@@ -214,7 +214,7 @@ export const SwapCard: React.FC<Props> = ({
       <div className="px-4 pb-4 md:px-5 md:pb-5">
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <label htmlFor="destination" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-white/55">
+            <label htmlFor="destination" className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/70">
               Destination address
             </label>
             <span className="rounded-[6px] border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] font-medium text-white/40">
@@ -223,7 +223,7 @@ export const SwapCard: React.FC<Props> = ({
           </div>
           <div
             onClick={() => destinationRef.current?.focus()}
-            className={`flex cursor-text items-center gap-2 rounded-[10px] border bg-ink-900 px-3 py-2.5 shadow-inner transition-all duration-200 ${
+            className={`flex cursor-text items-center gap-3 rounded-[12px] border-2 bg-ink-900 px-4 py-4 shadow-inner transition-all duration-200 ${
               showAddressError
                 ? 'border-brand-red/50 bg-brand-red/[0.06] focus-within:border-brand-red/60'
                 : isAddressValid
@@ -243,17 +243,17 @@ export const SwapCard: React.FC<Props> = ({
               placeholder={toAsset.addressPlaceholder}
               spellCheck={false}
               autoComplete="off"
-              className="w-full min-w-0 bg-transparent font-mono text-[13px] text-white outline-none placeholder:text-white/25"
+              className="w-full min-w-0 bg-transparent font-mono text-[15px] font-medium text-white outline-none placeholder:text-white/30"
             />
             {isAddressValid ? (
               <Check className="h-4 w-4 shrink-0 text-brand-greenBright" />
             ) : (
               <button
-                onClick={paste}
+                onClick={(e) => { e.stopPropagation(); paste(); }}
                 aria-label="Paste address"
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-[8px] border border-white/[0.08] bg-white/[0.06] text-white/50 transition hover:bg-white/[0.10] hover:text-white"
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-[10px] border border-white/[0.10] bg-white/[0.08] text-white/60 transition hover:bg-white/[0.12] hover:text-white hover:border-white/15 active:scale-95"
               >
-                <Clipboard className="h-3.5 w-3.5" />
+                <Clipboard className="h-4 w-4" />
               </button>
             )}
           </div>
