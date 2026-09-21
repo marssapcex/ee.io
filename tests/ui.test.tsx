@@ -285,25 +285,30 @@ describe('quote flow', () => {
 });
 
 describe('route comparison', () => {
-  it('labels the winner and lists unavailable providers separately', async () => {
+  it('labels the winner', async () => {
     render(<App />);
     await screen.findByText('Routes');
 
     expect(screen.getByText('BEST')).toBeDefined();
-    expect(screen.getByText(/1 unavailable/i)).toBeDefined();
   });
 
-  it('explains why a provider cannot route, never failing silently', async () => {
+  it('lists only routable venues — an unusable venue is noise, not a row', async () => {
     render(<App />);
     await screen.findByText('Routes');
-    fireEvent.click(screen.getByText(/1 unavailable/i));
-    expect(screen.getByText(/does not support cross-chain swaps/i)).toBeDefined();
+
+    // The fixture marks 0x unavailable for this pair.
+    expect(screen.queryByText(/unavailable/i)).toBeNull();
+    expect(screen.queryByText(/does not support cross-chain swaps/i)).toBeNull();
+    expect(screen.getByText(/1 venue quoted/i)).toBeDefined();
   });
 
   it('discloses the fee on every route', async () => {
     render(<App />);
     await screen.findByText('Routes');
-    expect(screen.getByText('50bps')).toBeDefined();
+    // Rendered twice by design: a dedicated column on desktop, a collapsed
+    // metric strip on mobile. jsdom evaluates no media queries, so both are
+    // in the tree here.
+    expect(screen.getAllByText('50bps').length).toBeGreaterThan(0);
   });
 });
 

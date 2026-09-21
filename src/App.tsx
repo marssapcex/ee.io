@@ -10,6 +10,7 @@ import { ProviderSheet } from './components/ProviderSheet';
 import { RouteComparison } from './components/RouteComparison';
 import { SwapCard } from './components/SwapCard';
 import { useQuote } from './hooks/useQuote';
+import { useWalletAccount } from './hooks/useWalletAccount';
 import { api, type AssetSummary, type HealthResponse, type ProviderSummary } from './lib/api';
 
 type Side = 'send' | 'receive';
@@ -34,7 +35,10 @@ export default function App() {
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
-  const [account, setAccount] = useState<string | null>(null);
+
+  // Read-only: improves quote accuracy when a wallet is already authorised,
+  // never prompts. See useWalletAccount.
+  const account = useWalletAccount();
 
   useEffect(() => {
     Promise.all([api.assets(), api.providers(), api.health()])
@@ -191,14 +195,9 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <Navbar
-        health={health}
-        account={account}
-        onAccount={setAccount}
-        onOpenProviders={() => setProviderSheet(true)}
-      />
+      <Navbar health={health} onOpenProviders={() => setProviderSheet(true)} />
 
-      <main className="mx-auto w-full max-w-[520px] flex-1 px-4 pb-16 pt-6 sm:pt-10">
+      <main className="mx-auto w-full max-w-[1040px] flex-1 px-4 pb-16 pt-6 sm:pt-10">
         <SwapCard
           fromAsset={fromAsset}
           toAsset={toAsset}
@@ -243,13 +242,6 @@ export default function App() {
           </div>
         )}
       </main>
-
-      <footer className="border-t border-line-soft py-5">
-        <div className="mx-auto flex max-w-[520px] items-center justify-between px-4 font-mono text-[10px] text-white/25">
-          <span>ee.io</span>
-          <span>e &gt; f</span>
-        </div>
-      </footer>
 
       <AssetPicker
         open={pickerSide !== null}

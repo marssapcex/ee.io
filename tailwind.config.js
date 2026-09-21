@@ -8,22 +8,22 @@ export default {
         // of navy — washed-out "dark" themes come from lifting the base too
         // far off black.
         ink: {
-          950: '#050507',
-          900: '#08080b',
-          850: '#0b0b0f',
-          800: '#101014',
-          750: '#141419',
-          700: '#17171d',
-          650: '#1c1c23',
-          600: '#212129',
-          550: '#282831',
-          500: '#30303b',
+          950: '#000000',
+          900: '#040405',
+          850: '#0a0a0c',
+          800: '#0f0f13',
+          750: '#131318',
+          700: '#18181e',
+          650: '#1d1d24',
+          600: '#23232b',
+          550: '#2a2a33',
+          500: '#33333e',
         },
         line: {
-          DEFAULT: '#1f1f27',
-          soft: '#17171e',
-          strong: '#2e2e3a',
-          glow: '#3a3a4a',
+          DEFAULT: '#1e1e26',
+          soft: '#141419',
+          strong: '#2f2f3a',
+          glow: '#454555',
         },
         // Saturated, high-chroma accents that hold up against pure black.
         brand: {
