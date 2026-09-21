@@ -253,4 +253,6 @@ export interface DepositRecord {
   fundedAt?: number;
   txHash?: string;
   outTxHash?: string;
+  /** CREATE2 salt = keccak256(abi.encode(orderId, destination, fromToken, toToken)) for frontrun protection */
+  salt?: string;
 }

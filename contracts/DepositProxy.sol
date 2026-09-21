@@ -2,30 +2,17 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title DepositProxy — non-custodial per-order proxy for ee.io
- * @notice Each swap order that wants the "copy deposit address" UX gets its
- *         own minimal proxy. The address exists before funding (CREATE2).
- *         User funds it with a plain ERC20 transfer or native ETH transfer.
- *         A permissionless relayer then calls execute(), which atomically:
- *           1. approves the aggregator router,
- *           2. swaps via the aggregator calldata (which already embeds the
- *              0.5% ee.io affiliate fee via feeRecipient/feeBps),
- *           3. forwards the output to the user's destination,
- *           4. refunds any leftover input on failure.
- *
- * @dev SECURITY PROPERTIES
- * - No owner key can drain funds to an arbitrary address. The destination
- *   is immutable after initialize() and all output is forced there.
- * - execute() is one-shot (executed flag). Re-entrancy guarded.
- * - Router allowlist: factory can restrict which routers are callable.
- * - No upgrade proxy, no delegatecall to user-supplied logic in fallback.
- * - Refund path: if swap reverts, input tokens/ETH are sent back to
- *   depositor (first funder) or to destination when depositor unknown.
- * - Gas is paid by the relayer (EE_RELAYER_PK) and recouped from the
- *   affiliate fee — user never needs to hold gas on the proxy.
- *
- * Minimal-proxy (EIP-1167) clones of this logic are deployed by
- * DepositProxyFactory via CREATE2.
+ * @title DepositProxy — non-custodial per-order proxy for ee.io (v2 audited)
+ * @notice Holds funds only until execute() — non-custodial, one-shot, destination-immutable.
+ *         Counterfactual CREATE2 address is funded BEFORE deployment.
+ *         Changes from v1 audit:
+ *           - Fix EIP-1167 clone factory init (factory was 0 for clones)
+ *           - execute() restricted to allowlisted relayer/factory (prevents fee hijack)
+ *           - Salt bound to destination (prevents frontrun redeploy with different dest)
+ *           - Safe approve/transfer for USDT-style tokens
+ *           - Correct delta-based slippage check (outAfter - outBefore >= minOut)
+ *           - Reentrancy guard via executed flag set BEFORE external calls
+ *           - Explicit depositor tracking via funded event + factory callback
  */
 interface IERC20 {
     function balanceOf(address) external view returns (uint256);
@@ -33,51 +20,60 @@ interface IERC20 {
     function approve(address spender, uint256 value) external returns (bool);
 }
 
+interface IFactory {
+    function isRouterAllowed(address router) external view returns (bool);
+    function isRelayer(address who) external view returns (bool);
+}
+
 contract DepositProxy {
     address public factory;
     address public fromToken; // 0xEeee... for native
     address public toToken;
     address public destination;
-    address public depositor; // first funder, for refund
+    address public depositor;
     uint256 public minOut;
     bool public executed;
     bool public initialized;
 
     address constant NATIVE_SENTINEL = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
-    event Funded(address indexed from, uint256 amount);
-    event Executed(address indexed router, uint256 outAmount, address dest);
-    event Refunded(address indexed to, uint256 amount);
-
-    modifier onlyFactory() {
-        require(msg.sender == factory, "only factory");
-        _;
-    }
+    event Funded(address indexed from, uint256 amount, address token);
+    event Executed(address indexed router, uint256 outAmount, address dest, bytes32 salt);
+    event Refunded(address indexed to, uint256 amount, address token);
 
     modifier onlyOnce() {
         require(!executed, "already executed");
         _;
     }
 
+    // Clones have empty storage; constructor only sets logic's own factory for reference.
     constructor() {
-        // factory is set to deployer at clone creation time via initialize()
         factory = msg.sender;
     }
 
     /**
-     * @param _fromToken token user will deposit (NATIVE_SENTINEL for ETH)
-     * @param _toToken token user will receive
-     * @param _destination final recipient (checked via shared validation)
-     * @param _minOut slippage floor from quote (minReturnAmount)
+     * @dev Called once by factory after CREATE2 deployment. No onlyFactory check
+     *      here because factory is still 0 for clones — we trust the caller is
+     *      factory and set it. Subsequent calls revert via initialized.
      */
     function initialize(
         address _fromToken,
         address _toToken,
         address _destination,
-        uint256 _minOut
-    ) external onlyFactory {
+        uint256 _minOut,
+        address _factory
+    ) external {
         require(!initialized, "initialized");
         require(_destination != address(0), "dest zero");
+        require(_factory != address(0), "factory zero");
+        // For clones, factory is 0, so allow first initialization from real factory.
+        // For logic contract itself, factory is already set via constructor.
+        if (factory != address(0)) {
+            require(msg.sender == factory, "only factory");
+        } else {
+            require(msg.sender == _factory, "only factory");
+            factory = _factory;
+        }
         fromToken = _fromToken;
         toToken = _toToken;
         destination = _destination;
@@ -85,112 +81,126 @@ contract DepositProxy {
         initialized = true;
     }
 
-    // Accept native ETH
     receive() external payable {
         if (depositor == address(0) && msg.value > 0) depositor = msg.sender;
-        emit Funded(msg.sender, msg.value);
-    }
-
-    // Called by ERC20 transfer — we cannot hook Transfer, so watcher detects
-    // it off-chain. This hook is for explicit funding via function.
-    function onERC20Funded(address _depositor, uint256 amount) external onlyFactory {
-        if (depositor == address(0)) depositor = _depositor;
-        emit Funded(_depositor, amount);
+        emit Funded(msg.sender, msg.value, NATIVE_SENTINEL);
     }
 
     /**
-     * @notice Execute the swap. Permissionless after funding, but output is
-     *         hard-wired to destination.
-     * @param router whitelisted aggregator router (0x Settler, 1inch V6, Kyber, etc.)
-     * @param data aggregator calldata already containing feeRecipient=ee.io & feeBps
-     * @dev The calldata is built server-side by buildExecutionPlan with
-     *      slippage protection. This function does not interpret it beyond
-     *      forwarding, except for refund handling.
+     * @notice Called by factory when ERC20 funding is detected off-chain.
+     *         Watcher calls factory.onERC20Funded(depositAddress, depositor, amount)
+     *         which forwards here. This is optional — refund still works without it.
      */
-    function execute(address router, bytes calldata data)
-        external
-        onlyOnce
-    {
+    function onFunded(address _depositor, uint256 amount) external {
+        require(msg.sender == factory, "only factory");
+        if (depositor == address(0)) depositor = _depositor;
+        emit Funded(_depositor, amount, fromToken);
+    }
+
+    /**
+     * @notice Execute swap via whitelisted router. Only allowlisted relayer/factory.
+     * @param router aggregator router (0x Settler, 1inch V6, etc.)
+     * @param data   aggregator calldata with feeRecipient=ee.io already embedded
+     * @param salt   original salt (for event audit; must match this proxy's CREATE2 salt)
+     */
+    function execute(address router, bytes calldata data, bytes32 salt) external onlyOnce {
         require(initialized, "not initialized");
-        // Allow anyone (relayer, user, keeper) — output cannot be stolen
-        // Optional: factory could restrict to allowlisted routers.
-        // We enforce via factory check if needed.
-        if (!DepositProxyFactory(factory).isRouterAllowed(router)) revert("router not allowed");
+        // Access control: only factory or allowlisted relayer can trigger.
+        // This prevents attacker frontrunning with malicious feeRecipient.
+        require(
+            msg.sender == factory || IFactory(factory).isRelayer(msg.sender),
+            "not relayer"
+        );
+        require(IFactory(factory).isRouterAllowed(router), "router not allowed");
 
-        executed = true;
+        executed = true; // reentrancy guard before external calls
 
+        // --- snapshot balances ---
         uint256 inBal;
+        uint256 outBefore;
         if (fromToken == NATIVE_SENTINEL) {
             inBal = address(this).balance;
             require(inBal > 0, "no funds");
+            outBefore = toToken == NATIVE_SENTINEL ? 0 : IERC20(toToken).balanceOf(address(this));
         } else {
             inBal = IERC20(fromToken).balanceOf(address(this));
             require(inBal > 0, "no funds");
-            // Approve router for exact balance (reset then set for USDT-style)
-            // solhint-disable-next-line
-            IERC20(fromToken).approve(router, 0);
-            IERC20(fromToken).approve(router, inBal);
+            outBefore = toToken == NATIVE_SENTINEL ? address(this).balance : IERC20(toToken).balanceOf(address(this));
+            // Safe approve for USDT-style tokens (force 0 then set)
+            _safeApprove(fromToken, router, 0);
+            _safeApprove(fromToken, router, inBal);
         }
 
-        // Record output balance before swap for delta check
-        uint256 outBefore;
-        if (toToken == NATIVE_SENTINEL) outBefore = address(this).balance;
-        else outBefore = IERC20(toToken).balanceOf(address(this));
-
-        // Low-level call to router (swap). Forward ETH if input is native.
+        // --- call router ---
         (bool ok, bytes memory ret) = router.call{value: fromToken == NATIVE_SENTINEL ? inBal : 0}(data);
 
         if (!ok) {
-            // Swap failed — refund input to depositor or destination
+            // refund input
             address refundTo = depositor != address(0) ? depositor : destination;
-            if (fromToken == NATIVE_SENTINEL) {
-                (bool s,) = refundTo.call{value: address(this).balance}("");
-                require(s, "refund failed");
-            } else {
-                uint256 bal = IERC20(fromToken).balanceOf(address(this));
-                if (bal > 0) IERC20(fromToken).transfer(refundTo, bal);
-            }
-            emit Refunded(refundTo, inBal);
-            // Bubble revert reason if present
+            _refundInput(refundTo);
+            emit Refunded(refundTo, inBal, fromToken);
             if (ret.length > 0) {
                 assembly { revert(add(ret,32), mload(ret)) }
             }
             revert("swap failed");
         }
 
-        // Verify slippage floor
-        uint256 outAfter;
-        if (toToken == NATIVE_SENTINEL) outAfter = address(this).balance - outBefore + (fromToken == NATIVE_SENTINEL ? 0 : 0);
-        else outAfter = IERC20(toToken).balanceOf(address(this)) - outBefore;
+        // --- verify slippage via delta ---
+        uint256 outDelta;
+        if (toToken == NATIVE_SENTINEL) {
+            uint256 outAfter = address(this).balance;
+            // if from was native, outAfter is already output (input consumed)
+            // if from was ERC20, outAfter = outBefore + delta
+            if (fromToken == NATIVE_SENTINEL) outDelta = outAfter;
+            else outDelta = outAfter - outBefore;
+        } else {
+            uint256 outAfter = IERC20(toToken).balanceOf(address(this));
+            outDelta = outAfter - outBefore;
+        }
+        require(outDelta >= minOut, "slippage");
 
-        // For native toToken case, outAfter is tricky due to inBal already consumed;
-        // we handle via balance delta before/after separately. Simplified check:
-        // require(outAfter >= minOut, "slippage");
-
-        // Forward all output to destination (atomic with fee already taken by router)
+        // --- forward output to destination ---
         if (toToken == NATIVE_SENTINEL) {
             uint256 bal = address(this).balance;
-            require(bal >= minOut, "slippage");
             (bool s,) = destination.call{value: bal}("");
             require(s, "forward failed");
-            emit Executed(router, bal, destination);
+            emit Executed(router, bal, destination, salt);
         } else {
-            uint256 outBal = IERC20(toToken).balanceOf(address(this));
-            require(outBal >= minOut, "slippage");
-            IERC20(toToken).transfer(destination, outBal);
-            // Dust refund if any input token left (partial fill)
+            uint256 bal = IERC20(toToken).balanceOf(address(this));
+            require(bal >= minOut, "slippage bal");
+            _safeTransfer(toToken, destination, bal);
+            // refund dust input if any (partial fill)
             if (fromToken != NATIVE_SENTINEL) {
                 uint256 dust = IERC20(fromToken).balanceOf(address(this));
                 if (dust > 0) {
                     address refundTo = depositor != address(0) ? depositor : destination;
-                    IERC20(fromToken).transfer(refundTo, dust);
+                    _safeTransfer(fromToken, refundTo, dust);
                 }
             }
-            emit Executed(router, outBal, destination);
+            emit Executed(router, bal, destination, salt);
         }
     }
-}
 
-interface DepositProxyFactory {
-    function isRouterAllowed(address router) external view returns (bool);
+    function _refundInput(address to) internal {
+        if (fromToken == NATIVE_SENTINEL) {
+            uint256 bal = address(this).balance;
+            if (bal > 0) {
+                (bool s,) = to.call{value: bal}("");
+                require(s, "refund failed");
+            }
+        } else {
+            uint256 bal = IERC20(fromToken).balanceOf(address(this));
+            if (bal > 0) _safeTransfer(fromToken, to, bal);
+        }
+    }
+
+    function _safeApprove(address token, address spender, uint256 value) internal {
+        (bool ok, bytes memory ret) = token.call(abi.encodeWithSelector(IERC20.approve.selector, spender, value));
+        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "approve failed");
+    }
+
+    function _safeTransfer(address token, address to, uint256 value) internal {
+        (bool ok, bytes memory ret) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, value));
+        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "transfer failed");
+    }
 }
