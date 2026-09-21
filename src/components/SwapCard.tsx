@@ -125,8 +125,8 @@ export const SwapCard: React.FC<Props> = ({
 
   return (
     <section className="overflow-hidden rounded-[16px] border border-white/[0.06] bg-ink-850 shadow-[0_8px_32px_rgba(0,0,0,0.6)]">
-      {/* ---- Row 1: Send | flip | Receive, side by side ---- */}
-      <div className="relative grid items-stretch gap-3 p-4 md:grid-cols-[1fr_auto_1fr] md:gap-4 md:p-5">
+      {/* ---- Row 1: Send | Receive — always horizontal like ff.io / doggy ---- */}
+      <div className="relative grid grid-cols-[1fr_auto_1fr] items-stretch gap-3 p-4 md:gap-4 md:p-5">
         <AmountBox
           label="You send"
           asset={fromAsset}
@@ -159,16 +159,16 @@ export const SwapCard: React.FC<Props> = ({
           }
         />
 
-        {/* Flip control: between the boxes on desktop, between rows on mobile. */}
-        <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center md:static md:inset-auto md:self-center">
+        {/* Flip — stays in the middle column, always horizontal */}
+        <div className="flex items-center justify-center self-center">
           <button
             onClick={handleFlip}
             aria-label="Swap direction"
-            className="pointer-events-auto grid h-11 w-11 place-items-center rounded-full border-4 border-ink-850 bg-ink-700 text-white/55 transition-all duration-200 hover:bg-ink-600 hover:text-brand-cyan hover:shadow-glow-mint active:scale-90"
+            className="grid h-10 w-10 place-items-center rounded-full border border-white/[0.08] bg-ink-700 text-white/60 shadow-[0_2px_10px_rgba(0,0,0,0.4)] transition-all duration-200 hover:bg-ink-600 hover:text-white hover:border-white/15 active:scale-90"
           >
             <ArrowRight
-              className={`h-4 w-4 rotate-90 transition-transform duration-[400ms] md:rotate-0 ${
-                spin ? 'rotate-[270deg] md:rotate-180' : ''
+              className={`h-4 w-4 transition-transform duration-[400ms] ${
+                spin ? 'rotate-180' : ''
               }`}
             />
           </button>
@@ -209,47 +209,51 @@ export const SwapCard: React.FC<Props> = ({
         />
       </div>
 
-      {/* ---- Row 2: destination, full width ---- */}
+      {/* ---- Row 2: destination — label on top, square bordered input like ff.io ---- */}
       <div className="px-4 pb-4 md:px-5 md:pb-5">
-        <div
-          className={`flex items-center gap-3 rounded-[12px] border bg-ink-800 px-4 py-3.5 transition-all duration-200 ${
-            showAddressError
-              ? 'border-brand-red/40'
-              : isAddressValid
-                ? 'border-brand-greenMid/40'
-                : 'border-white/[0.06] hover:border-white/[0.10] focus-within:border-white/[0.14] focus-within:bg-ink-750'
-          }`}
-        >
-          <label htmlFor="destination" className="shrink-0 text-[12px] font-medium text-white/45">
-            Destination
-          </label>
-          <input
-            id="destination"
-            value={destination}
-            onChange={(e) => {
-              onDestination(e.target.value);
-              setAddressTouched(true);
-            }}
-            onBlur={() => setAddressTouched(true)}
-            placeholder={toAsset.addressPlaceholder}
-            spellCheck={false}
-            autoComplete="off"
-            className="w-full min-w-0 bg-transparent font-mono text-[14px] text-white outline-none placeholder:text-white/20"
-          />
-          <span className="hidden shrink-0 font-mono text-[11px] text-white/40 sm:block">
-            {toAsset.chainName}
-          </span>
-          {isAddressValid ? (
-            <Check className="h-4 w-4 shrink-0 text-brand-greenBright" />
-          ) : (
-            <button
-              onClick={paste}
-              aria-label="Paste address"
-              className="shrink-0 rounded-lg p-1.5 text-white/40 transition-colors hover:bg-white/5 hover:text-white"
-            >
-              <Clipboard className="h-4 w-4" />
-            </button>
-          )}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label htmlFor="destination" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-white/55">
+              Destination address
+            </label>
+            <span className="rounded-[6px] border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] font-medium text-white/40">
+              {toAsset.chainName}
+            </span>
+          </div>
+          <div
+            className={`flex items-center gap-2 rounded-[10px] border bg-ink-900 px-3 py-2.5 shadow-inner transition-all duration-200 ${
+              showAddressError
+                ? 'border-brand-red/50 bg-brand-red/[0.06] focus-within:border-brand-red/60'
+                : isAddressValid
+                  ? 'border-brand-greenMid/50 bg-brand-greenMid/[0.06] focus-within:border-brand-greenMid/60'
+                  : 'border-white/[0.14] hover:border-white/[0.18] focus-within:border-brand-cyan/50 focus-within:ring-2 focus-within:ring-brand-cyan/20'
+            }`}
+          >
+            <input
+              id="destination"
+              value={destination}
+              onChange={(e) => {
+                onDestination(e.target.value);
+                setAddressTouched(true);
+              }}
+              onBlur={() => setAddressTouched(true)}
+              placeholder={toAsset.addressPlaceholder}
+              spellCheck={false}
+              autoComplete="off"
+              className="w-full min-w-0 bg-transparent font-mono text-[13px] text-white outline-none placeholder:text-white/25"
+            />
+            {isAddressValid ? (
+              <Check className="h-4 w-4 shrink-0 text-brand-greenBright" />
+            ) : (
+              <button
+                onClick={paste}
+                aria-label="Paste address"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-[8px] border border-white/[0.08] bg-white/[0.06] text-white/50 transition hover:bg-white/[0.10] hover:text-white"
+              >
+                <Clipboard className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         {showAddressError && (
@@ -335,10 +339,10 @@ const AmountBox: React.FC<{
   footer: React.ReactNode;
 }> = ({ label, asset, value, onChange, onPick, usd, invalid, busy, accent, footer }) => (
   <div
-    className={`flex flex-col justify-between rounded-[14px] border bg-ink-800 p-4 transition-all duration-200 ${
+    className={`flex flex-col justify-between rounded-[14px] border bg-ink-800/80 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 ${
       invalid
         ? 'border-brand-red/40'
-        : 'border-white/[0.06] hover:border-white/[0.08] focus-within:border-white/[0.10] focus-within:bg-ink-750'
+        : 'border-white/[0.08] hover:border-white/[0.12] focus-within:border-white/[0.14] focus-within:bg-ink-750'
     }`}
   >
     <div className="mb-5 flex items-center justify-between gap-3">
@@ -348,11 +352,14 @@ const AmountBox: React.FC<{
       <button
         onClick={onPick}
         aria-label={`${label === 'You send' ? 'Change send asset' : 'Change receive asset'} — currently ${asset.symbol} on ${asset.chainName}`}
-        className="flex shrink-0 items-center gap-2 rounded-full border border-line bg-ink-700 py-1.5 pl-1.5 pr-3 transition-all duration-200 hover:border-line-strong hover:bg-ink-650"
+        className="flex shrink-0 items-center gap-2 rounded-full border border-white/[0.10] bg-ink-900 px-1.5 py-1 pr-2.5 shadow-sm transition-all duration-200 hover:border-white/15 hover:bg-ink-700"
       >
-        <AssetIcon asset={asset} size={26} showChain />
-        <span className="text-[14px] font-semibold text-white">{asset.symbol}</span>
-        <ChevronDown className="h-3.5 w-3.5 text-white/35" />
+        <span className="grid h-[26px] w-[26px] place-items-center overflow-hidden rounded-full">
+          <AssetIcon asset={asset} size={26} showChain />
+        </span>
+        <span className="text-[13px] font-bold tracking-tight text-white">{asset.symbol}</span>
+        <span className="rounded bg-white/[0.08] px-1 py-0.5 font-mono text-[9px] font-semibold leading-none text-white/45">{asset.chainName.slice(0,3).toUpperCase()}</span>
+        <ChevronDown className="h-3.5 w-3.5 text-white/30" />
       </button>
     </div>
 
@@ -365,7 +372,7 @@ const AmountBox: React.FC<{
       inputMode="decimal"
       placeholder="0"
       aria-label={label === 'You send' ? 'You send' : 'You receive'}
-      className={`tabular w-full min-w-0 bg-transparent text-[38px] font-semibold leading-none tracking-tight outline-none placeholder:text-white/15 ${
+      className={`tabular w-full min-w-0 bg-transparent text-[34px] font-bold leading-none tracking-tighter outline-none placeholder:text-white/12 ${
         accent === 'mint' ? 'text-brand-cyan' : 'text-white'
       } ${busy ? 'opacity-50' : ''}`}
     />

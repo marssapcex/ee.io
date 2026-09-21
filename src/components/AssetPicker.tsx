@@ -114,7 +114,7 @@ export const AssetPicker: React.FC<Props> = ({
       aria-modal="true"
       aria-label={title}
     >
-      <div className="flex max-h-[76vh] w-full max-w-lg animate-slide-up flex-col overflow-hidden rounded-[20px] border border-line bg-ink-700 shadow-2xl">
+      <div className="flex max-h-[76vh] w-full max-w-lg animate-slide-up flex-col overflow-hidden rounded-[16px] border border-white/[0.08] bg-[#15151a] shadow-2xl">
         <div className="flex items-center justify-between border-b border-line-soft px-5 py-4">
           <h2 className="text-sm font-bold text-white">{title}</h2>
           <button
@@ -133,8 +133,8 @@ export const AssetPicker: React.FC<Props> = ({
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name, ticker, or paste a contract address"
-              className="w-full rounded-2xl border border-line bg-ink-800 py-2.5 pl-9 pr-3 text-sm text-white placeholder:text-white/35 focus:border-brand-cyan focus:outline-none"
+              placeholder="Type a currency or ticker"
+              className="w-full rounded-[10px] border border-white/[0.10] bg-ink-900 py-2.5 pl-9 pr-3 text-sm text-white placeholder:text-white/30 focus:border-white/15 focus:outline-none focus:ring-2 focus:ring-white/10"
             />
           </div>
 
@@ -156,10 +156,17 @@ export const AssetPicker: React.FC<Props> = ({
               No assets match “{query}”.
             </p>
           )}
+          {filtered.length > 0 && !query && chainFilter === 'all' && (
+            <p className="px-3 pb-2 pt-1 text-[11px] font-medium uppercase tracking-widest text-white/30">Popular currencies</p>
+          )}
+          {filtered.length > 0 && (query || chainFilter !== 'all') && (
+            <p className="px-3 pb-2 pt-1 text-[11px] font-medium uppercase tracking-widest text-white/30">All currencies</p>
+          )}
 
           {filtered.map((asset, index) => {
             const isSelected = asset.id === selectedId;
             const isExcluded = asset.id === excludeId;
+            const isPopular = asset.popular;
             return (
               <button
                 key={asset.id}
@@ -167,15 +174,17 @@ export const AssetPicker: React.FC<Props> = ({
                 disabled={isExcluded}
                 onMouseEnter={() => setCursor(index)}
                 onClick={() => onSelect(asset)}
-                className={`flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition-colors ${
+                className={`flex w-full items-center gap-3 rounded-[10px] px-3 py-2.5 text-left transition-colors ${
                   isExcluded
                     ? 'cursor-not-allowed opacity-35'
                     : index === cursor
-                      ? 'bg-ink-650'
-                      : 'hover:bg-ink-700'
+                      ? 'bg-white/[0.06]'
+                      : isPopular && !query && chainFilter==='all'
+                        ? 'bg-white/[0.02] hover:bg-white/[0.04]'
+                        : 'hover:bg-white/[0.04]'
                 }`}
               >
-                <AssetIcon asset={asset} size={34} />
+                <span className="grid h-8 w-8 place-items-center overflow-hidden rounded-full ring-1 ring-white/10"><AssetIcon asset={asset} size={32} /></span>
 
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
