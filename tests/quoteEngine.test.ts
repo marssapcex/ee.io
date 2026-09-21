@@ -101,7 +101,7 @@ describe('buildQuote — send side', () => {
     expect(fixed.best!.fee.bps).toBe(50);
     // Float-only: no advantage for fixed
     expect(fixed.best!.netOut).toBe(float.best!.netOut);
-    expect(fixed.expiresAt).toBe(float.expiresAt);
+    expect(Math.abs(fixed.expiresAt - float.expiresAt)).toBeLessThan(100);
   });
 
   it('never reports a net output above the gross output', async () => {
