@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+.scratch/
+
+# Secrets — never commit. .env.example is the documented template.
+.env
+.env.local
+.env.*.local
+
+*.log
+npm-debug.log*
+.DS_Store
+.vscode/
+.idea/
+*.tsbuildinfo
