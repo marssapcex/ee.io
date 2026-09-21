@@ -90,32 +90,68 @@ export default {
           '0%, 100%': { opacity: '1' },
           '50%': { opacity: '0.35' },
         },
-        /* --- to the moon --- */
-        launch: {
-          '0%': { transform: 'translate(0, 0) rotate(0deg) scale(1)', opacity: '0' },
-          '5%': { opacity: '1' },
-          /* arc: climbs steeply, then leans toward the moon on the right */
-          '45%': { transform: 'translate(22vw, -58vh) rotate(4deg) scale(0.92)' },
-          '85%': { opacity: '1' },
+        /* --- launch sequence ---
+           Distance-vs-time written out by hand on a `linear` timing function.
+           A single ease-in cannot express "hold on the pad, unstick, then
+           accelerate" — the hold has to be explicit keyframes. */
+        liftoff: {
+          '0%':   { transform: 'translateY(0)' },
+          '16%':  { transform: 'translateY(0)' },            /* ignition, clamped */
+          '24%':  { transform: 'translateY(-14px)' },        /* unsticks, crawls */
+          '32%':  { transform: 'translateY(-48px)' },
+          '42%':  { transform: 'translateY(-13vh)' },
+          '55%':  { transform: 'translateY(-34vh)' },
+          '70%':  { transform: 'translateY(-64vh)' },
+          '85%':  { transform: 'translateY(-105vh)' },
+          '100%': { transform: 'translateY(-165vh)' },
+        },
+        /* Shudder against the hold-downs, then settle once it is flying. */
+        'pad-shake': {
+          '0%, 12%':  { transform: 'translateX(0) rotate(0deg)' },
+          '14%':      { transform: 'translateX(-1.6px) rotate(-0.5deg)' },
+          '16%':      { transform: 'translateX(1.6px) rotate(0.5deg)' },
+          '18%':      { transform: 'translateX(-1.4px) rotate(-0.4deg)' },
+          '20%':      { transform: 'translateX(1.4px) rotate(0.4deg)' },
+          '23%':      { transform: 'translateX(-1px) rotate(-0.3deg)' },
+          '26%':      { transform: 'translateX(0.9px) rotate(0.25deg)' },
+          '30%':      { transform: 'translateX(-0.6px) rotate(-0.15deg)' },
+          '36%, 100%':{ transform: 'translateX(0) rotate(0deg)' },
+        },
+        /* Engines light before the stack moves. */
+        'flame-grow': {
+          '0%':       { transform: 'scaleY(0) scaleX(0.5)', opacity: '0' },
+          '10%':      { transform: 'scaleY(0.45) scaleX(0.9)', opacity: '0.9' },
+          '16%':      { transform: 'scaleY(1.15) scaleX(1.1)', opacity: '1' },
+          '30%, 82%': { transform: 'scaleY(1) scaleX(1)', opacity: '1' },
+          '100%':     { transform: 'scaleY(1.3) scaleX(0.85)', opacity: '0.85' },
+        },
+        /* Exhaust floods the pad: billows outward, expands, fades. */
+        'smoke-puff': {
+          '0%':   { transform: 'translate(0,0) scale(0.25)', opacity: '0' },
+          '18%':  { opacity: '0.34' },
+          '55%':  { opacity: '0.18' },
           '100%': {
-            transform: 'translate(64vw, -122vh) rotate(10deg) scale(0.7)',
+            transform: 'translate(var(--dx), var(--dy)) scale(var(--pscale))',
             opacity: '0',
           },
         },
-        spark: {
-          '0%': { transform: 'translateY(0) scale(1)', opacity: '0.95' },
-          '100%': { transform: 'translateY(52px) scale(0.2)', opacity: '0' },
+        /* Payload drifts out alongside the hull. */
+        'coin-ride': {
+          '0%':       { transform: 'translate(0,0) rotate(0deg) scale(0)', opacity: '0' },
+          '22%':      { opacity: '0' },
+          '34%':      { transform: 'translate(calc(var(--cx) * 0.5), calc(var(--cy) * 0.5)) rotate(calc(var(--cr) * 0.4)) scale(1)', opacity: '1' },
+          '80%':      { transform: 'translate(var(--cx), var(--cy)) rotate(var(--cr)) scale(1)', opacity: '1' },
+          '100%':     { transform: 'translate(calc(var(--cx) * 1.25), calc(var(--cy) * 1.3)) rotate(calc(var(--cr) * 1.4)) scale(0.82)', opacity: '0' },
         },
-        'moon-rise': {
-          '0%': { opacity: '0', transform: 'translateY(16px) scale(0.9)' },
-          '30%': { opacity: '1', transform: 'translateY(0) scale(1)' },
-          '80%': { opacity: '1', transform: 'translateY(0) scale(1)' },
-          '100%': { opacity: '0', transform: 'translateY(-6px) scale(1.04)' },
+        'moon-in': {
+          '0%':       { opacity: '0', transform: 'translate(-50%, 14px) scale(0.86)' },
+          '26%':      { opacity: '1', transform: 'translate(-50%, 0) scale(1)' },
+          '84%':      { opacity: '1', transform: 'translate(-50%, 0) scale(1)' },
+          '100%':     { opacity: '0', transform: 'translate(-50%, -6px) scale(1.06)' },
         },
-        'star-streak': {
-          '0%': { transform: 'translateY(-10vh)', opacity: '0' },
-          '10%': { opacity: '1' },
-          '100%': { transform: 'translateY(115vh)', opacity: '0' },
+        twinkle: {
+          '0%, 100%': { opacity: '0.18' },
+          '50%':      { opacity: '0.9' },
         },
         'flame-flicker': {
           '0%, 100%': { transform: 'scaleY(1) scaleX(1)', opacity: '0.95' },
@@ -127,10 +163,13 @@ export default {
         'slide-up': 'slide-up 260ms cubic-bezier(0.22, 1, 0.36, 1)',
         shimmer: 'shimmer 1.8s infinite',
         breathe: 'breathe 2s ease-in-out infinite',
-        launch: 'launch 3.2s cubic-bezier(0.45, 0, 0.75, 0.4) forwards',
-        spark: 'spark 620ms ease-out infinite',
-        'moon-rise': 'moon-rise 3.3s ease-out forwards',
-        'star-streak': 'star-streak 1.1s linear infinite',
+        liftoff: 'liftoff 4.8s linear forwards',
+        'pad-shake': 'pad-shake 4.8s linear forwards',
+        'flame-grow': 'flame-grow 4.8s ease-out forwards',
+        'smoke-puff': 'smoke-puff 2.6s ease-out forwards',
+        'coin-ride': 'coin-ride 4.8s ease-out forwards',
+        'moon-in': 'moon-in 4.8s ease-out forwards',
+        twinkle: 'twinkle 2.4s ease-in-out infinite',
         'flame-flicker': 'flame-flicker 90ms ease-in-out infinite',
       },
     },

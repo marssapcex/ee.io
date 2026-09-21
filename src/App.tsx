@@ -4,7 +4,7 @@ import { formatUnits, parseUnits } from '../shared/money';
 import type { OrderRecord, QuoteRequest, RateType } from '../shared/types';
 import { AssetPicker } from './components/AssetPicker';
 import { ExecutionInspector } from './components/ExecutionInspector';
-import { MoonShot } from './components/MoonShot';
+import { RocketLaunch } from './components/RocketLaunch';
 import { Navbar } from './components/Navbar';
 import { OrderTracker } from './components/OrderTracker';
 import { RouteComparison } from './components/RouteComparison';
@@ -241,7 +241,8 @@ export default function App() {
         )}
       </main>
 
-      <MoonShot trigger={launch} label="to the moon" />
+      {/* Plays as the page opens, and again on every order built. */}
+      <RocketLaunch trigger={launch} playOnMount />
 
       <AssetPicker
         open={pickerSide !== null}
