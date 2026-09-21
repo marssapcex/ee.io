@@ -6,21 +6,21 @@ export default {
       colors: {
         ink: {
           950: '#000000',
-          900: '#0a0a0a',
-          850: '#121212',
-          800: '#161616',
-          750: '#1c1c1c',
-          700: '#212121',
-          650: '#272727',
-          600: '#2e2e2e',
-          550: '#383838',
-          500: '#454545',
+          900: '#09090b', // page — pure near-black like Polymarket
+          850: '#1a1a1f', // card — slightly lifted, visible separation
+          800: '#232329', // well / inner input
+          750: '#2a2a30',
+          700: '#303036',
+          650: '#383840',
+          600: '#44444c',
+          550: '#52525c',
+          500: '#6b6b76',
         },
         line: {
-          DEFAULT: 'rgba(255,255,255,0.07)',
-          soft: 'rgba(255,255,255,0.045)',
-          strong: 'rgba(255,255,255,0.12)',
-          glow: 'rgba(255,255,255,0.22)',
+          DEFAULT: 'rgba(255,255,255,0.06)', // polymarket: hairline 6%
+          soft: 'rgba(255,255,255,0.04)',
+          strong: 'rgba(255,255,255,0.10)',
+          glow: 'rgba(255,255,255,0.16)',
         },
         brand: {
           cyan: '#2fe0c0',

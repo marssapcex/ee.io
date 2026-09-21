@@ -28,16 +28,16 @@ export const RouteComparison: React.FC<Props> = ({
   if (available.length === 0 && !loading) return null;
 
   return (
-    <section className="overflow-hidden rounded-[20px] border border-line bg-ink-850 shadow-card">
-      <header className="flex items-center justify-between px-6 py-5">
-        <h2 className="text-[15px] font-semibold tracking-tight text-white">Routes</h2>
-        <span className="font-mono text-[11px] text-white/40">
+    <section className="overflow-hidden rounded-[16px] border border-white/[0.06] bg-ink-850 shadow-[0_8px_32px_rgba(0,0,0,0.6)]">
+      <header className="flex items-center justify-between px-5 py-4">
+        <h2 className="text-[13px] font-bold uppercase tracking-[0.08em] text-white/90">Routes</h2>
+        <span className="rounded-full bg-white/[0.06] px-2.5 py-1 font-mono text-[10px] font-medium text-white/45">
           {available.length} venue{available.length === 1 ? '' : 's'} quoted
         </span>
       </header>
 
       {/* Column headers — only worth showing once there is room for them. */}
-      <div className="hidden grid-cols-[1fr_repeat(4,minmax(0,78px))_150px] items-center gap-4 border-y border-line-soft px-6 py-2.5 font-mono text-[10px] uppercase tracking-[0.08em] text-white/40 md:grid">
+      <div className="hidden grid-cols-[1fr_repeat(4,minmax(0,78px))_150px] items-center gap-4 border-y border-white/[0.04] bg-ink-900/40 px-5 py-2.5 font-mono text-[10px] uppercase tracking-[0.08em] text-white/35 md:grid">
         <span>Venue</span>
         <span className="text-right">Gas</span>
         <span className="text-right">Impact</span>
@@ -46,15 +46,15 @@ export const RouteComparison: React.FC<Props> = ({
         <span className="text-right">You receive</span>
       </div>
 
-      <div className="divide-y divide-line-soft">
+      <div className="divide-y divide-white/[0.04]">
         {available.map((quote) => {
           const isSelected = selected === quote.aggregator;
           return (
             <button
               key={quote.aggregator}
               onClick={() => onSelect(quote.aggregator)}
-              className={`relative grid w-full grid-cols-[1fr_auto] items-center gap-4 px-6 py-4 text-left transition-all duration-200 md:grid-cols-[1fr_repeat(4,minmax(0,78px))_150px] ${
-                isSelected ? 'bg-brand-cyan/[0.06]' : 'hover:bg-white/[0.025]'
+              className={`relative grid w-full grid-cols-[1fr_auto] items-center gap-4 px-5 py-3.5 text-left transition-all duration-200 md:grid-cols-[1fr_repeat(4,minmax(0,78px))_150px] ${
+                isSelected ? 'bg-white/[0.04]' : 'hover:bg-white/[0.02]'
               }`}
             >
               {isSelected && (

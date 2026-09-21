@@ -196,7 +196,7 @@ export default function App() {
     <div className="flex min-h-screen flex-col">
       <Navbar assets={assets} />
 
-      <main className="mx-auto w-full max-w-[1040px] flex-1 px-4 pb-20 pt-8 sm:px-6 sm:pt-12">
+      <main className="mx-auto w-full max-w-[1120px] flex-1 px-4 pb-16 pt-6 sm:px-6 sm:pt-8">
         <SwapCard
           fromAsset={fromAsset}
           toAsset={toAsset}

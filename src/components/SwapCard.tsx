@@ -124,9 +124,9 @@ export const SwapCard: React.FC<Props> = ({
     isAddressValid && !belowMin && !aboveMax && !!quote?.best && !loading && !submitting;
 
   return (
-    <section className="overflow-hidden rounded-[20px] border border-line bg-ink-850 shadow-card">
+    <section className="overflow-hidden rounded-[16px] border border-white/[0.06] bg-ink-850 shadow-[0_8px_32px_rgba(0,0,0,0.6)]">
       {/* ---- Row 1: Send | flip | Receive, side by side ---- */}
-      <div className="relative grid items-stretch gap-4 p-5 md:grid-cols-[1fr_auto_1fr] md:gap-5 md:p-6">
+      <div className="relative grid items-stretch gap-3 p-4 md:grid-cols-[1fr_auto_1fr] md:gap-4 md:p-5">
         <AmountBox
           label="You send"
           asset={fromAsset}
@@ -210,14 +210,14 @@ export const SwapCard: React.FC<Props> = ({
       </div>
 
       {/* ---- Row 2: destination, full width ---- */}
-      <div className="px-5 pb-5 md:px-6 md:pb-6">
+      <div className="px-4 pb-4 md:px-5 md:pb-5">
         <div
-          className={`flex items-center gap-3 rounded-2xl border bg-ink-800 px-5 py-4 transition-all duration-200 ${
+          className={`flex items-center gap-3 rounded-[12px] border bg-ink-800 px-4 py-3.5 transition-all duration-200 ${
             showAddressError
-              ? 'border-brand-red/45'
+              ? 'border-brand-red/40'
               : isAddressValid
-                ? 'border-brand-greenMid/45'
-                : 'border-line hover:border-line-strong focus-within:border-line-glow'
+                ? 'border-brand-greenMid/40'
+                : 'border-white/[0.06] hover:border-white/[0.10] focus-within:border-white/[0.14] focus-within:bg-ink-750'
           }`}
         >
           <label htmlFor="destination" className="shrink-0 text-[12px] font-medium text-white/45">
@@ -260,7 +260,7 @@ export const SwapCard: React.FC<Props> = ({
       </div>
 
       {/* ---- Row 3: rate type + submit ---- */}
-      <div className="grid gap-3 px-5 pb-5 md:grid-cols-[minmax(260px,auto)_1fr] md:px-6 md:pb-6">
+      <div className="grid gap-3 px-4 pb-4 md:grid-cols-[200px_1fr] md:px-5 md:pb-5">
         <div className="grid grid-cols-2 gap-2">
           <RatePill
             active={rateType === 'float'}
@@ -335,10 +335,10 @@ const AmountBox: React.FC<{
   footer: React.ReactNode;
 }> = ({ label, asset, value, onChange, onPick, usd, invalid, busy, accent, footer }) => (
   <div
-    className={`flex flex-col justify-between rounded-2xl border bg-ink-800 p-5 transition-all duration-200 ${
+    className={`flex flex-col justify-between rounded-[14px] border bg-ink-800 p-4 transition-all duration-200 ${
       invalid
-        ? 'border-brand-red/45'
-        : 'border-line hover:border-line-strong focus-within:border-line-glow'
+        ? 'border-brand-red/40'
+        : 'border-white/[0.06] hover:border-white/[0.08] focus-within:border-white/[0.10] focus-within:bg-ink-750'
     }`}
   >
     <div className="mb-5 flex items-center justify-between gap-3">

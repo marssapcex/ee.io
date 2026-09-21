@@ -20,11 +20,7 @@
   body {
     @apply bg-ink-900 text-white antialiased;
     font-feature-settings: 'cv11', 'ss01';
-    /* A single, very low-amplitude well. Polymarket's page reads as flat
-       near-black; anything stronger turns into a gradient poster. */
-    background-image:
-      radial-gradient(1100px 620px at 50% -10%, rgba(47, 224, 192, 0.035), transparent 70%);
-    background-attachment: fixed;
+    background: #09090b;
   }
 
   /* Number inputs: strip the spinners, they break the monospace rhythm. */
