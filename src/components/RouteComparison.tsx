@@ -2,14 +2,13 @@ import { Zap } from 'lucide-react';
 import React from 'react';
 import { formatDisplay, formatUsd } from '../../shared/money';
 import type { AggregatorQuote } from '../../shared/types';
-import type { AssetSummary, ProviderSummary } from '../lib/api';
+import type { AssetSummary } from '../lib/api';
 
 interface Props {
   quotes: AggregatorQuote[];
   toAsset: AssetSummary;
   selected: string | null;
   onSelect: (aggregator: string) => void;
-  providers: ProviderSummary[];
   loading: boolean;
 }
 

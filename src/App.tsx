@@ -7,18 +7,16 @@ import { ExecutionInspector } from './components/ExecutionInspector';
 import { MoonShot } from './components/MoonShot';
 import { Navbar } from './components/Navbar';
 import { OrderTracker } from './components/OrderTracker';
-import { ProviderSheet } from './components/ProviderSheet';
 import { RouteComparison } from './components/RouteComparison';
 import { SwapCard } from './components/SwapCard';
 import { useQuote } from './hooks/useQuote';
 import { useWalletAccount } from './hooks/useWalletAccount';
-import { api, type AssetSummary, type HealthResponse, type ProviderSummary } from './lib/api';
+import { api, type AssetSummary, type HealthResponse } from './lib/api';
 
 type Side = 'send' | 'receive';
 
 export default function App() {
   const [assets, setAssets] = useState<AssetSummary[]>([]);
-  const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
 
@@ -32,7 +30,6 @@ export default function App() {
   const [selectedAggregator, setSelectedAggregator] = useState<string | null>(null);
 
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
-  const [providerSheet, setProviderSheet] = useState(false);
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -43,10 +40,9 @@ export default function App() {
   const account = useWalletAccount();
 
   useEffect(() => {
-    Promise.all([api.assets(), api.providers(), api.health()])
-      .then(([assetRes, providerRes, healthRes]) => {
+    Promise.all([api.assets(), api.health()])
+      .then(([assetRes, healthRes]) => {
         setAssets(assetRes.assets);
-        setProviders(providerRes.providers);
         setHealth(healthRes);
       })
       .catch((error) =>
@@ -198,7 +194,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <Navbar health={health} assets={assets} onOpenProviders={() => setProviderSheet(true)} />
+      <Navbar assets={assets} />
 
       <main className="mx-auto w-full max-w-[1040px] flex-1 px-4 pb-20 pt-8 sm:px-6 sm:pt-12">
         <SwapCard
@@ -233,7 +229,6 @@ export default function App() {
               toAsset={toAsset}
               selected={activeQuote?.aggregator ?? null}
               onSelect={setSelectedAggregator}
-              providers={providers}
               loading={loading || refreshing}
             />
           </div>
@@ -258,12 +253,6 @@ export default function App() {
         onClose={() => setPickerSide(null)}
       />
 
-      <ProviderSheet
-        open={providerSheet}
-        providers={providers}
-        health={health}
-        onClose={() => setProviderSheet(false)}
-      />
 
       {order && (
         <OrderTracker

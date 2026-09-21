@@ -92,10 +92,19 @@ export default {
         },
         /* --- to the moon --- */
         launch: {
-          '0%': { transform: 'translate(0, 0) rotate(0deg)', opacity: '0' },
-          '6%': { opacity: '1' },
-          '88%': { opacity: '1' },
-          '100%': { transform: 'translate(46vw, -118vh) rotate(6deg)', opacity: '0' },
+          '0%': { transform: 'translate(0, 0) rotate(0deg) scale(1)', opacity: '0' },
+          '5%': { opacity: '1' },
+          /* arc: climbs steeply, then leans toward the moon on the right */
+          '45%': { transform: 'translate(22vw, -58vh) rotate(4deg) scale(0.92)' },
+          '85%': { opacity: '1' },
+          '100%': {
+            transform: 'translate(64vw, -122vh) rotate(10deg) scale(0.7)',
+            opacity: '0',
+          },
+        },
+        spark: {
+          '0%': { transform: 'translateY(0) scale(1)', opacity: '0.95' },
+          '100%': { transform: 'translateY(52px) scale(0.2)', opacity: '0' },
         },
         'moon-rise': {
           '0%': { opacity: '0', transform: 'translateY(16px) scale(0.9)' },
@@ -118,8 +127,9 @@ export default {
         'slide-up': 'slide-up 260ms cubic-bezier(0.22, 1, 0.36, 1)',
         shimmer: 'shimmer 1.8s infinite',
         breathe: 'breathe 2s ease-in-out infinite',
-        launch: 'launch 2.6s cubic-bezier(0.55, 0, 0.9, 0.35) forwards',
-        'moon-rise': 'moon-rise 2.8s ease-out forwards',
+        launch: 'launch 3.2s cubic-bezier(0.45, 0, 0.75, 0.4) forwards',
+        spark: 'spark 620ms ease-out infinite',
+        'moon-rise': 'moon-rise 3.3s ease-out forwards',
         'star-streak': 'star-streak 1.1s linear infinite',
         'flame-flicker': 'flame-flicker 90ms ease-in-out infinite',
       },

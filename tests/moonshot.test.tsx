@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MoonShot } from '../src/components/MoonShot';
+import { MOONSHOT_DURATION_MS, MoonShot } from '../src/components/MoonShot';
 
 /**
  * The launch animation is decoration, so the bar it has to clear is that it
@@ -60,7 +60,9 @@ describe('MoonShot', () => {
     expect(screen.getByTestId('moonshot')).toBeDefined();
 
     act(() => {
-      vi.advanceTimersByTime(3200);
+      // Track the component's own duration; a hard-coded number silently
+      // starts passing for the wrong reason when the timing changes.
+      vi.advanceTimersByTime(MOONSHOT_DURATION_MS + 100);
     });
     expect(screen.queryByTestId('moonshot')).toBeNull();
   });
