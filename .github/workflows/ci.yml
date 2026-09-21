@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      # Types first: a type error makes every later failure harder to read.
+      - name: Typecheck
+        run: npm run typecheck
+
+      # EE_FORCE_SIMULATION is set by vitest.config.ts, so the suite is
+      # hermetic — no network, no API keys, identical results every run.
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # A bundle that builds but cannot boot is still broken. Start the real
+      # production server and exercise it.
+      - name: Smoke-test the production server
+        run: |
+          API_PORT=8080 npx tsx server/index.ts &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8080/api/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8080/api/health | grep -q '"ok":true'
+          curl -sf http://127.0.0.1:8080/ | grep -q 'id="root"'
+          curl -sf -X POST http://127.0.0.1:8080/api/quote \
+            -H 'Content-Type: application/json' \
+            -d '{"fromAssetId":"BTC.BITCOIN","toAssetId":"USDT.ETHEREUM","amount":"5000000","side":"send","rateType":"float"}' \
+            | grep -q '"best"'

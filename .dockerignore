@@ -1,0 +1,13 @@
+node_modules
+dist
+coverage
+.scratch
+.git
+.github
+.env
+.env.*
+!.env.example
+*.log
+tests
+docs
+README.md

@@ -51,8 +51,12 @@ pricing. Add keys to `.env` to fetch real quotes and executable calldata.
 ```bash
 npm test         # 120 tests
 npm run typecheck
-npm run build
+npm run build    # typecheck + bundle to dist/
+npm start        # production: ONE process on :8080 serving dist/ and /api
 ```
+
+Deployment — Docker, hosting, config and the pre-launch checklist — is in
+[`docs/deployment.md`](docs/deployment.md).
 
 ---
 

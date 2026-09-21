@@ -11,6 +11,8 @@
  * payloads; the user's own wallet signs and broadcasts them.
  */
 
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import cors from 'cors';
 import express from 'express';
 import { z } from 'zod';
@@ -224,6 +226,33 @@ app.post('/api/orders/:orderId/simulate-deposit', (req, res) => {
 
 /* ----------------------------------------------------------------- serve */
 
+/**
+ * In production the built frontend is served by this same process, so a
+ * deployment is a single container with no CORS surface and no separate CDN
+ * origin. In development Vite owns :5173 and proxies /api here instead.
+ */
+const DIST_DIR = path.resolve(process.cwd(), 'dist');
+const SERVE_STATIC = existsSync(path.join(DIST_DIR, 'index.html'));
+
+if (SERVE_STATIC) {
+  // Hashed asset filenames are immutable; index.html must never be cached or
+  // users keep booting an old bundle against a new API.
+  app.use(
+    '/assets',
+    express.static(path.join(DIST_DIR, 'assets'), {
+      immutable: true,
+      maxAge: '1y',
+    }),
+  );
+  app.use(express.static(DIST_DIR, { index: false }));
+
+  // SPA fallback — anything that is not an API route renders the app shell.
+  app.get(/^\/(?!api\/).*/, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(path.join(DIST_DIR, 'index.html'));
+  });
+}
+
 app.listen(PORT, '0.0.0.0', () => {
   const policy = loadFeePolicy();
   console.log(`\n  ee.io quote server → http://0.0.0.0:${PORT}`);
@@ -236,13 +265,13 @@ app.listen(PORT, '0.0.0.0', () => {
     console.warn('  ⚠  EE_THORNAME is unset — THORChain affiliate fees are disabled.');
   }
   const creds = credentialStatus();
-  console.log(`  live providers: ${[
-    creds.zeroEx && '0x',
-    creds.oneInch && '1inch',
-    ...creds.keyless,
-    'openocean',
-    'jupiter',
-  ]
+  // `keyless` already includes openocean and jupiter (both serve a public
+  // tier), so they must not be appended again or the log double-counts them.
+  console.log(`  live providers: ${[creds.zeroEx && '0x', creds.oneInch && '1inch', ...creds.keyless]
     .filter(Boolean)
-    .join(', ')}\n`);
+    .join(', ')}`);
+  if (SERVE_STATIC) {
+    console.log(`  serving built frontend from ${DIST_DIR}`);
+  }
+  console.log('');
 });
