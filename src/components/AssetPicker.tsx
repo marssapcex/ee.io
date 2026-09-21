@@ -119,7 +119,7 @@ export const AssetPicker: React.FC<Props> = ({
           <h2 className="text-sm font-bold text-white">{title}</h2>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-ink-500 hover:text-white"
+            className="rounded-lg p-1.5 text-white/45 transition-colors hover:bg-ink-500 hover:text-white"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
@@ -128,13 +128,13 @@ export const AssetPicker: React.FC<Props> = ({
 
         <div className="space-y-3 border-b border-line-soft px-5 py-3">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/35" />
             <input
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search name, ticker, or paste a contract address"
-              className="w-full rounded-2xl border border-line bg-ink-800 py-2.5 pl-9 pr-3 text-sm text-white placeholder:text-slate-500 focus:border-brand-cyan focus:outline-none"
+              className="w-full rounded-2xl border border-line bg-ink-800 py-2.5 pl-9 pr-3 text-sm text-white placeholder:text-white/35 focus:border-brand-cyan focus:outline-none"
             />
           </div>
 
@@ -152,7 +152,7 @@ export const AssetPicker: React.FC<Props> = ({
 
         <div ref={listRef} className="scrollbar-thin flex-1 overflow-y-auto p-2">
           {filtered.length === 0 && (
-            <p className="px-3 py-8 text-center text-sm text-slate-500">
+            <p className="px-3 py-8 text-center text-sm text-white/35">
               No assets match “{query}”.
             </p>
           )}
@@ -186,14 +186,14 @@ export const AssetPicker: React.FC<Props> = ({
                       {asset.chainName}
                     </span>
                     {isExcluded && (
-                      <span className="text-[10px] text-slate-500">already selected</span>
+                      <span className="text-[10px] text-white/35">already selected</span>
                     )}
                   </div>
-                  <p className="truncate text-xs text-slate-400">{asset.name}</p>
+                  <p className="truncate text-xs text-white/45">{asset.name}</p>
                 </div>
 
                 <div className="text-right">
-                  <div className="font-mono text-xs text-slate-300">
+                  <div className="font-mono text-xs text-white/70">
                     {formatUsd(asset.usdPrice)}
                   </div>
                   {isSelected && (
@@ -205,7 +205,7 @@ export const AssetPicker: React.FC<Props> = ({
           })}
         </div>
 
-        <div className="border-t border-line-soft px-5 py-2.5 text-[11px] text-slate-500">
+        <div className="border-t border-line-soft px-5 py-2.5 text-[11px] text-white/35">
           <kbd className="rounded bg-ink-600 px-1 font-mono">↑↓</kbd> navigate ·{' '}
           <kbd className="rounded bg-ink-600 px-1 font-mono">↵</kbd> select ·{' '}
           <kbd className="rounded bg-ink-600 px-1 font-mono">esc</kbd> close
@@ -224,8 +224,8 @@ const FilterChip: React.FC<{
     onClick={onClick}
     className={`shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
       active
-        ? 'border-brand-cyan/60 bg-cyan-500/10 text-brand-cyan'
-        : 'border-line bg-ink-800 text-slate-400 hover:text-slate-200'
+        ? 'border-brand-cyan/60 bg-brand-cyan/10 text-brand-cyan'
+        : 'border-line bg-ink-800 text-white/45 hover:text-white/80'
     }`}
   >
     {children}

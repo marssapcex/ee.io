@@ -197,35 +197,35 @@ afterEach(() => {
 describe('App shell', () => {
   it('mounts and renders the swap form without crashing', async () => {
     render(<App />);
-    expect(await screen.findByText(/You send/i)).toBeDefined();
-    expect(screen.getByText(/You receive/i)).toBeDefined();
-    expect(screen.getByLabelText(/Destination address/i)).toBeDefined();
+    expect(await screen.findByLabelText('You send')).toBeDefined();
+    expect(screen.getByLabelText('You receive')).toBeDefined();
+    expect(screen.getByLabelText(/Destination/i)).toBeDefined();
   });
 
-  it('shows the branding and the non-custodial promise', async () => {
+  it('shows the brand mark', async () => {
     render(<App />);
-    await screen.findByText(/You send/i);
-    expect(screen.getByText(/zero custody/i)).toBeDefined();
-    expect(screen.getAllByText(/non-custodial/i).length).toBeGreaterThan(0);
+    await screen.findByLabelText('You send');
+    expect(screen.getAllByText('ee.io').length).toBeGreaterThan(0);
   });
 
-  it('surfaces the simulation banner when no route is live', async () => {
+  it('marks simulated routes so they are never mistaken for live pricing', async () => {
     render(<App />);
-    expect(await screen.findByText(/Simulation mode/i)).toBeDefined();
+    expect(await screen.findByText('SIM', {}, { timeout: 3000 })).toBeDefined();
   });
 
   it('renders the fee policy from /api/health rather than hard-coding it', async () => {
     render(<App />);
-    await screen.findByText(/You send/i);
-    // 50 bps float, 100 bps fixed → "0.50–1.00%"
-    expect(screen.getByText(/0\.50.*1\.00%/)).toBeDefined();
+    await screen.findByLabelText('You send');
+    // floatBps 50 -> the Float pill shows 0.50%
+    expect(screen.getByText('0.50%')).toBeDefined();
+    expect(screen.getByText('1.00%')).toBeDefined();
   });
 });
 
 describe('quote flow', () => {
   it('requests a quote and fills in the receive box', async () => {
     render(<App />);
-    await screen.findByText(/You send/i);
+    await screen.findByLabelText('You send');
 
     await waitFor(() => expect(quoteCalls.length).toBeGreaterThan(0), { timeout: 3000 });
 
@@ -287,41 +287,45 @@ describe('quote flow', () => {
 describe('route comparison', () => {
   it('labels the winner and lists unavailable providers separately', async () => {
     render(<App />);
-    await screen.findByText(/Route comparison/i);
+    await screen.findByText('Routes');
 
     expect(screen.getByText('BEST')).toBeDefined();
-    expect(screen.getByText(/1 provider cannot route this pair/i)).toBeDefined();
+    expect(screen.getByText(/1 unavailable/i)).toBeDefined();
   });
 
   it('explains why a provider cannot route, never failing silently', async () => {
     render(<App />);
-    await screen.findByText(/Route comparison/i);
-    fireEvent.click(screen.getByText(/1 provider cannot route this pair/i));
+    await screen.findByText('Routes');
+    fireEvent.click(screen.getByText(/1 unavailable/i));
     expect(screen.getByText(/does not support cross-chain swaps/i)).toBeDefined();
   });
 
   it('discloses the fee on every route', async () => {
     render(<App />);
-    await screen.findByText(/Route comparison/i);
-    expect(screen.getByText(/50 bps on output/i)).toBeDefined();
+    await screen.findByText('Routes');
+    expect(screen.getByText('50bps')).toBeDefined();
   });
 });
 
 describe('address validation', () => {
   it('marks a well-formed address valid', async () => {
     render(<App />);
-    const input = await screen.findByLabelText(/Destination address/i);
+    const input = await screen.findByLabelText(/Destination/i);
 
     fireEvent.change(input, {
       target: { value: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' },
     });
 
-    expect(await screen.findByText(/Valid Ethereum address/i, {}, { timeout: 3000 })).toBeDefined();
+    // A valid address enables the submit button; that is the user-visible effect.
+    const submit = screen.getByRole('button', {
+      name: /Enter destination address|Exchange now/i,
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(submit.disabled).toBe(false), { timeout: 3000 });
   });
 
   it('rejects a malformed address with an explanation', async () => {
     render(<App />);
-    const input = await screen.findByLabelText(/Destination address/i);
+    const input = await screen.findByLabelText(/Destination/i);
 
     fireEvent.change(input, { target: { value: 'not-an-address' } });
     fireEvent.blur(input);
@@ -331,23 +335,27 @@ describe('address validation', () => {
 
   it('keeps the submit button disabled until the address is valid', async () => {
     render(<App />);
-    await screen.findByText(/You send/i);
-    const submit = screen.getByRole('button', { name: /Exchange now/i }) as HTMLButtonElement;
+    await screen.findByLabelText('You send');
 
+    // The CTA doubles as a status line, so it is matched by role + prompt text.
+    const submit = screen.getByRole('button', {
+      name: /Enter destination address/i,
+    }) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
 
-    fireEvent.change(screen.getByLabelText(/Destination address/i), {
+    fireEvent.change(screen.getByLabelText(/Destination/i), {
       target: { value: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' },
     });
 
     await waitFor(() => expect(submit.disabled).toBe(false), { timeout: 3000 });
+    expect(submit.textContent).toMatch(/Exchange now/i);
   });
 });
 
 describe('asset selection', () => {
   it('opens the picker and swaps the selected asset', async () => {
     render(<App />);
-    await screen.findByText(/You send/i);
+    await screen.findByLabelText('You send');
 
     // The send-side asset button shows BTC.
     const sendButtons = screen.getAllByText('BTC');
@@ -359,7 +367,7 @@ describe('asset selection', () => {
 
   it('flips the pair without losing the amounts', async () => {
     render(<App />);
-    await screen.findByText(/You send/i);
+    await screen.findByLabelText('You send');
     await waitFor(() => expect(quoteCalls.length).toBeGreaterThan(0), { timeout: 3000 });
 
     fireEvent.click(screen.getByLabelText(/Swap direction/i));
@@ -378,10 +386,10 @@ describe('asset selection', () => {
 describe('rate type', () => {
   it('re-quotes when switching between float and fixed', async () => {
     render(<App />);
-    await screen.findByText(/You send/i);
+    await screen.findByLabelText('You send');
     await waitFor(() => expect(quoteCalls.length).toBeGreaterThan(0), { timeout: 3000 });
 
-    fireEvent.click(screen.getByText(/Fixed rate/i));
+    fireEvent.click(screen.getByText('Fixed'));
 
     await waitFor(
       () => {
@@ -407,9 +415,9 @@ describe('failure handling', () => {
 
   it('renders min/max guidance for the selected asset', async () => {
     render(<App />);
-    await screen.findByText(/You send/i);
-    expect(screen.getByText(/Min/)).toBeDefined();
-    expect(screen.getByText(/Max/)).toBeDefined();
+    await screen.findByLabelText('You send');
+    expect(screen.getByText(/min/)).toBeDefined();
+    expect(screen.getByText(/max/)).toBeDefined();
   });
 
   it('surfaces server warnings to the user', async () => {

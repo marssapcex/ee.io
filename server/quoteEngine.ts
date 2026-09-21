@@ -172,12 +172,9 @@ export async function buildQuote(request: QuoteRequest): Promise<QuoteResponse> 
   const best = available.find((q) => q.isBest);
   const anyLive = quotes.some((q) => q.source === 'live');
 
-  if (!anyLive) {
-    warnings.push(
-      'No aggregator API is reachable or configured — showing simulated pricing. ' +
-        'Set ZEROX_API_KEY / ONEINCH_API_KEY (KyberSwap, ParaSwap and THORChain need no key) for live quotes.',
-    );
-  }
+  // Simulation is surfaced per-route by the SIM chip and by `anyLive` on the
+  // response, so no banner is pushed here — a paragraph repeating it on every
+  // quote is noise the user cannot act on mid-trade.
 
   const receiveAmount = best ? BigInt(best.netOut) : 0n;
   const windowSeconds =

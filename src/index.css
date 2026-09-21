@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -7,21 +9,26 @@
     color-scheme: dark;
   }
 
-  html,
-  body,
-  #root {
-    min-height: 100%;
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html {
+    scroll-behavior: smooth;
   }
 
   body {
-    background:
-      radial-gradient(900px 500px at 12% -8%, rgba(251, 146, 60, 0.1), transparent 60%),
-      radial-gradient(1000px 600px at 92% 0%, rgba(34, 211, 238, 0.11), transparent 62%),
-      #0a0b14;
+    @apply bg-ink-950 text-white antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+    /* Two faint colour wells instead of a flat wash — keeps pure black in the
+       corners while stopping the page from looking like a dead rectangle. */
+    background-image:
+      radial-gradient(900px 500px at 78% -8%, rgba(0, 229, 255, 0.07), transparent 65%),
+      radial-gradient(760px 420px at 12% 4%, rgba(255, 138, 52, 0.05), transparent 60%);
     background-attachment: fixed;
   }
 
-  /* Strip the spinners so numeric inputs read as plain text fields. */
+  /* Number inputs: strip the spinners, they break the monospace rhythm. */
   input[type='number']::-webkit-outer-spin-button,
   input[type='number']::-webkit-inner-spin-button {
     -webkit-appearance: none;
@@ -32,28 +39,48 @@
   }
 
   ::selection {
-    background: rgba(34, 211, 238, 0.28);
+    @apply bg-brand-cyan/25 text-white;
+  }
+
+  /* Keyboard focus stays visible; pointer focus does not draw a ring. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-cyan/60 ring-offset-2 ring-offset-ink-950;
   }
 }
 
-@layer components {
+@layer utilities {
   .scrollbar-thin {
     scrollbar-width: thin;
-    scrollbar-color: #2b304c transparent;
+    scrollbar-color: theme('colors.line.strong') transparent;
   }
   .scrollbar-thin::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: #2b304c;
-    border-radius: 999px;
+    width: 6px;
+    height: 6px;
   }
   .scrollbar-thin::-webkit-scrollbar-track {
     background: transparent;
   }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-line-strong;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    @apply bg-line-glow;
+  }
 
-  /* Shimmer used while a quote refreshes, so numbers never "jump" silently. */
+  .text-gradient {
+    @apply bg-gradient-to-r from-brand-cyan via-brand-teal to-brand-green bg-clip-text text-transparent;
+  }
+
+  /* 1px gradient border via two stacked backgrounds — avoids the blurry edge
+     you get from a box-shadow ring. */
+  .border-gradient {
+    background:
+      linear-gradient(theme('colors.ink.800'), theme('colors.ink.800')) padding-box,
+      linear-gradient(135deg, rgba(0, 229, 255, 0.5), rgba(169, 112, 255, 0.28), rgba(255, 138, 52, 0.4))
+        border-box;
+    border: 1px solid transparent;
+  }
+
   .shimmer {
     position: relative;
     overflow: hidden;
@@ -63,13 +90,17 @@
     position: absolute;
     inset: 0;
     transform: translateX(-100%);
-    background: linear-gradient(
+    background-image: linear-gradient(
       90deg,
       transparent,
-      rgba(148, 163, 184, 0.08),
+      rgba(255, 255, 255, 0.05),
       transparent
     );
     animation: shimmer 1.8s infinite;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
 }
 
@@ -80,5 +111,6 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

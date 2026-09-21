@@ -1,5 +1,5 @@
-import { Activity, Github, Loader2, Timer, TriangleAlert } from 'lucide-react';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2, TriangleAlert } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatUnits, parseUnits } from '../shared/money';
 import type { OrderRecord, QuoteRequest, RateType } from '../shared/types';
 import { AssetPicker } from './components/AssetPicker';
@@ -9,19 +9,17 @@ import { OrderTracker } from './components/OrderTracker';
 import { ProviderSheet } from './components/ProviderSheet';
 import { RouteComparison } from './components/RouteComparison';
 import { SwapCard } from './components/SwapCard';
-import { useCountdown, useQuote } from './hooks/useQuote';
+import { useQuote } from './hooks/useQuote';
 import { api, type AssetSummary, type HealthResponse, type ProviderSummary } from './lib/api';
 
 type Side = 'send' | 'receive';
 
 export default function App() {
-  /* ------------------------------------------------------------ catalogue */
   const [assets, setAssets] = useState<AssetSummary[]>([]);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
 
-  /* ----------------------------------------------------------- swap state */
   const [fromId, setFromId] = useState('BTC.BITCOIN');
   const [toId, setToId] = useState('USDT.ETHEREUM');
   const [sendInput, setSendInput] = useState('0.05');
@@ -31,14 +29,11 @@ export default function App() {
   const [destination, setDestination] = useState('');
   const [selectedAggregator, setSelectedAggregator] = useState<string | null>(null);
 
-  /* --------------------------------------------------------------- modals */
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const [providerSheet, setProviderSheet] = useState(false);
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
-
-  /* --------------------------------------------------------------- wallet */
   const [account, setAccount] = useState<string | null>(null);
 
   useEffect(() => {
@@ -58,7 +53,6 @@ export default function App() {
 
   const feeBps = rateType === 'fixed' ? (health?.fee.fixedBps ?? 100) : (health?.fee.floatBps ?? 50);
 
-  /* ----------------------------------------------------------- quote wire */
   const quoteRequest: QuoteRequest | null = useMemo(() => {
     if (!fromAsset || !toAsset) return null;
 
@@ -87,10 +81,8 @@ export default function App() {
   }, [fromAsset, toAsset, side, sendInput, receiveInput, fromId, toId, rateType, destination, account]);
 
   const { quote, loading, refreshing, error, refresh } = useQuote(quoteRequest);
-  const secondsLeft = useCountdown(quote?.expiresAt);
 
-  // Mirror the computed side back into its input box. Guarded by `side` so we
-  // never overwrite the box the user is actively typing in.
+  // Mirror the derived side back into its box, never the one being typed in.
   const lastApplied = useRef<string>('');
   useEffect(() => {
     if (!quote || !fromAsset || !toAsset) return;
@@ -105,8 +97,6 @@ export default function App() {
     }
   }, [quote, side, fromAsset, toAsset]);
 
-  // Keep the manual selection valid: if the chosen router drops out of the
-  // results, fall back to whatever is currently best.
   useEffect(() => {
     if (!quote) return;
     const stillRoutable = quote.quotes.some(
@@ -124,7 +114,6 @@ export default function App() {
     );
   }, [quote, selectedAggregator]);
 
-  /* -------------------------------------------------------------- actions */
   const handleSendInput = useCallback((value: string) => {
     setSide('send');
     setSendInput(value);
@@ -179,15 +168,14 @@ export default function App() {
     }
   }, [quote, activeQuote, fromAsset, fromId, toId, destination, account, rateType]);
 
-  /* ---------------------------------------------------------------- render */
   if (bootError) {
     return (
       <div className="grid min-h-screen place-items-center p-6">
-        <div className="max-w-md rounded-3xl border border-red-900/50 bg-red-950/30 p-6 text-center">
-          <TriangleAlert className="mx-auto mb-3 h-8 w-8 text-red-400" />
+        <div className="max-w-md rounded-2xl border border-brand-red/30 bg-brand-red/5 p-6 text-center">
+          <TriangleAlert className="mx-auto mb-3 h-7 w-7 text-brand-red" />
           <h1 className="mb-1 text-sm font-bold text-white">Quote API unreachable</h1>
-          <p className="text-xs leading-relaxed text-red-200/80">{bootError}</p>
-          <p className="mt-3 font-mono text-[11px] text-slate-400">npm run dev</p>
+          <p className="text-xs leading-relaxed text-white/60">{bootError}</p>
+          <p className="mt-3 font-mono text-[11px] text-white/40">npm run dev</p>
         </div>
       </div>
     );
@@ -202,7 +190,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen">
+    <div className="flex min-h-screen flex-col">
       <Navbar
         health={health}
         account={account}
@@ -210,22 +198,7 @@ export default function App() {
         onOpenProviders={() => setProviderSheet(true)}
       />
 
-      <main className="mx-auto flex max-w-6xl flex-col items-center px-4 py-8 sm:px-6 sm:py-12">
-        <Hero />
-
-        {quote && !quote.anyLive && (
-          <div className="mb-4 flex w-full max-w-2xl items-start gap-2 rounded-2xl border border-amber-800/40 bg-amber-950/25 px-4 py-2.5 text-[11px] leading-relaxed text-amber-200/90">
-            <Activity className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>
-              <strong className="font-semibold">Simulation mode.</strong> No aggregator API key is
-              configured (or the upstreams are unreachable), so every route below is a deterministic
-              model using{' '}
-              {quote.priceMode === 'live' ? 'live CoinGecko prices' : 'built-in reference prices'}.
-              Numbers are realistic but not tradeable — add keys to fetch executable calldata.
-            </span>
-          </div>
-        )}
-
+      <main className="mx-auto w-full max-w-[520px] flex-1 px-4 pb-16 pt-6 sm:pt-10">
         <SwapCard
           fromAsset={fromAsset}
           toAsset={toAsset}
@@ -251,16 +224,8 @@ export default function App() {
           submitting={submitting}
         />
 
-        {quote && rateType === 'fixed' && secondsLeft > 0 && (
-          <div className="mt-3 flex items-center gap-2 rounded-full border border-orange-800/50 bg-orange-950/40 px-3.5 py-1.5 font-mono text-[11px] text-brand-orange">
-            <Timer className="h-3 w-3" />
-            rate locked for {Math.floor(secondsLeft / 60)}:
-            {String(secondsLeft % 60).padStart(2, '0')}
-          </div>
-        )}
-
         {quote && quote.quotes.length > 0 && (
-          <div className="mt-4 w-full max-w-2xl">
+          <div className="mt-3">
             <RouteComparison
               quotes={quote.quotes}
               toAsset={toAsset}
@@ -273,15 +238,18 @@ export default function App() {
         )}
 
         {order && (
-          <div className="mt-4 w-full max-w-2xl">
+          <div className="mt-3">
             <ExecutionInspector plan={order.plan} fromAsset={fromAsset} toAsset={toAsset} />
           </div>
         )}
-
-        <TrustGrid />
       </main>
 
-      <Footer />
+      <footer className="border-t border-line-soft py-5">
+        <div className="mx-auto flex max-w-[520px] items-center justify-between px-4 font-mono text-[10px] text-white/25">
+          <span>ee.io</span>
+          <span>e &gt; f</span>
+        </div>
+      </footer>
 
       <AssetPicker
         open={pickerSide !== null}
@@ -311,71 +279,6 @@ export default function App() {
     </div>
   );
 }
-
-/* ------------------------------------------------------------- page chrome */
-
-const Hero: React.FC = () => (
-  <div className="mb-6 text-center">
-    <h1 className="text-2xl font-black tracking-tight text-white sm:text-4xl">
-      Instant swaps,{' '}
-      <span className="bg-gradient-to-r from-brand-orange via-amber-300 to-brand-cyan bg-clip-text text-transparent">
-        zero custody
-      </span>
-    </h1>
-    <p className="mx-auto mt-2 max-w-xl text-xs leading-relaxed text-slate-400 sm:text-sm">
-      The exchange never holds your coins, so it can never freeze them, lose them to a hot-wallet
-      breach, or demand your documents. Funds move from your wallet to a public DEX router and out
-      to your address in a single atomic transaction.
-    </p>
-  </div>
-);
-
-const TRUST = [
-  {
-    title: 'No custody',
-    body: 'Your assets never sit in an ee.io wallet. The router pulls from you and pays your destination in one call frame — there is no balance to seize.',
-  },
-  {
-    title: 'No account, no KYC',
-    body: 'No email, no password, no document upload. Nothing to leak in a breach, nothing to hold your withdrawal hostage.',
-  },
-  {
-    title: 'Atomic fees',
-    body: 'The affiliate fee is a parameter inside the swap call. If your payout reverts, the fee reverts with it. We cannot be paid for a trade you did not receive.',
-  },
-  {
-    title: 'Public liquidity',
-    body: 'Quotes come from 0x, KyberSwap, 1inch, OpenOcean, ParaSwap, Jupiter and THORChain — the same routers anyone can query, compared side by side.',
-  },
-];
-
-const TrustGrid: React.FC = () => (
-  <section className="mt-10 grid w-full max-w-4xl grid-cols-1 gap-3 sm:grid-cols-2">
-    {TRUST.map((item) => (
-      <div
-        key={item.title}
-        className="rounded-2xl border border-line bg-ink-750/60 p-4 transition-colors hover:border-line-strong"
-      >
-        <h3 className="mb-1 text-xs font-bold text-brand-cyan">{item.title}</h3>
-        <p className="text-[11px] leading-relaxed text-slate-400">{item.body}</p>
-      </div>
-    ))}
-  </section>
-);
-
-const Footer: React.FC = () => (
-  <footer className="mt-12 border-t border-line-soft py-6">
-    <div className="mx-auto flex max-w-6xl flex-col items-center gap-2 px-4 text-center sm:flex-row sm:justify-between sm:text-left">
-      <p className="font-mono text-[10px] text-slate-600">
-        ee.io — e &gt; f · non-custodial routing over public aggregators
-      </p>
-      <div className="flex items-center gap-4 text-[10px] text-slate-600">
-        <span>No funds held · No KYC · No freeze</span>
-        <Github className="h-3.5 w-3.5" />
-      </div>
-    </div>
-  </footer>
-);
 
 /** `formatUnits` keeps full precision; trim the noise for an input box. */
 function trimZeros(value: string): string {

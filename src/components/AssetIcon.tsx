@@ -15,8 +15,16 @@ interface Props {
  */
 export const AssetIcon: React.FC<Props> = ({ asset, size = 32, showChain = false }) => {
   const gradientId = `grad-${asset.id.replace(/[^a-zA-Z0-9]/g, '')}`;
-  const initials = asset.symbol.slice(0, asset.symbol.length > 3 ? 3 : asset.symbol.length);
-  const fontSize = initials.length >= 4 ? size * 0.3 : initials.length === 3 ? size * 0.34 : size * 0.42;
+  // Show up to 4 characters rather than 3. Truncating at 3 turned USDT into
+  // "USD" and USDC into "USD" — two different assets rendering an identical,
+  // and wrong, ticker on a coin the user is about to send money to.
+  const initials = asset.symbol.slice(0, 4);
+  const fontSize =
+    initials.length >= 4
+      ? size * 0.27
+      : initials.length === 3
+        ? size * 0.34
+        : size * 0.42;
 
   return (
     <span className="relative inline-flex shrink-0" style={{ width: size, height: size }}>
@@ -46,7 +54,7 @@ export const AssetIcon: React.FC<Props> = ({ asset, size = 32, showChain = false
 
       {showChain && (
         <span
-          className="absolute -bottom-0.5 -right-0.5 rounded-full border border-ink-800 bg-ink-750 px-1 text-[7px] font-bold uppercase leading-[11px] text-slate-300"
+          className="absolute -bottom-0.5 -right-0.5 rounded-full border border-ink-800 bg-ink-750 px-1 text-[7px] font-bold uppercase leading-[11px] text-white/70"
           title={asset.chainName}
         >
           {asset.chain.slice(0, 3)}
