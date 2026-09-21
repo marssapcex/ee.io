@@ -10,7 +10,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AddressValidation } from '../../shared/address';
 import { formatDisplay, formatUsd, parseUnits } from '../../shared/money';
-import type { QuoteResponse, RateType } from '../../shared/types';
+import type { QuoteResponse } from '../../shared/types';
 import type { AssetSummary } from '../lib/api';
 import { api } from '../lib/api';
 import { AssetIcon } from './AssetIcon';
@@ -25,12 +25,10 @@ interface Props {
   sendInput: string;
   receiveInput: string;
   side: 'send' | 'receive';
-  rateType: RateType;
   destination: string;
   feeBps: number;
   onSendInput: (value: string) => void;
   onReceiveInput: (value: string) => void;
-  onRateType: (value: RateType) => void;
   onDestination: (value: string) => void;
   onOpenFrom: () => void;
   onOpenTo: () => void;
@@ -50,12 +48,10 @@ export const SwapCard: React.FC<Props> = ({
   sendInput,
   receiveInput,
   side,
-  rateType,
   destination,
   feeBps,
   onSendInput,
   onReceiveInput,
-  onRateType,
   onDestination,
   onOpenFrom,
   onOpenTo,
@@ -266,29 +262,17 @@ export const SwapCard: React.FC<Props> = ({
         )}
       </div>
 
-      {/* ---- Row 3: rate type + submit ---- */}
-      <div className="grid gap-3 px-4 pb-4 md:grid-cols-[200px_1fr] md:px-5 md:pb-5">
-        <div className="grid grid-cols-2 gap-2">
-          <RatePill
-            active={rateType === 'float'}
-            onClick={() => onRateType('float')}
-            title="Float"
-            sub={`${(feeBps / 100).toFixed(2)}%`}
-            tone="green"
-          />
-          <RatePill
-            active={rateType === 'fixed'}
-            onClick={() => onRateType('fixed')}
-            title="Fixed"
-            sub="1.00%"
-            tone="red"
-          />
+      {/* ---- Row 3: submit — V1 float only (0.5%, ~2 min, no lock) ---- */}
+      <div className="space-y-3 px-4 pb-4 md:px-5 md:pb-5">
+        <div className="flex items-center justify-between rounded-[10px] border border-white/[0.06] bg-ink-900/60 px-3 py-2.5 text-[11px]">
+          <span className="font-mono text-white/50">Float <span className="text-white/30">•</span> {(feeBps / 100).toFixed(2)}% fee</span>
+          <span className="font-mono text-[10px] text-white/25">~2 min • no price lock</span>
         </div>
 
         <button
           onClick={onSubmit}
           disabled={!canSubmit}
-          className="group rounded-xl bg-brand-green py-4 text-[15px] font-semibold tracking-tight text-white transition-all duration-200 hover:bg-brand-greenMid hover:shadow-glow-green active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-ink-750 disabled:text-white/40 disabled:shadow-none"
+          className="group w-full rounded-xl bg-brand-green py-4 text-[15px] font-semibold tracking-tight text-white transition-all duration-200 hover:bg-brand-greenMid hover:shadow-glow-green active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-ink-750 disabled:text-white/40 disabled:shadow-none"
         >
           {submitting ? (
             <span className="flex items-center justify-center gap-2">
@@ -392,33 +376,7 @@ const AmountBox: React.FC<{
   );
 };
 
-/**
- * Float / Fixed, styled as Polymarket's Yes / No pair — muted green and red
- * that read instantly without glowing.
- */
-const RatePill: React.FC<{
-  active: boolean;
-  onClick: () => void;
-  title: string;
-  sub: string;
-  tone: 'green' | 'red';
-}> = ({ active, onClick, title, sub, tone }) => (
-  <button
-    onClick={onClick}
-    className={`flex items-center justify-center gap-2 rounded-xl border py-4 transition-all duration-200 ${
-      active
-        ? tone === 'green'
-          ? 'border-brand-greenMid/50 bg-brand-greenMid/15 text-brand-greenBright'
-          : 'border-brand-red/50 bg-brand-red/15 text-brand-redBright'
-        : tone === 'green'
-          ? 'border-line bg-ink-800 text-white/45 hover:border-brand-greenMid/35 hover:bg-brand-greenMid/[0.08] hover:text-brand-greenBright'
-          : 'border-line bg-ink-800 text-white/45 hover:border-brand-red/35 hover:bg-brand-red/[0.08] hover:text-brand-redBright'
-    }`}
-  >
-    <span className="text-[14px] font-semibold">{title}</span>
-    <span className={`font-mono text-[11px] ${active ? 'opacity-70' : 'opacity-50'}`}>{sub}</span>
-  </button>
-);
+
 
 /* -------------------------------------------------------------- helpers */
 

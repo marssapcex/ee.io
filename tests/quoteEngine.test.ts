@@ -86,7 +86,7 @@ describe('buildQuote — send side', () => {
     );
   });
 
-  it('charges the fixed rate more than the float rate', async () => {
+  it('charges the float rate at 50 bps with a ~2-minute window', async () => {
     const base = {
       fromAssetId: 'ETH.ETHEREUM',
       toAssetId: 'USDC.ETHEREUM',
@@ -94,14 +94,14 @@ describe('buildQuote — send side', () => {
       side: 'send' as const,
     };
     const float = await buildQuote({ ...base, rateType: 'float' });
-    const fixed = await buildQuote({ ...base, rateType: 'fixed' });
+    // request with fixed must still resolve to float (V1 is float-only)
+    const fixed = await buildQuote({ ...base, rateType: 'fixed' as const });
 
     expect(float.best!.fee.bps).toBe(50);
-    expect(fixed.best!.fee.bps).toBe(100);
-    // A bigger fee must mean a smaller payout, all else equal.
-    expect(BigInt(fixed.best!.netOut)).toBeLessThan(BigInt(float.best!.netOut));
-    // And the fixed-rate window must be longer than the float one.
-    expect(fixed.expiresAt).toBeGreaterThan(float.expiresAt);
+    expect(fixed.best!.fee.bps).toBe(50);
+    // Float-only: no advantage for fixed
+    expect(fixed.best!.netOut).toBe(float.best!.netOut);
+    expect(fixed.expiresAt).toBe(float.expiresAt);
   });
 
   it('never reports a net output above the gross output', async () => {

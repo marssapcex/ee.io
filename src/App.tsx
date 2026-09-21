@@ -1,7 +1,7 @@
 import { Loader2, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatUnits, parseUnits } from '../shared/money';
-import type { OrderRecord, QuoteRequest, RateType } from '../shared/types';
+import type { OrderRecord, QuoteRequest } from '../shared/types';
 import { AssetPicker } from './components/AssetPicker';
 import { ExecutionInspector } from './components/ExecutionInspector';
 import { RocketLaunch } from './components/RocketLaunch';
@@ -25,7 +25,6 @@ export default function App() {
   const [sendInput, setSendInput] = useState('0.05');
   const [receiveInput, setReceiveInput] = useState('');
   const [side, setSide] = useState<Side>('send');
-  const [rateType, setRateType] = useState<RateType>('float');
   const [destination, setDestination] = useState('');
   const [selectedAggregator, setSelectedAggregator] = useState<string | null>(null);
 
@@ -53,7 +52,7 @@ export default function App() {
   const fromAsset = useMemo(() => assets.find((a) => a.id === fromId), [assets, fromId]);
   const toAsset = useMemo(() => assets.find((a) => a.id === toId), [assets, toId]);
 
-  const feeBps = rateType === 'fixed' ? (health?.fee.fixedBps ?? 100) : (health?.fee.floatBps ?? 50);
+  const feeBps = health?.fee.floatBps ?? 50;
 
   const quoteRequest: QuoteRequest | null = useMemo(() => {
     if (!fromAsset || !toAsset) return null;
@@ -76,11 +75,11 @@ export default function App() {
       toAssetId: toId,
       amount,
       side,
-      rateType,
+      rateType: 'float' as const,
       destinationAddress: destination.trim() || undefined,
       takerAddress: account ?? undefined,
     };
-  }, [fromAsset, toAsset, side, sendInput, receiveInput, fromId, toId, rateType, destination, account]);
+  }, [fromAsset, toAsset, side, sendInput, receiveInput, fromId, toId, destination, account]);
 
   const { quote, loading, refreshing, error, refresh } = useQuote(quoteRequest);
 
@@ -159,7 +158,7 @@ export default function App() {
         sendAmount: quote.sendAmount,
         destinationAddress: destination.trim(),
         takerAddress: account ?? undefined,
-        rateType,
+        rateType: 'float' as const,
         aggregator: activeQuote.aggregator,
       });
       setOrder(res.order);
@@ -169,7 +168,7 @@ export default function App() {
     } finally {
       setSubmitting(false);
     }
-  }, [quote, activeQuote, fromAsset, fromId, toId, destination, account, rateType]);
+  }, [quote, activeQuote, fromAsset, fromId, toId, destination, account]);
 
   if (bootError) {
     return (
@@ -207,12 +206,10 @@ export default function App() {
           sendInput={sendInput}
           receiveInput={receiveInput}
           side={side}
-          rateType={rateType}
           destination={destination}
           feeBps={feeBps}
           onSendInput={handleSendInput}
           onReceiveInput={handleReceiveInput}
-          onRateType={setRateType}
           onDestination={setDestination}
           onOpenFrom={() => setPickerSide('send')}
           onOpenTo={() => setPickerSide('receive')}

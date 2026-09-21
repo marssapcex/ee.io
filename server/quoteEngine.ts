@@ -26,7 +26,6 @@ import { thorchainAdapter } from './aggregators/thorchain.js';
 import type { Adapter, AdapterContext } from './aggregators/types.js';
 import { zeroExAdapter } from './aggregators/zeroex.js';
 import {
-  FIXED_RATE_WINDOW_SECONDS,
   FLOAT_RATE_WINDOW_SECONDS,
   FORCE_SIMULATION,
   loadFeePolicy,
@@ -47,9 +46,9 @@ export const ADAPTERS: Adapter[] = [
 
 const ADAPTER_BY_ID = new Map(ADAPTERS.map((a) => [a.id, a]));
 
-export function feeBpsFor(rateType: RateType): number {
+export function feeBpsFor(_rateType: RateType): number {
   const policy = loadFeePolicy();
-  return rateType === 'fixed' ? policy.fixedBps : policy.floatBps;
+  return policy.floatBps;
 }
 
 /**
@@ -57,9 +56,8 @@ export function feeBpsFor(rateType: RateType): number {
  * need a wider on-chain tolerance to still fill after the deposit window;
  * float orders can stay tight.
  */
-export function defaultSlippageBps(rateType: RateType, from: Asset, to: Asset): number {
+export function defaultSlippageBps(_rateType: RateType, from: Asset, to: Asset): number {
   const volatile = !from.stable || !to.stable;
-  if (rateType === 'fixed') return volatile ? 150 : 50;
   return volatile ? 75 : 20;
 }
 
@@ -177,8 +175,7 @@ export async function buildQuote(request: QuoteRequest): Promise<QuoteResponse> 
   // quote is noise the user cannot act on mid-trade.
 
   const receiveAmount = best ? BigInt(best.netOut) : 0n;
-  const windowSeconds =
-    request.rateType === 'fixed' ? FIXED_RATE_WINDOW_SECONDS : FLOAT_RATE_WINDOW_SECONDS;
+  const windowSeconds = FLOAT_RATE_WINDOW_SECONDS;
 
   return {
     requestId: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,

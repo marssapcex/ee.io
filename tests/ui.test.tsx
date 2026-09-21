@@ -216,9 +216,11 @@ describe('App shell', () => {
   it('renders the fee policy from /api/health rather than hard-coding it', async () => {
     render(<App />);
     await screen.findByLabelText('You send');
-    // floatBps 50 -> the Float pill shows 0.50%
-    expect(screen.getByText('0.50%')).toBeDefined();
-    expect(screen.getByText('1.00%')).toBeDefined();
+    // floatBps 50 -> the Float fee bar shows 0.50%, no Fixed pill
+    expect(screen.getByText(/0\.50%/)).toBeDefined();
+    expect(screen.queryByText('1.00%')).toBeNull();
+    expect(screen.queryByText('Fixed')).toBeNull();
+    expect(screen.getByText(/Float/)).toBeDefined();
   });
 });
 
@@ -390,20 +392,17 @@ describe('asset selection', () => {
 });
 
 describe('rate type', () => {
-  it('re-quotes when switching between float and fixed', async () => {
+  it('is always float — no Fixed toggle exists', async () => {
     render(<App />);
     await screen.findByLabelText('You send');
     await waitFor(() => expect(quoteCalls.length).toBeGreaterThan(0), { timeout: 3000 });
 
-    fireEvent.click(screen.getByText('Fixed'));
-
-    await waitFor(
-      () => {
-        const last = quoteCalls[quoteCalls.length - 1] as { rateType: string };
-        expect(last.rateType).toBe('fixed');
-      },
-      { timeout: 3000 },
-    );
+    expect(screen.queryByText('Fixed')).toBeNull();
+    expect(screen.getByText(/Float/)).toBeDefined();
+    // Every quote must be float
+    for (const q of quoteCalls as Array<{ rateType: string }>) {
+      expect(q.rateType).toBe('float');
+    }
   });
 });
 
@@ -422,8 +421,8 @@ describe('failure handling', () => {
   it('renders min/max guidance for the selected asset', async () => {
     render(<App />);
     await screen.findByLabelText('You send');
-    expect(screen.getByText(/min/)).toBeDefined();
-    expect(screen.getByText(/max/)).toBeDefined();
+    expect(screen.getByText(/^min /)).toBeDefined();
+    expect(screen.getByText(/^max /)).toBeDefined();
   });
 
   it('surfaces server warnings to the user', async () => {
