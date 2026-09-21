@@ -36,6 +36,7 @@ interface Props {
   onRefresh: () => void;
   onSubmit: () => void;
   submitting: boolean;
+  mode?: 'connect' | 'deposit';
 }
 
 export const SwapCard: React.FC<Props> = ({
@@ -59,6 +60,7 @@ export const SwapCard: React.FC<Props> = ({
   onRefresh,
   onSubmit,
   submitting,
+  mode = 'connect',
 }) => {
   const [addressTouched, setAddressTouched] = useState(false);
   const [validation, setValidation] = useState<AddressValidation | null>(null);
@@ -277,7 +279,7 @@ export const SwapCard: React.FC<Props> = ({
           {submitting ? (
             <span className="flex items-center justify-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Building route
+              {mode==='deposit' ? 'Creating deposit address' : 'Building route'}
             </span>
           ) : !isAddressValid && destination.trim().length === 0 ? (
             'Enter destination address'
@@ -285,6 +287,8 @@ export const SwapCard: React.FC<Props> = ({
             `Minimum ${minAmount} ${fromAsset.symbol}`
           ) : aboveMax ? (
             `Maximum ${maxAmount} ${fromAsset.symbol}`
+          ) : mode==='deposit' ? (
+            'Get deposit address'
           ) : (
             'Exchange now'
           )}

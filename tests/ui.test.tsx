@@ -325,7 +325,7 @@ describe('address validation', () => {
 
     // A valid address enables the submit button; that is the user-visible effect.
     const submit = screen.getByRole('button', {
-      name: /Enter destination address|Exchange now/i,
+      name: /Enter destination address|Exchange now|Get deposit address/i,
     }) as HTMLButtonElement;
     await waitFor(() => expect(submit.disabled).toBe(false), { timeout: 3000 });
   });
@@ -355,7 +355,7 @@ describe('address validation', () => {
     });
 
     await waitFor(() => expect(submit.disabled).toBe(false), { timeout: 3000 });
-    expect(submit.textContent).toMatch(/Exchange now/i);
+    expect(submit.textContent).toMatch(/Exchange now|Get deposit address/i);
   });
 });
 

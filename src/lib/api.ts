@@ -7,6 +7,7 @@
  */
 
 import type {
+  DepositRecord,
   ExecutionPlan,
   OrderRecord,
   QuoteRequest,
@@ -139,6 +140,24 @@ export const api = {
     request<{ order: OrderRecord }>(`/api/orders/${orderId}/simulate-deposit`, {
       method: 'POST',
       body: JSON.stringify({}),
+    }),
+
+  // Deposit proxy (ff.io-style, non-custodial)
+  deposit: (body: {
+    fromAssetId: string;
+    toAssetId: string;
+    amount: string;
+    destinationAddress: string;
+    aggregator?: string;
+    slippageBps?: number;
+  }) => request<{ deposit: DepositRecord }>('/api/deposit', { method: 'POST', body: JSON.stringify(body) }),
+
+  depositStatus: (depositId: string) => request<{ deposit: DepositRecord }>(`/api/deposit/${depositId}`),
+
+  depositFunded: (depositId: string, txHash?: string) =>
+    request<{ deposit: DepositRecord }>(`/api/deposit/${depositId}/funded`, {
+      method: 'POST',
+      body: JSON.stringify({ txHash }),
     }),
 };
 

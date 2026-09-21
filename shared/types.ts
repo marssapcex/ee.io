@@ -217,3 +217,40 @@ export interface OrderRecord {
   inboundTxHash?: string;
   outboundTxHash?: string;
 }
+
+/** Deposit-proxy order (EVM same-chain, no wallet connect). */
+export interface DepositRecord {
+  depositId: string;
+  /** Alias for UI compat */
+  orderId: string;
+  createdAt: number;
+  expiresAt: number;
+  status:
+    | 'awaiting_funds'
+    | 'funding'
+    | 'funded'
+    | 'executing'
+    | 'executed'
+    | 'expired'
+    | 'refunded';
+  fromAssetId: string;
+  toAssetId: string;
+  sendAmount: string;
+  sendUsd: number;
+  receiveAmount: string;
+  minReceiveAmount: string;
+  destinationAddress: string;
+  /** Counterfactual CREATE2 address user funds */
+  depositAddress: string;
+  factoryAddress: string;
+  logicAddress: string;
+  chainId: number;
+  chain: string;
+  aggregator: AggregatorId;
+  quote: AggregatorQuote;
+  fee: FeeQuote;
+  warnings: string[];
+  fundedAt?: number;
+  txHash?: string;
+  outTxHash?: string;
+}

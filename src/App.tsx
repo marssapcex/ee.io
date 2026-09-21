@@ -1,13 +1,14 @@
 import { Loader2, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatUnits, parseUnits } from '../shared/money';
-import type { OrderRecord, QuoteRequest } from '../shared/types';
+import type { DepositRecord, OrderRecord, QuoteRequest } from '../shared/types';
 import { AssetPicker } from './components/AssetPicker';
 import { ExecutionInspector } from './components/ExecutionInspector';
 import { RocketLaunch } from './components/RocketLaunch';
 import { Navbar } from './components/Navbar';
 import { OrderTracker } from './components/OrderTracker';
 import { RouteComparison } from './components/RouteComparison';
+import { DepositFlow } from './components/DepositFlow';
 import { SwapCard } from './components/SwapCard';
 import { useQuote } from './hooks/useQuote';
 import { useWalletAccount } from './hooks/useWalletAccount';
@@ -30,6 +31,8 @@ export default function App() {
 
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const [order, setOrder] = useState<OrderRecord | null>(null);
+  const [deposit, setDeposit] = useState<DepositRecord | null>(null);
+  const [mode, setMode] = useState<'connect' | 'deposit'>('deposit');
   const [submitting, setSubmitting] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [launch, setLaunch] = useState(0);
@@ -148,27 +151,40 @@ export default function App() {
   );
 
   const submit = useCallback(async () => {
-    if (!quote || !activeQuote || !fromAsset) return;
+    if (!quote || !activeQuote || !fromAsset || !toAsset) return;
     setSubmitting(true);
     setPlanError(null);
     try {
-      const res = await api.plan({
-        fromAssetId: fromId,
-        toAssetId: toId,
-        sendAmount: quote.sendAmount,
-        destinationAddress: destination.trim(),
-        takerAddress: account ?? undefined,
-        rateType: 'float' as const,
-        aggregator: activeQuote.aggregator,
-      });
-      setOrder(res.order);
-      setLaunch((n) => n + 1);
+      const isEvmSameChain = fromAsset.chainKind === 'evm' && toAsset.chainKind === 'evm' && fromAsset.chain === toAsset.chain;
+      if (mode === 'deposit' && isEvmSameChain) {
+        const res = await api.deposit({
+          fromAssetId: fromId,
+          toAssetId: toId,
+          amount: quote.sendAmount,
+          destinationAddress: destination.trim(),
+          aggregator: activeQuote.aggregator,
+        });
+        setDeposit(res.deposit);
+        setLaunch((n) => n + 1);
+      } else {
+        const res = await api.plan({
+          fromAssetId: fromId,
+          toAssetId: toId,
+          sendAmount: quote.sendAmount,
+          destinationAddress: destination.trim(),
+          takerAddress: account ?? undefined,
+          rateType: 'float' as const,
+          aggregator: activeQuote.aggregator,
+        });
+        setOrder(res.order);
+        setLaunch((n) => n + 1);
+      }
     } catch (err) {
       setPlanError(err instanceof Error ? err.message : 'Could not build the execution plan');
     } finally {
       setSubmitting(false);
     }
-  }, [quote, activeQuote, fromAsset, fromId, toId, destination, account]);
+  }, [quote, activeQuote, fromAsset, toAsset, fromId, toId, destination, account, mode]);
 
   if (bootError) {
     return (
@@ -196,6 +212,24 @@ export default function App() {
       <Navbar assets={assets} />
 
       <main className="mx-auto w-full max-w-[1120px] flex-1 px-4 pb-16 pt-6 sm:px-6 sm:pt-8">
+        {/* Mode toggle — connect vs deposit (ff.io-style) */}
+        <div className="mb-3 flex items-center justify-center gap-1 rounded-full border border-white/[0.06] bg-ink-850 p-1 text-[12px] font-semibold">
+          <button
+            onClick={() => setMode('deposit')}
+            className={`flex-1 rounded-full px-4 py-2 transition ${mode==='deposit' ? 'bg-white text-black shadow' : 'text-white/50 hover:text-white'}`}
+          >
+            No wallet — copy address
+          </button>
+          <button
+            onClick={() => setMode('connect')}
+            className={`flex-1 rounded-full px-4 py-2 transition ${mode==='connect' ? 'bg-white text-black shadow' : 'text-white/50 hover:text-white'}`}
+          >
+            Connect & swap
+          </button>
+        </div>
+        <div className="mb-2 px-1 text-center font-mono text-[10px] leading-relaxed text-white/30">
+          {mode==='deposit' ? 'Deposit proxy (CREATE2) — non-custodial, fee 0.5% in calldata, gas from fee. No private key custody.' : 'Atomic swap via your wallet — fee 0.5% in one transaction, reverts if anything fails.'}
+        </div>
         <SwapCard
           fromAsset={fromAsset}
           toAsset={toAsset}
@@ -217,6 +251,7 @@ export default function App() {
           onRefresh={refresh}
           onSubmit={submit}
           submitting={submitting}
+          mode={mode}
         />
 
         {quote && quote.quotes.length > 0 && (
@@ -259,6 +294,9 @@ export default function App() {
           toAsset={toAsset}
           onClose={() => setOrder(null)}
         />
+      )}
+      {deposit && fromAsset && toAsset && (
+        <DepositFlow deposit={deposit} fromAsset={fromAsset} toAsset={toAsset} onClose={() => setDeposit(null)} />
       )}
     </div>
   );

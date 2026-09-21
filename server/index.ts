@@ -27,6 +27,7 @@ import {
 } from './quoteEngine.js';
 import { buildExecutionPlan } from './executionPlanner.js';
 import { createOrder, getOrder, listOrders, markDeposited } from './orders.js';
+import { createDeposit, getDeposit, listDeposits, markDepositFunded } from './depositProxy.js';
 import { credentialStatus, isPlaceholderRecipient, loadFeePolicy } from './config.js';
 import { getPrices, priceLookup } from './prices.js';
 import { requireAsset } from '../shared/assets.js';
@@ -222,6 +223,46 @@ app.post('/api/orders/:orderId/simulate-deposit', (req, res) => {
   const order = markDeposited(req.params.orderId, req.body?.txHash);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   res.json({ order });
+});
+
+/* --------------------------------------------------------- deposit proxy (ff.io-style, non-custodial) */
+
+const depositSchema = z.object({
+  fromAssetId: z.string().min(1),
+  toAssetId: z.string().min(1),
+  amount: z.string().regex(/^\d+$/, 'amount must be base-units integer string'),
+  destinationAddress: z.string().min(1),
+  aggregator: z.string().optional(),
+  slippageBps: z.number().int().min(1).max(5000).optional(),
+});
+
+app.post('/api/deposit', async (req, res) => {
+  const parsed = depositSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
+  try {
+    const deposit = await createDeposit(parsed.data);
+    res.json({ deposit });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Deposit creation failed';
+    console.error('[deposit]', msg);
+    res.status(400).json({ error: msg });
+  }
+});
+
+app.get('/api/deposits', (_req, res) => {
+  res.json({ deposits: listDeposits() });
+});
+
+app.get('/api/deposit/:depositId', (req, res) => {
+  const rec = getDeposit(req.params.depositId);
+  if (!rec) return res.status(404).json({ error: 'Deposit not found' });
+  res.json({ deposit: rec });
+});
+
+app.post('/api/deposit/:depositId/funded', async (req, res) => {
+  const rec = await markDepositFunded(req.params.depositId, req.body?.txHash);
+  if (!rec) return res.status(404).json({ error: 'Deposit not found' });
+  res.json({ deposit: rec });
 });
 
 /* ----------------------------------------------------------------- serve */
