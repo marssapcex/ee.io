@@ -7,7 +7,7 @@ import {
   RefreshCw,
   TriangleAlert,
 } from 'lucide-react';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AddressValidation } from '../../shared/address';
 import { formatDisplay, formatUsd, parseUnits } from '../../shared/money';
 import type { QuoteResponse, RateType } from '../../shared/types';
@@ -67,6 +67,7 @@ export const SwapCard: React.FC<Props> = ({
   const [addressTouched, setAddressTouched] = useState(false);
   const [validation, setValidation] = useState<AddressValidation | null>(null);
   const [spin, setSpin] = useState(false);
+  const destinationRef = useRef<HTMLInputElement>(null);
 
   // Validate server-side so the browser and the execution path share one
   // implementation of the rules.
@@ -221,7 +222,8 @@ export const SwapCard: React.FC<Props> = ({
             </span>
           </div>
           <div
-            className={`flex items-center gap-2 rounded-[10px] border bg-ink-900 px-3 py-2.5 shadow-inner transition-all duration-200 ${
+            onClick={() => destinationRef.current?.focus()}
+            className={`flex cursor-text items-center gap-2 rounded-[10px] border bg-ink-900 px-3 py-2.5 shadow-inner transition-all duration-200 ${
               showAddressError
                 ? 'border-brand-red/50 bg-brand-red/[0.06] focus-within:border-brand-red/60'
                 : isAddressValid
@@ -230,6 +232,7 @@ export const SwapCard: React.FC<Props> = ({
             }`}
           >
             <input
+              ref={destinationRef}
               id="destination"
               value={destination}
               onChange={(e) => {
@@ -337,9 +340,12 @@ const AmountBox: React.FC<{
   busy?: boolean;
   accent: 'mint' | 'plain';
   footer: React.ReactNode;
-}> = ({ label, asset, value, onChange, onPick, usd, invalid, busy, accent, footer }) => (
+}> = ({ label, asset, value, onChange, onPick, usd, invalid, busy, accent, footer }) => {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
   <div
-    className={`flex flex-col justify-between rounded-[14px] border bg-ink-800/80 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 ${
+    onClick={() => inputRef.current?.focus()}
+    className={`flex cursor-text flex-col justify-between rounded-[14px] border bg-ink-800/80 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 ${
       invalid
         ? 'border-brand-red/40'
         : 'border-white/[0.08] hover:border-white/[0.12] focus-within:border-white/[0.14] focus-within:bg-ink-750'
@@ -350,7 +356,7 @@ const AmountBox: React.FC<{
         {label}
       </span>
       <button
-        onClick={onPick}
+        onClick={(e) => { e.stopPropagation(); onPick(); }}
         aria-label={`${label === 'You send' ? 'Change send asset' : 'Change receive asset'} — currently ${asset.symbol} on ${asset.chainName}`}
         className="flex shrink-0 items-center gap-2 rounded-full border border-white/[0.10] bg-ink-900 px-1.5 py-1 pr-2.5 shadow-sm transition-all duration-200 hover:border-white/15 hover:bg-ink-700"
       >
@@ -382,7 +388,8 @@ const AmountBox: React.FC<{
       {footer}
     </div>
   </div>
-);
+  );
+};
 
 /**
  * Float / Fixed, styled as Polymarket's Yes / No pair — muted green and red
