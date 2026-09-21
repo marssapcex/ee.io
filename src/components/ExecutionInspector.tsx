@@ -92,21 +92,21 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
   };
 
   return (
-    <section className="w-full max-w-2xl rounded-3xl border border-line bg-ink-750/90 p-5 backdrop-blur-md">
+    <section className="w-full max-w-2xl rounded-[20px] border border-line bg-ink-750/90 p-5 backdrop-blur-md">
       <header className="mb-4 flex items-center justify-between border-b border-line-soft pb-3">
         <div className="flex items-center gap-2">
           <Terminal className="h-4 w-4 text-brand-cyan" />
           <h2 className="text-sm font-bold text-white">Execution inspector</h2>
         </div>
-        <span className="flex items-center gap-1.5 rounded-full border border-brand-green/40 bg-brand-green/10 px-2.5 py-0.5 font-mono text-[10px] text-brand-green">
+        <span className="flex items-center gap-1.5 rounded-full border border-brand-greenMid/40 bg-brand-greenMid/10 px-2.5 py-0.5 font-mono text-[11px] text-brand-greenBright">
           <ShieldCheck className="h-3 w-3" />
           {plan.source === 'live' ? 'live route' : 'simulated route'}
         </span>
       </header>
 
       {/* Custody model — the central claim, stated plainly. */}
-      <div className="mb-4 rounded-2xl border border-brand-green/40 bg-brand-green/10 p-3">
-        <div className="mb-1 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-brand-green">
+      <div className="mb-4 rounded-2xl border border-brand-greenMid/40 bg-brand-greenMid/10 p-3">
+        <div className="mb-1 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide text-brand-greenBright">
           <Lock className="h-3 w-3" />
           Custody model
         </div>
@@ -119,10 +119,10 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
           <span className="font-mono text-sm font-bold text-brand-cyan">
             {formatDisplay(BigInt(plan.receiveAmount), toAsset.decimals, 8)} {toAsset.symbol}
           </span>
-          <span className="block font-mono text-[10px] text-white/35">
+          <span className="block font-mono text-[11px] text-white/35">
             min {formatDisplay(BigInt(plan.minReceiveAmount), toAsset.decimals, 8)} after slippage
           </span>
-          <span className="mt-1 block truncate font-mono text-[10px] text-white/45">
+          <span className="mt-1 block truncate font-mono text-[11px] text-white/45">
             → {plan.destinationAddress}
           </span>
         </Panel>
@@ -136,10 +136,10 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
             )}{' '}
             {plan.fee.assetId === toAsset.id ? toAsset.symbol : fromAsset.symbol}
           </span>
-          <span className="block font-mono text-[10px] text-white/35">
+          <span className="block font-mono text-[11px] text-white/35">
             charged on {plan.fee.chargedOn}
           </span>
-          <span className="mt-1 block truncate font-mono text-[10px] text-white/45">
+          <span className="mt-1 block truncate font-mono text-[11px] text-white/45">
             → {plan.fee.recipient || '(unset)'}
           </span>
         </Panel>
@@ -155,9 +155,9 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
                 {step.index}. {step.title}
               </span>
               <span
-                className={`flex shrink-0 items-center gap-1 rounded border px-1.5 py-px font-mono text-[9px] ${
+                className={`flex shrink-0 items-center gap-1 rounded border px-1.5 py-px font-mono text-[10px] ${
                   step.atomic
-                    ? 'border-brand-green/40 bg-brand-green/10 text-brand-green'
+                    ? 'border-brand-greenMid/40 bg-brand-greenMid/10 text-brand-greenBright'
                     : 'border-white/10 bg-white/5 text-white/45'
                 }`}
               >
@@ -165,8 +165,8 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
                 {step.atomic ? 'atomic' : 'sequential'}
               </span>
             </div>
-            <p className="mt-1 font-mono text-[10px] leading-relaxed text-white/45">{step.detail}</p>
-            <p className="mt-1.5 text-[10px] leading-relaxed text-white/35">
+            <p className="mt-1 font-mono text-[11px] leading-relaxed text-white/45">{step.detail}</p>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-white/35">
               <span className="text-white/45">Guarantee:</span> {step.guarantee}
             </p>
           </div>
@@ -178,12 +178,12 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
         <div className="space-y-3">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Panel label="Router contract">
-              <code className="block break-all font-mono text-[10px] text-white/70">
+              <code className="block break-all font-mono text-[11px] text-white/70">
                 {plan.transaction.to}
               </code>
             </Panel>
             <Panel label="Value / chain">
-              <code className="font-mono text-[10px] text-white/70">
+              <code className="font-mono text-[11px] text-white/70">
                 {plan.transaction.value} wei · chain {plan.transaction.chainId}
               </code>
             </Panel>
@@ -193,27 +193,27 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
             <div className="mb-1 flex items-center justify-between">
               <button
                 onClick={() => setShowRaw((v) => !v)}
-                className="text-[11px] font-semibold text-white/45 hover:text-brand-cyan"
+                className="text-[12px] font-semibold text-white/45 hover:text-brand-cyan"
               >
                 {showRaw ? 'Hide' : 'Show'} raw calldata ({(plan.transaction.data.length - 2) / 2} bytes)
               </button>
               <button
                 onClick={() => copy('calldata', (plan.transaction as { data: string }).data)}
-                className="flex items-center gap-1 font-mono text-[11px] text-brand-cyan hover:text-brand-cyan"
+                className="flex items-center gap-1 font-mono text-[12px] text-brand-cyan hover:text-brand-cyan"
               >
                 {copied === 'calldata' ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                 {copied === 'calldata' ? 'copied' : 'copy'}
               </button>
             </div>
             {showRaw && (
-              <pre className="scrollbar-thin max-h-32 select-all overflow-auto rounded-xl border border-line-soft bg-ink-950 p-3 font-mono text-[10px] leading-relaxed text-white/45">
+              <pre className="scrollbar-thin max-h-32 select-all overflow-auto rounded-xl border border-line-soft bg-ink-950 p-3 font-mono text-[11px] leading-relaxed text-white/45">
                 {plan.transaction.data}
               </pre>
             )}
           </div>
 
           {plan.source !== 'live' && (
-            <p className="rounded-xl border border-brand-amber/30 bg-brand-amber/10 px-3 py-2 text-[11px] leading-relaxed text-brand-amber/80">
+            <p className="rounded-xl border border-brand-amber/30 bg-brand-amber/10 px-3 py-2 text-[12px] leading-relaxed text-brand-amber/80">
               This calldata is an ABI-encoded <em>preview</em> showing where the fee recipient and
               amount sit in the call. Configure an aggregator API key to fetch executable calldata
               signed off by the router itself — never broadcast preview calldata.
@@ -225,7 +225,7 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
               <button
                 onClick={runApproval}
                 disabled={txState.kind === 'pending'}
-                className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-line-strong bg-ink-600 px-4 py-2.5 text-xs font-bold text-white/80 transition-colors hover:bg-ink-550 disabled:opacity-50"
+                className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-line-strong bg-ink-700 px-4 py-2.5 text-xs font-bold text-white/80 transition-colors hover:bg-ink-650 disabled:opacity-50"
               >
                 1. Approve {fromAsset.symbol}
               </button>
@@ -250,17 +250,17 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
       )}
 
       {txState.kind === 'sent' && (
-        <p className="mt-3 break-all rounded-xl border border-brand-green/40 bg-brand-green/10 px-3 py-2 font-mono text-[11px] text-brand-green">
+        <p className="mt-3 break-all rounded-xl border border-brand-greenMid/40 bg-brand-greenMid/10 px-3 py-2 font-mono text-[12px] text-brand-greenBright">
           Broadcast: {txState.hash}
         </p>
       )}
       {txState.kind === 'error' && (
-        <p className="mt-3 rounded-xl border border-brand-red/30 bg-brand-red/10 px-3 py-2 text-[11px] text-brand-red">
+        <p className="mt-3 rounded-xl border border-brand-red/30 bg-brand-red/10 px-3 py-2 text-[12px] text-brand-red">
           {txState.message}
         </p>
       )}
       {txState.kind === 'pending' && (
-        <p className="mt-3 flex items-center gap-2 rounded-xl border border-line bg-ink-800 px-3 py-2 text-[11px] text-white/70">
+        <p className="mt-3 flex items-center gap-2 rounded-xl border border-line bg-ink-800 px-3 py-2 text-[12px] text-white/70">
           <Loader2 className="h-3 w-3 animate-spin" />
           {txState.label}
         </p>
@@ -268,7 +268,7 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
 
       {plan.references.length > 0 && (
         <footer className="mt-4 border-t border-line-soft pt-3">
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/35">
+          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-white/35">
             Protocol documentation
           </p>
           <ul className="space-y-1">
@@ -278,7 +278,7 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
                   href={ref.url}
                   target="_blank"
                   rel="noreferrer noopener"
-                  className="flex items-center gap-1.5 text-[11px] text-white/45 transition-colors hover:text-brand-cyan"
+                  className="flex items-center gap-1.5 text-[12px] text-white/45 transition-colors hover:text-brand-cyan"
                 >
                   <ExternalLink className="h-3 w-3 shrink-0" />
                   <span className="truncate">{ref.label}</span>
@@ -311,12 +311,12 @@ const DepositPanel: React.FC<{
 
       <div className="rounded-2xl border border-line bg-ink-800 p-3">
         <div className="mb-1 flex items-center justify-between">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-white/35">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-white/35">
             Inbound vault address
           </span>
           <button
             onClick={() => onCopy('address', tx.depositAddress)}
-            className="flex items-center gap-1 font-mono text-[11px] text-brand-cyan hover:text-brand-cyan"
+            className="flex items-center gap-1 font-mono text-[12px] text-brand-cyan hover:text-brand-cyan"
           >
             {copied === 'address' ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
             {copied === 'address' ? 'copied' : 'copy'}
@@ -328,19 +328,19 @@ const DepositPanel: React.FC<{
       {tx.memo && (
         <div className="rounded-2xl border border-brand-amber/30 bg-brand-amber/10 p-3">
           <div className="mb-1 flex items-center justify-between">
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-brand-amber">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-brand-amber">
               Required memo — {tx.memoEncoding}
             </span>
             <button
               onClick={() => onCopy('memo', tx.memo!)}
-              className="flex items-center gap-1 font-mono text-[11px] text-brand-amber hover:text-brand-amber"
+              className="flex items-center gap-1 font-mono text-[12px] text-brand-amber hover:text-brand-amber"
             >
               {copied === 'memo' ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
               {copied === 'memo' ? 'copied' : 'copy'}
             </button>
           </div>
           <code className="block break-all font-mono text-xs text-brand-amber">{tx.memo}</code>
-          <p className="mt-2 text-[10px] leading-relaxed text-brand-amber/80">
+          <p className="mt-2 text-[11px] leading-relaxed text-brand-amber/80">
             Without this memo THORChain cannot tell where to send the output, and the deposit will
             be refunded minus fees. The memo encodes your destination, the minimum acceptable
             output, and the affiliate fee.
@@ -348,7 +348,7 @@ const DepositPanel: React.FC<{
         </div>
       )}
 
-      <p className="rounded-xl border border-brand-red/30 bg-brand-red/10 px-3 py-2 text-[11px] leading-relaxed text-brand-red/90">
+      <p className="rounded-xl border border-brand-red/30 bg-brand-red/10 px-3 py-2 text-[12px] leading-relaxed text-brand-red/90">
         Vault addresses rotate. Always re-fetch the inbound address immediately before sending —
         never reuse a cached one, and never send after the quote expires.
       </p>
@@ -358,7 +358,7 @@ const DepositPanel: React.FC<{
 
 const Panel: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div className="rounded-2xl border border-line bg-ink-800 p-3">
-    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-white/35">
+    <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-white/35">
       {label}
     </div>
     {children}

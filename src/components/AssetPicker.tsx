@@ -114,12 +114,12 @@ export const AssetPicker: React.FC<Props> = ({
       aria-modal="true"
       aria-label={title}
     >
-      <div className="flex max-h-[76vh] w-full max-w-lg animate-slide-up flex-col overflow-hidden rounded-3xl border border-line bg-ink-700 shadow-2xl">
+      <div className="flex max-h-[76vh] w-full max-w-lg animate-slide-up flex-col overflow-hidden rounded-[20px] border border-line bg-ink-700 shadow-2xl">
         <div className="flex items-center justify-between border-b border-line-soft px-5 py-4">
           <h2 className="text-sm font-bold text-white">{title}</h2>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-white/45 transition-colors hover:bg-ink-500 hover:text-white"
+            className="rounded-lg p-1.5 text-white/45 transition-colors hover:bg-ink-600 hover:text-white"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
@@ -171,8 +171,8 @@ export const AssetPicker: React.FC<Props> = ({
                   isExcluded
                     ? 'cursor-not-allowed opacity-35'
                     : index === cursor
-                      ? 'bg-ink-550'
-                      : 'hover:bg-ink-600'
+                      ? 'bg-ink-650'
+                      : 'hover:bg-ink-700'
                 }`}
               >
                 <AssetIcon asset={asset} size={34} />
@@ -181,12 +181,12 @@ export const AssetPicker: React.FC<Props> = ({
                   <div className="flex items-center gap-2">
                     <span className="truncate font-semibold text-white">{asset.symbol}</span>
                     <span
-                      className={`rounded border px-1.5 py-px font-mono text-[9px] ${asset.chainColor.bg} ${asset.chainColor.text} ${asset.chainColor.border}`}
+                      className={`rounded border px-1.5 py-px font-mono text-[10px] ${asset.chainColor.bg} ${asset.chainColor.text} ${asset.chainColor.border}`}
                     >
                       {asset.chainName}
                     </span>
                     {isExcluded && (
-                      <span className="text-[10px] text-white/35">already selected</span>
+                      <span className="text-[11px] text-white/35">already selected</span>
                     )}
                   </div>
                   <p className="truncate text-xs text-white/45">{asset.name}</p>
@@ -205,10 +205,10 @@ export const AssetPicker: React.FC<Props> = ({
           })}
         </div>
 
-        <div className="border-t border-line-soft px-5 py-2.5 text-[11px] text-white/35">
-          <kbd className="rounded bg-ink-600 px-1 font-mono">↑↓</kbd> navigate ·{' '}
-          <kbd className="rounded bg-ink-600 px-1 font-mono">↵</kbd> select ·{' '}
-          <kbd className="rounded bg-ink-600 px-1 font-mono">esc</kbd> close
+        <div className="border-t border-line-soft px-5 py-2.5 text-[12px] text-white/35">
+          <kbd className="rounded bg-ink-700 px-1 font-mono">↑↓</kbd> navigate ·{' '}
+          <kbd className="rounded bg-ink-700 px-1 font-mono">↵</kbd> select ·{' '}
+          <kbd className="rounded bg-ink-700 px-1 font-mono">esc</kbd> close
         </div>
       </div>
     </div>
@@ -222,7 +222,7 @@ const FilterChip: React.FC<{
 }> = ({ active, onClick, children }) => (
   <button
     onClick={onClick}
-    className={`shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+    className={`shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1 text-[12px] font-semibold transition-colors ${
       active
         ? 'border-brand-cyan/60 bg-brand-cyan/10 text-brand-cyan'
         : 'border-line bg-ink-800 text-white/45 hover:text-white/80'

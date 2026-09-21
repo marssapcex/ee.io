@@ -40,17 +40,17 @@ export const ProviderSheet: React.FC<Props> = ({ open, providers, health, onClos
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/75 p-4 pt-[6vh] backdrop-blur-sm"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="w-full max-w-xl animate-slide-up rounded-3xl border border-line bg-ink-700 p-5 shadow-2xl">
+      <div className="w-full max-w-xl animate-slide-up rounded-[20px] border border-line bg-ink-700 p-5 shadow-2xl">
         <header className="mb-3 flex items-start justify-between">
           <div>
             <h2 className="text-sm font-bold text-white">Liquidity routers</h2>
-            <p className="text-[11px] text-white/35">
+            <p className="text-[12px] text-white/35">
               Every route is a public aggregator. ee.io adds an affiliate parameter — nothing else.
             </p>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-white/45 hover:bg-ink-500 hover:text-white"
+            className="rounded-lg p-1.5 text-white/45 hover:bg-ink-600 hover:text-white"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
@@ -69,13 +69,13 @@ export const ProviderSheet: React.FC<Props> = ({ open, providers, health, onClos
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold text-white">{provider.displayName}</span>
                   {live ? (
-                    <span className="flex shrink-0 items-center gap-1 rounded border border-brand-green/40 bg-brand-green/10 px-1.5 py-px font-mono text-[9px] text-brand-green">
+                    <span className="flex shrink-0 items-center gap-1 rounded border border-brand-greenMid/40 bg-brand-greenMid/10 px-1.5 py-px font-mono text-[10px] text-brand-greenBright">
                       <CheckCircle2 className="h-2.5 w-2.5" />
                       LIVE
                     </span>
                   ) : (
                     <span
-                      className="flex shrink-0 items-center gap-1 rounded border border-brand-amber/30 bg-brand-amber/10 px-1.5 py-px font-mono text-[9px] text-brand-amber"
+                      className="flex shrink-0 items-center gap-1 rounded border border-brand-amber/30 bg-brand-amber/10 px-1.5 py-px font-mono text-[10px] text-brand-amber"
                       title={keyVar ? `Set ${keyVar} to enable` : 'Upstream unreachable'}
                     >
                       <KeyRound className="h-2.5 w-2.5" />
@@ -84,7 +84,7 @@ export const ProviderSheet: React.FC<Props> = ({ open, providers, health, onClos
                   )}
                 </div>
 
-                <p className="mt-1 font-mono text-[10px] leading-relaxed text-white/45">
+                <p className="mt-1 font-mono text-[11px] leading-relaxed text-white/45">
                   {provider.feeMechanism}
                 </p>
 
@@ -93,13 +93,13 @@ export const ProviderSheet: React.FC<Props> = ({ open, providers, health, onClos
                     href={provider.docsUrl}
                     target="_blank"
                     rel="noreferrer noopener"
-                    className="flex items-center gap-1 text-[10px] text-white/35 hover:text-brand-cyan"
+                    className="flex items-center gap-1 text-[11px] text-white/35 hover:text-brand-cyan"
                   >
                     <ExternalLink className="h-2.5 w-2.5" />
                     documentation
                   </a>
                   {keyVar && !live && (
-                    <code className="font-mono text-[10px] text-brand-amber/80">{keyVar}</code>
+                    <code className="font-mono text-[11px] text-brand-amber/80">{keyVar}</code>
                   )}
                 </div>
               </li>
@@ -108,7 +108,7 @@ export const ProviderSheet: React.FC<Props> = ({ open, providers, health, onClos
         </ul>
 
         {health && (
-          <div className="mt-3 rounded-2xl border border-line bg-ink-800 p-3 font-mono text-[10px] text-white/45">
+          <div className="mt-3 rounded-2xl border border-line bg-ink-800 p-3 font-mono text-[11px] text-white/45">
             <div className="flex justify-between">
               <span>fee policy</span>
               <span className="text-brand-orange">
@@ -118,13 +118,13 @@ export const ProviderSheet: React.FC<Props> = ({ open, providers, health, onClos
             </div>
             <div className="mt-1 flex justify-between">
               <span>recipient (EVM)</span>
-              <span className={health.fee.recipientConfigured ? 'text-brand-green' : 'text-brand-amber'}>
+              <span className={health.fee.recipientConfigured ? 'text-brand-greenBright' : 'text-brand-amber'}>
                 {health.fee.recipientConfigured ? 'configured' : 'placeholder — set EE_FEE_RECIPIENT_EVM'}
               </span>
             </div>
             <div className="mt-1 flex justify-between">
               <span>THORName</span>
-              <span className={health.fee.thornameConfigured ? 'text-brand-green' : 'text-brand-amber'}>
+              <span className={health.fee.thornameConfigured ? 'text-brand-greenBright' : 'text-brand-amber'}>
                 {health.fee.thornameConfigured ? 'registered' : 'unset — affiliate fee skipped'}
               </span>
             </div>

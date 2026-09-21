@@ -4,6 +4,7 @@ import { formatUnits, parseUnits } from '../shared/money';
 import type { OrderRecord, QuoteRequest, RateType } from '../shared/types';
 import { AssetPicker } from './components/AssetPicker';
 import { ExecutionInspector } from './components/ExecutionInspector';
+import { MoonShot } from './components/MoonShot';
 import { Navbar } from './components/Navbar';
 import { OrderTracker } from './components/OrderTracker';
 import { ProviderSheet } from './components/ProviderSheet';
@@ -35,6 +36,7 @@ export default function App() {
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [launch, setLaunch] = useState(0);
 
   // Read-only: improves quote accuracy when a wallet is already authorised,
   // never prompts. See useWalletAccount.
@@ -165,6 +167,7 @@ export default function App() {
         aggregator: activeQuote.aggregator,
       });
       setOrder(res.order);
+      setLaunch((n) => n + 1);
     } catch (err) {
       setPlanError(err instanceof Error ? err.message : 'Could not build the execution plan');
     } finally {
@@ -195,9 +198,9 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <Navbar health={health} onOpenProviders={() => setProviderSheet(true)} />
+      <Navbar health={health} assets={assets} onOpenProviders={() => setProviderSheet(true)} />
 
-      <main className="mx-auto w-full max-w-[1040px] flex-1 px-4 pb-16 pt-6 sm:pt-10">
+      <main className="mx-auto w-full max-w-[1040px] flex-1 px-4 pb-20 pt-8 sm:px-6 sm:pt-12">
         <SwapCard
           fromAsset={fromAsset}
           toAsset={toAsset}
@@ -224,7 +227,7 @@ export default function App() {
         />
 
         {quote && quote.quotes.length > 0 && (
-          <div className="mt-3">
+          <div className="mt-4">
             <RouteComparison
               quotes={quote.quotes}
               toAsset={toAsset}
@@ -237,11 +240,13 @@ export default function App() {
         )}
 
         {order && (
-          <div className="mt-3">
+          <div className="mt-4">
             <ExecutionInspector plan={order.plan} fromAsset={fromAsset} toAsset={toAsset} />
           </div>
         )}
       </main>
+
+      <MoonShot trigger={launch} label="to the moon" />
 
       <AssetPicker
         open={pickerSide !== null}

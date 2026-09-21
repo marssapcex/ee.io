@@ -81,17 +81,17 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/75 p-4 pt-[6vh] backdrop-blur-sm"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="w-full max-w-lg animate-slide-up rounded-3xl border border-line bg-ink-700 p-5 shadow-2xl">
+      <div className="w-full max-w-lg animate-slide-up rounded-[20px] border border-line bg-ink-700 p-5 shadow-2xl">
         <header className="mb-4 flex items-start justify-between">
           <div>
             <h2 className="text-sm font-bold text-white">Order {order.orderId}</h2>
-            <p className="font-mono text-[11px] text-white/35">
+            <p className="font-mono text-[12px] text-white/35">
               via {order.plan.displayName} · {order.plan.fee.bps} bps
             </p>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-white/45 hover:bg-ink-500 hover:text-white"
+            className="rounded-lg p-1.5 text-white/45 hover:bg-ink-600 hover:text-white"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
@@ -104,15 +104,15 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
               {formatDisplay(BigInt(order.plan.sendAmount), fromAsset.decimals, 8)}{' '}
               {fromAsset.symbol}
             </p>
-            <p className="text-[10px] text-white/35">{fromAsset.chainName}</p>
+            <p className="text-[11px] text-white/35">{fromAsset.chainName}</p>
           </div>
-          <span className="text-white/25">→</span>
+          <span className="text-white/40">→</span>
           <div className="text-right">
             <p className="font-mono text-sm font-bold text-brand-cyan">
               {formatDisplay(BigInt(order.plan.receiveAmount), toAsset.decimals, 8)}{' '}
               {toAsset.symbol}
             </p>
-            <p className="text-[10px] text-white/35">{toAsset.chainName}</p>
+            <p className="text-[11px] text-white/35">{toAsset.chainName}</p>
           </div>
         </div>
 
@@ -124,12 +124,12 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
             return (
               <li key={stage.id} className="flex items-center gap-3">
                 <span
-                  className={`grid h-6 w-6 shrink-0 place-items-center rounded-full border text-[10px] font-bold ${
+                  className={`grid h-6 w-6 shrink-0 place-items-center rounded-full border text-[11px] font-bold ${
                     done
-                      ? 'border-brand-green/40 bg-brand-green/10 text-brand-green'
+                      ? 'border-brand-greenMid/40 bg-brand-greenMid/10 text-brand-greenBright'
                       : current
                         ? 'border-brand-cyan bg-brand-cyan/10 text-brand-cyan'
-                        : 'border-line bg-ink-800 text-white/25'
+                        : 'border-line bg-ink-800 text-white/40'
                   }`}
                 >
                   {done ? <Check className="h-3 w-3" /> : current ? (
@@ -139,11 +139,11 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
                   )}
                 </span>
                 <span
-                  className={`text-xs ${current ? 'font-bold text-white' : done ? 'text-white/45' : 'text-white/25'}`}
+                  className={`text-xs ${current ? 'font-bold text-white' : done ? 'text-white/45' : 'text-white/40'}`}
                 >
                   {stage.label}
                   {current && stage.id === 'confirming' && (
-                    <span className="ml-1.5 font-mono text-[10px] text-white/35">
+                    <span className="ml-1.5 font-mono text-[11px] text-white/35">
                       {order.confirmations}/{order.requiredConfirmations}
                     </span>
                   )}
@@ -156,12 +156,12 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
         {isDeposit && order.status === 'awaiting_deposit' && (
           <div className="mb-3 rounded-2xl border border-line bg-ink-800 p-3">
             <div className="mb-1 flex items-center justify-between">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-white/35">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-white/35">
                 Send {fromAsset.symbol} to
               </span>
               <button
                 onClick={copyAddress}
-                className="flex items-center gap-1 font-mono text-[11px] text-brand-cyan"
+                className="flex items-center gap-1 font-mono text-[12px] text-brand-cyan"
               >
                 {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                 {copied ? 'copied' : 'copy'}
@@ -182,7 +182,7 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
           <button
             onClick={simulateDeposit}
             disabled={simulating}
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-line-strong bg-ink-600 px-4 py-2.5 text-xs font-bold text-white/70 transition-colors hover:bg-ink-550 disabled:opacity-50"
+            className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-line-strong bg-ink-700 px-4 py-2.5 text-xs font-bold text-white/70 transition-colors hover:bg-ink-650 disabled:opacity-50"
           >
             {simulating ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -193,7 +193,7 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
           </button>
         )}
 
-        <p className="mt-3 text-center text-[10px] leading-relaxed text-white/25">
+        <p className="mt-3 text-center text-[11px] leading-relaxed text-white/40">
           ee.io holds no funds and stores no account. This tracker is a read-only view of a public
           on-chain process — closing it does not affect your swap.
         </p>
@@ -204,10 +204,10 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
 
 const TxRow: React.FC<{ label: string; hash: string }> = ({ label, hash }) => (
   <div className="mt-2 flex items-center justify-between rounded-xl border border-line-soft bg-ink-800/60 px-3 py-2">
-    <span className="text-[10px] font-semibold uppercase tracking-wide text-white/35">
+    <span className="text-[11px] font-semibold uppercase tracking-wide text-white/35">
       {label}
     </span>
-    <span className="flex items-center gap-1.5 font-mono text-[10px] text-white/45">
+    <span className="flex items-center gap-1.5 font-mono text-[11px] text-white/45">
       {hash.slice(0, 10)}…{hash.slice(-8)}
       <ExternalLink className="h-3 w-3" />
     </span>

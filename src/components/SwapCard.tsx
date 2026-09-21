@@ -124,9 +124,9 @@ export const SwapCard: React.FC<Props> = ({
     isAddressValid && !belowMin && !aboveMax && !!quote?.best && !loading && !submitting;
 
   return (
-    <section className="overflow-hidden rounded-[26px] border border-line bg-ink-900 shadow-card">
+    <section className="overflow-hidden rounded-[20px] border border-line bg-ink-850 shadow-card">
       {/* ---- Row 1: Send | flip | Receive, side by side ---- */}
-      <div className="relative grid items-stretch gap-2 p-2 md:grid-cols-[1fr_auto_1fr]">
+      <div className="relative grid items-stretch gap-4 p-5 md:grid-cols-[1fr_auto_1fr] md:gap-5 md:p-6">
         <AmountBox
           label="You send"
           asset={fromAsset}
@@ -136,22 +136,21 @@ export const SwapCard: React.FC<Props> = ({
           usd={sendUsd}
           invalid={belowMin || aboveMax}
           busy={refreshing && side === 'receive'}
-          accent="orange"
+          accent="plain"
           footer={
-            <div className="flex items-center gap-3 font-mono text-[10px] text-white/30">
+            <div className="flex items-center gap-2 font-mono text-[11px] text-white/35">
               <button
                 onClick={() => onSendInput(minAmount)}
-                className={`transition-colors hover:text-brand-orange ${
-                  belowMin ? 'font-bold text-brand-orange' : ''
+                className={`rounded-md px-1.5 py-0.5 transition-colors hover:bg-white/5 hover:text-white/70 ${
+                  belowMin ? 'font-semibold text-brand-red' : ''
                 }`}
               >
                 min {minAmount}
               </button>
-              <span className="text-white/10">/</span>
               <button
                 onClick={() => onSendInput(maxAmount)}
-                className={`transition-colors hover:text-brand-orange ${
-                  aboveMax ? 'font-bold text-brand-orange' : ''
+                className={`rounded-md px-1.5 py-0.5 transition-colors hover:bg-white/5 hover:text-white/70 ${
+                  aboveMax ? 'font-semibold text-brand-red' : ''
                 }`}
               >
                 max {maxAmount}
@@ -160,13 +159,12 @@ export const SwapCard: React.FC<Props> = ({
           }
         />
 
-        {/* Flip control sits between the two boxes on desktop, between the
-            rows on mobile. */}
+        {/* Flip control: between the boxes on desktop, between rows on mobile. */}
         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center md:static md:inset-auto md:self-center">
           <button
             onClick={handleFlip}
             aria-label="Swap direction"
-            className="pointer-events-auto grid h-10 w-10 place-items-center rounded-full border-[3px] border-ink-900 bg-ink-650 text-white/60 transition-all hover:bg-ink-550 hover:text-brand-cyan active:scale-90"
+            className="pointer-events-auto grid h-11 w-11 place-items-center rounded-full border-4 border-ink-850 bg-ink-700 text-white/55 transition-all duration-200 hover:bg-ink-600 hover:text-brand-cyan hover:shadow-glow-mint active:scale-90"
           >
             <ArrowRight
               className={`h-4 w-4 rotate-90 transition-transform duration-[400ms] md:rotate-0 ${
@@ -184,21 +182,21 @@ export const SwapCard: React.FC<Props> = ({
           onPick={onOpenTo}
           usd={receiveUsd}
           busy={refreshing && side === 'send'}
-          accent="cyan"
+          accent="mint"
           footer={
-            <div className="flex items-center gap-2 font-mono text-[10px] text-white/30">
+            <div className="flex items-center gap-2 font-mono text-[11px] text-white/35">
               {quote ? (
                 <>
                   <span className="truncate">
                     1 {fromAsset.symbol} ={' '}
-                    <span className="text-white/60">{formatRate(quote.unitRate)}</span>{' '}
+                    <span className="text-white/65">{formatRate(quote.unitRate)}</span>{' '}
                     {toAsset.symbol}
                   </span>
                   <button
                     onClick={onRefresh}
                     disabled={loading}
                     aria-label="Refresh quote"
-                    className="shrink-0 transition-colors hover:text-brand-cyan disabled:opacity-40"
+                    className="shrink-0 rounded-md p-1 transition-colors hover:bg-white/5 hover:text-brand-cyan disabled:opacity-40"
                   >
                     <RefreshCw className={`h-3 w-3 ${loading || refreshing ? 'animate-spin' : ''}`} />
                   </button>
@@ -212,20 +210,17 @@ export const SwapCard: React.FC<Props> = ({
       </div>
 
       {/* ---- Row 2: destination, full width ---- */}
-      <div className="px-2 pb-2">
+      <div className="px-5 pb-5 md:px-6 md:pb-6">
         <div
-          className={`flex items-center gap-3 rounded-2xl border bg-ink-850 px-4 py-3 transition-colors ${
+          className={`flex items-center gap-3 rounded-2xl border bg-ink-800 px-5 py-4 transition-all duration-200 ${
             showAddressError
-              ? 'border-brand-red/50'
+              ? 'border-brand-red/45'
               : isAddressValid
-                ? 'border-brand-green/40'
-                : 'border-line focus-within:border-line-glow'
+                ? 'border-brand-greenMid/45'
+                : 'border-line hover:border-line-strong focus-within:border-line-glow'
           }`}
         >
-          <label
-            htmlFor="destination"
-            className="shrink-0 text-[11px] font-semibold text-white/40"
-          >
+          <label htmlFor="destination" className="shrink-0 text-[12px] font-medium text-white/45">
             Destination
           </label>
           <input
@@ -239,18 +234,18 @@ export const SwapCard: React.FC<Props> = ({
             placeholder={toAsset.addressPlaceholder}
             spellCheck={false}
             autoComplete="off"
-            className="w-full min-w-0 bg-transparent font-mono text-[13px] text-white outline-none placeholder:text-white/20"
+            className="w-full min-w-0 bg-transparent font-mono text-[14px] text-white outline-none placeholder:text-white/20"
           />
-          <span className="hidden shrink-0 font-mono text-[10px] text-white/25 sm:block">
+          <span className="hidden shrink-0 font-mono text-[11px] text-white/40 sm:block">
             {toAsset.chainName}
           </span>
           {isAddressValid ? (
-            <Check className="h-4 w-4 shrink-0 text-brand-green" />
+            <Check className="h-4 w-4 shrink-0 text-brand-greenBright" />
           ) : (
             <button
               onClick={paste}
               aria-label="Paste address"
-              className="shrink-0 rounded-lg p-1 text-white/30 transition-colors hover:bg-ink-650 hover:text-white"
+              className="shrink-0 rounded-lg p-1.5 text-white/40 transition-colors hover:bg-white/5 hover:text-white"
             >
               <Clipboard className="h-4 w-4" />
             </button>
@@ -258,35 +253,35 @@ export const SwapCard: React.FC<Props> = ({
         </div>
 
         {showAddressError && (
-          <p className="animate-fade-in px-4 pt-1.5 text-[11px] text-brand-red">
+          <p className="animate-fade-in px-1 pt-2 text-[12px] text-brand-red">
             {validation?.message}
           </p>
         )}
       </div>
 
-      {/* ---- Row 3: rate type + submit, one row ---- */}
-      <div className="grid gap-2 px-2 pb-2 md:grid-cols-[auto_1fr]">
-        <div className="grid grid-cols-2 gap-1 rounded-2xl border border-line bg-ink-850 p-1">
+      {/* ---- Row 3: rate type + submit ---- */}
+      <div className="grid gap-3 px-5 pb-5 md:grid-cols-[minmax(260px,auto)_1fr] md:px-6 md:pb-6">
+        <div className="grid grid-cols-2 gap-2">
           <RatePill
             active={rateType === 'float'}
             onClick={() => onRateType('float')}
             title="Float"
             sub={`${(feeBps / 100).toFixed(2)}%`}
-            accent="cyan"
+            tone="green"
           />
           <RatePill
             active={rateType === 'fixed'}
             onClick={() => onRateType('fixed')}
             title="Fixed"
             sub="1.00%"
-            accent="orange"
+            tone="red"
           />
         </div>
 
         <button
           onClick={onSubmit}
           disabled={!canSubmit}
-          className="rounded-2xl bg-gradient-to-r from-brand-cyan to-brand-teal py-4 text-[15px] font-extrabold tracking-tight text-ink-950 transition-all hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-ink-750 disabled:bg-none disabled:text-white/25"
+          className="group rounded-xl bg-brand-green py-4 text-[15px] font-semibold tracking-tight text-white transition-all duration-200 hover:bg-brand-greenMid hover:shadow-glow-green active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-ink-750 disabled:text-white/40 disabled:shadow-none"
         >
           {submitting ? (
             <span className="flex items-center justify-center gap-2">
@@ -306,7 +301,7 @@ export const SwapCard: React.FC<Props> = ({
       </div>
 
       {error && (
-        <p className="flex items-start gap-2 border-t border-brand-red/20 bg-brand-red/5 px-5 py-2.5 text-[11px] text-brand-red">
+        <p className="flex items-start gap-2 border-t border-brand-red/20 bg-brand-red/[0.07] px-6 py-3.5 text-[12px] text-brand-red">
           <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
           {error}
         </p>
@@ -315,7 +310,7 @@ export const SwapCard: React.FC<Props> = ({
       {quote?.warnings.map((warning) => (
         <p
           key={warning}
-          className="flex items-start gap-2 border-t border-brand-amber/20 bg-brand-amber/5 px-5 py-2.5 text-[11px] text-brand-amber"
+          className="flex items-start gap-2 border-t border-brand-amber/20 bg-brand-amber/[0.07] px-6 py-3.5 text-[12px] text-brand-amber"
         >
           <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
           {warning}
@@ -336,24 +331,27 @@ const AmountBox: React.FC<{
   usd: number;
   invalid?: boolean;
   busy?: boolean;
-  accent: 'cyan' | 'orange';
+  accent: 'mint' | 'plain';
   footer: React.ReactNode;
 }> = ({ label, asset, value, onChange, onPick, usd, invalid, busy, accent, footer }) => (
   <div
-    className={`flex flex-col justify-between rounded-2xl border bg-ink-850 p-4 transition-colors ${
-      invalid ? 'border-brand-red/50' : 'border-line focus-within:border-line-glow'
+    className={`flex flex-col justify-between rounded-2xl border bg-ink-800 p-5 transition-all duration-200 ${
+      invalid
+        ? 'border-brand-red/45'
+        : 'border-line hover:border-line-strong focus-within:border-line-glow'
     }`}
   >
-    <div className="mb-3 flex items-center justify-between">
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-white/40">
+    <div className="mb-5 flex items-center justify-between gap-3">
+      <span className="text-[12px] font-medium uppercase tracking-[0.08em] text-white/40">
         {label}
       </span>
       <button
         onClick={onPick}
-        className="flex shrink-0 items-center gap-2 rounded-full border border-line bg-ink-750 py-1 pl-1 pr-2.5 transition-all hover:border-line-strong hover:bg-ink-650"
+        aria-label={`${label === 'You send' ? 'Change send asset' : 'Change receive asset'} — currently ${asset.symbol} on ${asset.chainName}`}
+        className="flex shrink-0 items-center gap-2 rounded-full border border-line bg-ink-700 py-1.5 pl-1.5 pr-3 transition-all duration-200 hover:border-line-strong hover:bg-ink-650"
       >
         <AssetIcon asset={asset} size={26} showChain />
-        <span className="font-mono text-[13px] font-bold text-white">{asset.symbol}</span>
+        <span className="text-[14px] font-semibold text-white">{asset.symbol}</span>
         <ChevronDown className="h-3.5 w-3.5 text-white/35" />
       </button>
     </div>
@@ -367,47 +365,43 @@ const AmountBox: React.FC<{
       inputMode="decimal"
       placeholder="0"
       aria-label={label === 'You send' ? 'You send' : 'You receive'}
-      className={`tabular w-full min-w-0 bg-transparent font-mono text-[32px] font-bold leading-none outline-none placeholder:text-white/15 ${
-        accent === 'cyan' ? 'text-brand-cyan' : 'text-white'
+      className={`tabular w-full min-w-0 bg-transparent text-[38px] font-semibold leading-none tracking-tight outline-none placeholder:text-white/15 ${
+        accent === 'mint' ? 'text-brand-cyan' : 'text-white'
       } ${busy ? 'opacity-50' : ''}`}
     />
 
-    <div className="mt-2 flex items-center justify-between gap-2">
-      <span className="font-mono text-[10px] text-white/25">
-        {usd > 0 ? formatUsd(usd) : ''}
-      </span>
+    <div className="mt-4 flex items-center justify-between gap-2">
+      <span className="font-mono text-[11px] text-white/40">{usd > 0 ? formatUsd(usd) : ''}</span>
       {footer}
     </div>
   </div>
 );
 
+/**
+ * Float / Fixed, styled as Polymarket's Yes / No pair — muted green and red
+ * that read instantly without glowing.
+ */
 const RatePill: React.FC<{
   active: boolean;
   onClick: () => void;
   title: string;
   sub: string;
-  accent: 'cyan' | 'orange';
-}> = ({ active, onClick, title, sub, accent }) => (
+  tone: 'green' | 'red';
+}> = ({ active, onClick, title, sub, tone }) => (
   <button
     onClick={onClick}
-    className={`flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 transition-all ${
+    className={`flex items-center justify-center gap-2 rounded-xl border py-4 transition-all duration-200 ${
       active
-        ? accent === 'cyan'
-          ? 'bg-brand-cyan/10 ring-1 ring-brand-cyan/50'
-          : 'bg-brand-orange/10 ring-1 ring-brand-orange/50'
-        : 'hover:bg-ink-750'
+        ? tone === 'green'
+          ? 'border-brand-greenMid/50 bg-brand-greenMid/15 text-brand-greenBright'
+          : 'border-brand-red/50 bg-brand-red/15 text-brand-redBright'
+        : tone === 'green'
+          ? 'border-line bg-ink-800 text-white/45 hover:border-brand-greenMid/35 hover:bg-brand-greenMid/[0.08] hover:text-brand-greenBright'
+          : 'border-line bg-ink-800 text-white/45 hover:border-brand-red/35 hover:bg-brand-red/[0.08] hover:text-brand-redBright'
     }`}
   >
-    <span
-      className={`text-[12px] font-bold ${
-        active ? (accent === 'cyan' ? 'text-brand-cyan' : 'text-brand-orange') : 'text-white/45'
-      }`}
-    >
-      {title}
-    </span>
-    <span className={`font-mono text-[10px] ${active ? 'text-white/55' : 'text-white/25'}`}>
-      {sub}
-    </span>
+    <span className="text-[14px] font-semibold">{title}</span>
+    <span className={`font-mono text-[11px] ${active ? 'opacity-70' : 'opacity-50'}`}>{sub}</span>
   </button>
 );
 

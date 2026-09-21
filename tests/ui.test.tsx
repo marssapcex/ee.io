@@ -210,7 +210,7 @@ describe('App shell', () => {
 
   it('marks simulated routes so they are never mistaken for live pricing', async () => {
     render(<App />);
-    expect(await screen.findByText('SIM', {}, { timeout: 3000 })).toBeDefined();
+    expect(await screen.findByText('Sim', {}, { timeout: 3000 })).toBeDefined();
   });
 
   it('renders the fee policy from /api/health rather than hard-coding it', async () => {
@@ -289,7 +289,7 @@ describe('route comparison', () => {
     render(<App />);
     await screen.findByText('Routes');
 
-    expect(screen.getByText('BEST')).toBeDefined();
+    expect(screen.getByText('Best')).toBeDefined();
   });
 
   it('lists only routable venues — an unusable venue is noise, not a row', async () => {
@@ -362,9 +362,10 @@ describe('asset selection', () => {
     render(<App />);
     await screen.findByLabelText('You send');
 
-    // The send-side asset button shows BTC.
-    const sendButtons = screen.getAllByText('BTC');
-    fireEvent.click(sendButtons[0].closest('button')!);
+    // Target the button by its accessible name rather than by its visible
+    // ticker — the header also renders a BTC price chip, so a bare text
+    // lookup is ambiguous.
+    fireEvent.click(screen.getByLabelText(/Change send asset/i));
 
     const dialog = await screen.findByText(/Select asset to send/i);
     expect(dialog).toBeDefined();

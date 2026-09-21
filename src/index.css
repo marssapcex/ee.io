@@ -18,13 +18,12 @@
   }
 
   body {
-    @apply bg-ink-950 text-white antialiased;
+    @apply bg-ink-900 text-white antialiased;
     font-feature-settings: 'cv11', 'ss01';
-    /* Two faint colour wells instead of a flat wash — keeps pure black in the
-       corners while stopping the page from looking like a dead rectangle. */
+    /* A single, very low-amplitude well. Polymarket's page reads as flat
+       near-black; anything stronger turns into a gradient poster. */
     background-image:
-      radial-gradient(900px 500px at 78% -8%, rgba(0, 229, 255, 0.07), transparent 65%),
-      radial-gradient(760px 420px at 12% 4%, rgba(255, 138, 52, 0.05), transparent 60%);
+      radial-gradient(1100px 620px at 50% -10%, rgba(47, 224, 192, 0.035), transparent 70%);
     background-attachment: fixed;
   }
 
@@ -39,12 +38,12 @@
   }
 
   ::selection {
-    @apply bg-brand-cyan/25 text-white;
+    @apply bg-brand-cyan/25 text-ink-950;
   }
 
   /* Keyboard focus stays visible; pointer focus does not draw a ring. */
   :focus-visible {
-    @apply outline-none ring-2 ring-brand-cyan/60 ring-offset-2 ring-offset-ink-950;
+    @apply outline-none ring-2 ring-brand-cyan/50 ring-offset-2 ring-offset-ink-900;
   }
 }
 
@@ -68,7 +67,7 @@
   }
 
   .text-gradient {
-    @apply bg-gradient-to-r from-brand-cyan via-brand-teal to-brand-green bg-clip-text text-transparent;
+    @apply bg-gradient-to-r from-brand-cyan to-brand-teal bg-clip-text text-transparent;
   }
 
   /* 1px gradient border via two stacked backgrounds — avoids the blurry edge
@@ -76,7 +75,7 @@
   .border-gradient {
     background:
       linear-gradient(theme('colors.ink.800'), theme('colors.ink.800')) padding-box,
-      linear-gradient(135deg, rgba(0, 229, 255, 0.5), rgba(169, 112, 255, 0.28), rgba(255, 138, 52, 0.4))
+      linear-gradient(135deg, rgba(47, 224, 192, 0.35), rgba(139, 127, 240, 0.2), rgba(232, 135, 58, 0.28))
         border-box;
     border: 1px solid transparent;
   }

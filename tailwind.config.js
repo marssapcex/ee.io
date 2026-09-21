@@ -4,37 +4,50 @@ export default {
   theme: {
     extend: {
       colors: {
-        // True black base. Each step is a real surface elevation, not a tint
-        // of navy — washed-out "dark" themes come from lifting the base too
-        // far off black.
+        /**
+         * Polymarket-style surface ramp: a near-black page with cards only a
+         * few points lighter. Separation comes from hairline borders and
+         * spacing, not from stacking progressively greyer boxes — that is what
+         * made the previous pass look like an arcade cabinet.
+         */
         ink: {
-          950: '#000000',
-          900: '#040405',
-          850: '#0a0a0c',
-          800: '#0f0f13',
-          750: '#131318',
-          700: '#18181e',
-          650: '#1d1d24',
-          600: '#23232b',
-          550: '#2a2a33',
-          500: '#33333e',
+          950: '#000000', // page
+          900: '#0a0a0a', // page, raised
+          850: '#121212', // card
+          800: '#161616', // well inside a card
+          750: '#1c1c1c',
+          700: '#212121',
+          650: '#272727',
+          600: '#2e2e2e',
+          550: '#383838',
+          500: '#454545',
         },
+        /** Hairlines are white at low alpha, so they read on any surface. */
         line: {
-          DEFAULT: '#1e1e26',
-          soft: '#141419',
-          strong: '#2f2f3a',
-          glow: '#454555',
+          DEFAULT: 'rgba(255,255,255,0.07)',
+          soft: 'rgba(255,255,255,0.045)',
+          strong: 'rgba(255,255,255,0.12)',
+          glow: 'rgba(255,255,255,0.22)',
         },
-        // Saturated, high-chroma accents that hold up against pure black.
         brand: {
-          cyan: '#00e5ff',
-          teal: '#00f0c0',
-          orange: '#ff8a34',
-          amber: '#ffc043',
-          violet: '#a970ff',
-          pink: '#ff4d8d',
-          green: '#00e58a',
-          red: '#ff4d6a',
+          // Primary accent — mint rather than electric cyan. Still crypto, no
+          // longer a highlighter pen.
+          cyan: '#2fe0c0',
+          teal: '#19c8a8',
+          // Market green / red, Polymarket weight: saturated enough to read
+          // instantly, dim enough to sit on black without vibrating.
+          // Button fill. White label on this is 4.89:1 — AA. The lighter
+          // #27ae60 is 2.87:1 with white and is reserved for text/borders on
+          // dark, where it reads 6.5:1.
+          green: '#12823f',
+          greenMid: '#27ae60',
+          greenBright: '#4ec97f',
+          red: '#eb5757',
+          redBright: '#f4756f',
+          orange: '#e8873a',
+          amber: '#d9a441',
+          violet: '#8b7ff0',
+          blue: '#2d9cdb',
         },
       },
       fontFamily: {
@@ -56,10 +69,12 @@ export default {
         ],
       },
       boxShadow: {
-        glow: '0 0 0 1px rgba(0,229,255,0.28), 0 0 32px -6px rgba(0,229,255,0.35)',
-        'glow-orange': '0 0 0 1px rgba(255,138,52,0.28), 0 0 32px -6px rgba(255,138,52,0.3)',
-        card: '0 1px 0 0 rgba(255,255,255,0.04) inset, 0 16px 48px -12px rgba(0,0,0,0.9)',
-        lift: '0 8px 32px -8px rgba(0,0,0,0.85)',
+        // Depth without a halo: a hairline top highlight plus a long soft drop.
+        card: '0 1px 0 0 rgba(255,255,255,0.05) inset, 0 12px 40px -16px rgba(0,0,0,0.9)',
+        lift: '0 16px 48px -20px rgba(0,0,0,0.95)',
+        'glow-mint': '0 0 0 1px rgba(47,224,192,0.22), 0 8px 32px -14px rgba(47,224,192,0.28)',
+        'glow-green': '0 0 0 1px rgba(39,174,96,0.28), 0 8px 28px -14px rgba(39,174,96,0.32)',
+        'glow-red': '0 0 0 1px rgba(235,87,87,0.28), 0 8px 28px -14px rgba(235,87,87,0.32)',
       },
       keyframes: {
         'fade-in': {
@@ -75,12 +90,38 @@ export default {
           '0%, 100%': { opacity: '1' },
           '50%': { opacity: '0.35' },
         },
+        /* --- to the moon --- */
+        launch: {
+          '0%': { transform: 'translate(0, 0) rotate(0deg)', opacity: '0' },
+          '6%': { opacity: '1' },
+          '88%': { opacity: '1' },
+          '100%': { transform: 'translate(46vw, -118vh) rotate(6deg)', opacity: '0' },
+        },
+        'moon-rise': {
+          '0%': { opacity: '0', transform: 'translateY(16px) scale(0.9)' },
+          '30%': { opacity: '1', transform: 'translateY(0) scale(1)' },
+          '80%': { opacity: '1', transform: 'translateY(0) scale(1)' },
+          '100%': { opacity: '0', transform: 'translateY(-6px) scale(1.04)' },
+        },
+        'star-streak': {
+          '0%': { transform: 'translateY(-10vh)', opacity: '0' },
+          '10%': { opacity: '1' },
+          '100%': { transform: 'translateY(115vh)', opacity: '0' },
+        },
+        'flame-flicker': {
+          '0%, 100%': { transform: 'scaleY(1) scaleX(1)', opacity: '0.95' },
+          '50%': { transform: 'scaleY(1.35) scaleX(0.82)', opacity: '0.7' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 160ms ease-out',
         'slide-up': 'slide-up 260ms cubic-bezier(0.22, 1, 0.36, 1)',
         shimmer: 'shimmer 1.8s infinite',
         breathe: 'breathe 2s ease-in-out infinite',
+        launch: 'launch 2.6s cubic-bezier(0.55, 0, 0.9, 0.35) forwards',
+        'moon-rise': 'moon-rise 2.8s ease-out forwards',
+        'star-streak': 'star-streak 1.1s linear infinite',
+        'flame-flicker': 'flame-flicker 90ms ease-in-out infinite',
       },
     },
   },
