@@ -370,13 +370,14 @@ const AmountBox: React.FC<{
     </div>
 
     <input
+      ref={inputRef}
       value={value}
       onChange={(e) => {
         const next = e.target.value.replace(/,/g, '.');
         if (next === '' || /^\d*\.?\d*$/.test(next)) onChange(next);
       }}
       inputMode="decimal"
-      placeholder="0"
+      placeholder="0.00"
       aria-label={label === 'You send' ? 'You send' : 'You receive'}
       className={`tabular w-full min-w-0 bg-transparent text-[34px] font-bold leading-none tracking-tighter outline-none placeholder:text-white/12 ${
         accent === 'mint' ? 'text-brand-cyan' : 'text-white'
