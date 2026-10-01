@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title DepositProxy — non-custodial per-order proxy for ee.io (v2 audited)
+ * @title DepositProxy — non-custodial per-order proxy for ee.io (v3 audited)
  * @notice Holds funds only until execute() — non-custodial, one-shot, destination-immutable.
  *         Counterfactual CREATE2 address is funded BEFORE deployment.
  *         Changes from v1 audit:
@@ -13,6 +13,15 @@ pragma solidity ^0.8.24;
  *           - Correct delta-based slippage check (outAfter - outBefore >= minOut)
  *           - Reentrancy guard via executed flag set BEFORE external calls
  *           - Explicit depositor tracking via funded event + factory callback
+ *         Changes in v3 audit:
+ *           - FAILED swap now actually refunds: v2 emitted a refund and then reverted,
+ *             which rolled the refund back — dead code, funds stranded in the proxy.
+ *           - Self-service refund(): if the router can never satisfy minOut, the
+ *             depositor/destination/relayer can unwind the proxy. v2 had NO exit path —
+ *             funds were locked forever once the quote went stale.
+ *           - Refunds always go to DESTINATION, never to `depositor`. v2 let any
+ *             griefer frontrun the first native funding tx with 1 wei to become
+ *             `depositor`, redirecting the refund of the FULL input to themselves.
  */
 interface IERC20 {
     function balanceOf(address) external view returns (uint256);
@@ -132,17 +141,18 @@ contract DepositProxy {
         }
 
         // --- call router ---
-        (bool ok, bytes memory ret) = router.call{value: fromToken == NATIVE_SENTINEL ? inBal : 0}(data);
+        (bool ok, ) = router.call{value: fromToken == NATIVE_SENTINEL ? inBal : 0}(data);
 
         if (!ok) {
-            // refund input
-            address refundTo = depositor != address(0) ? depositor : destination;
-            _refundInput(refundTo);
-            emit Refunded(refundTo, inBal, fromToken);
-            if (ret.length > 0) {
-                assembly { revert(add(ret,32), mload(ret)) }
-            }
-            revert("swap failed");
+            // Swap failed: unwind the deposit instead of bricking the proxy.
+            // v2 refunded here and then reverted — the revert rolled the refund
+            // (and the executed flag) back, so the "refund" was dead code and
+            // funds sat stranded. Refunds go to `destination`, not `depositor`:
+            // the depositor slot can be claimed by a griefer who frontruns the
+            // first native funding tx with 1 wei, so it must never custody funds.
+            _refundInput(destination);
+            emit Refunded(destination, inBal, fromToken);
+            return;
         }
 
         // --- verify slippage via delta ---
@@ -169,16 +179,42 @@ contract DepositProxy {
             uint256 bal = IERC20(toToken).balanceOf(address(this));
             require(bal >= minOut, "slippage bal");
             _safeTransfer(toToken, destination, bal);
-            // refund dust input if any (partial fill)
+            // refund dust input if any (partial fill) — to destination, never
+            // to the griefable depositor slot.
             if (fromToken != NATIVE_SENTINEL) {
                 uint256 dust = IERC20(fromToken).balanceOf(address(this));
                 if (dust > 0) {
-                    address refundTo = depositor != address(0) ? depositor : destination;
-                    _safeTransfer(fromToken, refundTo, dust);
+                    _safeTransfer(fromToken, destination, dust);
                 }
             }
             emit Executed(router, bal, destination, salt);
         }
+    }
+
+    /**
+     * @notice Self-rescue exit when the swap can never execute: expired quote,
+     *         aggregator outage, or minOut permanently unreachable. v2 had no
+     *         way out — a stuck order meant permanently locked funds.
+     * @dev    Sends the full input balance to the immutable `destination`.
+     *         Callable by the depositor, the destination itself, the factory or
+     *         a relayer; it can never send anywhere other than `destination`.
+     */
+    function refund() external onlyOnce {
+        require(initialized, "not initialized");
+        require(
+            msg.sender == factory ||
+            msg.sender == destination ||
+            (depositor != address(0) && msg.sender == depositor) ||
+            IFactory(factory).isRelayer(msg.sender),
+            "not allowed"
+        );
+
+        executed = true;
+        uint256 amount = fromToken == NATIVE_SENTINEL
+            ? address(this).balance
+            : IERC20(fromToken).balanceOf(address(this));
+        _refundInput(destination);
+        emit Refunded(destination, amount, fromToken);
     }
 
     function _refundInput(address to) internal {

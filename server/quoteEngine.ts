@@ -26,13 +26,16 @@ import { thorchainAdapter } from './aggregators/thorchain.js';
 import type { Adapter, AdapterContext } from './aggregators/types.js';
 import { zeroExAdapter } from './aggregators/zeroex.js';
 import {
+  FIXED_RATE_WINDOW_SECONDS,
   FLOAT_RATE_WINDOW_SECONDS,
   FORCE_SIMULATION,
   loadFeePolicy,
   QUOTE_DEADLINE_MS,
 } from './config.js';
+import { chainGasUsd, nativeUsdPriceForChain } from './gasOracle.js';
 import { getPrices, priceLookup } from './prices.js';
 import { simulateQuote } from './simulation.js';
+import { isCircuitOpen, reliabilityPct, venueHealthOf, recordVenueTrial } from './venueHealth.js';
 
 export const ADAPTERS: Adapter[] = [
   zeroExAdapter,
@@ -46,9 +49,14 @@ export const ADAPTERS: Adapter[] = [
 
 const ADAPTER_BY_ID = new Map(ADAPTERS.map((a) => [a.id, a]));
 
-export function feeBpsFor(_rateType: RateType): number {
+/**
+ * The fee depends on the rate contract being sold. Float passes the market
+ * through at execution time; fixed sells a guaranteed number for a window —
+ * the wider fee is the premium for that optionality (see config.ts).
+ */
+export function feeBpsFor(rateType: RateType): number {
   const policy = loadFeePolicy();
-  return policy.floatBps;
+  return rateType === 'fixed' ? policy.fixedBps : policy.floatBps;
 }
 
 /**
@@ -56,9 +64,15 @@ export function feeBpsFor(_rateType: RateType): number {
  * need a wider on-chain tolerance to still fill after the deposit window;
  * float orders can stay tight.
  */
-export function defaultSlippageBps(_rateType: RateType, from: Asset, to: Asset): number {
+export function defaultSlippageBps(rateType: RateType, from: Asset, to: Asset): number {
   const volatile = !from.stable || !to.stable;
+  if (rateType === 'fixed') return volatile ? 150 : 50;
   return volatile ? 75 : 20;
+}
+
+/** How long a quoted number is honoured for, per rate contract. */
+export function quoteWindowSeconds(rateType: RateType): number {
+  return rateType === 'fixed' ? FIXED_RATE_WINDOW_SECONDS : FLOAT_RATE_WINDOW_SECONDS;
 }
 
 export async function buildQuote(request: QuoteRequest): Promise<QuoteResponse> {
@@ -72,6 +86,9 @@ export async function buildQuote(request: QuoteRequest): Promise<QuoteResponse> 
   const priceEntry = await getPrices();
   const priceOf = priceLookup(priceEntry);
   const feePolicy = loadFeePolicy();
+  // Resolve gas cost for the destination chain alongside prices — one RPC
+  // round-trip (cached) keeps simulated numbers on the real network price.
+  const gasUsdOverride = await chainGasUsd(to.chain, nativeUsdPriceForChain(to.chain, priceOf));
   const feeBps = feeBpsFor(request.rateType);
   const slippageBps = request.slippageBps ?? defaultSlippageBps(request.rateType, from, to);
 
@@ -128,6 +145,7 @@ export async function buildQuote(request: QuoteRequest): Promise<QuoteResponse> 
     destinationAddress: request.destinationAddress,
     takerAddress: request.takerAddress,
     priceOf,
+    gasUsdOverride,
     signal: controller.signal,
   };
 
@@ -164,6 +182,13 @@ export async function buildQuote(request: QuoteRequest): Promise<QuoteResponse> 
   // Limits are checked against the converged amount, not the initial estimate.
   const sendUsd = checkLimits(sendAmount);
 
+  // Annotate every route with the venue's recent track record — the board
+  // uses it to flag flappy vendors even when their current quote looks fine.
+  for (const quote of quotes) {
+    quote.reliabilityPct = reliabilityPct(quote.aggregator);
+    quote.health = venueHealthOf(quote.aggregator);
+  }
+
   const available = quotes.filter((q) => !q.unavailableReason && BigInt(q.netOut) > 0n);
   rank(available, to, priceOf);
 
@@ -175,7 +200,7 @@ export async function buildQuote(request: QuoteRequest): Promise<QuoteResponse> 
   // quote is noise the user cannot act on mid-trade.
 
   const receiveAmount = best ? BigInt(best.netOut) : 0n;
-  const windowSeconds = FLOAT_RATE_WINDOW_SECONDS;
+  const windowSeconds = quoteWindowSeconds(request.rateType);
 
   return {
     requestId: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
@@ -206,9 +231,24 @@ async function quoteWithFallback(adapter: Adapter, ctx: AdapterContext): Promise
     return simulateQuote(ctx, adapter.id);
   }
 
+  // A venue with its circuit open would almost certainly fail and burn the
+  // full upstream timeout — skip straight to the labelled fallback instead.
+  if (isCircuitOpen(adapter.id)) {
+    const simulated = simulateQuote(ctx, adapter.id);
+    simulated.notes = [
+      ...(simulated.notes ?? []),
+      'Venue circuit open after recent failures — live quote skipped, simulated',
+    ];
+    return simulated;
+  }
+
+  const startedAt = performance.now();
   try {
-    return await adapter.quote(ctx);
+    const quote = await adapter.quote(ctx);
+    recordVenueTrial(adapter.id, true, performance.now() - startedAt);
+    return quote;
   } catch (error) {
+    recordVenueTrial(adapter.id, false, performance.now() - startedAt);
     const message = error instanceof Error ? error.message : String(error);
     const simulated = simulateQuote(ctx, adapter.id);
     simulated.notes = [
@@ -299,7 +339,7 @@ function emptyResponse(
     sendUsd: 0,
     receiveUsd: 0,
     quotes: [],
-    expiresAt: Date.now() + FLOAT_RATE_WINDOW_SECONDS * 1000,
+    expiresAt: Date.now() + quoteWindowSeconds(request.rateType) * 1000,
     warnings,
     anyLive: false,
     priceMode: priceLive ? 'live' : 'reference',

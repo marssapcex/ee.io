@@ -34,6 +34,16 @@ function factoryFor(chainId: number): string {
   return FAKE_FACTORY;
 }
 
+/**
+ * CRITICAL: with no factory configured, every deposit address is a CREATE2
+ * output of the non-existent FAKE_FACTORY — nothing can ever deploy the proxy,
+ * so funds sent to it are permanently unrecoverable. Deposits created in this
+ * state must be flagged `simulated` and bannered in the UI.
+ */
+export function factoryConfigured(chainId: number): boolean {
+  return factoryFor(chainId) !== FAKE_FACTORY;
+}
+
 function logicFor(chainId: number): string {
   const perChain = process.env[`EE_PROXY_LOGIC_${chainId}`];
   if (perChain && ethers.isAddress(perChain)) return ethers.getAddress(perChain);
@@ -47,10 +57,16 @@ function rpcFor(chainId: number): string | undefined {
 }
 
 const MINIMAL_PROXY_PREFIX = '0x3d602d80600a3d3981f3363d3d373d3d3d363d73';
+// NOTE: unlike the prefix, this constant already starts with the raw hex (no
+// 0x). The old code called .slice(2) on it "to strip 0x" — stripping the '5a'
+// opcode instead, so the off-chain init code hash never matched the on-chain
+// creation code. Every deposit address shown to users was an address the
+// factory could NEVER deploy: funds sent there were lost. Verified on-chain
+// via ganache (off-chain address ≠ factory.computeAddress before the fix).
 const MINIMAL_PROXY_SUFFIX = '5af43d82803e903d91602b57fd5bf3';
 
 function minimalProxyCreationCode(logic: string): string {
-  return MINIMAL_PROXY_PREFIX + logic.toLowerCase().slice(2) + MINIMAL_PROXY_SUFFIX.slice(2);
+  return MINIMAL_PROXY_PREFIX + logic.toLowerCase().slice(2) + MINIMAL_PROXY_SUFFIX;
 }
 
 /**
@@ -114,6 +130,54 @@ function saltForOrder(
 const deposits = new Map<string, DepositRecord>();
 const MAX_DEPOSITS = 500;
 const activeExecutions = new Set<string>(); // guard concurrent execute
+const lastAttempt = new Map<string, number>(); // throttle retries per deposit
+
+/** Topic0 of DepositProxy's Refunded(address,uint256,address) event (v3). */
+const REFUNDED_TOPIC = ethers.id('Refunded(address,uint256,address)');
+
+/**
+ * Status fabrication is only honest when there is NOTHING real on-chain: no
+ * RPC means no watcher and no real funding, so time-based progression is just
+ * UI theatre. The moment an RPC endpoint exists, a user's money can be real —
+ * even without a relayer key — and the status machine must never invent an
+ * execution that did not happen.
+ */
+function demoExecution(chainId: number): boolean {
+  return !rpcFor(chainId);
+}
+
+function pushWarningOnce(rec: DepositRecord, warning: string): void {
+  if (!rec.warnings.includes(warning)) rec.warnings.push(warning);
+}
+
+/**
+ * Lock gate (pure, unit-tested).
+ *
+ * Given the pinned floor (`lockedWei`) and the fresh route's netOut
+ * (`freshWei`):
+ *  - fresh < locked  → do NOT execute; funds stay put (lock-or-refund).
+ *  - fresh ≥ locked  → executable; express calldata slippage as the pin
+ *    between lock and fresh minus 5 bps of dust tolerance, floored at
+ *    15 bps, capped at the caller's default — all upside lands with the
+ *    user, the lock floor is enforced by the contract itself.
+ */
+export function lockGate(
+  lockedWei: bigint,
+  freshWei: bigint,
+  defaultSlippageBps: number,
+): { execute: boolean; slippageBps: number } {
+  if (lockedWei <= 0n) return { execute: true, slippageBps: defaultSlippageBps };
+  if (freshWei < lockedWei) return { execute: false, slippageBps: defaultSlippageBps };
+  const pin = Number(((freshWei - lockedWei) * 10_000n) / freshWei);
+  return { execute: true, slippageBps: Math.min(Math.max(pin - 5, 15), defaultSlippageBps) };
+}
+
+/** Target locks may sit up to 72h watching the market; rate locks stay 30 min. */
+const TARGET_MAX_MINUTES = 4_320;
+const TARGET_DEFAULT_MINUTES = 1_440;
+/** A target more than +50% above the current route is noise, not intent. */
+const TARGET_CAP_NUM = 150n;
+const TARGET_CAP_DEN = 100n;
 
 export function listDeposits(): DepositRecord[] {
   return [...deposits.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 100);
@@ -131,6 +195,11 @@ function advanceDeposit(rec: DepositRecord): DepositRecord {
     rec.status = 'expired';
     return rec;
   }
+  // Only fabricate progress in pure demo mode. With an RPC configured this
+  // advancement RACES the real watcher: it marked partial funding 'funded'
+  // after 2s and 'executed' (with made-up tx hashes) after 12s even while the
+  // relayer was still working — or while the deposit was still partial.
+  if (!demoExecution(rec.chainId)) return rec;
   if (rec.status === 'funding' || rec.status === 'funded') {
     const elapsed = (Date.now() - (rec.fundedAt ?? rec.createdAt)) / 1000;
     if (elapsed > 2 && rec.status === 'funding') rec.status = 'funded';
@@ -155,6 +224,19 @@ export interface CreateDepositParams {
   destinationAddress: string;
   aggregator?: string;
   slippageBps?: number;
+  /** Fixed = locked rate until deposit expiry (wider fee, per fee policy). */
+  rateType?: 'float' | 'fixed';
+  /**
+   * Target lock: pin an execution condition STRICTLY above the current
+   * quote floor. Requires rateType='fixed'. Base units of toAsset.
+   */
+  targetMinReceive?: string;
+  /** Watching window, minutes (target locks only, 15–4320). */
+  expiresInMinutes?: number;
+  /** Status-transition webhook — validated before it ever reaches this store. */
+  webhookUrl?: string;
+  /** Integration partner that created this deposit (partner API). */
+  partnerId?: string;
 }
 
 export async function createDeposit(params: CreateDepositParams): Promise<DepositRecord> {
@@ -171,14 +253,16 @@ export async function createDeposit(params: CreateDepositParams): Promise<Deposi
   // Amount sanity: must be >0 and within asset limits (USD)
   const amountBi = BigInt(params.amount);
   if (amountBi <= 0n) throw new Error('Amount must be > 0');
-  // BUILD quote
-  const slippageBps = params.slippageBps ?? defaultSlippageBps('float' as any, from, to);
+  // BUILD quote — the caller's rate contract drives fee size, slippage floor
+  // and the quote's honesty about how long its number holds.
+  const rateType = params.rateType ?? 'float';
+  const slippageBps = params.slippageBps ?? defaultSlippageBps(rateType, from, to);
   const quoteRes = await buildQuote({
     fromAssetId: from.id,
     toAssetId: to.id,
     amount: params.amount,
     side: 'send',
-    rateType: 'float',
+    rateType,
     destinationAddress: destination,
     slippageBps,
   });
@@ -193,7 +277,53 @@ export async function createDeposit(params: CreateDepositParams): Promise<Deposi
 
   if (!chosen) throw new Error('No executable route for deposit proxy');
 
+  /* -------------------------------------------------- target lock (v0.4)
+   *
+   * A limit order that cannot be gamed by an orderbook because there IS no
+   * orderbook. The user pins a target output strictly above the current
+   * guaranteed floor; the escrow holds the input and the relayer only fires
+   * when a fresh aggregated route can pay the target — else the clock runs
+   * out and the proxy refunds. The target becomes part of the receipt's
+   * evidence hash, i.e. the execution CONDITION is provable, not just the
+   * outcome. */
+  let lockKind: 'rate' | 'target' = 'rate';
+  let targetMinReceive: string | undefined;
+  if (params.targetMinReceive !== undefined) {
+    if (rateType !== 'fixed') {
+      throw new Error('Target lock requires rateType "fixed" (the lock-or-refund vault does the waiting)');
+    }
+    const target = BigInt(params.targetMinReceive);
+    const floorNow = BigInt(chosen.minOut);
+    if (target <= 0n) throw new Error('Target must be > 0');
+    if (target <= floorNow) {
+      throw new Error(
+        'Target is already reachable now — post a normal fixed lock ' +
+          `(floor ${floorNow}) and it executes immediately`,
+      );
+    }
+    const cap = (BigInt(chosen.netOut) * TARGET_CAP_NUM) / TARGET_CAP_DEN;
+    if (target > cap) {
+      throw new Error(
+        `Target unreachably high (>+50% of the current route netOut). Cap ${cap} — split the order or lower the ask.`,
+      );
+    }
+    lockKind = 'target';
+    targetMinReceive = target.toString();
+  }
+
   const warnings: string[] = [...quoteRes.warnings];
+  // Funds sent to a CREATE2 address of the PLACEHOLDER factory can never be
+  // recovered — the contract does not exist. Flag loudly rather than handing
+  // the user what looks like a real deposit address (this silently burned
+  // money before).
+  const simulated = !factoryConfigured(chain.chainId!);
+  if (simulated) {
+    warnings.push(
+      'DEMO MODE: no proxy factory is configured for this chain (EE_PROXY_FACTORY_*), so this ' +
+        'deposit address is derived from a placeholder contract that does not exist. ' +
+        'Do NOT send real funds to it.',
+    );
+  }
   const gasUsd = chosen.gasUsd;
   const feeUsd = chosen.fee.amountUsd ?? chosen.fee.netToOperatorUsd ?? 0;
   if (feeUsd < gasUsd * 1.5) {
@@ -210,7 +340,12 @@ export async function createDeposit(params: CreateDepositParams): Promise<Deposi
     if (oldest) deposits.delete(oldest.depositId);
   }
 
-  const depositId = `DP-${randomDigits(6)}`;
+  // 6 random digits collided regularly at ≥1k deposits (birthday bound), and
+  // a collision silently OVERWROTE someone else's in-flight deposit record.
+  let depositId = '';
+  do {
+    depositId = `DP-${randomDigits(6)}`;
+  } while (deposits.has(depositId));
   const chainId = chain.chainId!;
   const fromTokenAddr = isNativeEvm(from) ? NATIVE_SENTINEL : ethers.getAddress(from.address!);
   const toTokenAddr = isNativeEvm(to) ? NATIVE_SENTINEL : ethers.getAddress(to.address!);
@@ -219,7 +354,19 @@ export async function createDeposit(params: CreateDepositParams): Promise<Deposi
   const factory = factoryFor(chainId);
   const logic = logicFor(chainId);
   const now = Date.now();
-  const expiresAt = now + 30 * 60 * 1000;
+  const lockMinutes =
+    lockKind === 'target'
+      ? Math.min(Math.max(params.expiresInMinutes ?? TARGET_DEFAULT_MINUTES, 15), TARGET_MAX_MINUTES)
+      : 30;
+  const expiresAt = now + lockMinutes * 60 * 1000;
+
+  if (lockKind === 'target' && targetMinReceive) {
+    warnings.push(
+      `TARGET LOCK: executes ONLY if a route pays ≥ ${targetMinReceive} (floor now ${chosen.minOut}). ` +
+        `Watching for ${lockMinutes} min — if the target never lands, the proxy auto-refunds the full input. ` +
+        'The target is pinned in your receipt; nothing else can happen to the funds in between.',
+    );
+  }
 
   const rec: DepositRecord = {
     depositId,
@@ -242,12 +389,21 @@ export async function createDeposit(params: CreateDepositParams): Promise<Deposi
     aggregator: chosen.aggregator,
     quote: chosen,
     fee: chosen.fee,
+    rateType,
+    webhookUrl: params.webhookUrl,
+    partnerId: params.partnerId,
     warnings,
     fundedAt: undefined,
     txHash: undefined,
     outTxHash: undefined,
-    // store salt for audit trail (not in type, but add via any)
+    lockKind,
+    targetMinReceive,
+    /// store salt for audit trail (not in type, but add via any)
     salt,
+    simulated,
+    // The deposit proxy's guarantee: contract refunds the whole input if the
+    // route / lock cannot be honoured. Compare routes by this, not rate alone.
+    failureMode: 'atomic-refund',
   } as DepositRecord & { salt: string };
 
   deposits.set(depositId, rec);
@@ -276,12 +432,15 @@ async function watchDeposit(rec: DepositRecord): Promise<void> {
       }
       if (bal >= expected && bal > 0n) {
         rec.status = 'funded';
-        rec.fundedAt = Date.now();
+        rec.fundedAt ??= Date.now();
         await executeDeposit(rec);
-        return;
+        // Only exit once a terminal state is reached; a failed execution is
+        // rolled back to 'funded' and retried on the next poll (throttled).
+        const statusAfter = rec.status as DepositRecord['status'];
+        if (statusAfter === 'executed' || statusAfter === 'refunded') return;
       } else if (bal > 0n && bal < expected) {
         rec.status = 'funding';
-        rec.fundedAt = Date.now();
+        rec.fundedAt ??= Date.now();
       }
       if (rec.status === 'executed' || rec.status === 'expired' || rec.status === 'refunded') return;
     } catch (e) {
@@ -332,6 +491,12 @@ export async function markDepositFunded(depositId: string, txHash?: string): Pro
 async function executeDeposit(rec: DepositRecord): Promise<void> {
   if (rec.status !== 'funded' && rec.status !== 'funding') return;
   if (activeExecutions.has(rec.depositId)) return;
+  // Throttle retries: a permanent failure (e.g. minOut unreachable after a
+  // price move) must not re-quote every watcher poll.
+  const last = lastAttempt.get(rec.depositId) ?? 0;
+  if (Date.now() - last < 30_000) return;
+  lastAttempt.set(rec.depositId, Date.now());
+
   activeExecutions.add(rec.depositId);
   rec.status = 'executing';
   try {
@@ -340,25 +505,97 @@ async function executeDeposit(rec: DepositRecord): Promise<void> {
     const relayerPk = process.env.EE_RELAYER_PK;
     const rpc = rpcFor(rec.chainId);
 
-    const slippageBps = defaultSlippageBps('float' as any, from, to);
+    const rateType = rec.rateType ?? 'float';
+    const slippageBps = defaultSlippageBps(rateType, from, to);
+    // Floored to the lock pin for fixed orders during execution — see the
+    // LOCK-OR-REFUND note below.
+    let slippageBpsExec = slippageBps;
     const quoteRes = await buildQuote({
       fromAssetId: from.id,
       toAssetId: to.id,
       amount: rec.sendAmount,
       side: 'send',
-      rateType: 'float',
+      rateType,
       destinationAddress: rec.destinationAddress,
       takerAddress: rec.depositAddress,
       slippageBps,
     });
     const chosen = quoteRes.quotes.find((q) => q.aggregator === rec.aggregator && !q.unavailableReason) ?? quoteRes.best;
     if (!chosen) {
-      rec.status = 'refunded';
+      // No route right now: the v2 code marked this 'refunded' although no
+      // refund ever happened — the funds sat in the proxy while the UI told
+      // the user they were back. Back to 'funded' so the watcher retries,
+      // with an honest warning.
+      if (!rpc) {
+        rec.status = 'refunded'; // demo mode: nothing real to unwind
+      } else {
+        rec.status = 'funded';
+        pushWarningOnce(
+          rec,
+          'No executable route at the moment — funds remain in the proxy and execution will be retried.',
+        );
+      }
       return;
     }
-    // Update rec with fresh quote (slippage may have moved)
-    rec.receiveAmount = chosen.netOut;
-    rec.minReceiveAmount = chosen.minOut;
+
+    /*
+     * LOCK-OR-REFUND (the honest non-custodial version of "fixed rate").
+     *
+     * A custodial instant exchange honours a locked rate by eating market
+     * risk from its hot-wallet float — and pockets the difference when the
+     * market moves against the user. ee.io holds no inventory; what it can
+     * guarantee instead is structural: the user's minOut was pinned into the
+     * deposit record at creation, and the relayer MUST NOT settle below it.
+     *
+     * If the fresh route undercuts the lock, nothing is signed; the deposit
+     * stays put with all upside intact until the market recovers or the
+     * deadline passes. If it beats the lock, the calldata's minReturn is
+     * expressed as slippage OFF the fresh number exactly at the lock floor —
+     * all upside goes to the user, the downside is hard-capped by the
+     * contract's own minOut check (whose failure path refunds the input
+     * atomically — a guarantee no hot-wallet operator can make).
+     */
+    if (rateType === 'fixed' && BigInt(rec.minReceiveAmount || '0') > 0n) {
+      // A target lock is gated by the user's PINNED TARGET, not the creation
+      // floor — execution only happens when the route can actually pay it.
+      const isTarget = rec.lockKind === 'target' && Boolean(rec.targetMinReceive);
+      const locked = BigInt(isTarget ? rec.targetMinReceive! : rec.minReceiveAmount);
+      const fresh = BigInt(chosen.netOut);
+      const gate = lockGate(locked, fresh, slippageBps);
+      if (!gate.execute) {
+        if (isTarget) {
+          // Watching is the EXPECTED state here, not a failure — publish the
+          // observation instead of writing one warning per market tick. The
+          // UI renders lastObservedOut vs targetMinReceive as a progress bar.
+          rec.status = 'funded';
+          rec.lastObservedOut = fresh.toString();
+          rec.observedAt = Date.now();
+          pushWarningOnce(
+            rec,
+            'Target lock: watching the market. Nothing executes below your pinned target; expiry auto-refunds.',
+          );
+        } else {
+          rec.status = rpc ? 'funded' : rec.status;
+          pushWarningOnce(
+            rec,
+            `Market moved below your locked rate (lock ${locked}, fresh route ${fresh}). ` +
+              'Funds are untouched in the proxy — execution resumes the moment a route honours the lock.',
+          );
+        }
+        return;
+      }
+      if (isTarget) {
+        rec.lastObservedOut = fresh.toString();
+        rec.observedAt = Date.now();
+      }
+      // 15 bps of engineering tolerance against dust-level boundary reverts;
+      // the lock floor itself is enforced by the contract, not by rounding.
+      slippageBpsExec = gate.slippageBps;
+    } else {
+      // Float: the fresh minOut IS the settlement promise; overwrite as before.
+      rec.receiveAmount = chosen.netOut;
+      rec.minReceiveAmount = chosen.minOut;
+    }
     rec.quote = chosen;
     rec.fee = chosen.fee;
 
@@ -369,15 +606,43 @@ async function executeDeposit(rec: DepositRecord): Promise<void> {
       sendAmount: rec.sendAmount,
       destinationAddress: rec.destinationAddress,
       takerAddress: rec.depositAddress,
-      slippageBps,
+      slippageBps: slippageBpsExec,
       expiresAt: rec.expiresAt,
+      rateType: rec.rateType ?? 'float',
     });
 
     if (!relayerPk || !rpc) {
+      if (rpc) {
+        // REAL funds are sitting at the proxy but no relayer key exists to
+        // move them. Claiming 'executed' with a made-up hash here (the old
+        // behaviour) is the worst kind of bug: a success message on top of
+        // untouched user money.
+        rec.status = 'funded';
+        pushWarningOnce(
+          rec,
+          'Funds received on-chain, but EE_RELAYER_PK is not configured — the swap cannot run. ' +
+            'Configure the relayer or call refund() on the proxy.',
+        );
+        return;
+      }
+      // Pure demo: nothing real ever moved, so theatre is safe.
       await sleep(2500);
       rec.status = 'executed';
       rec.outTxHash = `0x${randomHex(64)}`;
       console.log(`[deposit] simulated execute ${rec.depositId} -> ${rec.destinationAddress} via ${chosen.aggregator}`);
+      return;
+    }
+
+    if (plan.transaction.kind !== 'evm' || plan.transaction.executable !== true) {
+      // Never broadcast server-FABRICATED preview calldata (the old code sent
+      // it verbatim — an ABI shape the router does not implement, guaranteed
+      // to revert on-chain at best). Only calldata built by the aggregator
+      // API itself is executed.
+      rec.status = 'funded';
+      pushWarningOnce(
+        rec,
+        `Route via ${chosen.aggregator} did not return executable calldata — funds remain in the proxy (refundable).`,
+      );
       return;
     }
 
@@ -398,30 +663,35 @@ async function executeDeposit(rec: DepositRecord): Promise<void> {
     const factory = new ethers.Contract(factoryAddr, factoryAbi, wallet);
     const existing: string = await factory.proxyOf(salt).catch(() => ethers.ZeroAddress);
     let proxyAddr = existing;
-    if (!proxyAddr || proxyAddr === ethers.ZeroAddress || proxyAddr.toLowerCase() === ethers.ZeroAddress) {
+    if (!proxyAddr || proxyAddr === ethers.ZeroAddress) {
       const minOut = BigInt(chosen.minOut);
       const tx = await factory.createProxy(salt, fromTokenAddr, toTokenAddr, rec.destinationAddress, minOut);
       await tx.wait();
       proxyAddr = await factory.computeAddress(salt);
-    } else {
-      // Verify existing proxy matches expected destination (defense against prior frontrun with old factory)
-      // If mismatch, we would have different salt, so shouldn't happen
     }
 
-    if (plan.transaction.kind === 'evm') {
-      const proxyAbi = ['function execute(address,bytes,bytes32)'];
-      const proxy = new ethers.Contract(proxyAddr, proxyAbi, wallet);
-      const tx = await proxy.execute(plan.transaction.to, plan.transaction.data, salt, { gasLimit: 650000 });
-      const receipt = await tx.wait();
-      rec.outTxHash = receipt.hash;
-      rec.status = 'executed';
-      rec.txHash = tx.hash;
-    } else {
-      rec.status = 'executed';
-    }
+    const proxyAbi = ['function execute(address,bytes,bytes32)'];
+    const proxy = new ethers.Contract(proxyAddr, proxyAbi, wallet);
+    const tx = await proxy.execute(plan.transaction.to, plan.transaction.data, salt, { gasLimit: 650000 });
+    const receipt = await tx.wait();
+    if (!receipt) throw new Error('Transaction dropped from mempool');
+
+    // v3 contract refunds atomically on router failure — a SUCCEEDED tx can
+    // still be a refund. Detect it instead of celebrating a refund as a fill.
+    rec.txHash = tx.hash;
+    rec.outTxHash = receipt.hash;
+    const refunded = receipt.logs.some((log: { topics: readonly string[] }) => log.topics[0] === REFUNDED_TOPIC);
+    rec.status = refunded ? 'refunded' : 'executed';
   } catch (e) {
+    // UNKNOWN on-chain state here. The old code wrote 'refunded' — a claim no
+    // one had earned. Back to 'funded' so the watcher retries; the proxy's
+    // refund() path keeps an exit open if the failure is permanent.
     console.error('[deposit] live execute failed', e);
-    rec.status = 'refunded';
+    rec.status = 'funded';
+    pushWarningOnce(
+      rec,
+      `Execution failed (${e instanceof Error ? e.message.slice(0, 120) : 'unknown error'}) — will retry; funds remain in the proxy.`,
+    );
   } finally {
     activeExecutions.delete(rec.depositId);
   }
@@ -430,6 +700,11 @@ async function executeDeposit(rec: DepositRecord): Promise<void> {
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
+/** Test hook: wipe the store between cases. Production code must not call. */
+export function __resetDeposits(): void {
+  deposits.clear();
+}
+
 function randomDigits(count: number): string {
   let out = '';
   for (let i = 0; i < count; i++) out += Math.floor(Math.random() * 10);

@@ -8,7 +8,7 @@
 
 import { ASSETS, type Asset } from '../shared/assets.js';
 
-const COINGECKO_IDS: Record<string, string> = {
+export const COINGECKO_IDS: Record<string, string> = {
   BTC: 'bitcoin',
   ETH: 'ethereum',
   WETH: 'weth',
@@ -35,7 +35,29 @@ const COINGECKO_IDS: Record<string, string> = {
   AAVE: 'aave',
   PEPE: 'pepe',
   SHIB: 'shiba-inu',
+  MKR: 'maker',
+  LDO: 'lido-dao',
+  STETH: 'staked-ether',
+  CRV: 'curve-dao-token',
+  ENS: 'ethereum-name-service',
+  APE: 'apecoin',
+  FET: 'fetch-ai',
+  RNDR: 'render-token',
+  MANA: 'decentraland',
+  SAND: 'the-sandbox',
   CAKE: 'pancakeswap-token',
+  XVS: 'venus',
+  GMX: 'gmx',
+  PENDLE: 'pendle',
+  JOE: 'joe',
+  CBBTC: 'coinbase-wrapped-btc',
+  AERO: 'aerodrome-finance',
+  DEGEN: 'degen-base',
+  BONK: 'bonk',
+  WIF: 'dogwifcoin',
+  RAY: 'raydium',
+  PYTH: 'pyth-network',
+  JTO: 'jito-governance-token',
   JUP: 'jupiter-exchange-solana',
 };
 
@@ -99,11 +121,16 @@ export async function getPrices(): Promise<CacheEntry> {
 
   inFlight = fetchLivePrices()
     .catch((error) => {
-      // Offline or rate-limited: fall back to reference prices. The response
-      // reports priceMode:'reference' so the UI can say so.
-      if (!cache) {
-        console.warn(`[prices] falling back to reference prices: ${(error as Error).message}`);
+      // A failed REFRESH must not discard a previously good live snapshot:
+      // overwriting real prices with the static reference table (which may be
+      // months stale) would silently break limits, USD displays and simulator
+      // quotes. Keep the expired-but-live data; only the very first boot with
+      // no cache at all falls back to the reference table.
+      if (cache) {
+        console.warn(`[prices] refresh failed, keeping stale live prices: ${(error as Error).message}`);
+        return { prices: cache.prices, fetchedAt: Date.now(), live: true };
       }
+      console.warn(`[prices] falling back to reference prices: ${(error as Error).message}`);
       return { prices: referencePrices(), fetchedAt: Date.now(), live: false };
     })
     .then((entry) => {

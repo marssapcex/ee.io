@@ -17,7 +17,7 @@ import { isEvmAsset, type Asset } from '../../shared/assets.js';
 import { CHAINS } from '../../shared/chains.js';
 import { formatUnits, toNumber } from '../../shared/money.js';
 import type { AggregatorQuote, RouteHop } from '../../shared/types.js';
-import { AdapterError, fetchJson, type Adapter, type AdapterContext } from './types.js';
+import { AdapterError, fetchJson, nativeUsdPrice, type Adapter, type AdapterContext } from './types.js';
 
 const BASE_URL = 'https://open-api.openocean.finance/v4';
 
@@ -176,5 +176,8 @@ function estimateGasUsd(data: NonNullable<OpenOceanQuoteResponse['data']>, ctx: 
   if (gas === 0n) return 0;
   const chain = CHAINS[ctx.from.chain];
   if (chain.kind === 'solana') return 0.002;
-  return toNumber(gas * gasPrice, 18) * 3420;
+  // Native-token gas priced in the CHAIN's gas token, not at a hard-coded ETH
+  // price (the pre-fix code made BNB gas look 5x too expensive and every
+  // alt-EVM ranking wrong).
+  return toNumber(gas * gasPrice, 18) * nativeUsdPrice(ctx);
 }

@@ -33,6 +33,12 @@ export default function App() {
   const [order, setOrder] = useState<OrderRecord | null>(null);
   const [deposit, setDeposit] = useState<DepositRecord | null>(null);
   const [mode, setMode] = useState<'connect' | 'deposit'>('deposit');
+  const [rateType, setRateType] = useState<'float' | 'fixed'>('float');
+  // Target lock (v0.4): 'target' rides the fixed quote lane but pins a
+  // user-set execution condition into the deposit vault instead.
+  const [lockMode, setLockMode] = useState<'float' | 'fixed' | 'target'>('float');
+  const [targetReceive, setTargetReceive] = useState('');
+  const [lockWindowMin, setLockWindowMin] = useState(1440);
   const [submitting, setSubmitting] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [launch, setLaunch] = useState(0);
@@ -52,10 +58,33 @@ export default function App() {
       );
   }, []);
 
+  // Deep links — the widget and shared order links prefill the box:
+  // ?from=BTC.BITCOIN&to=USDT.ETHEREUM&amount=0.05&mode=deposit&deposit=DP-…
+  useEffect(() => {
+    if (assets.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const from = params.get('from');
+    const to = params.get('to');
+    const amount = params.get('amount');
+    const requestedMode = params.get('mode');
+    if (from && assets.some((a) => a.id === from)) setFromId(from);
+    if (to && assets.some((a) => a.id === to)) setToId(to);
+    if (amount && Number.isFinite(parseFloat(amount)) && parseFloat(amount) > 0) {
+      setSide('send');
+      setSendInput(amount);
+    }
+    if (requestedMode === 'connect' || requestedMode === 'deposit') setMode(requestedMode);
+    const depositId = params.get('deposit');
+    if (depositId) {
+      api
+        .depositStatus(depositId)
+        .then((res) => setDeposit(res.deposit))
+        .catch(() => undefined);
+    }
+  }, [assets]);
+
   const fromAsset = useMemo(() => assets.find((a) => a.id === fromId), [assets, fromId]);
   const toAsset = useMemo(() => assets.find((a) => a.id === toId), [assets, toId]);
-
-  const feeBps = health?.fee.floatBps ?? 50;
 
   const quoteRequest: QuoteRequest | null = useMemo(() => {
     if (!fromAsset || !toAsset) return null;
@@ -78,11 +107,11 @@ export default function App() {
       toAssetId: toId,
       amount,
       side,
-      rateType: 'float' as const,
+      rateType,
       destinationAddress: destination.trim() || undefined,
       takerAddress: account ?? undefined,
     };
-  }, [fromAsset, toAsset, side, sendInput, receiveInput, fromId, toId, destination, account]);
+  }, [fromAsset, toAsset, side, sendInput, receiveInput, fromId, toId, destination, account, rateType]);
 
   const { quote, loading, refreshing, error, refresh } = useQuote(quoteRequest);
 
@@ -128,6 +157,29 @@ export default function App() {
     setReceiveInput(value);
   }, []);
 
+  /** Resume a tracker from the Recent menu (local history, no accounts). */
+  const resumeOrder = useCallback((id: string, kind: 'order' | 'deposit') => {
+    if (kind === 'deposit') {
+      api
+        .depositStatus(id)
+        .then((res) => {
+          setFromId(res.deposit.fromAssetId);
+          setToId(res.deposit.toAssetId);
+          setDeposit(res.deposit);
+        })
+        .catch(() => setPlanError('That order is no longer on this server (in-memory store reset).'));
+    } else {
+      api
+        .order(id)
+        .then((res) => {
+          setFromId(res.order.plan.fromAssetId);
+          setToId(res.order.plan.toAssetId);
+          setOrder(res.order);
+        })
+        .catch(() => setPlanError('That order is no longer on this server (in-memory store reset).'));
+    }
+  }, []);
+
   const flip = useCallback(() => {
     setFromId(toId);
     setToId(fromId);
@@ -157,14 +209,27 @@ export default function App() {
     try {
       const isEvmSameChain = fromAsset.chainKind === 'evm' && toAsset.chainKind === 'evm' && fromAsset.chain === toAsset.chain;
       if (mode === 'deposit' && isEvmSameChain) {
+        const targetBase =
+          lockMode === 'target' && targetReceive.trim()
+            ? (() => {
+                try {
+                  return parseUnits(targetReceive.trim(), toAsset.decimals).toString();
+                } catch {
+                  return undefined;
+                }
+              })()
+            : undefined;
         const res = await api.deposit({
           fromAssetId: fromId,
           toAssetId: toId,
           amount: quote.sendAmount,
           destinationAddress: destination.trim(),
           aggregator: activeQuote.aggregator,
+          rateType,
+          ...(targetBase ? { targetMinReceive: targetBase, expiresInMinutes: lockWindowMin } : {}),
         });
         setDeposit(res.deposit);
+        rememberOrder(res.deposit.depositId, 'deposit', `${fromAsset.symbol}→${toAsset.symbol}`);
         setLaunch((n) => n + 1);
       } else {
         const res = await api.plan({
@@ -173,10 +238,11 @@ export default function App() {
           sendAmount: quote.sendAmount,
           destinationAddress: destination.trim(),
           takerAddress: account ?? undefined,
-          rateType: 'float' as const,
+          rateType,
           aggregator: activeQuote.aggregator,
         });
         setOrder(res.order);
+        rememberOrder(res.order.orderId, 'order', `${fromAsset.symbol}→${toAsset.symbol}`);
         setLaunch((n) => n + 1);
       }
     } catch (err) {
@@ -184,7 +250,7 @@ export default function App() {
     } finally {
       setSubmitting(false);
     }
-  }, [quote, activeQuote, fromAsset, toAsset, fromId, toId, destination, account, mode]);
+  }, [quote, activeQuote, fromAsset, toAsset, fromId, toId, destination, account, mode, rateType]);
 
   if (bootError) {
     return (
@@ -209,7 +275,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <Navbar assets={assets} />
+      <Navbar assets={assets} onResume={resumeOrder} />
 
       <main className="mx-auto w-full max-w-[1120px] flex-1 px-4 pb-16 pt-6 sm:px-6 sm:pt-8">
         {/* Mode toggle — connect vs deposit (ff.io-style) */}
@@ -228,7 +294,7 @@ export default function App() {
           </button>
         </div>
         <div className="mb-2 px-1 text-center font-mono text-[10px] leading-relaxed text-white/30">
-          {mode==='deposit' ? 'Deposit proxy (CREATE2) — non-custodial, fee 0.5% in calldata, gas from fee. No private key custody.' : 'Atomic swap via your wallet — fee 0.5% in one transaction, reverts if anything fails.'}
+          {mode==='deposit' ? `Deposit proxy (CREATE2) — non-custodial, ${(rateType==='fixed' ? health?.fee.fixedBps : health?.fee.floatBps) ?? 50}bps fee in calldata ${rateType==='fixed' ? '· rate locked 10 min' : ''}, gas from fee. No private key custody.` : 'Atomic swap via your wallet — fee in one transaction, reverts if anything fails.'}
         </div>
         <SwapCard
           fromAsset={fromAsset}
@@ -241,7 +307,30 @@ export default function App() {
           receiveInput={receiveInput}
           side={side}
           destination={destination}
-          feeBps={feeBps}
+          feeBpsFloat={health?.fee.floatBps ?? 50}
+          feeBpsFixed={health?.fee.fixedBps ?? 100}
+          rateType={rateType}
+          onRateType={setRateType}
+          lockMode={lockMode}
+          onLockMode={(m) => {
+            setLockMode(m);
+            if (m === 'target') {
+              setRateType('fixed');
+              // Prefill +3% above the current quote — reachable, not a dream.
+              if (!targetReceive.trim() && receiveInput.trim()) {
+                const n = Number(receiveInput);
+                if (Number.isFinite(n) && n > 0) {
+                  setTargetReceive((n * 1.03).toPrecision(6));
+                }
+              }
+            } else {
+              setRateType(m);
+            }
+          }}
+          targetReceive={targetReceive}
+          onTargetReceive={setTargetReceive}
+          lockWindowMin={lockWindowMin}
+          onLockWindowMin={setLockWindowMin}
           onSendInput={handleSendInput}
           onReceiveInput={handleReceiveInput}
           onDestination={setDestination}
@@ -306,4 +395,26 @@ export default function App() {
 function trimZeros(value: string): string {
   if (!value.includes('.')) return value;
   return value.replace(/0+$/, '').replace(/\.$/, '');
+}
+
+/**
+ * Recent orders are remembered locally (no accounts — the browser IS the
+ * account) so the Navbar can resume a tracker after an accidental close and
+ * the home screen can hint at recent activity.
+ */
+export function rememberOrder(id: string, kind: 'order' | 'deposit', pair: string): void {
+  try {
+    const key = 'ee:recent';
+    const existing = JSON.parse(localStorage.getItem(key) ?? '[]') as {
+      id: string;
+      kind: 'order' | 'deposit';
+      pair: string;
+      at: number;
+    }[];
+    const next = [{ id, kind, pair, at: Date.now() }, ...existing.filter((e) => e.id !== id)].slice(0, 8);
+    localStorage.setItem(key, JSON.stringify(next));
+    window.dispatchEvent(new CustomEvent('ee:recent-updated'));
+  } catch {
+    /* storage full/blocked — non-fatal */
+  }
 }

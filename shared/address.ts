@@ -272,15 +272,92 @@ export function validateDogecoinAddress(value: string): AddressValidation {
   return ok(address);
 }
 
+/* ----------------------------------------------------------- CashAddr */
+
+/**
+ * CashAddr (BCH) checksum validation. The pre-fix version accepted any
+ * `/^[qp][0-9a-z]{40,}$/` string — a single-character typo still passed
+ * "isValid" and the app would happily build an order that burns funds.
+ * CashAddr reuses the bech32 charset but a different 40-bit polymod and a
+ * different hrp expansion, so it needs its own decoder.
+ * Spec: https://reference.cash/protocol/blockchain/encoding/cashaddr
+ */
+const CASHADDR_GENERATORS = [
+  0x98f2bc8e61n,
+  0x79b76d99e2n,
+  0xf33e5fb3c4n,
+  0xae2eabe2a8n,
+  0x1e4f43e470n,
+];
+
+function cashAddrPolymod(values: number[]): bigint {
+  let c = 1n;
+  for (const value of values) {
+    const c0 = c >> 35n;
+    c = ((c & 0x07ffffffffn) << 5n) ^ BigInt(value);
+    for (let i = 0; i < 5; i++) {
+      if ((c0 >> BigInt(i)) & 1n) c ^= CASHADDR_GENERATORS[i];
+    }
+  }
+  return c ^ 1n;
+}
+
+/** Hash byte-size per cashaddr version size-bits (spec table). */
+const CASHADDR_SIZES = [20, 24, 28, 32, 40, 48, 56, 64];
+
+function cashAddrDecode(input: string): { prefix: string; type: number } | null {
+  // CashAddr must be single-case.
+  if (input !== input.toLowerCase() && input !== input.toUpperCase()) return null;
+  const value = input.toLowerCase();
+
+  const separator = value.lastIndexOf(':');
+  // When the prefix is omitted, mainnet "bitcoincash" is implied — and the
+  // checksum still covers it, so we must restore it before verifying.
+  const prefix = separator >= 0 ? value.slice(0, separator) : 'bitcoincash';
+  const payloadPart = separator >= 0 ? value.slice(separator + 1) : value;
+  if (!/^[qp]/.test(payloadPart)) return null;
+  if (!prefix || payloadPart.length < 8 + 34) return null;
+
+  const words: number[] = [];
+  for (const ch of payloadPart) {
+    const index = BECH32_ALPHABET.indexOf(ch);
+    if (index === -1) return null;
+    words.push(index);
+  }
+
+  const expanded: number[] = [];
+  for (const ch of prefix) expanded.push(ch.charCodeAt(0) & 31);
+  expanded.push(0);
+  if (cashAddrPolymod([...expanded, ...words]) !== 0n) return null;
+
+  const data = convertBits(words.slice(0, -8), 5, 8, false);
+  if (!data || data.length < 2) return null;
+
+  const version = data[0];
+  if (version & 0x80) return null; // reserved bit must be zero
+  const type = version >> 3;
+  const size = CASHADDR_SIZES[version & 0x07];
+  if (data.length - 1 !== size) return null;
+  return { prefix, type };
+}
+
 export function validateBitcoinCashAddress(value: string): AddressValidation {
   const address = value.trim();
   if (!address) return fail('Address is required');
-  const withoutPrefix = address.replace(/^bitcoincash:/i, '');
-  if (/^[qp][0-9a-z]{40,}$/i.test(withoutPrefix)) return ok(withoutPrefix.toLowerCase());
-  if (/^[13]/.test(withoutPrefix)) {
-    const payload = base58CheckDecode(withoutPrefix);
+  if (/^[qp]/i.test(address) || /^bitcoincash:/i.test(address)) {
+    const decoded = cashAddrDecode(address);
+    if (!decoded) return fail('Invalid CashAddr checksum — this address has a typo');
+    // version type bits: 0 = P2PKH, 1 = P2SH-20. Other types (P2SH-24/32,
+    // CashToken-aware) are not valid plain swap destinations.
+    if (decoded.type !== 0 && decoded.type !== 1) {
+      return fail('Unsupported CashAddr type (token-aware addresses are not swap destinations)');
+    }
+    return ok(address.toLowerCase());
+  }
+  if (/^[13]/.test(address)) {
+    const payload = base58CheckDecode(address);
     if (!payload) return fail('Invalid base58check checksum');
-    return ok(withoutPrefix, 'Legacy format — CashAddr (q...) is preferred');
+    return ok(address, 'Legacy format — CashAddr (q…) is preferred');
   }
   return fail('Expected a CashAddr (q…) or legacy address');
 }

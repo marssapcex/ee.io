@@ -76,6 +76,14 @@ export interface AggregatorQuote {
   isBest?: boolean;
   /** USD advantage over the runner-up (winner only). */
   advantageUsd?: number;
+  /**
+   * Rolling venue reliability over the recent quote window (0–100), from the
+   * venue-health service. Lets the board say \"Kyber looks flappy right now\"
+   * instead of presenting every venue as equally trustworthy.
+   */
+  reliabilityPct?: number;
+  /** good | degraded | down — derived from failure rate + circuit state. */
+  health?: 'good' | 'degraded' | 'down';
   /** The exact upstream request, shown in the inspector for verifiability. */
   requestPreview?: { method: string; url: string; body?: unknown };
 }
@@ -150,6 +158,13 @@ export interface EvmTransactionPlan {
   data: string;
   value: string;
   gas?: string;
+  /**
+   * True ONLY when `data` was returned by the aggregator API itself and can
+   * be broadcast. When false/absent, `data` is a server-encoded ABI preview
+   * (fee fields visible for inspection) that MUST never be signed — the
+   * router does not implement that selector and the tx can only revert.
+   */
+  executable?: boolean;
   /** Token approval the user must grant before `to` can pull funds. */
   approval?: {
     token: string;
@@ -188,8 +203,15 @@ export interface ExecutionPlan {
   minReceiveAmount: string;
   destinationAddress: string;
   fee: FeeQuote;
+  /** float = final amount tracks the market; fixed = rate locked until expiresAt. */
+  rateType: RateType;
   transaction: TransactionPlan;
   steps: ExecutionStep[];
+  /**
+   * One-word answer to "what happens to my money if this can't fill". See
+   * DepositRecord.failureMode for the tier meanings.
+   */
+  failureMode: 'atomic-refund' | 'protocol-refund' | 'revert-only';
   /** Human-readable summary of the non-custodial guarantee for this route. */
   custodyModel: string;
   /** Documentation links backing each claim in the plan. */
@@ -216,7 +238,21 @@ export interface OrderRecord {
   requiredConfirmations: number;
   inboundTxHash?: string;
   outboundTxHash?: string;
+  /** Server POSTs a JSON status webhook here on every transition. */
+  webhookUrl?: string;
+  /** Partner (integration) that created this order, when via the partner API. */
+  partnerId?: string;
 }
+
+/** Consumer-facing labels for the failure-behavior tiers. */
+export const FAILURE_MODE_LABEL: Record<
+  'atomic-refund' | 'protocol-refund' | 'revert-only',
+  string
+> = {
+  'atomic-refund': 'Guaranteed: fills or full input back on-chain',
+  'protocol-refund': 'Refundable by the route protocol (overload path)',
+  'revert-only': 'Your wallet signs: fills or the whole tx reverts',
+};
 
 /** Deposit-proxy order (EVM same-chain, no wallet connect). */
 export interface DepositRecord {
@@ -249,10 +285,50 @@ export interface DepositRecord {
   aggregator: AggregatorId;
   quote: AggregatorQuote;
   fee: FeeQuote;
+  /** float = market rate at execution; fixed = locked until deposit expiry. */
+  rateType?: RateType;
+  /** Server POSTs a JSON status webhook here on every transition. */
+  webhookUrl?: string;
+  /** Partner (integration) that created this order, when via the partner API. */
+  partnerId?: string;
   warnings: string[];
   fundedAt?: number;
   txHash?: string;
   outTxHash?: string;
   /** CREATE2 salt = keccak256(abi.encode(orderId, destination, fromToken, toToken)) for frontrun protection */
   salt?: string;
+  /**
+   * True when the deposit address is derived from the PLACEHOLDER factory
+   * (no EE_PROXY_FACTORY_* configured). That factory does not exist on-chain,
+   * so the proxy can never be deployed and any funds sent are UNRECOVERABLE.
+   * The UI must banner this loudly; the flag exists so no one can mistake a
+   * demo address for a real one.
+   */
+  simulated?: boolean;
+  /**
+   * What happens to the user's money when the route cannot be honoured.
+   * Routes should be compared by failure behaviour, not just best-case price:
+   *  - atomic-refund: on-chain contract refunds the full input if minOut can't
+   *    be honoured (deposit-proxy route).
+   *  - protocol-refund: upstream protocol (THORChain) refunds on overload.
+   *  - revert-only: user's own wallet — the tx either fills or reverts.
+   */
+  failureMode?: 'atomic-refund' | 'protocol-refund' | 'revert-only';
+  /**
+   * TARGET LOCK (v0.4): limit order without an orderbook.
+   *
+   * 'rate'   — classic lock-or-refund: execute at ≥ the creation-time floor.
+   * 'target' — user pins a targetMinReceive STRICTLY ABOVE the current quote
+   *            floor; the relayer executes ONLY when a fresh route can pay it
+   *            before expiry, otherwise the escrow auto-refunds. The target is
+   *            pinned into the receipt's evidence hash, so the execution
+   *            condition itself is provable after the fact.
+   */
+  lockKind?: 'rate' | 'target';
+  /** Base units of toAsset — the pinned target floor (execution condition). */
+  targetMinReceive?: string;
+  /** Last fresh-route netOut observed while watching a target lock. */
+  lastObservedOut?: string;
+  /** When lastObservedOut was measured (epoch ms). */
+  observedAt?: number;
 }

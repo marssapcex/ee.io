@@ -150,9 +150,29 @@ export const api = {
     destinationAddress: string;
     aggregator?: string;
     slippageBps?: number;
+    rateType?: 'float' | 'fixed';
+    /** v0.4 target lock: pinned execution condition + watch window (minutes). */
+    targetMinReceive?: string;
+    expiresInMinutes?: number;
   }) => request<{ deposit: DepositRecord }>('/api/deposit', { method: 'POST', body: JSON.stringify(body) }),
 
   depositStatus: (depositId: string) => request<{ deposit: DepositRecord }>(`/api/deposit/${depositId}`),
+
+  /** Live venue health: rolling success rate, circuit state, avg latency. */
+  venues: () =>
+    request<{
+      venues: {
+        id: string;
+        attempts: number;
+        failures: number;
+        successRatePct: number;
+        avgLatencyMs: number;
+        consecutiveFailures: number;
+        health: 'good' | 'degraded' | 'down';
+        circuitOpen: boolean;
+        circuitOpenedAt: number;
+      }[];
+    }>('/api/venues'),
 
   depositFunded: (depositId: string, txHash?: string) =>
     request<{ deposit: DepositRecord }>(`/api/deposit/${depositId}/funded`, {

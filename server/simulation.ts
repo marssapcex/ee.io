@@ -166,9 +166,13 @@ export function simulateQuote(ctx: AdapterContext, aggregator: AggregatorId): Ag
   const afterVenue = (idealOut * BigInt(Math.round(efficiency * 1e6))) / 1_000_000n;
   const grossOut = afterVenue - applyBps(afterVenue, slipBps);
 
-  // Network cost, charged against the output.
-  const chainKey = aggregator === 'thorchain' ? to.chain : to.chain;
-  const baseGas = CHAIN_GAS_USD[chainKey] ?? 1.0;
+  // Network cost, charged against the output — for THORChain that is the
+  // destination chain's outbound fee, for same-chain swaps just the gas of
+  // the chain being swapped on. (Both are `to.chain`; the old code had a dead
+  // `aggregator === 'thorchain' ? to.chain : to.chain` ternary.) When the
+  // engine pre-resolved a live gas number from `eth_gasPrice`, prefer it over
+  // the static table so rankings track the real network.
+  const baseGas = ctx.gasUsdOverride ?? CHAIN_GAS_USD[to.chain] ?? 1.0;
   const gasUsd = baseGas * venue.gasMultiplier;
 
   const feeAsset = feeChargedOnOutput ? to : from;

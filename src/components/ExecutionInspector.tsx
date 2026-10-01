@@ -9,9 +9,10 @@ import {
   Terminal,
   Unlock,
 } from 'lucide-react';
-import React, { useState } from 'react';
-import { formatDisplay } from '../../shared/money';
+import React, { useEffect, useState } from 'react';
+import { formatDisplay, formatUnits } from '../../shared/money';
 import type { ExecutionPlan } from '../../shared/types';
+import { api } from '../lib/api';
 import type { AssetSummary } from '../lib/api';
 import {
   connect,
@@ -37,6 +38,12 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
   const [copied, setCopied] = useState<string | null>(null);
   const [txState, setTxState] = useState<TxState>({ kind: 'idle' });
   const [showRaw, setShowRaw] = useState(false);
+  const [drift, setDrift] = useState<{
+    checking: boolean;
+    pct?: number;
+    at?: number;
+    error?: string;
+  } | null>(null);
 
   const copy = async (label: string, value: string) => {
     try {
@@ -47,6 +54,54 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
       /* clipboard blocked */
     }
   };
+
+  /**
+   * Route drift check: re-quote the same trade and compare the venue's fresh
+   * number against what this plan promises. A swapping user has NO other way
+   * to know the market moved — competitors ship the quote as-of build time
+   * and let you sign stale numbers. Adverse drift > ~0.8% deserves a shout.
+   */
+  const verifyRoute = async () => {
+    setDrift((prev) => ({ checking: true, pct: prev?.pct, at: prev?.at }));
+    try {
+      const response = await api.quote({
+        fromAssetId: plan.fromAssetId,
+        toAssetId: plan.toAssetId,
+        amount: plan.sendAmount,
+        side: 'send',
+        rateType: plan.rateType,
+        destinationAddress: plan.destinationAddress,
+      });
+      const match =
+        response.quotes.find((q) => q.aggregator === plan.aggregator && !q.unavailableReason) ??
+        response.best;
+      if (!match) {
+        setDrift({ checking: false, error: 'No comparable quote right now.' });
+        return;
+      }
+      const oldOut = Number(formatUnits(BigInt(plan.receiveAmount), toAsset.decimals));
+      const newOut = Number(formatUnits(BigInt(match.netOut), toAsset.decimals));
+      setDrift(
+        oldOut > 0 && Number.isFinite(newOut)
+          ? { checking: false, pct: ((newOut - oldOut) / oldOut) * 100, at: Date.now() }
+          : { checking: false, error: 'Could not diff the routes.' },
+      );
+    } catch (error) {
+      setDrift({
+        checking: false,
+        error: error instanceof Error ? error.message : 'Requote failed',
+      });
+    }
+  };
+
+  // Auto-verify once for executable routes — the calldata was priced at plan
+  // build time and could already be stale.
+  useEffect(() => {
+    if (plan.transaction.kind === 'evm' && plan.transaction.executable === true) {
+      void verifyRoute();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan.planId]);
 
   const runApproval = async () => {
     if (plan.transaction.kind !== 'evm' || !plan.transaction.approval) return;
@@ -212,28 +267,79 @@ export const ExecutionInspector: React.FC<Props> = ({ plan, fromAsset, toAsset }
             )}
           </div>
 
-          {plan.source !== 'live' && (
+          {plan.transaction.kind === 'evm' && plan.transaction.executable !== true && (
             <p className="rounded-xl border border-brand-amber/30 bg-brand-amber/10 px-3 py-2 text-[12px] leading-relaxed text-brand-amber/80">
               This calldata is an ABI-encoded <em>preview</em> showing where the fee recipient and
-              amount sit in the call. Configure an aggregator API key to fetch executable calldata
-              signed off by the router itself — never broadcast preview calldata.
+              amount sit in the call — it is NOT router-built and would only revert on-chain, so
+              broadcasting is disabled. {plan.source === 'live'
+                ? 'This route was quoted live, but no executable calldata was returned for it yet (KyberSwap routes are the first that do).'
+                : 'Configure an aggregator API key to fetch executable calldata signed off by the router itself.'}
             </p>
           )}
+
+          {/* Route drift verification */}
+          <div className="rounded-xl border border-line-soft bg-ink-800/60 px-3 py-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                {drift?.checking ? (
+                  <p className="flex items-center gap-2 text-[12px] text-white/55">
+                    <Loader2 className="h-3 w-3 animate-spin text-brand-cyan" />
+                    Re-quoting {plan.displayName}…
+                  </p>
+                ) : drift?.error ? (
+                  <p className="text-[12px] text-brand-amber/90">Drift check: {drift.error}</p>
+                ) : drift?.pct !== undefined ? (
+                  <p
+                    className={`text-[12px] ${
+                      drift.pct <= -0.8
+                        ? 'font-semibold text-brand-red'
+                        : drift.pct < 0
+                          ? 'text-brand-amber'
+                          : 'text-brand-greenBright'
+                    }`}
+                  >
+                    {drift.pct <= -0.8
+                      ? `Route drifted ${drift.pct.toFixed(2)}% against you — rebuild the plan for freshened numbers`
+                      : drift.pct >= 0.05
+                        ? `Route improved +${drift.pct.toFixed(2)}% since the plan was built`
+                        : `Route is fresh (drift ${drift.pct >= 0 ? '+' : ''}${drift.pct.toFixed(2)}%)`}
+                  </p>
+                ) : (
+                  <p className="text-[12px] text-white/45">
+                    Verify this route against a fresh quote before signing.
+                  </p>
+                )}
+                {drift?.at && (
+                  <p className="font-mono text-[10px] text-white/25">
+                    checked just now • min out {formatDisplay(BigInt(plan.minReceiveAmount), toAsset.decimals, 6)} {toAsset.symbol}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => void verifyRoute()}
+                disabled={!!drift?.checking}
+                className="shrink-0 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-1.5 text-[11px] font-semibold text-white/60 hover:bg-white/[0.08] hover:text-white disabled:opacity-40"
+              >
+                Re-verify
+              </button>
+            </div>
+          </div>
 
           <div className="flex flex-col gap-2 sm:flex-row">
             {plan.transaction.approval && plan.transaction.approval.mechanism !== 'none' && (
               <button
                 onClick={runApproval}
-                disabled={txState.kind === 'pending'}
-                className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-line-strong bg-ink-700 px-4 py-2.5 text-xs font-bold text-white/80 transition-colors hover:bg-ink-650 disabled:opacity-50"
+                disabled={txState.kind === 'pending' || plan.transaction.executable !== true}
+                title={plan.transaction.executable !== true ? 'Approval enabled once executable calldata exists' : undefined}
+                className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-line-strong bg-ink-700 px-4 py-2.5 text-xs font-bold text-white/80 transition-colors hover:bg-ink-650 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 1. Approve {fromAsset.symbol}
               </button>
             )}
             <button
               onClick={runSwap}
-              disabled={txState.kind === 'pending' || plan.source !== 'live'}
-              title={plan.source !== 'live' ? 'Live calldata required before broadcasting' : undefined}
+              disabled={txState.kind === 'pending' || plan.transaction.executable !== true}
+              title={plan.transaction.executable !== true ? 'Router-built calldata required before broadcasting' : undefined}
               className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-brand-cyan/40 bg-brand-cyan/10 px-4 py-2.5 text-xs font-bold text-brand-cyan transition-colors hover:bg-brand-cyan/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {txState.kind === 'pending' ? (

@@ -31,12 +31,30 @@ import { createDeposit, getDeposit, listDeposits, markDepositFunded } from './de
 import { credentialStatus, isPlaceholderRecipient, loadFeePolicy } from './config.js';
 import { getPrices, priceLookup } from './prices.js';
 import { requireAsset } from '../shared/assets.js';
+import { ADAPTERS } from './quoteEngine.js';
+import { scanNow, startNotifyWatcher, subscribeSse, validateWebhookUrl } from './notify.js';
+import { partnerRouter } from './partnerRoutes.js';
+import { venueCatalogue } from './venueHealth.js';
+import { depositReceipt, orderReceipt } from './receipt.js';
 
 const app = express();
 const PORT = Number(process.env.API_PORT ?? 8787);
 
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+
+// A malformed JSON body otherwise surfaces Express's default HTML stack page —
+// the API contract is JSON, so every caller (and the ui) cleanly sees an error.
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (
+    err instanceof SyntaxError ||
+    (typeof err === 'object' && err !== null && (err as { type?: string }).type === 'entity.parse.failed')
+  ) {
+    res.status(400).json({ error: 'Malformed JSON body' });
+    return;
+  }
+  next(err);
+});
 
 app.use((req, _res, next) => {
   const started = Date.now();
@@ -152,6 +170,7 @@ const planSchema = z.object({
   rateType: z.enum(['float', 'fixed']),
   aggregator: z.string(),
   slippageBps: z.number().int().min(1).max(5000).optional(),
+  webhookUrl: z.string().optional(),
 });
 
 app.post('/api/plan', async (req, res) => {
@@ -187,6 +206,15 @@ app.post('/api/plan', async (req, res) => {
       return res.status(400).json({ error: 'No executable route for this pair' });
     }
 
+    let webhookUrl: string | undefined;
+    if (body.webhookUrl !== undefined) {
+      const check = validateWebhookUrl(body.webhookUrl);
+      if (!check.ok) {
+        return res.status(400).json({ error: `webhookUrl rejected: ${check.reason}` });
+      }
+      webhookUrl = check.url;
+    }
+
     const plan = await buildExecutionPlan({
       quote: chosen,
       fromAssetId: body.fromAssetId,
@@ -196,9 +224,10 @@ app.post('/api/plan', async (req, res) => {
       takerAddress: body.takerAddress,
       slippageBps,
       expiresAt: quoteResponse.expiresAt,
+      rateType: body.rateType,
     });
 
-    const order = createOrder(plan);
+    const order = createOrder(plan, { webhookUrl });
     res.json({ plan, order, feeBps: feeBpsFor(body.rateType) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Plan failed';
@@ -225,6 +254,37 @@ app.post('/api/orders/:orderId/simulate-deposit', (req, res) => {
   res.json({ order });
 });
 
+/* ------------------------------------------------------ real-time streams */
+
+/**
+ * Server-sent events: the browser's EventSource gets every status transition
+ * the moment the notify watcher sees it, instead of polling JSON every 2 s.
+ * The client still poll-falls-back — SSE is additive, not a hard dependency.
+ */
+app.get('/api/orders/:orderId/stream', (req, res) => {
+  const unsubscribe = subscribeSse(req.params.orderId, res);
+  const order = getOrder(req.params.orderId);
+  if (order) res.write(`data: ${JSON.stringify(order)}\n\n`);
+  req.on('close', unsubscribe);
+});
+
+app.get('/api/deposit/:depositId/stream', (req, res) => {
+  const unsubscribe = subscribeSse(req.params.depositId, res);
+  const deposit = getDeposit(req.params.depositId);
+  if (deposit) res.write(`data: ${JSON.stringify(deposit)}\n\n`);
+  req.on('close', unsubscribe);
+});
+
+/* -------------------------------------------------------- venue health */
+
+app.get('/api/venues', (_req, res) => {
+  res.json({ venues: venueCatalogue(ADAPTERS.map((a) => a.id)) });
+});
+
+/* ----------------------------------------------------------- partner api */
+
+app.use('/api/partner/v1', partnerRouter());
+
 /* --------------------------------------------------------- deposit proxy (ff.io-style, non-custodial) */
 
 const depositSchema = z.object({
@@ -234,13 +294,25 @@ const depositSchema = z.object({
   destinationAddress: z.string().min(1),
   aggregator: z.string().optional(),
   slippageBps: z.number().int().min(1).max(5000).optional(),
+  rateType: z.enum(['float', 'fixed']).optional(),
+  // Target lock (v0.4): pin an execution condition above the current floor.
+  targetMinReceive: z.string().regex(/^\d+$/, 'targetMinReceive must be base-units integer string').optional(),
+  expiresInMinutes: z.number().int().min(15).max(4320).optional(),
+  webhookUrl: z.string().optional(),
 });
 
 app.post('/api/deposit', async (req, res) => {
   const parsed = depositSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
+  let webhookUrl: string | undefined;
+  if (parsed.data.webhookUrl !== undefined) {
+    const check = validateWebhookUrl(parsed.data.webhookUrl);
+    if (!check.ok) return res.status(400).json({ error: `webhookUrl rejected: ${check.reason}` });
+    webhookUrl = check.url;
+  }
   try {
-    const deposit = await createDeposit(parsed.data);
+    const { targetMinReceive, expiresInMinutes, ...rest } = parsed.data;
+    const deposit = await createDeposit({ ...rest, targetMinReceive, expiresInMinutes, webhookUrl });
     res.json({ deposit });
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Deposit creation failed';
@@ -263,6 +335,24 @@ app.post('/api/deposit/:depositId/funded', async (req, res) => {
   const rec = await markDepositFunded(req.params.depositId, req.body?.txHash);
   if (!rec) return res.status(404).json({ error: 'Deposit not found' });
   res.json({ deposit: rec });
+});
+
+/* ----------------------------------------------------------- receipts */
+
+/**
+ * Comparison-by-failure-mode needs a machine-readable artifact: the receipt
+ * digest over the immutable terms of the trade.
+ */
+app.get('/api/orders/:orderId/receipt', (req, res) => {
+  const order = getOrder(req.params.orderId);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  res.json({ receipt: orderReceipt(order) });
+});
+
+app.get('/api/deposit/:depositId/receipt', (req, res) => {
+  const rec = getDeposit(req.params.depositId);
+  if (!rec) return res.status(404).json({ error: 'Deposit not found' });
+  res.json({ receipt: depositReceipt(rec) });
 });
 
 /* ----------------------------------------------------------------- serve */
@@ -295,6 +385,9 @@ if (SERVE_STATIC) {
 }
 
 app.listen(PORT, '0.0.0.0', () => {
+  // Real-time order layer: SSE fan-out + webhook dispatch.
+  startNotifyWatcher();
+  void scanNow();
   const policy = loadFeePolicy();
   console.log(`\n  ee.io quote server → http://0.0.0.0:${PORT}`);
   console.log(`  fee policy: ${policy.floatBps} bps float / ${policy.fixedBps} bps fixed, charged on ${policy.chargeOn}`);

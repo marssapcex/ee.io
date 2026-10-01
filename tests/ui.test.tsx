@@ -213,14 +213,16 @@ describe('App shell', () => {
     expect(await screen.findByText('Sim', {}, { timeout: 3000 })).toBeDefined();
   });
 
-  it('renders the fee policy from /api/health rather than hard-coding it', async () => {
+  it('renders both rate contracts with the fee policy from /api/health', async () => {
     render(<App />);
     await screen.findByLabelText('You send');
-    // floatBps 50 -> the Float fee bar shows 0.50%, no Fixed pill
+    // The fixed vs float choice is the organising principle of this whole
+    // exchange category — the card must lead with it, fees sourced from the
+    // server policy, never hard-coded in the bundle.
     expect(screen.getByText(/0\.50%/)).toBeDefined();
-    expect(screen.queryByText('1.00%')).toBeNull();
-    expect(screen.queryByText('Fixed')).toBeNull();
-    expect(screen.getByText(/Float/)).toBeDefined();
+    expect(screen.getByText(/1\.00%/)).toBeDefined();
+    expect(screen.getByText('Float')).toBeDefined();
+    expect(screen.getByText('Fixed')).toBeDefined();
   });
 });
 
@@ -289,14 +291,14 @@ describe('quote flow', () => {
 describe('route comparison', () => {
   it('labels the winner', async () => {
     render(<App />);
-    await screen.findByText('Routes');
+    await screen.findByText('Smart routes');
 
     expect(screen.getByText('Best')).toBeDefined();
   });
 
   it('lists only routable venues — an unusable venue is noise, not a row', async () => {
     render(<App />);
-    await screen.findByText('Routes');
+    await screen.findByText('Smart routes');
 
     // The fixture marks 0x unavailable for this pair.
     expect(screen.queryByText(/unavailable/i)).toBeNull();
@@ -306,7 +308,7 @@ describe('route comparison', () => {
 
   it('discloses the fee on every route', async () => {
     render(<App />);
-    await screen.findByText('Routes');
+    await screen.findByText('Smart routes');
     // Rendered twice by design: a dedicated column on desktop, a collapsed
     // metric strip on mobile. jsdom evaluates no media queries, so both are
     // in the tree here.
@@ -392,17 +394,27 @@ describe('asset selection', () => {
 });
 
 describe('rate type', () => {
-  it('is always float — no Fixed toggle exists', async () => {
+  it('defaults to float and re-quotes fixed rate contracts when toggled', async () => {
     render(<App />);
     await screen.findByLabelText('You send');
     await waitFor(() => expect(quoteCalls.length).toBeGreaterThan(0), { timeout: 3000 });
 
-    expect(screen.queryByText('Fixed')).toBeNull();
-    expect(screen.getByText(/Float/)).toBeDefined();
-    // Every quote must be float
+    expect(screen.getByText('Fixed')).toBeDefined();
+    expect(screen.getByText('Float')).toBeDefined();
+    // Every quote so far is float — the default market-rate contract.
     for (const q of quoteCalls as Array<{ rateType: string }>) {
       expect(q.rateType).toBe('float');
     }
+
+    // Toggling to Fixed re-fetches with the locked-rate contract.
+    fireEvent.click(screen.getByText('Fixed'));
+    await waitFor(
+      () => {
+        const types = (quoteCalls as Array<{ rateType: string }>).map((q) => q.rateType);
+        expect(types).toContain('fixed');
+      },
+      { timeout: 3000 },
+    );
   });
 });
 

@@ -1,7 +1,7 @@
 {
   "name": "ee-io",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "ee.io \u2014 non-custodial instant swap protocol routed through public DEX aggregators with on-chain affiliate fee splitting",
   "scripts": {
@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "demo:evidence": "tsx evidence/demo.ts",
     "serve": "npm run build && npm run start"
   },
   "dependencies": {

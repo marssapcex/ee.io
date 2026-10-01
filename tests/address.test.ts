@@ -27,6 +27,15 @@ const VALID: Record<string, string[]> = {
   'TRX.TRON': ['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'],
   'XRP.RIPPLE': ['rN7n7otQDd6FczFgLdSqtcsAUxDkw6fzRH'],
   'ATOM.COSMOS': ['cosmos1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu'],
+  // Cross-checked against bchaddrjs conversions of real legacy addresses.
+  'BCH.BITCOINCASH': [
+    'bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a',
+    'qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a', // prefixless implies mainnet "bitcoincash:"
+    'BITCOINCASH:QPM2QSZNHKS23Z7629MMS6S4CWEF74VCWVY22GDX6A', // all-caps is legal
+    'bitcoincash:qr95sy3j9xwd2ap32xkykttr4cvcu7as4y0qverfuy',
+    'bitcoincash:ppm2qsznhks23z7629mms6s4cwef74vcwvn0h829pq', // P2SH
+    '1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu', // legacy base58 form
+  ],
 };
 
 const INVALID: Record<string, string[]> = {
@@ -50,6 +59,12 @@ const INVALID: Record<string, string[]> = {
     '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsUx', // 45 chars, over-long
   ],
   'TRX.TRON': ['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6u'],
+  'BCH.BITCOINCASH': [
+    'bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6b', // checksum typo on a valid address
+    'qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6b', // same typo, prefixless
+    'bchtest:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a', // checksum covers the prefix — wrong network
+    'bitcoincash:QQQ3728yw0y47sqn6l2na30mcw6zm78dzqre909m2r', // mixed case is ambiguous
+  ],
 };
 
 describe('address validation', () => {

@@ -17,9 +17,13 @@ import { isEvmAsset, type Asset } from '../../shared/assets.js';
 import { CHAINS } from '../../shared/chains.js';
 import { toNumber } from '../../shared/money.js';
 import type { AggregatorQuote, RouteHop } from '../../shared/types.js';
-import { AdapterError, fetchJson, type Adapter, type AdapterContext } from './types.js';
+import { AdapterError, fetchJson, nativeUsdPrice, type Adapter, type AdapterContext } from './types.js';
 
-const BASE_URL = 'https://api.1inch.dev/swap/v6.1';
+// api.1inch.dev is retired — the rebranding migration deadline has passed
+// and every integration must use api.1inch.com (see 1inch Rebranding FAQ).
+// Hitting the old host meant every live 1inch quote silently degraded to a
+// simulated one.
+const BASE_URL = 'https://api.1inch.com/swap/v6.1';
 
 /** 1inch caps the partner fee at 3%. */
 export const ONEINCH_MAX_FEE_PERCENT = 3;
@@ -156,7 +160,9 @@ function estimateGasUsd(gas: number, ctx: AdapterContext): number {
   // this as an estimate.
   const GWEI = 12n;
   const weiCost = BigInt(gas) * GWEI * 1_000_000_000n;
-  const chain = CHAINS[ctx.from.chain];
-  const nativePrice = chain.nativeSymbol === 'ETH' ? ctx.priceOf(ctx.from) : ctx.priceOf(ctx.from);
-  return toNumber(weiCost, 18) * (chain.nativeSymbol === 'ETH' ? 3420 : nativePrice);
+  // Price the fee in the CHAIN's native token: on BSC the gas token is BNB at
+  // ~$695, not ETH at $3420 — the pre-fix code priced every chain's gas in
+  // ETH (and the ternary's two branches were identical dead code), so L2 and
+  // alt-L1 rankings were distorted by a 5–100x wrong gas estimate.
+  return toNumber(weiCost, 18) * nativeUsdPrice(ctx);
 }

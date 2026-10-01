@@ -5,12 +5,14 @@ import {
   Clipboard,
   Loader2,
   RefreshCw,
+  Timer,
   TriangleAlert,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AddressValidation } from '../../shared/address';
 import { formatDisplay, formatUsd, parseUnits } from '../../shared/money';
 import type { QuoteResponse } from '../../shared/types';
+import { useCountdown } from '../hooks/useQuote';
 import type { AssetSummary } from '../lib/api';
 import { api } from '../lib/api';
 import { AssetIcon } from './AssetIcon';
@@ -26,7 +28,18 @@ interface Props {
   receiveInput: string;
   side: 'send' | 'receive';
   destination: string;
-  feeBps: number;
+  /** Fee in bps for float and fixed rate contracts, from /api/health. */
+  feeBpsFloat: number;
+  feeBpsFixed: number;
+  rateType: 'float' | 'fixed';
+  onRateType: (value: 'float' | 'fixed') => void;
+  /** Target-lock UI (v0.4) — optional so the embedded widget stays two-mode. */
+  lockMode?: 'float' | 'fixed' | 'target';
+  onLockMode?: (value: 'float' | 'fixed' | 'target') => void;
+  targetReceive?: string;
+  onTargetReceive?: (value: string) => void;
+  lockWindowMin?: number;
+  onLockWindowMin?: (value: number) => void;
   onSendInput: (value: string) => void;
   onReceiveInput: (value: string) => void;
   onDestination: (value: string) => void;
@@ -50,7 +63,16 @@ export const SwapCard: React.FC<Props> = ({
   receiveInput,
   side,
   destination,
-  feeBps,
+  feeBpsFloat,
+  feeBpsFixed,
+  rateType,
+  onRateType,
+  lockMode,
+  onLockMode,
+  targetReceive,
+  onTargetReceive,
+  lockWindowMin,
+  onLockWindowMin,
   onSendInput,
   onReceiveInput,
   onDestination,
@@ -119,8 +141,19 @@ export const SwapCard: React.FC<Props> = ({
     }
   }, [onDestination]);
 
+  // A fixed quote past its window is meaningless — it must be refreshed
+  // before the user commits to a locked number that no longer applies.
+  const fixedExpired =
+    rateType === 'fixed' && !!quote && Date.now() > quote.expiresAt;
+
   const canSubmit =
-    isAddressValid && !belowMin && !aboveMax && !!quote?.best && !loading && !submitting;
+    isAddressValid &&
+    !belowMin &&
+    !aboveMax &&
+    !!quote?.best &&
+    !fixedExpired &&
+    !loading &&
+    !submitting;
 
   return (
     <section className="overflow-hidden rounded-[16px] border border-white/[0.06] bg-ink-850 shadow-[0_8px_32px_rgba(0,0,0,0.6)]">
@@ -264,12 +297,23 @@ export const SwapCard: React.FC<Props> = ({
         )}
       </div>
 
-      {/* ---- Row 3: submit — V1 float only (0.5%, ~2 min, no lock) ---- */}
+      {/* ---- Row 3: rate contract + submit ---- */}
       <div className="space-y-3 px-4 pb-4 md:px-5 md:pb-5">
-        <div className="flex items-center justify-between rounded-[10px] border border-white/[0.06] bg-ink-900/60 px-3 py-2.5 text-[11px]">
-          <span className="font-mono text-white/50">Float <span className="text-white/30">•</span> {(feeBps / 100).toFixed(2)}% fee</span>
-          <span className="font-mono text-[10px] text-white/25">~2 min • no price lock</span>
-        </div>
+        <RateContractBar
+          rateType={rateType}
+          onRateType={onRateType}
+          feeBpsFloat={feeBpsFloat}
+          feeBpsFixed={feeBpsFixed}
+          expiresAt={quote?.expiresAt}
+          onRefresh={onRefresh}
+          lockMode={lockMode}
+          onLockMode={onLockMode}
+          targetReceive={targetReceive}
+          onTargetReceive={onTargetReceive}
+          lockWindowMin={lockWindowMin}
+          onLockWindowMin={onLockWindowMin}
+          toSymbol={toAsset.symbol}
+        />
 
         <button
           onClick={onSubmit}
@@ -316,6 +360,157 @@ export const SwapCard: React.FC<Props> = ({
 };
 
 /* ------------------------------------------------------------- subviews */
+
+/**
+ * The rate-contract selector — the "fixed vs float" choice that the entire
+ * instant-exchange category is organised around (FixedFloat, ChangeNOW,
+ * StealthEX all lead with it). Float streams the market rate at execution;
+ * fixed guarantees the number through the deposit window for a wider fee.
+ */
+const RateContractBar: React.FC<{
+  rateType: 'float' | 'fixed';
+  onRateType: (value: 'float' | 'fixed') => void;
+  feeBpsFloat: number;
+  feeBpsFixed: number;
+  expiresAt?: number;
+  onRefresh: () => void;
+  lockMode?: 'float' | 'fixed' | 'target';
+  onLockMode?: (value: 'float' | 'fixed' | 'target') => void;
+  targetReceive?: string;
+  onTargetReceive?: (value: string) => void;
+  lockWindowMin?: number;
+  onLockWindowMin?: (value: number) => void;
+  toSymbol?: string;
+}> = ({
+  rateType,
+  onRateType,
+  feeBpsFloat,
+  feeBpsFixed,
+  expiresAt,
+  onRefresh,
+  lockMode,
+  onLockMode,
+  targetReceive,
+  onTargetReceive,
+  lockWindowMin,
+  onLockWindowMin,
+  toSymbol,
+}) => {
+  const lockSeconds = useCountdown(rateType === 'fixed' ? expiresAt : undefined);
+  const expired = rateType === 'fixed' && expiresAt !== undefined && lockSeconds === 0;
+  const tri = lockMode !== undefined && onLockMode !== undefined;
+  const isTarget = tri && lockMode === 'target';
+
+  const pick = (m: 'float' | 'fixed' | 'target') => {
+    if (tri) onLockMode!(m);
+    if (m !== 'target') onRateType(m); // target rides the fixed quote lane
+    else onRateType('fixed');
+  };
+
+  return (
+    <div className="rounded-[10px] border border-white/[0.06] bg-ink-900/60 px-2 py-2">
+      <div className={`grid ${tri ? 'grid-cols-3' : 'grid-cols-2'} gap-1`}>
+        <RateButton
+          active={tri ? lockMode === 'float' : rateType === 'float'}
+          onClick={() => pick('float')}
+          title="Float"
+          meta={`${(feeBpsFloat / 100).toFixed(2)}%`}
+        />
+        <RateButton
+          active={tri ? lockMode === 'fixed' : rateType === 'fixed'}
+          onClick={() => pick('fixed')}
+          title="Fixed"
+          meta={`${(feeBpsFixed / 100).toFixed(2)}%`}
+        />
+        {tri && (
+          <RateButton
+            active={isTarget}
+            onClick={() => pick('target')}
+            title="Target"
+            meta="🎯"
+          />
+        )}
+      </div>
+
+      {isTarget ? (
+        <div className="mt-2 space-y-1.5 px-1 pb-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-mono text-white/40">execute only if you receive ≥</span>
+            <input
+              value={targetReceive ?? ''}
+              onChange={(e) => onTargetReceive?.(e.target.value)}
+              inputMode="decimal"
+              placeholder="amount"
+              className="w-24 rounded-md border border-white/[0.08] bg-ink-950/80 px-2 py-1 text-right font-mono text-[11px] text-white outline-none focus:border-brand-amber/40"
+            />
+            <span className="text-[10px] font-mono text-white/50">{toSymbol}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-mono text-white/40">active for</span>
+            <div className="flex gap-1">
+              {[60, 360, 1440, 4320].map((m) => (
+                <button
+                  key={m}
+                  onClick={() => onLockWindowMin?.(m)}
+                  className={`rounded-md px-2 py-0.5 font-mono text-[10px] transition ${
+                    lockWindowMin === m
+                      ? 'bg-brand-amber/15 text-brand-amber'
+                      : 'text-white/30 hover:text-white/60'
+                  }`}
+                >
+                  {m < 1440 ? `${m / 60}h` : `${m / 1440}d`}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="text-[9px] font-mono leading-relaxed text-white/25">
+            limit order without an orderbook — target pinned in your receipt; nothing executes below it; expiry auto-refunds
+          </p>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between px-2 pt-1.5 text-[10px] font-mono">
+          {(tri ? lockMode === 'float' : rateType === 'float') ? (
+            <span className="text-white/30">market rate at execution • tighter fee</span>
+          ) : expired ? (
+            <button onClick={onRefresh} className="flex items-center gap-1 font-semibold text-brand-amber hover:text-brand-amber/80">
+              <RefreshCw className="h-2.5 w-2.5" /> lock expired — tap to refresh
+            </button>
+          ) : (
+            <span className="flex items-center gap-1 text-brand-cyan/80">
+              <Timer className="h-2.5 w-2.5" />
+              locked {lockSeconds > 0 ? `${Math.floor(lockSeconds / 60)}:${String(lockSeconds % 60).padStart(2, '0')}` : '—'}
+            </span>
+          )}
+          <span className="text-white/25">
+            {(tri ? lockMode === 'float' : rateType === 'float')
+              ? 'final amount follows the market'
+              : 'lock honoured, or full input back on-chain'}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const RateButton: React.FC<{
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  meta: string;
+}> = ({ active, onClick, title, meta }) => (
+  <button
+    onClick={onClick}
+    aria-pressed={active}
+    className={`flex items-center justify-center gap-2 rounded-[8px] px-2 py-1.5 text-[11px] font-medium transition-all duration-200 ${
+      active ? 'bg-white/[0.10] text-white shadow-sm' : 'text-white/40 hover:text-white/70'
+    }`}
+  >
+    {title}
+    <span className={`font-mono text-[10px] ${active ? 'text-brand-cyan' : 'text-white/25'}`}>
+      {meta}
+    </span>
+  </button>
+);
 
 const AmountBox: React.FC<{
   label: string;

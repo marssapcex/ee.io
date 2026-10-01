@@ -109,6 +109,8 @@ export interface PlanRequest {
   takerAddress?: string;
   slippageBps: number;
   expiresAt: number;
+  /** The rate contract this plan fulfils. Drives custody copy + UI lock UI. */
+  rateType: import('../shared/types.js').RateType;
 }
 
 export async function buildExecutionPlan(request: PlanRequest): Promise<ExecutionPlan> {
@@ -145,8 +147,13 @@ export async function buildExecutionPlan(request: PlanRequest): Promise<Executio
     minReceiveAmount: request.quote.minOut,
     destinationAddress: destination,
     fee: request.quote.fee,
+    rateType: request.rateType,
     transaction,
     steps,
+    // Same-chain connect-wallet trades live or die inside one tx (revert-or-
+    // nothing). THORChain's protocol itself refunds on overload. The deposit
+    // proxy's atomic-refund tier never flows through this planner.
+    failureMode: request.quote.aggregator === 'thorchain' ? 'protocol-refund' : 'revert-only',
     custodyModel:
       request.quote.aggregator === 'thorchain'
         ? 'Funds go to a THORChain Asgard vault secured by a 2/3 threshold signature across ' +
@@ -195,6 +202,7 @@ async function buildEvmPlan(
           data: built.data,
           value: built.value,
           gas: built.gas,
+          executable: true, // calldata built by KyberSwap's own API
           approval: isNative
             ? { token: from.address!, spender: built.to, amount: '0', mechanism: 'none' }
             : {
@@ -223,6 +231,11 @@ async function buildEvmPlan(
     data,
     value: isNative ? sendAmount.toString() : '0',
     gas: '250000',
+    // NOT executable: a representative encoding for the inspector only. This
+    // flag matters even when quote.source === 'live' — a live indicative
+    // quote does not make fabricated calldata signable. Broadcasting this
+    // payload used to be merely "discouraged" by a banner; it is now blocked.
+    executable: false,
     approval: isNative
       ? { token: from.address!, spender: router, amount: '0', mechanism: 'none' }
       : {

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ee.io Swap Widget</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    min-height: 100vh;
+    background: #09090b;
+    color: #fff;
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+  }
+  .widget {
+    width: 100%;
+    max-width: 420px;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    background: #131316;
+    padding: 18px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  }
+  h1 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.85; }
+  h1 span { color: #22d3ee; }
+  label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: rgba(255,255,255,0.4); margin: 14px 0 6px; }
+  select, input {
+    width: 100%;
+    background: #0a0a0c;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    padding: 11px 12px;
+    color: #fff;
+    font-size: 14px;
+    outline: none;
+  }
+  select:focus, input:focus { border-color: rgba(34,211,238,0.5); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .quote {
+    margin-top: 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    color: rgba(255,255,255,0.75);
+    min-height: 22px;
+  }
+  .quote .best { color: #34d399; font-weight: 700; }
+  .quote .venue { color: rgba(255,255,255,0.45); font-size: 11px; }
+  .err { color: #f87171; }
+  button.cta {
+    margin-top: 14px;
+    width: 100%;
+    border: 0;
+    border-radius: 12px;
+    background: #16a34a;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 13px;
+    cursor: pointer;
+  }
+  button.cta:hover { background: #15803d; }
+  button.cta:disabled { background: #26262b; color: rgba(255,255,255,0.35); cursor: not-allowed; }
+  .foot { margin-top: 10px; text-align: center; font-size: 10px; color: rgba(255,255,255,0.25); font-family: ui-monospace, Menlo, monospace; }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #22d3ee; border-radius: 50%; animation: s 0.8s linear infinite; vertical-align: -2px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="widget" role="form" aria-label="ee.io swap widget">
+  <h1>Swap <span>ee.io</span></h1>
+
+  <div class="row">
+    <div>
+      <label for="from">You send</label>
+      <select id="from"></select>
+    </div>
+    <div>
+      <label for="to">You get</label>
+      <select id="to"></select>
+    </div>
+  </div>
+
+  <label for="amount">Amount</label>
+  <input id="amount" inputmode="decimal" placeholder="0.05" />
+
+  <div class="quote" id="quote"><span style="color:rgba(255,255,255,0.3)">Enter an amount to see the best route</span></div>
+
+  <button class="cta" id="go" disabled>Open ee.io to swap</button>
+  <div class="foot">non-custodial • no account • powered by 7 aggregators</div>
+</div>
+
+<script>
+(async function () {
+  const $ = (id) => document.getElementById(id);
+  const state = { assets: [], quote: null };
+
+  const assetsRes = await fetch('/api/assets').then((r) => r.json());
+  state.assets = assetsRes.assets;
+
+  for (const el of [$('from'), $('to')]) {
+    for (const a of state.assets) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.symbol} · ${a.chainName}`;
+      el.appendChild(opt);
+    }
+  }
+  $('from').value = 'BTC.BITCOIN';
+  $('to').value = 'USDT.ETHEREUM';
+
+  let timer = null;
+  let controller = null;
+
+  function asset(id) { return state.assets.find((a) => a.id === id); }
+
+  function parseUnitsSafe(raw, decimals) {
+    const clean = String(raw).trim();
+    if (!/^\d*\.?\d*$/.test(clean) || clean === '' || clean === '.') return null;
+    const [whole, frac = ''] = clean.split('.');
+    const fracPadded = (frac + '0'.repeat(decimals)).slice(0, decimals);
+    const units = (whole || '0').replace(/^0+(?=\d)/, '') + ''; // no-op clarity
+    const base = (BigInt((whole || '0')) * 10n ** BigInt(decimals) + BigInt(fracPadded || '0'));
+    return base > 0n ? base.toString() : null;
+  }
+
+  function display(units, decimals, digits) {
+    const s = units.padStart(decimals + 1, '0');
+    const whole = s.slice(0, s.length - decimals) || '0';
+    const frac = s.slice(s.length - decimals).slice(0, digits).replace(/0+$/, '');
+    return frac ? `${whole}.${frac}` : whole;
+  }
+
+  async function quote() {
+    const from = asset($('from').value);
+    const to = asset($('to').value);
+    const raw = $('amount').value;
+    const amount = from && parseUnitsSafe(raw, from.decimals);
+    if (!from || !to || from.id === to.id || !amount) {
+      state.quote = null;
+      $('go').disabled = true;
+      $('quote').innerHTML = from && to && from.id === to.id
+        ? '<span class="err">Pick two different assets</span>'
+        : '<span style="color:rgba(255,255,255,0.3)">Enter an amount to see the best route</span>';
+      return;
+    }
+    $('quote').innerHTML = '<span class="spin"></span> Fetching routes…';
+    controller?.abort();
+    controller = new AbortController();
+    try {
+      const res = await fetch('/api/quote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fromAssetId: from.id, toAssetId: to.id, amount, side: 'send', rateType: 'float' }),
+        signal: controller.signal,
+      }).then((r) => (r.ok ? r.json() : Promise.reject(new Error('quote failed'))));
+      state.quote = { res, from, to };
+      const best = res.best;
+      $('quote').innerHTML = best
+        ? `<span class="best">≈ ${display(best.netOut, to.decimals, 4)} ${to.symbol}</span> ` +
+          `<span class="venue">via ${best.displayName} • ` +
+          `${res.quotes.filter((q) => !q.unavailableReason).length} venues compared • gas $${best.gasUsd.toFixed(2)}</span>`
+        : '<span class="err">No route for this pair right now</span>';
+      $('go').disabled = !best;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      $('quote').innerHTML = '<span class="err">Could not reach the quote API</span>';
+      $('go').disabled = true;
+    }
+  }
+
+  ['from', 'to', 'amount'].forEach((id) =>
+    $(id).addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(quote, 350);
+    }),
+  );
+
+  // Hand off prefilled to the full app — the widget stays thin and honest:
+  // it never asks for keys, never signs, just routes the user in with all
+  // choices preserved so the non-custodial flow completes on the main app.
+  $('go').addEventListener('click', () => {
+    if (!state.quote) return;
+    const params = new URLSearchParams({
+      from: state.quote.from.id,
+      to: state.quote.to.id,
+      amount: $('amount').value,
+      mode: 'deposit',
+    });
+    window.open(`/?${params}`, '_blank', 'noopener');
+  });
+
+  quote();
+})();
+</script>
+</body>
+</html>

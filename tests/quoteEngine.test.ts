@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { requireAsset } from '../shared/assets';
 import { toNumber } from '../shared/money';
-import { buildQuote } from '../server/quoteEngine';
+import { buildQuote, defaultSlippageBps } from '../server/quoteEngine';
 
 /**
  * These tests exercise the engine through the deterministic simulator
@@ -94,14 +94,28 @@ describe('buildQuote — send side', () => {
       side: 'send' as const,
     };
     const float = await buildQuote({ ...base, rateType: 'float' });
-    // request with fixed must still resolve to float (V1 is float-only)
     const fixed = await buildQuote({ ...base, rateType: 'fixed' as const });
 
+    // V2 rate contracts: float is cheap and volatile-facing, fixed carries the
+    // lock premium and honours its number for the whole deposit window.
     expect(float.best!.fee.bps).toBe(50);
-    expect(fixed.best!.fee.bps).toBe(50);
-    // Float-only: no advantage for fixed
-    expect(fixed.best!.netOut).toBe(float.best!.netOut);
-    expect(Math.abs(fixed.expiresAt - float.expiresAt)).toBeLessThan(100);
+    expect(fixed.best!.fee.bps).toBe(100);
+    expect(BigInt(fixed.best!.netOut)).toBeLessThan(BigInt(float.best!.netOut));
+
+    // Fixed gets the long lock window; float the tight one.
+    const floatWindow = (float.expiresAt - Date.now()) / 1000;
+    const fixedWindow = (fixed.expiresAt - Date.now()) / 1000;
+    expect(floatWindow).toBeGreaterThan(0);
+    expect(floatWindow).toBeLessThanOrEqual(121);
+    expect(fixedWindow).toBeGreaterThanOrEqual(590);
+    expect(fixedWindow).toBeLessThanOrEqual(601);
+  });
+
+  it('widens default slippage for fixed-rate orders', () => {
+    expect(defaultSlippageBps('float', requireAsset('ETH.ETHEREUM'), requireAsset('USDC.ETHEREUM'))).toBe(75);
+    expect(defaultSlippageBps('fixed', requireAsset('ETH.ETHEREUM'), requireAsset('USDC.ETHEREUM'))).toBe(150);
+    expect(defaultSlippageBps('float', requireAsset('USDT.ETHEREUM'), requireAsset('USDC.ETHEREUM'))).toBe(20);
+    expect(defaultSlippageBps('fixed', requireAsset('USDT.ETHEREUM'), requireAsset('USDC.ETHEREUM'))).toBe(50);
   });
 
   it('never reports a net output above the gross output', async () => {

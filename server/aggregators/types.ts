@@ -1,4 +1,4 @@
-import type { Asset } from '../../shared/assets.js';
+import { ASSETS, isNativeEvm, type Asset } from '../../shared/assets.js';
 import type { AggregatorId, AggregatorQuote, FeePolicy, RateType } from '../../shared/types.js';
 
 export interface AdapterContext {
@@ -15,6 +15,13 @@ export interface AdapterContext {
   takerAddress?: string;
   /** USD price lookup, already resolved for this request. */
   priceOf: (asset: Asset) => number;
+  /**
+   * Pre-resolved gas cost in USD for the destination chain, sourced from the
+   * gas oracle (live `eth_gasPrice` when an RPC is configured, table
+   * otherwise). Only the simulator consumes this — live adapters price gas
+   * from their own upstream responses.
+   */
+  gasUsdOverride?: number;
   /** Aborts the upstream request when the overall quote deadline passes. */
   signal: AbortSignal;
 }
@@ -40,6 +47,17 @@ export class AdapterError extends Error {
     super(message);
     this.name = 'AdapterError';
   }
+}
+
+/**
+ * USD price of the gas token on the context's source chain. Gas must be
+ * priced in the chain's native asset (BNB on BSC, AVAX on Avalanche…), not in
+ * ETH — hard-coding an ETH price skews route ranking on every non-Ethereum
+ * chain by an order of magnitude. Falls back to the input asset's price.
+ */
+export function nativeUsdPrice(ctx: AdapterContext): number {
+  const native = ASSETS.find((a) => a.chain === ctx.from.chain && isNativeEvm(a));
+  return native ? ctx.priceOf(native) : ctx.priceOf(ctx.from);
 }
 
 /** fetch with a hard timeout that also respects the caller's abort signal. */

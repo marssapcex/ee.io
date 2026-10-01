@@ -81,6 +81,11 @@ contract DepositProxyFactory {
 
     function transferOwnership(address newOwner) external onlyOwner {
         require(newOwner != address(0), "zero");
+        // The old owner must not silently keep relayer rights after the
+        // handover — a departed operator could still trigger execute() calls.
+        if (newOwner != owner) {
+            isRelayer[owner] = false;
+        }
         owner = newOwner;
         isRelayer[newOwner] = true;
     }
@@ -123,6 +128,24 @@ contract DepositProxyFactory {
         address destination,
         uint256 minOut
     ) external whenNotPaused onlyRelayerOrOwner returns (address proxy) {
+        return _createProxy(salt, fromToken, toToken, destination, minOut);
+    }
+
+    /**
+     * @dev Internal core. This file previously called the EXTERNAL `createProxy`
+     *      by name from `createProxyForOrder`/`createAndExecute` — Solidity does
+     *      not allow internal calls to `external` functions (`this.f()` only),
+     *      and solc ≥0.8.24 rejects it with a DeclarationError. In other words
+     *      the factory did not compile under its own pragma (^0.8.24). The
+     *      shared logic lives here so all three entry points can use it.
+     */
+    function _createProxy(
+        bytes32 salt,
+        address fromToken,
+        address toToken,
+        address destination,
+        uint256 minOut
+    ) internal returns (address proxy) {
         require(proxyOf[salt] == address(0), "exists");
         bytes memory creationCode = abi.encodePacked(MINIMAL_PROXY_PREFIX, logic, MINIMAL_PROXY_SUFFIX);
         assembly {
@@ -142,7 +165,7 @@ contract DepositProxyFactory {
         uint256 minOut
     ) external whenNotPaused onlyRelayerOrOwner returns (address proxy) {
         bytes32 salt = saltFor(orderId, destination, fromToken, toToken);
-        return createProxy(salt, fromToken, toToken, destination, minOut);
+        return _createProxy(salt, fromToken, toToken, destination, minOut);
     }
 
     // Forward funded notification to proxy (depositor tracking)
@@ -161,7 +184,7 @@ contract DepositProxyFactory {
         bytes calldata data
     ) external whenNotPaused onlyRelayerOrOwner returns (address proxy) {
         bytes32 salt = saltFor(orderId, destination, fromToken, toToken);
-        proxy = createProxy(salt, fromToken, toToken, destination, minOut);
+        proxy = _createProxy(salt, fromToken, toToken, destination, minOut);
         DepositProxy(payable(proxy)).execute(router, data, salt);
     }
 }

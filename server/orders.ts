@@ -17,18 +17,34 @@ import type { ExecutionPlan, OrderRecord } from '../shared/types.js';
 const orders = new Map<string, OrderRecord>();
 const MAX_ORDERS = 500;
 
-export function createOrder(plan: ExecutionPlan): OrderRecord {
+export interface CreateOrderOpts {
+  /** Status-transition webhook — validated by the HTTP layer. */
+  webhookUrl?: string;
+  /** Integration partner that created this order (partner API). */
+  partnerId?: string;
+}
+
+export function createOrder(plan: ExecutionPlan, opts: CreateOrderOpts = {}): OrderRecord {
   const from = requireAsset(plan.fromAssetId);
   const chain = CHAINS[from.chain];
 
+  // 6 random digits collide by the ~1k-orders mark (birthday bound); setting
+  // the map key unconditionally then REPLACED another user's live order.
+  let orderId = '';
+  do {
+    orderId = `EE-${randomDigits(6)}`;
+  } while (orders.has(orderId));
+
   const order: OrderRecord = {
-    orderId: `EE-${randomDigits(6)}`,
+    orderId,
     createdAt: Date.now(),
     expiresAt: plan.expiresAt,
     status: 'awaiting_deposit',
     plan,
     confirmations: 0,
     requiredConfirmations: chain.confirmations,
+    webhookUrl: opts.webhookUrl,
+    partnerId: opts.partnerId,
   };
 
   if (orders.size >= MAX_ORDERS) {
@@ -111,6 +127,11 @@ function advance(order: OrderRecord): OrderRecord {
   }
 
   return order;
+}
+
+/** Test hook: wipe the store between cases. Production code must not call. */
+export function __resetOrders(): void {
+  orders.clear();
 }
 
 function randomDigits(count: number): string {

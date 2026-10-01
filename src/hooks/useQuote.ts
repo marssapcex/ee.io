@@ -70,6 +70,7 @@ export function useQuote(request: QuoteRequest | null, debounceMs = 420) {
         request.rateType,
         request.takerAddress ?? '',
         request.destinationAddress ?? '',
+        request.slippageBps ?? '',
       ].join('|')
     : '';
 

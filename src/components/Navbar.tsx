@@ -1,12 +1,48 @@
-import React from 'react';
+import { History, ExternalLink, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
 import type { AssetSummary } from '../lib/api';
 
 interface Props {
   assets: AssetSummary[];
+  /** Resume a tracker by id; the app fetches the record and reopens the flow. */
+  onResume?: (id: string, kind: 'order' | 'deposit') => void;
 }
 
-export const Navbar: React.FC<Props> = ({ assets }) => {
+interface RecentEntry {
+  id: string;
+  kind: 'order' | 'deposit';
+  pair: string;
+  at: number;
+}
+
+export const Navbar: React.FC<Props> = ({ assets, onResume }) => {
   const btc = assets.find((a) => a.symbol === 'BTC');
+  const [recent, setRecent] = useState<RecentEntry[]>([]);
+  const [open, setOpen] = useState(false);
+
+  // localStorage is the account — reread on every navigation-level update.
+  useEffect(() => {
+    const read = () => {
+      try {
+        setRecent(JSON.parse(localStorage.getItem('ee:recent') ?? '[]') as RecentEntry[]);
+      } catch {
+        setRecent([]);
+      }
+    };
+    read();
+    window.addEventListener('ee:recent-updated', read);
+    return () => window.removeEventListener('ee:recent-updated', read);
+  }, []);
+
+  const remove = (id: string) => {
+    const next = recent.filter((e) => e.id !== id);
+    try {
+      localStorage.setItem('ee:recent', JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+    setRecent(next);
+  };
 
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-ink-900/90 backdrop-blur-xl">
@@ -31,6 +67,60 @@ export const Navbar: React.FC<Props> = ({ assets }) => {
               </span>
             </span>
           )}
+
+          {recent.length > 0 && (
+            <div className="relative">
+              <button
+                onClick={() => setOpen((v) => !v)}
+                aria-label="Recent orders"
+                className="flex items-center gap-2 rounded-full border border-line bg-ink-850 px-3 py-1.5 text-[11px] font-semibold text-white/55 hover:text-white"
+              >
+                <History className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Recent</span>
+                <span className="grid h-4 w-4 place-items-center rounded-full bg-brand-cyan/15 font-mono text-[9px] font-bold text-brand-cyan">
+                  {recent.length}
+                </span>
+              </button>
+
+              {open && (
+                <div className="absolute right-0 mt-2 w-[300px] overflow-hidden rounded-[14px] border border-line bg-ink-800 shadow-2xl">
+                  <div className="border-b border-line px-3.5 py-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.1em] text-white/40">
+                    Recent swaps
+                  </div>
+                  <ul className="max-h-[280px] divide-y divide-white/[0.04] overflow-y-auto">
+                    {recent.map((entry) => (
+                      <li key={entry.id} className="group flex items-center gap-1 px-3.5 py-2.5">
+                        <button
+                          onClick={() => {
+                            setOpen(false);
+                            // A shareable link survives browser restarts.
+                            onResume?.(entry.id, entry.kind);
+                          }}
+                          className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate font-mono text-[12px] font-semibold text-white">
+                              {entry.id}
+                            </div>
+                            <div className="truncate text-[10px] text-white/35">{entry.pair}</div>
+                          </div>
+                          <ExternalLink className="h-3 w-3 shrink-0 text-white/20 group-hover:text-brand-cyan" />
+                        </button>
+                        <button
+                          onClick={() => remove(entry.id)}
+                          aria-label={`Remove ${entry.id}`}
+                          className="rounded-md p-1 text-white/15 opacity-0 transition group-hover:opacity-100 hover:text-white/60"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
           <button className="rounded-full bg-white px-4 py-1.5 text-[13px] font-semibold text-black transition hover:bg-white/90">
             Get started
           </button>

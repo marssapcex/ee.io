@@ -1,8 +1,11 @@
-import { Check, Copy, ExternalLink, Loader2, PlayCircle, X } from 'lucide-react';
+import { Check, Copy, ExternalLink, FileDown, Loader2, PlayCircle, ShieldCheck, X } from 'lucide-react';
+import { FAILURE_MODE_LABEL } from '../../shared/types';
 import React, { useEffect, useState } from 'react';
 import { formatDisplay } from '../../shared/money';
 import type { OrderRecord } from '../../shared/types';
+import { useEventStream } from '../hooks/useOrderStream';
 import { api, type AssetSummary } from '../lib/api';
+import { downloadReceipt } from '../lib/receipt';
 
 interface Props {
   order: OrderRecord;
@@ -42,10 +45,20 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
   const [copied, setCopied] = useState(false);
   const [simulating, setSimulating] = useState(false);
 
-  // Poll while the order is in flight. Stops as soon as it settles so we do
-  // not hammer the API for a finished order.
+  // Live updates: SSE pushes transitions the moment they happen; the 2s
+  // poll only runs while the stream is down. Terminal states close the path.
+  const terminal =
+    order.status === 'completed' || order.status === 'expired' || order.status === 'refunded';
+  const { latest, streaming } = useEventStream<OrderRecord>(
+    terminal ? null : `/api/orders/${order.orderId}/stream`,
+  );
+
   useEffect(() => {
-    if (order.status === 'completed' || order.status === 'expired') return;
+    if (latest && latest.orderId === order.orderId) setOrder(latest);
+  }, [latest, order.orderId]);
+
+  useEffect(() => {
+    if (streaming || terminal) return;
 
     const timer = setInterval(() => {
       api
@@ -54,7 +67,7 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
         .catch(() => undefined);
     }, 2000);
     return () => clearInterval(timer);
-  }, [order.orderId, order.status]);
+  }, [order.orderId, streaming, terminal]);
 
   const active = stageIndex(order.status);
   const isDeposit = order.plan.transaction.kind === 'deposit';
@@ -87,6 +100,10 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
             <h2 className="text-sm font-bold text-white">Order {order.orderId}</h2>
             <p className="font-mono text-[12px] text-white/35">
               via {order.plan.displayName} · {order.plan.fee.bps} bps
+            </p>
+            <p className="mt-1 flex items-center gap-1 font-mono text-[10px] text-brand-greenBright/80">
+              <ShieldCheck className="h-3 w-3" />
+              {FAILURE_MODE_LABEL[order.plan.failureMode]}
             </p>
           </div>
           <button
@@ -197,6 +214,14 @@ export const OrderTracker: React.FC<Props> = ({ order: initial, fromAsset, toAss
           ee.io holds no funds and stores no account. This tracker is a read-only view of a public
           on-chain process — closing it does not affect your swap.
         </p>
+
+        <button
+          onClick={() => downloadReceipt(`/api/orders/${order.orderId}/receipt`, `${order.orderId}`)}
+          className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border border-line bg-ink-800/60 px-4 py-2 text-[11px] font-semibold text-white/45 transition hover:bg-ink-700 hover:text-white"
+        >
+          <FileDown className="h-3.5 w-3.5" />
+          Download evidence receipt (JSON + keccak hash)
+        </button>
       </div>
     </div>
   );

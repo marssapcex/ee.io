@@ -95,6 +95,12 @@ export const thorchainAdapter: Adapter = {
       throw new AdapterError('Amount rounds to zero at 1e8 precision', 'thorchain');
     }
 
+    // THORChain enforces a ~100 bps floor on liquidity_tolerance_bps, so the
+    // tolerance SENT can differ from the UI's tighter slippage. The trade
+    // limit below must use the tolerance actually sent, otherwise the memo's
+    // refund floor would be stricter than what the network was told to honour.
+    const toleranceBps = Math.max(ctx.slippageBps, 100);
+
     const params = new URLSearchParams({
       from_asset: from.thorchainAsset!,
       to_asset: to.thorchainAsset!,
@@ -102,7 +108,7 @@ export const thorchainAdapter: Adapter = {
       affiliate,
       affiliate_bps: String(affiliateBps),
       // Cap the slip users can silently eat; the network refunds beyond this.
-      liquidity_tolerance_bps: String(Math.max(ctx.slippageBps, 100)),
+      liquidity_tolerance_bps: String(toleranceBps),
     });
     if (ctx.destinationAddress) params.set('destination', ctx.destinationAddress);
 
@@ -129,8 +135,8 @@ export const thorchainAdapter: Adapter = {
     const gasUsd = toNumber(fromThorchain1e8(outboundFee1e8, to.decimals), to.decimals) * ctx.priceOf(to);
 
     // Trade limit: floor the output so an adverse move refunds instead of
-    // filling at a bad price.
-    const limit1e8 = (expectedOut1e8 * BigInt(10_000 - ctx.slippageBps)) / 10_000n;
+    // filling at a bad price. Uses the tolerance actually sent to the network.
+    const limit1e8 = (expectedOut1e8 * BigInt(10_000 - toleranceBps)) / 10_000n;
     const minOut = fromThorchain1e8(limit1e8, to.decimals);
 
     const sourceChain = CHAINS[from.chain];
@@ -148,9 +154,17 @@ export const thorchainAdapter: Adapter = {
 
     const notes: string[] = [];
     if (data.streaming_swap_seconds) {
+      // The pre-fix note printed the same number twice ("from X to X bps") —
+      // it meant to compare non-streaming vs streaming output. Show the real
+      // uplift in output terms instead.
+      const plainOut = data.expected_amount_out ? BigInt(data.expected_amount_out) : 0n;
+      const improvementBps =
+        plainOut > 0n ? Number(((expectedOut1e8 - plainOut) * 10_000n) / plainOut) : 0;
       notes.push(
-        `Streaming swap over ${data.streaming_swap_blocks} blocks (~${data.streaming_swap_seconds}s) ` +
-          `to cut slip from ${data.fees.slippage_bps} to ${data.fees.slippage_bps} bps`,
+        `Streaming swap over ${data.streaming_swap_blocks} blocks (~${data.streaming_swap_seconds}s)` +
+          (improvementBps > 0
+            ? ` — recovers ~${(improvementBps / 100).toFixed(2)}% of output vs a single swap`
+            : ' — splits the trade to reduce slip'),
       );
     }
     if (data.recommended_min_amount_in) {

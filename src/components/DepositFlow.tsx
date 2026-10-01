@@ -1,10 +1,13 @@
-import { Check, Clipboard, ExternalLink, Loader2, ShieldCheck, Timer } from 'lucide-react';
+import { Check, Clipboard, Crosshair, ExternalLink, FileDown, Loader2, ShieldCheck, Timer, TriangleAlert } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { formatDisplay } from '../../shared/money';
+import { CHAINS, type ChainId } from '../../shared/chains';
+import { formatDisplay, formatUnits } from '../../shared/money';
 import type { DepositRecord } from '../../shared/types';
+import { useEventStream } from '../hooks/useOrderStream';
 import type { AssetSummary } from '../lib/api';
 import { api } from '../lib/api';
+import { downloadReceipt } from '../lib/receipt';
 
 interface Props {
   deposit: DepositRecord;
@@ -26,8 +29,23 @@ export const DepositFlow: React.FC<Props> = ({ deposit: initial, fromAsset, toAs
       .catch(() => {});
   }, [deposit.depositAddress]);
 
-  // Poll status every 3s
+  // Live updates: SSE pushes every status transition; polling is only the
+  // fallback while the stream is reconnecting. Terminal states close the path
+  // so we scale to zero traffic once the trade settles.
+  const terminal =
+    deposit.status === 'executed' ||
+    deposit.status === 'refunded' ||
+    deposit.status === 'expired';
+  const { latest, streaming } = useEventStream<DepositRecord>(
+    terminal ? null : `/api/deposit/${deposit.depositId}/stream`,
+  );
+
   useEffect(() => {
+    if (latest && latest.depositId === deposit.depositId) setDeposit(latest);
+  }, [latest, deposit.depositId]);
+
+  useEffect(() => {
+    if (streaming || terminal) return;
     let alive = true;
     const id = setInterval(async () => {
       try {
@@ -36,7 +54,7 @@ export const DepositFlow: React.FC<Props> = ({ deposit: initial, fromAsset, toAs
       } catch {}
     }, 3000);
     return () => { alive = false; clearInterval(id); };
-  }, [deposit.depositId]);
+  }, [deposit.depositId, streaming, terminal]);
 
   const copy = async (text: string, key: string) => {
     await navigator.clipboard.writeText(text);
@@ -47,6 +65,7 @@ export const DepositFlow: React.FC<Props> = ({ deposit: initial, fromAsset, toAs
   const amountHuman = formatDisplay(BigInt(deposit.sendAmount), fromAsset.decimals, 6);
   const receiveHuman = formatDisplay(BigInt(deposit.receiveAmount), toAsset.decimals, 6);
   const isNative = fromAsset.address?.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  const explorer = CHAINS[deposit.chain as ChainId]?.explorerAddress ?? CHAINS.ethereum.explorerAddress;
 
   const statusLabel: Record<string, { label: string; color: string; desc: string }> = {
     awaiting_funds: { label: 'Awaiting funds', color: 'text-white/60', desc: 'Send exactly the amount below to the address. Funds are safe in a one-time contract.' },
@@ -79,6 +98,16 @@ export const DepositFlow: React.FC<Props> = ({ deposit: initial, fromAsset, toAs
         </div>
 
         <div className="space-y-4 p-5">
+          {/* DEMO banner — a placeholder-factory address burns real funds */}
+          {deposit.simulated && (
+            <div className="flex items-start gap-2 rounded-[12px] border border-brand-red/40 bg-brand-red/10 px-3 py-2.5 text-[11px] leading-relaxed text-brand-red">
+              <TriangleAlert className="mt-px h-4 w-4 shrink-0" />
+              <span>
+                <b>Demo mode.</b> No proxy factory is deployed for this chain in this environment —
+                this address is derived from a placeholder contract. <b>Do not send real funds.</b>
+              </span>
+            </div>
+          )}
           {/* status */}
           <div className="flex items-center justify-between rounded-[12px] border border-white/[0.06] bg-ink-850 px-3 py-2.5">
             <span className={`flex items-center gap-2 text-[12px] font-semibold ${st.color}`}>
@@ -142,7 +171,24 @@ export const DepositFlow: React.FC<Props> = ({ deposit: initial, fromAsset, toAs
 
           {/* custody proof */}
           <div className="rounded-[12px] border border-white/[0.06] bg-white/[0.02] px-3.5 py-3">
-            <div className="flex items-center gap-2 text-[11px] font-bold text-white/80"><ShieldCheck className="h-3.5 w-3.5 text-brand-greenBright" />Non-custodial proof</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-[11px] font-bold text-white/80"><ShieldCheck className="h-3.5 w-3.5 text-brand-greenBright" />Non-custodial proof</div>
+              {deposit.rateType === 'fixed' && (
+                <span className={`rounded-md px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wide ${deposit.lockKind === 'target' ? 'bg-brand-amber/10 text-brand-amber' : 'bg-brand-cyan/10 text-brand-cyan'}`}>
+                  {deposit.lockKind === 'target' ? 'Target lock' : 'Locked rate'}
+                </span>
+              )}
+            </div>
+            {deposit.rateType === 'fixed' && deposit.lockKind !== 'target' && (
+              <p className="mt-2 rounded-[8px] border border-brand-cyan/15 bg-brand-cyan/[0.05] px-2.5 py-2 text-[10px] leading-relaxed text-brand-cyan/80">
+                Lock-or-refund: execution only happens if the route still delivers your locked amount.
+                Market below the lock? Nothing signs — funds sit untouched in the proxy until the
+                route recovers. Nobody settles you worse to protect an inventory float.
+              </p>
+            )}
+            {deposit.lockKind === 'target' && deposit.targetMinReceive && (
+              <TargetWatch deposit={deposit} symbol={toAsset.symbol} decimals={toAsset.decimals} />
+            )}
             <ul className="mt-2 list-disc space-y-1 pl-4 font-mono text-[10px] leading-relaxed text-white/40">
               <li>Address is CREATE2: <span className="text-white/60">keccak256(0xff ++ factory ++ salt ++ codeHash)</span> — exists before funding, no private key.</li>
               <li>Proxy forwards <b className="text-white/70">only</b> to your destination. Factory cannot drain elsewhere.</li>
@@ -153,23 +199,90 @@ export const DepositFlow: React.FC<Props> = ({ deposit: initial, fromAsset, toAs
 
           {/* actions */}
           <div className="flex gap-2">
-            <button
-              onClick={async () => { try { await api.depositFunded(deposit.depositId); const r=await api.depositStatus(deposit.depositId); setDeposit(r.deposit);} catch {} }}
-              className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] py-2.5 text-[12px] font-semibold text-white/70 hover:bg-white/[0.08] hover:text-white"
-            >
-              Simulate funded (demo)
-            </button>
+            {deposit.simulated && (
+              <button
+                onClick={async () => { try { await api.depositFunded(deposit.depositId); const r=await api.depositStatus(deposit.depositId); setDeposit(r.deposit);} catch {} }}
+                className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] py-2.5 text-[12px] font-semibold text-white/70 hover:bg-white/[0.08] hover:text-white"
+              >
+                Simulate funded (demo)
+              </button>
+            )}
             <a
-              href={`https://etherscan.io/address/${deposit.depositAddress}`}
+              href={explorer(deposit.depositAddress)}
               target="_blank"
               rel="noreferrer"
-              className="flex items-center justify-center gap-1.5 rounded-xl bg-ink-800 px-4 py-2.5 text-[12px] font-semibold text-white/60 hover:bg-ink-700 hover:text-white"
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-ink-800 px-4 py-2.5 text-[12px] font-semibold text-white/60 hover:bg-ink-700 hover:text-white"
             >
-              View <ExternalLink className="h-3.5 w-3.5" />
+              View on explorer <ExternalLink className="h-3.5 w-3.5" />
             </a>
           </div>
+          <button
+            onClick={() => downloadReceipt(`/api/deposit/${deposit.depositId}/receipt`, deposit.depositId)}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-2 text-[11px] font-semibold text-white/45 transition hover:bg-white/[0.06] hover:text-white"
+          >
+            <FileDown className="h-3.5 w-3.5" />
+            Download evidence receipt (JSON + keccak hash)
+          </button>
         </div>
       </div>
     </div>
   );
 };
+
+/**
+ * Target-watch panel (v0.4 target lock): shows the pinned execution
+ * condition and how close the last observed route came to it. The market
+ * observation is volatile state; the target itself is evidence-pinned —
+ * that asymmetry is rendered exactly as it is hashed.
+ */
+const TargetWatch: React.FC<{ deposit: DepositRecord; symbol: string; decimals: number }> = ({
+  deposit,
+  symbol,
+  decimals,
+}) => {
+  const target = BigInt(deposit.targetMinReceive ?? '0');
+  const observed = deposit.lastObservedOut ? BigInt(deposit.lastObservedOut) : null;
+  const progress =
+    observed !== null && target > 0n ? Number((observed * 10_000n) / target) / 100 : null;
+  const secondsLeft = Math.max(0, Math.floor((deposit.expiresAt - Date.now()) / 1000));
+
+  return (
+    <div className="mt-2 rounded-[8px] border border-brand-amber/20 bg-brand-amber/[0.05] px-2.5 py-2">
+      <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-brand-amber">
+        <Crosshair className="h-3 w-3" /> limit order without an orderbook
+      </div>
+      <p className="mt-1.5 text-[10px] leading-relaxed text-brand-amber/80">
+        Executes <b>only</b> if a route pays ≥{' '}
+        <b className="text-white/80">
+          {formatUnits(target, decimals)} {symbol}
+        </b>
+        . Target pinned in your receipt — nothing else can happen to the funds; expiry auto-refunds.
+      </p>
+      <div className="mt-2">
+        <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-brand-amber/60 to-brand-amber transition-all duration-500"
+            style={{ width: `${progress === null ? 0 : Math.min(100, progress)}%` }}
+          />
+        </div>
+        <div className="mt-1 flex items-center justify-between font-mono text-[9px] text-white/35">
+          <span>
+            route now:{' '}
+            {observed !== null ? `${formatUnits(observed, decimals)} ${symbol}` : '— awaiting first observation —'}
+            {progress !== null && !terminalStatus(deposit) && (
+              <span className="text-brand-amber/80"> {progress.toFixed(1)}%</span>
+            )}
+          </span>
+          <span className="flex items-center gap-1">
+            <Timer className="h-2.5 w-2.5" />
+            {secondsLeft > 0 ? `${Math.floor(secondsLeft / 3600)}h ${Math.floor((secondsLeft % 3600) / 60)}m left` : 'expired'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+function terminalStatus(d: DepositRecord): boolean {
+  return d.status === 'executed' || d.status === 'refunded' || d.status === 'expired';
+}
