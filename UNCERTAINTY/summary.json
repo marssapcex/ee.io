@@ -1,0 +1,14 @@
+{
+  "N": 12000,
+  "mean_delta_logS": 1.0879561405934937,
+  "std_delta_logS": 0.5084356678775986,
+  "q025": 0.09797451317297322,
+  "q50": 1.083984109082876,
+  "q975": 2.076532444403447,
+  "prob_gain_gt_0.5": 0.87625,
+  "prob_dG_lt_0": 0.9784166666666667,
+  "worst_delta": -0.7799749612095095,
+  "best_delta": 3.1529532327060172,
+  "seed": 20261018,
+  "note": "MP is dominant driver [COMPUTED: uncertainty.py -> summary.json -> correlations]"
+}

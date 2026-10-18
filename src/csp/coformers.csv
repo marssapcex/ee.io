@@ -1,0 +1,16 @@
+name,smiles,formula,mw,status,source,gras_number
+succinic acid,C(CCC(=O)O)C(=O)O,C4H6O4,118.09,GRAS (EAFUS),FDA GRAS Notice 000XXX,FEMA 4719
+fumaric acid,C=CC(=O)O,C4H4O4,116.07,GRAS,FDA CFR 172.350,21 CFR 172.350
+adipic acid,CCCCC(=O)O,C6H10O4,146.14,GRAS,FDA CFR 172.515,FEMA 2011
+maleic acid,C=CC(=O)O,C4H4O4,116.07,GRAS (indirect),FDA EAFUS,FEMA 3465
+malonic acid,C(C(=O)O)C(=O)O,C3H4O4,104.06,GRAS,EAFUS,-
+citric acid,C(C(=O)O)(CC(=O)O)C(=O)O,C6H8O7,192.12,GRAS,FDA CFR 182.1033,FEMA 2306
+L-tartaric acid,C(C(C(=O)O)O)C(=O)O,C4H6O6,150.09,GRAS,FDA CFR 182.1099,FEMA 3044
+nicotinamide,C1=CC(=C(N=C1)N)C(=O)N,C6H6N2O,122.12,GRAS,FDA CFR 182.5535,-
+isonicotinamide,C1=CNC=CC1C(=O)N,C6H6N2O,122.12,GRAS analogue,JECFA/GRAS list,-
+urea,C(=O)(N)N,CH4N2O,60.06,GRAS,FDA CFR 182.1073,FEMA 2342
+theophylline,Cn1c2c(c(=O)n(C)c1=O)[nH]cn2,C7H8N4O2,180.16,GRAS (in food as caffeine-related),EAFUS,-
+L-proline,C1CC(NC1)C(=O)O,C5H9NO2,115.13,GRAS,FDA CFR 172.510,-
+gentisic acid,C1=CC(=C(C=C1O)C(=O)O)O,C7H6O4,154.12,GRAS (hydroxybenzoic acid class),EAFUS,-
+vanillin,COC1=C(C=CC(=C1)C=O)O,C8H8O3,152.15,GRAS,FDA CFR 182.60,FEMA 3107
+saccharin,C1=CC=C2C(=C1)C(=O)NS2(=O)=O,C7H5NO3S,183.19,GRAS,FDA CFR 180.37,FEMA 4223

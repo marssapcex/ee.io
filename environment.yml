@@ -1,0 +1,21 @@
+name: eeio-csp
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11.2
+  - pip
+  - pip:
+    - numpy==2.4.6  # BSD-3 CLEARED
+    - scipy==1.17.1  # BSD-3 CLEARED
+    - pandas==3.0.6  # BSD-3 CLEARED
+    - matplotlib==3.11.2  # PSF CLEARED
+    - rdkit-pypi==2022.09.5  # BSD-3 CLEARED for commercial
+    - pymatgen  # MIT CLEARED
+    - ase==3.29.0  # LGPL-2.1+ CLEARED with attribution
+    - spglib==2.8.0  # BSD-3 CLEARED
+    - fpdf2  # LGPL-2.1 CLEARED
+    - reportlab  # BSD-3 CLEARED
+  # Tools NOT installed this run but CLEARED licences noted: xtb LGPL-3.0, QE GPL-2.0, GPAW GPL-3.0, Lean Apache-2.0
+variables:
+  GLOBAL_SEED: 20261018
+  LEAN_VERSION: 4.7.0  # Apache-2.0, not installed — see ENV_REPORT.md

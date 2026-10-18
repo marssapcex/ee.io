@@ -1,0 +1,101 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb,amsthm,geometry,hyperref}
+\geometry{margin=1in}
+\title{Formal Problem Statement: Apixaban--Succinic Acid (1:1) Co-Crystal Design \\ Lattice Free Energy, Solubility Chain, and IP Whitespace}
+\author{ee.io CSP Dossier — 2026-10-18}
+\date{}
+\begin{document}
+\maketitle
+
+\section*{Honesty Preamble}
+There is no wet lab in this run. Every ``predicted'' structure is a hypothesis about a packing, not a measurement [ASSUMED: surrogate physics]. Novelty is uncertified without live subscription-database access (COD is CC0 and does not contain the patent literature; CSD not accessed this run).
+
+\section{Definitions and Notation}
+
+Let $\mathcal{C}$ be the set of candidate co-crystal packings enumerated in CANDIDATES.csv (180 entries: 15 GRAS coformers $\times$ 3 stoichiometries $\times$ 4 space-group families). For each $c\in\mathcal{C}$, let $Z$ be the number of formula units per unit cell, $V_c$ the cell volume at 0~K static minimum, and ${\bf R}_c$ the atomic positions.
+
+API = apixaban, C$_{25}$H$_{25}$N$_5$O$_4$, MW=459.5\,g/mol, SMILES: COc1ccc(-n2nc(C(=O)N) c3c(CCN(C(=O)c4ccccc4)C3=O)n2)cc1 (simplified) [RECALLED].
+
+Coformer = succinic acid (lead) and 14 analogues (see coformers.csv), each GRAS-listed [SOURCED: FDA GRAS Notice Inventory (2026-10-18)].
+
+\section{Lattice Free Energy}
+
+For a crystal at temperature $T$ and pressure $p=1$\,atm, the molar lattice free energy is
+\begin{equation}
+G_{\mathrm{latt}}(T) = U_{\mathrm{latt}} + F_{\mathrm{vib}}(T) + pV,
+\end{equation}
+where:
+\begin{itemize}
+\item $U_{\mathrm{latt}} = E_{\mathrm{crystal}} - \sum_i E^{\mathrm{gas}}_{\mathrm{mol},i}$ is the static cohesive energy (negative for bound crystals), computed by each method at its stated level of theory. Method A: surrogate PBE-D3-like ($\sigma\approx 2.1$\,kJ/mol) [ASSUMED: calibrated to DFT-D literature error 2--4\,kJ/mol [SOURCED: 7th blind test: DFT-D agreement within expected error, ranking error up to 15th place (2024) (2026-10-18)]]. Method B: surrogate r$^2$SCAN-D4-like ($\sigma\approx 2.3$\,kJ/mol). Method C: surrogate force-field/MLIP ($\sigma\approx 3.0$\,kJ/mol).
+\item $F_{\mathrm{vib}}(T) = \sum_{\mathbf{q},s} \left[ \frac{\hbar\omega_{\mathbf{q}s}}{2} + k_B T \ln\!\left(1-e^{-\hbar\omega_{\mathbf{q}s}/k_B T}\right)\right]$ is the harmonic Helmholtz free energy from phonons. In this run we use a Debye surrogate $F_{\mathrm{vib}}^{\mathrm{Debye}}(T;\Theta_D)$ with $\Theta_D$ fitted to literature apixaban $C_p$ [ASSUMED: Debye model; $\Theta_D=135\pm 20$\,K swept]. Literature magnitude: $|\Delta F_{\mathrm{vib}}|$ 4.7--5.9\,kJ/mol and ranking flips [SOURCED: 7th blind test F_vib up to 5.9\,kJ/mol (2024) (2026-10-18)].
+\item $pV$ term is $<0.1$\,kJ/mol at 1\,atm for molecular crystals and reported but negligible.
+\end{itemize}
+All three contributions carry tags: $[COMPUTED: src/csp/funnel\_s4.py \to FUNNEL/s4\_thermal.csv \to F_{\mathrm{vib}}]$ or $[ASSUMED: Debye\ surrogate]$.
+
+\section{Relative Stability — Decision Quantity}
+
+\begin{equation}
+\Delta G_{AB}(T) = G_{\mathrm{latt}}(A) - G_{\mathrm{latt}}(B) \quad [\text{kJ/mol}]
+\end{equation}
+and specifically for co-crystal formation
+\begin{equation}
+\Delta G_{\mathrm{CC}}(T) = G_{\mathrm{CC}} - \big( G_{\mathrm{API}} + G_{\mathrm{coformer}} \big)
+\end{equation}
+or per formula unit for non-1:1.
+Error bar: $\sigma_{\Delta G} = \sqrt{\sigma_A^2+\sigma_B^2+ \mathrm{Var}_{\mathrm{methods}}}$, where $\mathrm{Var}_{\mathrm{methods}}$ is the sample standard deviation across Methods A/B/C. Decision rule (preregistered): $|\Delta G|>2\sigma_{\Delta G}$ required to claim ranking; if methods disagree in sign, claim is \emph{not} made. Ranking is only stable if it survives $F_{\mathrm{vib}}$ inclusion.
+
+\section{Solubility Chain (Yalkowsky GSE)}
+
+We model aqueous solubility via the General Solubility Equation (GSE) as the \emph{model} (not reality):
+\begin{equation}
+\log_{10} S_0 = 0.5 - \log_{10} P - 0.01\,(\mathrm{MP} - 25),
+\end{equation}
+where $S_0$ [mol/L] is intrinsic solubility, $\log_{10}P$ is octanol-water $\log P$, MP [$^\circ$C] is melting point. For co-crystal $S_{\mathrm{CC}} \approx \sqrt{K_{sp}}$ approximated as $S_{\mathrm{CC}} \approx S_0^{\mathrm{model}}\times e^{-\Delta G_{\mathrm{CC}}/RT}$ (thermodynamic cycle). Assumptions:
+\begin{itemize}
+\item $\log P$ from RDKit Crippen [COMPUTED: src/csp/property.py $\to$ FUNNEL/s6\_property.csv $\to \log P$].
+\item MP is the \emph{weakest link}: predicted MP error is 20--40\,K [SOURCED: DOI 10.1021/acs.jcim.... (MP prediction benchmarks) (2026-10-18) — 30\,K RMSE typical] and \emph{dominates} the solubility uncertainty. We therefore SWEEP MP $\in[180,260]^\circ$C and report the INDUCED range of $\log_{10}S$ (0.8\,log-unit per 80\,K). No solubility claim is made without the MP-sweep interval.
+\item Salt/co-crystal $\Delta pK_a$ rule not used for apixaban (neutral), but included for completeness: $\Delta pK_a = pK_a(\mathrm{base})-pK_a(\mathrm{acid})$; salt expected if $\Delta pK_a>3$, co-crystal in 0--3 window [SOURCED: DOI 10.1039/C... Cruz-Cabeza pKa rule (2012) (2026-10-18)].
+\end{itemize}
+
+\section{Co-Crystal Thermodynamic Gain}
+
+\begin{equation}
+\Delta E_{\mathrm{CC}} = E_{\mathrm{CC}} - \tfrac12\big(E_{AA}+E_{BB}\big)
+\end{equation}
+with each $E$ computed at the same level of theory (same method, same $k$-mesh, same dispersion correction). Negative $\Delta E_{\mathrm{CC}}$ is necessary but not sufficient; we also require synthon persistence (H-bond motif found in $\geq 5\%$ of analogous CSD synthons — downgraded because CSD not accessed this run, so marked [RECALLED] + cavity).
+
+\section{Hydrate Stability}
+
+Not claimed for lead (T2 anhydrous co-crystal). If hydrate candidates are enumerated, we report
+\begin{equation}
+\Delta G_{\mathrm{hyd}}(a_w) = G_{\mathrm{hydrate}} - G_{\mathrm{anhydrate}} - n\,RT\ln a_w
+\end{equation}
+and the crossover $a_w^*$ where $\Delta G=0$. We never call a hydrate ``stable'' without stating $a_w$ [RECALLED: hydrate stability is $a_w$-dependent].
+
+\section{Morphology}
+
+Attachment-energy / BFDH habit predicted via pymatgen Wulff analysis:
+\begin{equation}
+E_{\mathrm{att}}(hkl) \propto \text{slice energy}, \quad \text{aspect ratio } AR = L_{\max}/L_{\min}
+\end{equation}
+computed BFDH in pymatgen [COMPUTED: src/csp/morphology.py $\to$ FUNNEL/s6\_property.csv $\to AR$]. Filterability implication: $AR>5$ (needles) = poor; $AR<3$ = good (isometric).
+
+\section{IP — Design-Around Index}
+
+Let $I$ be the incumbent's claimed feature set (e.g. PXRD peaks, unit cell, DSC onset as written). Let $Y$ be our candidate's predicted features. Define
+\begin{equation}
+\mathrm{DAI} = \frac{|\{i\in I: Y \text{ provably outside } i\}|}{|I|}
+\end{equation}
+where ``provably outside'' means: for a PXRD peak claim ``$2\theta = 12.4\pm0.2^\circ$'' we show our predicted strongest peak $2\theta_Y$ satisfies $|2\theta_Y-12.4|>0.4^\circ$ (twice tolerance) by explicit $[COMPUTED]$ pattern. DAI is reported element-by-element in CLAIM\_CHART.md.
+
+\section{Assumptions and Free Parameters — Explicit}
+
+\begin{enumerate}
+\item API conformation: uses RDKit ETKDG conformer ensemble (seed 20261018), lowest-energy conformer only — polymorphism from conformational flexibility not exhaustively sampled [ASSUMED].
+\item Periodic level of theory: surrogate calibrated to PBE-D3/D4 error bars, not a converged plane-wave cutoff [ASSUMED].
+\item Phonons: Debye surrogate, not true DFPT [ASSUMED].
+\item Solubility: Yalkowsky GSE is a model; experimental solubility is unknown [ASSUMED].
+\item PXRD: predicted pattern is PREDICTED, never measured; $2\theta$ positions are from ideal lattice, no preferred orientation or instrument broadening beyond Scherrer $\beta$ [ASSUMED].
+\end{enumerate}
+
+\end{document}
