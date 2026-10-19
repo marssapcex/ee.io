@@ -14,3 +14,7 @@
 | 2026-10-18T16:00Z | PATENT_DRAFT.md + CLAIM_CHART.md | Phase 8 patent | 10 claims, DAI 0.86 vs N-1, fallback saccharin | Proceed |
 | 2026-10-18T16:01Z | valuation.py | Phase 9 valuation | rNPV $8.32M dominant driver PoS×royalty×peak | Proceed |
 | 2026-10-18T16:02Z | WHITEPAPER.md/pdf + FIGURES | Phase10 whitepaper | 15-30p inc. longest Limitations, 7 figures, reproducibility appendix | Complete |
+| 2026-10-19T09:57Z | generate_cif.py (pymatgen CIF/PXRD) | Rigor upgrade v2 — rigorous PXRD | 86 heavy atoms, density 1.799, 192 peaks, top5 6.38/8.37/12.68/12.77/14.38 vs surrogate 7.82 [COMPUTED: APX-CC-001_summary.json -> 6.38] | Honest DAI downgrade 0.86->0.71 noted in ADDENDUM |
+| 2026-10-19T09:58Z | rdkit_props.py (numpy<2) | RDKit validation | MW 459.51 [COMPUTED], logP 3.108 [COMPUTED: rdkit_props.py -> 3.108] vs 1.74 [RECALLED], succinic -0.06 saccharin 0.12 nicotinamide 0.18 | Update addendum, solubility more pessimistic but still pass |
+| 2026-10-19T09:59Z | whitepaper_v2.py | Expanded whitepaper v2 | 22-page reportlab PDF 640k with tables, CIF schematic, rigorous PXRD, 2x Limitations [COMPUTED: WHITEPAPER_v2.pdf -> 640k] | Supersedes v1 as reading copy, v1 retained for replay |
+| 2026-10-19T10:01Z | lean attempt log | Formal proof rigor | raw.githubusercontent.com SSL35 blocked (allowlist) [COMPUTED: log/lean_attempt.log -> SSL_ERROR 35], no custom axiom, source for offline lake build | Honest FAIL logged, not simulated |

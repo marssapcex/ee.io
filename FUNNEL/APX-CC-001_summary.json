@@ -1,0 +1,26 @@
+{
+  "id": "APX-CC-001",
+  "formula": "C29H31N5O8 (apixaban + succinic 1:1)",
+  "MW": 577.6,
+  "cell": {
+    "a": 7.12,
+    "b": 10.84,
+    "c": 14.02,
+    "alpha": 82.1,
+    "beta": 85.3,
+    "gamma": 79.2,
+    "space_group": "P-1",
+    "Z": 2
+  },
+  "density_gcm3": 1.798911309260405,
+  "PXRD_top5_deg": [
+    6.38,
+    8.37,
+    12.68,
+    12.77,
+    14.38
+  ],
+  "method": "pymatgen XRDCalculator CuKa [COMPUTED: generate_cif.py -> APX-CC-001_predicted.cif -> top5]",
+  "tag": "PREDICTED HYPOTHESIS not measured [ASSUMED: surrogate packing]",
+  "note": "Structure is hypothesis packing; PXRD computed from ideal lattice, no thermal expansion or instrument broadening beyond Scherrer"
+}
