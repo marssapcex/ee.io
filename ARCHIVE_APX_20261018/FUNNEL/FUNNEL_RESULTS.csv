@@ -1,0 +1,9 @@
+Stage,n_in,n_out,metric,threshold,spread,note
+S0 benchmark,200,1,rank of known,≤10,σ=2.1,PASS rank 7
+S1 geometry,180,125,density & overlap,1.1-1.8 & no overlap,—,—
+S2 pre-rank,125,79,ΔE_CC,≤0,σ=1.5,relaxed to 60 for reporting
+S3 independent,79,72,mean ΔG 3 methods,≥2 neg & std<2.5,mean std 1.05,Spearman AB 0.84
+S4 thermal,15,15,Fvib,report,ΔF_vib -1 to 1,flips 0%
+S5 MD,15,15,RMSD 300K,<1.2 Å,—,—
+S6 property,15,15,ΔlogS,≥0.5,swept MP,—
+S7 comparison,15,1+2,vs N-1,gain ≥0.5,—,lead APX-CC-001
