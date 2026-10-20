@@ -39,6 +39,7 @@ Usage (run.sh does this for you):
 import base64
 import hashlib
 import hmac
+import glob
 import json
 import os
 import sys
@@ -474,8 +475,19 @@ def save_state(st):
         json.dump(st, f, indent=2)
 
 
-LOG_FILES = [os.path.join(os.environ.get("E2E_LOGS", ""), name)
-             for name in ("rsk.log", "powpeg-federator1.log")]
+def _log_files():
+    """Every log this run produced: rsk.log holds the node's own logback output,
+    powpeg-<generator>.log holds the JVM's stdout/stderr."""
+    d = os.environ.get("E2E_LOGS", "")
+    files = [os.path.join(d, "rsk.log")]
+    try:
+        files += sorted(glob.glob(os.path.join(d, "powpeg-*.log")))
+    except Exception:
+        pass
+    return [f for f in files if os.path.exists(f)]
+
+
+LOG_FILES = _log_files()
 
 
 def bridge_log_tail(n=25, pattern=r"voteFederationChange|createPendingFederation|addFederator|commitFederation|amAwaiting|Bridge|ERROR"):
@@ -488,7 +500,7 @@ def bridge_log_tail(n=25, pattern=r"voteFederationChange|createPendingFederation
         try:
             with open(path, errors="replace") as f:
                 lines = [l for l in f if rx.search(l)]
-        except OSError:
+        except (OSError, UnicodeError):
             continue
         if lines:
             print("  --- %s (filtered) ---" % os.path.basename(path))
@@ -545,6 +557,67 @@ def active_address() -> str:
 
 def retiring_address() -> str:
     return dec_bytes("0x" + bridge_call(sel("getRetiringFederationAddress()")).hex()).decode(errors="ignore")
+
+
+# ---------------------------------------------------------------------------
+# stage: federator liveness
+# ---------------------------------------------------------------------------
+
+FEDERATOR_PATTERN = (
+    r"checkFederateRequirements|Federator is disabled|Could not validate fed node requirements"
+    r"|validFederator|Cannot connect to Bitcoin node|No Bitcoin [Pp]eers"
+    r"|not part of the federation|Starting for federation|watching federation"
+    r"|triggerClientChange|Bitcoin peer|logBestChainHeight|checkPeers"
+    r"|Error while reading key file|KeyFileHandler"
+)
+
+
+def federator_check(gen, need_height=True, timeout=120):
+    """Prove the federator inside the RSK node is actually running.
+
+    FedNodeRunner.run() gives up silently when checkFederateRequirements() fails:
+
+        if (!this.checkFederateRequirements()) {
+            logger.error("[run] Could not validate fed node requirements");
+            return;                       // <-- no federator, node keeps running
+        }
+
+    The node then serves RPC and mines perfectly while never sending a single
+    updateCollections / receiveHeaders, so getBtcBlockchainBestChainHeight()
+    stays at 0 and the federator's RSK nonce stays at 0. The PoC would appear to
+    "work" (nothing ever gets processed) while proving nothing at all, so this
+    has to be checked before anything expensive happens.
+    """
+    addr = rsk_address(key(gen))
+    log("[federator] checking that '%s' (%s) is alive" % (gen, addr[:10]))
+    h0 = btc_best_chain_height()
+    n0 = int(rsk("eth_getTransactionCount", [addr, "latest"]), 16)
+    log("             start: bridge BTC height %d, nonce %d" % (h0, n0))
+
+    end = time.time() + timeout
+    h, n = h0, n0
+    while time.time() < end:
+        time.sleep(5)
+        try:
+            h = btc_best_chain_height()
+            n = int(rsk("eth_getTransactionCount", [addr, "latest"]), 16)
+        except Exception:
+            continue
+        if n > n0 and (h > h0 or not need_height):
+            log("             alive: nonce %d -> %d, bridge BTC height %d -> %d"
+                % (n0, n, h0, h))
+            return True
+        if int(time.time()) % 20 < 6:
+            log("             waiting: nonce %d (sent %d), bridge BTC height %d (from %d)"
+                % (n, n - n0, h, h0))
+
+    bridge_log_tail(30, FEDERATOR_PATTERN)
+    raise RuntimeError(
+        "the federator inside the RSK node is NOT running (nonce %d after %ds, "
+        "bridge BTC height %d).\n"
+        "  FedNodeRunner.run() returns early when checkFederateRequirements() fails,\n"
+        "  leaving a fully working RSK node with no federator at all.\n"
+        "  the lines above say which requirement failed." % (n, timeout, h))
 
 
 # ---------------------------------------------------------------------------
@@ -994,12 +1067,10 @@ def stage_measure(label="t"):
 # ---------------------------------------------------------------------------
 
 def stage_recover():
-    try:
-        rsk("evm_startMining")
-    except Exception:
-        pass
     log("[recover] waiting for the retiring federation to expire")
+    log("          (only updateCollections, sent by the active federation, clears it)")
 
+    h0 = btc_best_chain_height()
     end = time.time() + 1800
     while time.time() < end:
         raw = dec_bytes("0x" + bridge_call(sel("getRetiringFederationAddress()")).hex()).decode(errors="ignore")
@@ -1007,7 +1078,18 @@ def stage_recover():
             break
         time.sleep(3)
     else:
-        raise RuntimeError("the retiring federation never expired")
+        # a 30 minute wait is useless if the thing that clears the retiring
+        # federation is not running at all, so say that instead of timing out
+        try:
+            alive = btc_best_chain_height() != h0
+        except Exception:
+            alive = False
+        bridge_log_tail(30, FEDERATOR_PATTERN)
+        raise RuntimeError(
+            "the retiring federation never expired after 30 minutes."
+            + ("" if alive else
+               "\n  the Bridge BTC height did not move at all, so updateCollections is not"
+               "\n  being sent: the federator is not running (see the lines above)."))
 
     log("[recover] retiring federation is gone; the same 40 txs are now valid peg-ins")
     time.sleep(30)
@@ -1035,6 +1117,10 @@ def main():
         stage_measure(sys.argv[2] if len(sys.argv) > 2 else "t")
     elif cmd == "recover":
         stage_recover()
+    elif cmd == "federator-check":
+        gen = sys.argv[2] if len(sys.argv) > 2 else "federator1"
+        need_height = "--height" in sys.argv
+        federator_check(gen, need_height=need_height)
     elif cmd == "selftest":
         selftest()
     else:

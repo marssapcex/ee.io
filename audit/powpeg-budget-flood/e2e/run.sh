@@ -416,6 +416,13 @@ import json,urllib.request
 r=urllib.request.urlopen(urllib.request.Request('$RSK_RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=5)
 print('  RSK node up (embedded in powpeg-node), block', int(json.loads(r.read())['result'],16))"
 
+# The federator must be alive before anything expensive happens. FedNodeRunner
+# gives up quietly when a requirement fails and the node then looks perfectly
+# healthy over RPC while never sending a single transaction to the Bridge.
+c_step "3b. the federator inside the node is actually running"
+$PY "$HERE/e2e.py" federator-check federator1 --height || \
+  die "the node is up but its federator is not: see the lines above"
+
 # ---------------------------------------------------------------------------
 c_step "4. real federation change (2-of-3 votes from auth-a/auth-b)"
 $PY "$HERE/e2e.py" federation || die "federation change failed"
@@ -423,9 +430,11 @@ $PY "$HERE/e2e.py" federation || die "federation change failed"
 c_step "5. restart the federator as a member of the NEW federation"
 stop_powpeg
 start_powpeg e2e-fed-1 no
-sleep 5
 kill -0 "$POWPEG_PID" 2>/dev/null || { tail -30 "$LOGS/powpeg-e2e-fed-1.log"; die "node died after the restart"; }
-echo "  now federating the new active federation"
+# no header requirement here: bitcoind is quiet during the attack, so the proof
+# of life is updateCollections coming from this member of the new federation
+$PY "$HERE/e2e.py" federator-check e2e-fed-1 || \
+  die "the restarted node is up but its federator is not: see the lines above"
 
 # ---------------------------------------------------------------------------
 c_step "6. attack: 40 ground Bitcoin txs + 1 honest victim peg-in"
