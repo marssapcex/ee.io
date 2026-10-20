@@ -650,6 +650,20 @@ F1 = key("federator1")
 F2 = key("federator2")
 FUNDER = key("e2e-funder")
 
+# rskj 1e95a3b, BridgeRegTestConstants.java:84-85. PegUtils.java:139 only uses
+# the RSKIP379-aware transaction classifier -- the one that recognises SVP fund
+# and spend txs (PegUtils.java:119) -- from this Bitcoin height on:
+#
+#     btcHeightWhenPegoutTxIndexActivates = 250
+#     pegoutTxIndexGracePeriodInBtcBlocks = 100
+#     if (!isPegoutTxIndexEnabled(...)) return PegUtilsLegacy.getTransactionType(...)
+#
+# Below it the legacy classifier runs, which has no SVP knowledge whatsoever:
+# a tx spending the active federation's UTXO and paying a 2-of-2 P2SH is just a
+# PEGOUT_OR_MIGRATION (PegUtilsLegacy.java:347). Run 8 put the fund tx in Bitcoin
+# block 347 and got exactly that verdict, three blocks under the threshold.
+PEGOUT_INDEX_BTC_HEIGHT = 250 + 100
+
 SVP_FUND_OUTPUT = 500_000        # BridgeConstants.getSvpFundTxOutputsValue()
                                  # = minimumPegoutTxValue * 2, paid twice per fund tx
 PEG_SAT = 3_000_000              # comfortably above 2 x SVP_FUND_OUTPUT + fee
@@ -904,6 +918,17 @@ def svp_cycle(timeout_blocks=118):
     if not offsets:
         offsets = log_offsets()
 
+    height_now = btc("getblockcount")
+    if height_now < PEGOUT_INDEX_BTC_HEIGHT + 5:
+        need = PEGOUT_INDEX_BTC_HEIGHT + 5 - height_now
+        log("             Bitcoin is at %d; the RSKIP419-aware classifier only runs from "
+            "block %d (BridgeRegTestConstants: 250 + 100), so mining %d blocks first"
+            % (height_now, PEGOUT_INDEX_BTC_HEIGHT, need))
+        mine(need)
+        height_now = btc("getblockcount")
+    log("             Bitcoin height %d, SVP-aware classification from %d"
+        % (height_now, PEGOUT_INDEX_BTC_HEIGHT))
+
     scan = btc("getblockcount")
     fund = None          # (txid, sats to the proposed federation, btc height)
     spend = None
@@ -982,6 +1007,9 @@ def svp_cycle(timeout_blocks=118):
                         fund = (tx["txid"], paid, scan)
                         log("             block %d: fund tx %s on Bitcoin, %d sat to the "
                             "proposed federation" % (scan, tx["txid"], paid))
+                        if scan < PEGOUT_INDEX_BTC_HEIGHT:
+                            log("             WARNING: block %d is below %d, so this tx "
+                                "cannot be typed SVP_FUND_TX" % (scan, PEGOUT_INDEX_BTC_HEIGHT))
                         if built:
                             if len(built) > 1:
                                 log("             the Bridge asked to release %d txs: %s"
@@ -1007,6 +1035,13 @@ def svp_cycle(timeout_blocks=118):
                      if fund[0] in l]
             if types and "SVP_FUND_TX" not in types[-1]:
                 seen = types[-1].split("This is a ")[-1].split(" transaction")[0]
+                if fund[2] and fund[2] < PEGOUT_INDEX_BTC_HEIGHT:
+                    return False, ("the fund tx %s is in Bitcoin block %d and the "
+                                   "RSKIP419-aware classifier only runs from block %d "
+                                   "(BridgeRegTestConstants: 250 + 100), so the legacy "
+                                   "classifier typed it %s. Nothing is wrong with the "
+                                   "SVP -- the fixture mined the fund tx too early."
+                                   % (fund[0], fund[2], PEGOUT_INDEX_BTC_HEIGHT, seen))
                 why = diagnose_fund_tx(fund[0], seen, offsets)
                 return False, ("the Bridge classified its own fund tx %s as %s at block "
                                "%d instead of SVP_FUND_TX, so it never stored the signed "
