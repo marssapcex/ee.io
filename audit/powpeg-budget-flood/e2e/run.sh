@@ -159,6 +159,12 @@ echo "  powpeg-node $(basename "$POWPEG_JAR")"
 # ---------------------------------------------------------------------------
 c_step "1b. clearing leftovers from previous runs"
 
+# A full run starts from a wiped database, so measurements, txids and addresses
+# recorded by an earlier run are stale and must not be reused.
+if [ "$FROM" = "build" ]; then
+  rm -f "$STATE/state.json"
+fi
+
 # a stale FederateRunner keeps 4444 and the rskj database locked, which makes a
 # new one die before it can even log anything
 STALE=$(pgrep -f co.rsk.federate.FederateRunner 2>/dev/null || true)
