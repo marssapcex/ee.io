@@ -717,26 +717,34 @@ def address_script(addr):
 
 
 def svp_cycle(timeout_blocks=118):
-    """Drive RSKIP419's SVP cycle and report exactly where it stops.
+    """Drive RSKIP419's SVP cycle, one step at a time.
 
-    The state machine, all of it observable in the node log:
-      updateCollections -> fund tx created      "[updateSvpState] No svp values..."
-                        -> fund tx signed      (both federators sign, one broadcasts)
-                        -> spend tx created    "[updateSvpState] Fund tx signed..."
-                        -> spend tx signed
-                        -> registerSvpSpendTx  -> commitProposedFederation
-    The handover's own line is "[commitProposedFederation] Committed to proposed
-    federation <addr>", and the proposed federation then disappears. The ACTIVE
-    address does NOT change here: the new federation still has to reach
-    federationActivationAge (150 blocks) first, so it is useless as a success
-    signal.
+    The cycle only works if exactly ONE fund tx is created:
+      [1] updateCollections -> "[updateSvpState] No svp values were found" and
+          setSvpFundTxHashUnsigned() for the freshly built fund tx
+      [2] both federators sign, one broadcasts
+      [3] after 3 confirmations a federator calls registerBtcTransaction and the
+          Bridge must classify it as SVP_FUND_TX. It does that by comparing the
+          stored hash with the tx hash, so a SECOND fund tx overwriting the
+          stored value makes the comparison fail and the real fund tx is taken
+          for a PEGOUT (the exact failure seen in the log).
+      [4] updateCollections -> "[updateSvpState] Fund tx signed was found"
+                            -> spend tx creation
+      [5] both federators sign the spend tx, it is broadcast and registered
+      [6] registerSvpSpendTx -> "[commitProposedFederation] Committed to ..."
+    Step [1] fired twice, one block apart, because the loop mined two Bitcoin
+    blocks back to back and sent updateCollections on every iteration: rskj
+    builds the next block from a snapshot taken before the previous block's
+    Bridge state was applied, so the second execution still saw empty SVP
+    values. Hence: one Bitcoin block at a time, one updateCollections per RSK
+    block, and nothing new while a fund tx is still waiting for signatures.
     """
     start_block = int(rsk("eth_blockNumber"), 16)
     deadline = start_block + timeout_blocks
     offsets = log_offsets()
-    next_nudge = 0.0
-    mined = 0
+    last_send_block = -1
     last_print = 0.0
+    fund_created = 0
 
     while True:
         blk = int(rsk("eth_blockNumber"), 16)
@@ -756,15 +764,29 @@ def svp_cycle(timeout_blocks=118):
             return False, ("still no handover at block %d (started at %d, SVP "
                            "validation period is 125 blocks)" % (blk, start_block))
 
-        now = time.time()
-        if now >= next_nudge:
-            next_nudge = now + 6
+        lines = log_since(SVP_LOG, offsets)
+        n_fund = sum(1 for l in lines if "No svp values were found" in l)
+        signed_fund = any("Fund tx signed was found" in l for l in lines)
+        if n_fund > fund_created:
+            fund_created = n_fund
+            log("             block %d: fund tx created (updateSvpState #%d)"
+                % (blk, n_fund))
+            if n_fund > 1:
+                return False, ("the Bridge created %d fund transactions: the stored "
+                               "SVP fund tx hash was overwritten, so the real fund tx "
+                               "can no longer be recognised" % n_fund)
+
+        # One updateCollections per new RSK block, and only when it can actually
+        # move the cycle forward: when no fund tx exists yet, or when the fund tx
+        # has been registered and the spend tx is due. Sending it while the fund
+        # tx is still being signed is what let a second fund tx be created.
+        can_advance = (n_fund == 0) or signed_fund
+        if blk != last_send_block and can_advance:
+            last_send_block = blk
             try:
                 txh = bridge_tx(sel("updateCollections()"), rsk_address(F1))
                 rc = wait_rsk_tx(txh, 60)
                 if rc.get("status") not in ("0x1", 1, True):
-                    # the Bridge wraps the cause in a VMException; the node log
-                    # has the real one
                     raise RuntimeError(
                         "updateCollections reverted at block %d (tx %s). "
                         "The node log says:\n    %s"
@@ -778,19 +800,25 @@ def svp_cycle(timeout_blocks=118):
             except Exception as e:
                 log("             block %d: updateCollections failed: %s" % (blk, e))
 
+        if signed_fund:
+            log("             block %d: fund tx registered, waiting for the spend tx"
+                % blk)
+
+        # strictly one Bitcoin block, then a pause: rskj has to rebuild the work
+        # on top of the imported block before the next solution is accepted
         try:
-            mine(2)
-            mined += 2
+            mine(1)
         except Exception:
             pass
+        time.sleep(1.5)
 
-        if now - last_print > 15:
+        now = time.time()
+        if now - last_print > 20:
             last_print = now
-            log("             block %d: proposed size %d, %d BTC blocks mined, "
-                "%d blocks of SVP budget left" % (blk, size, mined, deadline - blk))
-            for line in log_since(SVP_LOG, offsets)[-3:]:
+            log("             block %d: proposed size %d, %d blocks of SVP budget left"
+                % (blk, size, deadline - blk))
+            for line in [l for l in lines if "updateSvpState" in l][-2:]:
                 log("               " + line.strip()[:170])
-        time.sleep(2)
 
 
 # ---------------------------------------------------------------------------
