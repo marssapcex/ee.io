@@ -755,6 +755,51 @@ def _tx_pays(tx, spk_hex):
     return 0
 
 
+def enc_str(text: str) -> bytes:
+    """ABI-encode one dynamic string, positioned for a two-slot call head."""
+    raw = text.encode()
+    return (enc_uint(64) + enc_uint(len(raw)) + raw
+            + b"\x00" * ((32 - len(raw) % 32) % 32))
+
+
+def federation_rsk_members():
+    """RSK addresses of the *active* federation's members, read from the Bridge.
+
+    updateCollections is wrapped in activeAndRetiringFederationOnly
+    (BridgeMethods.java:697), so a call from anywhere else reverts. Which key is
+    a member is not something to guess: ask the Bridge for each member's RSK
+    public key and hash it the way rskj does.
+    """
+    size = int.from_bytes(bridge_call(sel("getFederationSize()"))[:32], "big")
+    members = []
+    for i in range(size):
+        raw = bridge_call(sel("getFederatorPublicKeyOfType(int256,string)")
+                          + enc_uint(i) + enc_str("rsk"))
+        pub = dec_bytes("0x" + raw.hex())
+        if len(pub) in (33, 65):
+            pub = pub[1:]
+        members.append((i, "0x" + keccak256(pub)[-20:].hex()))
+    return members
+
+
+def federation_caller():
+    """The member address we hold the key for, preferring a federator's own."""
+    ours = {}
+    for name in ("federator1", "federator2", "auth-a", "auth-b", "auth-c"):
+        ours[rsk_address(key(name))] = name
+    members = federation_rsk_members()
+    log("             active federation members: %s"
+        % ", ".join("%d:%s" % (i, a[:10]) for i, a in members))
+    for _, addr in members:
+        if addr in ours:
+            log("             we hold the key of member %s (%s), so it will be the "
+                "only caller of updateCollections" % (ours[addr], addr[:10]))
+            return addr
+    raise RuntimeError(
+        "none of the active federation's keys are in this node's wallet: %s"
+        % [a for _, a in members])
+
+
 def send_update_collections(who=None):
     """Ask the Bridge to run its release/SVP cycle, exactly once.
 
@@ -763,7 +808,7 @@ def send_update_collections(who=None):
     Bridge's log belongs to a call we can name. Without that, two federators plus
     the script were all calling it and the log could not say who created what.
     """
-    who = who or rsk_address(key("auth-a"))
+    who = who or CALLER[0]
     txhash = bridge_tx(sel("updateCollections()"), who)
     receipt = wait_rsk_tx(txhash, 90)
     ok = int(receipt.get("status", "0x0"), 16) == 1
@@ -804,6 +849,9 @@ def diagnose_fund_tx(fund_txid, seen_type, offsets):
             "outputs), not in the witnesses.")
 
 
+CALLER = [None]       # federation member that may call updateCollections
+
+
 def svp_cycle(timeout_blocks=118):
     """Drive RSKIP419's handover, one Bridge call at a time, judged on Bitcoin.
 
@@ -833,6 +881,7 @@ def svp_cycle(timeout_blocks=118):
         return False, "the Bridge reports no proposed federation address"
     prop_spk = address_script(prop).hex()
     log("             proposed federation pays to %s" % prop)
+    CALLER[0] = federation_caller()
 
     # one node's log only: node B re-executes every block while syncing
     offsets = {f: o for f, o in log_offsets().items()
