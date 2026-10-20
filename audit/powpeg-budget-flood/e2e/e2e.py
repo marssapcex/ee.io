@@ -983,6 +983,9 @@ def svp_cycle(timeout_blocks=118):
                         log("             block %d: fund tx %s on Bitcoin, %d sat to the "
                             "proposed federation" % (scan, tx["txid"], paid))
                         if built:
+                            if len(built) > 1:
+                                log("             the Bridge asked to release %d txs: %s"
+                                    % (len(built), ", ".join(h[:16] for h in built)))
                             same = built[-1] == tx["txid"].lower()
                             log("             the Bridge built %s, %s" %
                                 (built[-1][:16],
