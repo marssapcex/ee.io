@@ -251,17 +251,19 @@ print(keccak256(sys.argv[1].encode()).hex())
 PYEOF
 }
 
-start_powpeg() {  # $1 generator, $2 extra args
-  local gen="$1"; shift
+start_powpeg() {  # $1 generator, $2 yes|no (wipe the database), rest = java args
+  local gen="$1"; local wipe="$2"; shift 2
   rm -f "$WORK/$gen.key"
   gen_key "$gen" > "$WORK/$gen.key"
   chmod 400 "$WORK/$gen.key"
 
-  # always start from an empty chain: this PoC owns the regtest, and a database
-  # left locked by a killed run is the difference between "starts" and "exits 1
-  # with no output at all"
-  rm -rf "$WORK/rskj-db"
-  rm -f "$LOGS"/rsk.log "$LOGS"/rskj-*.log.gz
+  # Wiping is only correct for the *first* start. The second start (as a member
+  # of the new federation) must keep the chain, or the federation change we just
+  # made disappears with it.
+  if [ "$wipe" = "yes" ]; then
+    rm -rf "$WORK/rskj-db"
+    rm -f "$LOGS"/rsk.log "$LOGS"/rskj-*.log.gz
+  fi
   rm -f "$WORK"/hs_err_pid*.log
   cat > "$WORK/powpeg.conf" <<EOF
 blockchain.config.name = "regtest"
@@ -387,7 +389,7 @@ stop_powpeg() {
   sleep 2
 }
 
-start_powpeg federator1 --reset
+start_powpeg federator1 yes --reset
 $PY -c "
 import json,urllib.request
 r=urllib.request.urlopen(urllib.request.Request('$RSK_RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=5)
@@ -399,7 +401,7 @@ $PY "$HERE/e2e.py" federation || die "federation change failed"
 
 c_step "5. restart the federator as a member of the NEW federation"
 stop_powpeg
-start_powpeg e2e-fed-1
+start_powpeg e2e-fed-1 no
 sleep 5
 kill -0 "$POWPEG_PID" 2>/dev/null || { tail -30 "$LOGS/powpeg-e2e-fed-1.log"; die "node died after the restart"; }
 echo "  now federating the new active federation"
