@@ -528,8 +528,8 @@ check("victim tx never marked processed during the window",
       int(during["victim_processed_height"]) < 0,
       "processedHeight=%s" % during["victim_processed_height"])
 check("attack txs never marked processed (retry loop)",
-      int(during["attacker_unprocessed"]) == 40,
-      "%s/40 unprocessed" % during["attacker_unprocessed"])
+      int(during["attacker_unprocessed"]) == int(during["attack_count"]),
+      "%s/%s unprocessed" % (during["attacker_unprocessed"], during["attack_count"]))
 check("victim credited after the window",
       int(after["victim_balance_wei"]) > 0,
       "balance=%s wei" % after["victim_balance_wei"])

