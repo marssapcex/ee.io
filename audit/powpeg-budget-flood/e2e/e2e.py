@@ -755,36 +755,76 @@ def _tx_pays(tx, spk_hex):
     return 0
 
 
-def svp_cycle(timeout_blocks=118):
-    """Drive the RSKIP419 handover and prove it from Bitcoin, not from logs.
+def send_update_collections(who=None):
+    """Ask the Bridge to run its release/SVP cycle, exactly once.
 
-    What the protocol does, in rskj 1e95a3b:
+    Both nodes run with federator.updateCollections = false (run.sh), so while
+    this stage runs the only caller is this function and every transition in the
+    Bridge's log belongs to a call we can name. Without that, two federators plus
+    the script were all calling it and the log could not say who created what.
+    """
+    who = who or rsk_address(key("auth-a"))
+    txhash = bridge_tx(sel("updateCollections()"), who)
+    receipt = wait_rsk_tx(txhash, 90)
+    ok = int(receipt.get("status", "0x0"), 16) == 1
+    log("             updateCollections %s %s" % (txhash[:12], "ok" if ok else "REVERTED"))
+    if not ok:
+        bridge_log_tail(10, SVP_LOG)
+        raise RuntimeError("updateCollections reverted (tx %s); the lines above say why"
+                           % txhash)
+    return txhash
+
+
+def diagnose_fund_tx(fund_txid, seen_type, offsets):
+    """The fund tx reached Bitcoin but the Bridge did not call it SVP_FUND_TX.
+
+    isTheSvpFundTransaction (rskj PegUtils.java:146) compares the stored hash of
+    the *unsigned* fund tx with BitcoinUtils.getMultiSigTransactionHashWithout
+    Signatures(signed tx), which for a witness tx is simply its txid. Two things
+    can make that comparison fail, and they are told apart by asking for one more
+    updateCollections: if the Bridge tries to create yet another fund tx, the
+    stored hash was gone; if it does not, the stored hash is there but different.
+    """
+    before = len(log_since(r"No svp values were found", offsets))
+    send_update_collections()
+    for _ in range(8):
+        time.sleep(1.5)
+    after = len(log_since(r"No svp values were found", offsets))
+    if after > before:
+        return ("the stored hash was gone: the Bridge built the fund tx again although "
+                "it had already built and broadcast %s. shouldCreateAndProcessSvp"
+                "FundTransaction (BridgeSupport.java:1085) only builds while all three "
+                "SVP values are empty, so the hash it stored the first time did not "
+                "survive." % fund_txid)
+    return ("the stored hash is present but does not equal the hash of the signed tx it "
+            "saw: the Bridge stored the txid of the unsigned tx it built, and the tx "
+            "that the federation signed and that got mined has a different txid. "
+            "getMultiSigTransactionHashWithoutSignatures returns getHash() for a witness "
+            "tx, so the two differ in something a signature cannot change (scriptSig / "
+            "outputs), not in the witnesses.")
+
+
+def svp_cycle(timeout_blocks=118):
+    """Drive RSKIP419's handover, one Bridge call at a time, judged on Bitcoin.
+
+    The cycle, from rskj 1e95a3b:
 
       updateCollections -> updateSvpState
-        -> buildSvpFundTransaction: the *active* federation pays
-           getSvpFundTxOutputsValue() twice (per BridgeConstants that is
-           minimumPegoutTxValue * 2, and 2 x that per tx) to the proposed
-           federation; the Bridge stores the unsigned hash, emits the same
-           ReleaseRequested event a pegout gets, and the federators sign and
-           broadcast it as an ordinary release.
-        -> once that tx is registered on-chain it is typed SVP_FUND_TX, the
-           Bridge stores the signed tx and the next updateCollections builds the
-           spend tx (proposed federation -> active federation), which the
-           proposed federation's own members sign.
-        -> registering the spend tx calls commitProposedFederation().
+        -> buildSvpFundTransaction: the active federation pays
+           getSvpFundTxOutputsValue() twice (BridgeConstants: minimumPegoutTxValue
+           * 2, so 500 000 sat each in regtest) to the proposed federation. The
+           Bridge stores the unsigned txid, emits the same ReleaseRequested event
+           a pegout gets, and the federators sign and broadcast that tx.
+        -> when the signed tx is registered it must be typed SVP_FUND_TX, which
+           needs the stored unsigned txid to equal the txid of the signed tx. The
+           Bridge then stores the signed tx and the next updateCollections builds
+           the spend tx (proposed federation -> active federation), signed by the
+           proposed federation's own members.
+        -> registering the spend tx calls commitProposedFederation(): handover.
 
-    shouldCreateAndProcessSvpFundTransaction() (BridgeSupport.java:1085) only
-    builds a fund tx while *all three* SVP values are empty, so a second
-    updateCollections cannot overwrite the stored hash; repeated
-    "No svp values were found" lines are retries after a failed build, and each
-    Bitcoin block re-executes the same RSK transaction. Counting those lines
-    across two nodes measures nothing, which is what an earlier version of this
-    stage got wrong.
-
-    So: one fund tx, watched for on Bitcoin by matching the proposed federation's
-    scriptPubKey; one spend tx, watched for by its input; and success decided by
-    the Bridge's own state (proposal cleared + the commit log) instead of a
-    counter.
+    Everything is verified on Bitcoin (a tx paying the proposed federation's
+    scriptPubKey, then a tx spending it) because the logs alone cannot tell a
+    built tx from a broadcast one.
     """
     start_block = int(rsk("eth_blockNumber"), 16)
     deadline = start_block + timeout_blocks
@@ -794,73 +834,56 @@ def svp_cycle(timeout_blocks=118):
     prop_spk = address_script(prop).hex()
     log("             proposed federation pays to %s" % prop)
 
-    # one node's log only: the second node re-executes every block while syncing,
-    # so it repeats whatever the first one logged
+    # one node's log only: node B re-executes every block while syncing
     offsets = {f: o for f, o in log_offsets().items()
                if f.endswith(os.path.join("node-federator1", "rsk.log"))}
     if not offsets:
         offsets = log_offsets()
 
     scan = btc("getblockcount")
-    fund = None          # (txid, sats to proposed, height)
-    spend = None         # spend txid
-    turns = 0
+    fund = None          # (txid, sats to the proposed federation, btc height)
+    spend = None
+    calls = 0
+    last_call = 0
+    spend_requested = False
     last_print = 0.0
+
+    # first call: this is what creates the fund tx
+    send_update_collections()
+    calls, last_call = 1, start_block
 
     while True:
         blk = int(rsk("eth_blockNumber"), 16)
         size = proposed_size()
         committed = log_since(r"Committed to proposed federation", offsets)
 
-        if (committed or size <= 0) and not fund:
-            return False, ("the proposal was cleared at block %d but no fund tx ever "
-                           "reached Bitcoin, so nothing was handed over" % blk)
-
         if committed and size <= 0:
             log("             handover at block %d" % blk)
+            if not fund:
+                return False, "the proposal was committed but no fund tx was ever seen"
             log("               fund  tx %s (%d sat to the proposed federation, %d conf)"
                 % (fund[0], fund[1], btc_confirmations(fund[0])))
-            log("               spend tx %s (%s the fund tx)"
-                % (spend, "spends" if spend else "NOT SEEN, spending"))
-            for line in committed[-3:]:
-                log("               " + line.strip()[:170])
             if not spend:
-                return False, ("proposed federation committed but no tx spending the "
-                               "fund tx was ever mined: the spend tx is %s"
-                               % ("still waiting for signatures"
-                                  if svp_spend_tx_pending() else "missing"))
+                return False, ("proposed federation committed but no tx spending the fund "
+                               "tx was mined")
+            log("               spend tx %s (spends the fund tx)" % spend)
+            for line in committed[-2:]:
+                log("               " + line.strip()[:170])
             return True, ""
 
         if size <= 0:
             return False, ("the proposed federation was cleared at block %d without a "
                            "handover: the SVP expired or failed" % blk)
         if blk > deadline:
-            hint = ""
-            if fund and not spend:
-                hint = ("  the fund tx %s is on Bitcoin with %d confirmations, so the "
-                        "proposed federation never signed the spend tx\n"
-                        % (fund[0], btc_confirmations(fund[0])))
-            elif fund:
-                hint = "  the fund tx %s was never spent\n" % fund[0]
-            else:
-                hint = ("  no fund tx ever paid the proposed federation, so "
-                        "updateSvpState never built one (see the 'Couldn't create svp "
-                        "fund transaction' line, if any)\n")
-            return False, ("still no handover at block %d (started at %d, the SVP "
-                           "validation period is 125 blocks)\n" % (blk, start_block) + hint)
-
-        # -- what the Bridge tried to do, from its own log -------------------
-        built = log_since(r"No svp values were found", offsets)
-        if len(built) > turns:
-            turns = len(built)
-            log("             block %d: the Bridge tried to build the fund tx (attempt %d)"
-                % (blk, turns))
-        refused = log_since(r"Couldn't create svp fund transaction", offsets)
-        if refused and not fund:
-            return False, ("the Bridge could not build the fund tx at block %d:\n    %s"
-                           % (blk, refused[-1].strip()[:220]))
-        if log_since(r"Proposed federation validation failed|processSvpFailure", offsets):
-            return False, "the Bridge processed an SVP failure at block %d" % blk
+            if fund:
+                return False, ("no handover at block %d: the fund tx %s is on Bitcoin "
+                               "with %d confirmations and %s"
+                               % (blk, fund[0], btc_confirmations(fund[0]),
+                                  "the spend tx %s was mined but never committed" % spend
+                                  if spend else "no tx spending it was ever mined"))
+            return False, ("no handover at block %d and no fund tx ever reached Bitcoin: "
+                           "%d updateCollections calls (%d, 12, 24, ... blocks) built "
+                           "nothing" % (blk, calls))
 
         # -- what Bitcoin says ----------------------------------------------
         height = btc("getblockcount")
@@ -879,32 +902,44 @@ def svp_cycle(timeout_blocks=118):
                         % (scan, spend))
             scan += 1
 
-        if fund is None:
-            # cross-check: the Bridge logs the txid it stored as the fund tx.
-            # Only reached when the address scan found nothing, so a mismatch
-            # between getProposedFederationAddress() and proposedFederation
-            # .getAddress() cannot hide the effect completely.
-            hit = log_since(r"\[updateSvpFundTransactionValues\] Transaction ([0-9a-f]{64})",
-                            offsets)
-            if hit:
-                import re as _re
-                fund = (_re.search(r"Transaction ([0-9a-f]{64})", hit[-1]).group(1), 0, 0)
-                log("             fund tx %s, from the Bridge's log (the address scan "
-                    "did not match it)" % fund[0])
+        # -- what the Bridge made of the fund tx ----------------------------
+        if fund and not spend:
+            types = [l for l in log_since(r"This is a (\w+) transaction type", offsets)
+                     if fund[0] in l]
+            if types and "SVP_FUND_TX" not in types[-1]:
+                seen = types[-1].split("This is a ")[-1].split(" transaction")[0]
+                why = diagnose_fund_tx(fund[0], seen, offsets)
+                return False, ("the Bridge classified its own fund tx %s as %s at block "
+                               "%d instead of SVP_FUND_TX, so it never stored the signed "
+                               "tx and no spend tx was ever built.\n  %s"
+                               % (fund[0], seen, blk, why))
+            if log_since(r"Fund tx signed was found|is the svp fund transaction", offsets) \
+                    and not spend_requested:
+                spend_requested = True
+                log("             the Bridge recognised the signed fund tx; asking it to "
+                    "build the spend tx")
+                send_update_collections()
+                calls, last_call = calls + 1, blk
+
+        # -- retries: the Bridge also needs turns to advance its own queues --
+        if blk - last_call >= 12 and calls < 10:
+            send_update_collections()
+            calls, last_call = calls + 1, blk
 
         mine(1)
-        time.sleep(1.5)
+        time.sleep(1.2)
 
         now = time.time()
         if now - last_print > 20:
             last_print = now
-            state = ("fund tx %s (%d conf)" % (fund[0], btc_confirmations(fund[0]))
-                     if fund else "no fund tx yet")
-            log("             block %d: %d blocks of SVP budget left, proposed size %d, "
-                "%s, spend tx %s" % (blk, deadline - blk, size, state,
-                                     "created" if spend else
-                                     ("waiting for signatures" if svp_spend_tx_pending()
-                                      else "not created")))
+            log("             block %d: %d of %d SVP blocks left, proposed size %d, "
+                "%s, spend tx %s, %d Bridge calls"
+                % (blk, deadline - blk, timeout_blocks, size,
+                   ("fund tx %s (%d conf)" % (fund[0], btc_confirmations(fund[0])))
+                   if fund else "no fund tx yet",
+                   "created" if spend else
+                   ("waiting for signatures" if svp_spend_tx_pending() else "not created"),
+                   calls))
 
 
 # ---------------------------------------------------------------------------

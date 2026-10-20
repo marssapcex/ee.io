@@ -363,6 +363,16 @@ federator {
     enabled = true
     updateBridgeTimerEnabled = true
 
+    # The SVP stage calls updateCollections itself, once per phase, from a single
+    # account: only then can a fund tx or a spend tx be attributed to a specific
+    # call. With the timer on, every federation member sends it on its own turn
+    # (2 members here -> every 30s), the log cannot say who built what, and two
+    # builds inside one validation period cannot be explained.
+    # Everything else the timer does (receiveHeaders, registerBtcTransaction,
+    # registerBtcCoinbaseTransaction) stays on: it is the only thing that feeds
+    # Bitcoin blocks to the Bridge.
+    updateCollections = false
+
     signers {
         BTC { type = "keyFile", path = "$WORK/$gen.key" }
         RSK { type = "keyFile", path = "$WORK/$gen.key" }
