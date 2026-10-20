@@ -181,6 +181,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# the two federation-change authorizers, derived the way rskj derives them
+export E2E_HERE="$HERE"
+AUTH_A_KEY=$($PY -c "import os,sys; sys.path.insert(0, os.environ['E2E_HERE']); from e2e import keccak256; print(keccak256(b'auth-a').hex())")
+AUTH_B_KEY=$($PY -c "import os,sys; sys.path.insert(0, os.environ['E2E_HERE']); from e2e import keccak256; print(keccak256(b'auth-b').hex())")
+[ -n "$AUTH_A_KEY" ] && [ -n "$AUTH_B_KEY" ] || die "could not derive the authorizer keys"
+
 c_step "3. powpeg-node (this jar IS the RSK node: FederateRunner embeds rskj)"
 
 # The federate node is a full RSK node with the federator bolted on, so there is
@@ -189,7 +195,6 @@ c_step "3. powpeg-node (this jar IS the RSK node: FederateRunner embeds rskj)"
 #                  allowed to send updateCollections, which is what actually
 #                  advances a federation change in RSKIP419+;
 #   e2e-fed-1   -- a member of the NEW federation, once that one is active.
-export E2E_HERE="$HERE"
 gen_key() {  # $1 generator name -> hex private key (rskj's GenNodeKeyId rule)
   $PY - "$1" <<'PYEOF'
 import os, sys
@@ -269,8 +274,17 @@ except Exception: sys.exit(1)" >/dev/null 2>&1; then
     kill -0 "$POWPEG_PID" 2>/dev/null || break
     sleep 1
   done
-  c_bad "  the node never answered on 4444. last lines of $LOGS/powpeg-$gen.log:"
-  tail -30 "$LOGS/powpeg-$gen.log" | sed 's/^/    /'
+  c_bad "  the node never answered on 4444."
+  if [ -s "$LOGS/powpeg-$gen.log" ]; then
+    echo "  last lines of $LOGS/powpeg-$gen.log:"
+    tail -30 "$LOGS/powpeg-$gen.log" | sed 's/^/    /'
+  else
+    echo "  $LOGS/powpeg-$gen.log is empty -- the JVM died before logging"
+    echo "  config used ($WORK/powpeg.conf):"
+    sed 's/^/    /' "$WORK/powpeg.conf" | grep -v privateKey
+    echo "  reproduce by hand:"
+    echo "    java -Drsk.conf.file=$WORK/powpeg.conf -cp $POWPEG_JAR co.rsk.federate.FederateRunner --regtest"
+  fi
   die "powpeg-node startup failed ($gen)"
 }
 
