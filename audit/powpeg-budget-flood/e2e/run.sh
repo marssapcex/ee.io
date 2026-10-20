@@ -268,6 +268,21 @@ start_powpeg() {  # $1 generator, $2 yes|no (wipe the database), rest = java arg
   cat > "$WORK/powpeg.conf" <<EOF
 blockchain.config.name = "regtest"
 
+# RSKIP419 (the SVP federation handover) is left inactive on this private chain.
+# With 419 active a quorum commit only stores a *proposed* federation and the
+# handover waits for an SVP fund/spend cycle driven by an external SVP server
+# (BridgeSupport.registerSvpSpendTx -> commitProposedFederation), so no retiring
+# federation is ever produced by voting alone. With 419 inactive the commit
+# performs the handover directly (legacyCommitPendingFederation) -- the exact
+# consensus mainnet ran before the Vetiver rollout. The window the attack needs
+# (a retiring federation that is still live next to a new active one) is the
+# same either way; nothing else in the node is changed.
+blockchain.config {
+    consensusRules {
+        rskip419 = -1
+    }
+}
+
 rpc {
     providers {
         web {
@@ -415,9 +430,13 @@ fi
 # ---------------------------------------------------------------------------
 c_step "7. measure while the window is open"
 
+# the retiring federation is live for exactly 150 blocks (FederationRegTest
+# Constants) and regtest mines one block per second, so attack + measurement has
+# to fit in ~150 blocks. The attack spends ~40 of them, four samples 15 s apart
+# spend 45 more: ~85 blocks, a comfortable margin.
 $PY "$HERE/e2e.py" measure "t0"
 for i in 1 2 3; do
-  sleep 40
+  sleep 15
   $PY "$HERE/e2e.py" measure "t$i"
 done
 
@@ -431,7 +450,10 @@ $PY - <<PYEOF
 import json, os
 st = json.load(open(os.path.join("$STATE", "state.json")))
 m = st["measurements"]
-during = m[0]
+# the samples taken while the retiring federation was still live; if the window
+# closed early the first of them is still a valid "inside the window" snapshot,
+# and the last sample overall is the post-recovery one
+during = next((x for x in m if x.get("retiring_present")), m[0])
 after = m[-1]
 ok = True
 
@@ -441,6 +463,9 @@ def check(label, cond, detail):
     if not cond:
         ok = False
 
+check("sampled inside the federation-change window",
+      bool(during.get("retiring_present")),
+      "retiring federation live, block %s" % during["rsk_block"])
 check("victim peg-in frozen during the window",
       int(during["victim_balance_wei"]) == 0,
       "balance=%s wei" % during["victim_balance_wei"])

