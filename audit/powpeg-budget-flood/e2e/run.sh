@@ -120,7 +120,19 @@ fi
 echo "  powpeg-node $(basename "$POWPEG_JAR")"
 
 # ---------------------------------------------------------------------------
+FINISHED=0
+dump_logs() {
+  for f in "$LOGS"/powpeg-*.log; do
+    [ -s "$f" ] || continue
+    echo
+    c_bad "  ---- last 40 lines of $(basename "$f") ----"
+    grep -vE '^\s+at ' "$f" | tail -40 | sed 's/^/    /'
+  done
+}
+
 cleanup() {
+  local rc=$?
+  [ "$FINISHED" = "1" ] || dump_logs
   [ "$KEEP" = "1" ] && { echo "  --keep: leaving nodes running"; return; }
   echo
   echo "  stopping nodes"
@@ -279,7 +291,12 @@ try:
     r=urllib.request.urlopen(urllib.request.Request('$RSK_RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=2)
     print(json.loads(r.read())['result']); sys.exit(0)
 except Exception: sys.exit(1)" >/dev/null 2>&1; then
-      return 0
+      # the RPC binds before the federator starts; give it a moment to fall over
+      sleep 8
+      if kill -0 "$POWPEG_PID" 2>/dev/null; then
+        return 0
+      fi
+      break
     fi
     kill -0 "$POWPEG_PID" 2>/dev/null || break
     sleep 1
@@ -382,3 +399,5 @@ print("  evidence: $STATE/state.json")
 print("  logs:     $LOGS/")
 raise SystemExit(0 if ok else 1)
 PYEOF
+
+FINISHED=1
