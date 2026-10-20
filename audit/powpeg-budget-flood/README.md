@@ -112,6 +112,11 @@ FINDINGS.md                source-level audit, claim-by-claim, severity, fix
 REPORT.md                  submission-ready bug report (rewritten)
 REPRODUCE_REAL_NODE.md     how to reproduce on the real stack
 patches/                   JUnit patches for both repos + how to run them
+repro/                     install tools + run the proof on your own machine
+  repro/00_install_tools.sh
+  repro/10_proof_unit.sh       real powpeg-node + rskj tests
+  repro/20_proof_regtest.sh    live regtest run (regtest_attack.py)
+  repro/30_collect_and_push.sh push results back
 poc/gen_attack_txs.py      real signed txs + wtxid grinding
 poc/verify_txs.py          independent verification + decision table
 poc/chm_order.py           updateBridgeBtcTransactions() on a live JVM
