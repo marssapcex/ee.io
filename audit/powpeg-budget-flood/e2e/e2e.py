@@ -481,12 +481,52 @@ def wait_rsk_tx(txhash, timeout=60):
     raise RuntimeError("timeout waiting for rsk tx " + txhash)
 
 
+# FederationChangeResponseCode, rskj 1e95a3b
+FED_CODE = {
+    1: "SUCCESSFUL",
+    -1: "FEDERATION_NON_EXISTENT / PENDING_FEDERATION_ALREADY_EXISTS",
+    -2: "INSUFFICIENT_MEMBERS / EXISTING_FEDERATION_AWAITING_ACTIVATION",
+    -3: "RETIRING_FEDERATION_ALREADY_EXISTS / PENDING_FEDERATION_MISMATCHED_HASH",
+    -4: "PROPOSED_FEDERATION_ALREADY_EXISTS",
+    -10: "UNAUTHORIZED_CALLER / GENERIC_ERROR",
+}
+
+
+def vote_dry_run(data: bytes, frm: str) -> int:
+    """eth_call the same vote; the Bridge runs its dry run path and returns the code."""
+    raw = bytes.fromhex(rsk("eth_call", [{"from": frm, "to": BRIDGE,
+                                          "data": "0x" + data.hex()}, "latest"])[2:])
+    if len(raw) < 32:
+        return -999
+    v = int.from_bytes(raw[:32], "big")
+    return v - (1 << 256) if v >= (1 << 255) else v
+
+
+def pending_hash() -> bytes:
+    return dec_bytes("0x" + bridge_call(sel("getPendingFederationHash()")).hex())
+
+
 # ---------------------------------------------------------------------------
 # stage: federation
 # ---------------------------------------------------------------------------
 
 def stage_federation():
     st = load_state()
+
+    # createPendingFederation refuses with -2 while any live federation is still
+    # awaiting activation, i.e. until the genesis federation is 150 blocks old
+    # (FederationRegTestConstants.federationActivationAge). With a federator
+    # running, updateCollections keeps that height set, so this is a hard gate.
+    log("[federation] waiting for the genesis federation to reach activation age (150 blocks)")
+    end = time.time() + 600
+    while time.time() < end:
+        blk = int(rsk("eth_blockNumber"), 16)
+        if blk >= 170:
+            break
+        time.sleep(5)
+    else:
+        raise RuntimeError("the chain did not reach block 170")
+    log("             block %d" % int(rsk("eth_blockNumber"), 16))
 
     log("[federation] current federation")
     size = dec_uint("0x" + bridge_call(sel("getFederationSize()")).hex())
@@ -497,10 +537,17 @@ def stage_federation():
     b = rsk_address(AUTH_B)
     log("[federation] authorizers: auth-a=%s auth-b=%s" % (a, b))
 
-    def vote(data, label):
+    def vote(data, label, expect=1):
         for who, k in (("auth-a", a), ("auth-b", b)):
+            code = vote_dry_run(data, k)
+            if code != 1:
+                raise RuntimeError(
+                    "vote '%s' rejected by the Bridge for %s: code %d (%s)"
+                    % (label, who, code, FED_CODE.get(code, "unknown")))
             txh = bridge_tx(data, k)
-            wait_rsk_tx(txh, timeout=90)
+            rc = wait_rsk_tx(txh, timeout=120)
+            if rc.get("status") not in ("0x1", 1, True):
+                raise RuntimeError("vote '%s' from %s reverted: %s" % (label, who, rc))
             log("             %s voted via %s  (%s)" % (label, who, txh[:18]))
             time.sleep(0.4)
 
@@ -514,7 +561,9 @@ def stage_federation():
         data = sel("addFederatorPublicKeyMultikey(bytes,bytes,bytes)") + enc_bytes3(btc_pub, ec_pub, ec_pub)
         vote(data, "add " + rsk_address(k)[:10])
 
-    pend = dec_bytes("0x" + bridge_call(sel("getPendingFederationHash()")).hex())
+    pend = pending_hash()
+    if not pend:
+        raise RuntimeError("the pending federation was not created: hash is empty")
     log("[federation] pending federation hash 0x%s" % pend.hex())
 
     log("[federation] commitFederation")
