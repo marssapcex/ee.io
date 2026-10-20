@@ -31,7 +31,7 @@ Script tự cài, chỉ khi thiếu:
 | Homebrew | bạn cài sẵn | https://brew.sh |
 | git, curl, jq | `brew install` | thường có sẵn |
 | **OpenJDK 17** | `brew install openjdk@17` | **bắt buộc 17** — `powpeg-node/build.gradle:179`, rskj cùng pin |
-| Python 3.10+ | có sẵn trên macOS / `brew install python@3.11` | |
+| Python **3.10–3.13** | script tự tìm, thiếu thì `brew install python@3.12` | ⚠️ **3.14 chưa dùng được**: `coincurve` chưa có wheel cp314 |
 | Bitcoin Core | `brew install bitcoin` | chỉ cần cho PROOF 2 |
 
 Cuối script nó ghi ra `repro/env.sh`:
@@ -129,7 +129,8 @@ Nếu bạn muốn tôi mở/merge PR hộ, nói một câu — tôi có `gh` tr
 |---|---|---|
 | `java -version` ra 21/24 | jenv / SDKMAN / brew mặc định | `source env.sh` rồi `java -version` phải là 17; hoặc `export JAVA_HOME=$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home` |
 | `error: invalid source release: 17` | đang dùng JDK 8/11 | như trên |
-| `gradle-wrapper.jar` missing | repo không kèm wrapper | đã tự xử lý: `./configure.sh` (chỉ chạy trên Linux/mac, tải jar có pin SHA256) |
+| `Could not find or load main class org.gradle.wrapper.GradleWrapperMain` | **cả rskj và powpeg-node** đều không kèm `gradle/wrapper/gradle-wrapper.jar` | script đã tự chạy `./configure.sh` cho **cả hai** repo (bản cũ chỉ làm cho powpeg-node). Chạy tay: `cd ~/powpeg-proof/rskj && ./configure.sh` |
+| `pip install coincurve` lỗi khi build | Python 3.14 | `brew install python@3.12` rồi `PY=$(brew --prefix python@3.12)/bin/python3.12 ./20_proof_regtest.sh` |
 | Gradle tải rất lâu lần đầu | tải deps từ Maven Central | bình thường, 5–15 phút. `./gradlew --no-daemon` đã set sẵn |
 | `Failed to apply patch` | bạn đã áp rồi | `cd ~/powpeg-proof/powpeg-node && git checkout -- .` rồi chạy lại |
 | `bitcoind not reachable` | chưa bật bitcoind | `bitcoind -regtest -datadir=... -daemon` (README 3.1) |

@@ -59,18 +59,36 @@ fi
 say "export JAVA_HOME=\"$JAVA17_HOME\""
 
 # ---------------------------------------------------------------- python
-step "python 3.10+"
+# coincurve (used by regtest_attack.py, libsecp256k1) publishes wheels for
+# CPython 3.9-3.13 only -- on 3.14 pip would try to build libsecp256k1 from
+# source. Prefer 3.12/3.11, install one if this Mac only has 3.14.
+step "python 3.10-3.13 (coincurve has no cp314 wheel yet)"
 PY=""
-for c in python3 python3.12 python3.11 python3.10; do
-  if have "$c" && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
-    PY="$c"; break
+for c in python3.12 python3.11 python3.13 python3.10; do
+  if have "$c" && "$c" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info < (3,14) else 1)' 2>/dev/null; then
+    PY="$(command -v "$c")"; break
   fi
 done
+if [ -z "$PY" ] && have python3 && python3 -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info < (3,14) else 1)' 2>/dev/null; then
+  PY="$(command -v python3)"
+fi
 if [ -z "$PY" ]; then
-  if [ "$OS" = "Darwin" ]; then brew install python@3.11; PY="python3.11"
-  else sudo apt-get install -y python3 python3-venv; PY="python3"; fi
+  say "no python in [3.10, 3.13) found"
+  if [ "$OS" = "Darwin" ]; then
+    brew install python@3.12 >/dev/null 2>&1 || true
+    PY="$(brew --prefix python@3.12 2>/dev/null)/bin/python3.12"
+  else
+    sudo apt-get install -y python3 python3-venv >/dev/null 2>&1
+    PY="$(command -v python3)"
+  fi
+fi
+if [ ! -x "$PY" ]; then
+  say "!! could not find or install a usable python (need 3.10-3.13)"
+  say "   brew install python@3.12"
+  exit 1
 fi
 "$PY" -V
+say "using: $PY   (the PoC venv will be built from this interpreter)"
 
 # ---------------------------------------------------------------- bitcoin core
 if [ "${SKIP_BITCOIN:-0}" != "1" ]; then

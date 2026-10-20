@@ -28,6 +28,26 @@ mkdir -p "$WORK" "$RES"
 [ -f "$HERE/env.sh" ] && . "$HERE/env.sh"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing $1 (run 00_install_tools.sh)"; exit 1; }; }
+
+# Neither rskj nor powpeg-node ships gradle/wrapper/gradle-wrapper.jar (only the
+# .properties file); both ship ./configure.sh, which downloads it and checks a
+# pinned SHA256. Call it whenever the jar is missing.
+ensure_wrapper() {
+  local repo="$1"
+  if [ -f "$repo/gradle/wrapper/gradle-wrapper.jar" ]; then
+    echo "gradle wrapper: present"
+    return 0
+  fi
+  echo "gradle wrapper: missing, running ./configure.sh"
+  ( cd "$repo" && chmod +x configure.sh && ./configure.sh )
+  if [ -f "$repo/gradle/wrapper/gradle-wrapper.jar" ]; then
+    echo "gradle wrapper: fetched"
+    return 0
+  fi
+  echo "!! could not fetch gradle-wrapper.jar in $repo"
+  echo "   fallback: curl -fsSL https://deps.rsklabs.io/gradle-wrapper.jar -o $repo/gradle/wrapper/gradle-wrapper.jar"
+  return 1
+}
 need git; need java
 JAVA_MAJOR="$(java -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
 [ "$JAVA_MAJOR" = "17" ] || echo "WARNING: java $JAVA_MAJOR detected, both projects expect 17"
@@ -50,8 +70,10 @@ else
   echo "patch already applied (or conflicts -- run: git checkout -- .) "
 fi
 
+ensure_wrapper "$WORK/rskj" || exit 1
+
 echo "running co.rsk.peg.PegUtilsEvaluatePeginTest ..."
-./gradlew --no-daemon :rskj-core:test \
+./gradlew --no-daemon --console=plain :rskj-core:test \
     --tests 'co.rsk.peg.PegUtilsEvaluatePeginTest' \
     2>&1 | tee "$RES/rskj-test.log" | tail -40
 RSKJ_RC=${PIPESTATUS[0]}
@@ -75,11 +97,10 @@ else
   echo "patch already applied (or conflicts -- run: git checkout -- .)"
 fi
 
-# the pinned gradle wrapper is not in the repo; configure.sh fetches it
-[ -f gradle/wrapper/gradle-wrapper.jar ] || ./configure.sh
+ensure_wrapper "$WORK/powpeg-node" || exit 1
 
 echo "running co.rsk.federate.BtcToRskClientTest ..."
-./gradlew --no-daemon test \
+./gradlew --no-daemon --console=plain test \
     --tests 'co.rsk.federate.BtcToRskClientTest' \
     2>&1 | tee "$RES/powpeg-test.log" | tail -40
 POWPEG_RC=${PIPESTATUS[0]}

@@ -23,12 +23,27 @@ mkdir -p "$RES"
 # shellcheck disable=SC1091
 [ -f "$HERE/env.sh" ] && . "$HERE/env.sh"
 
-PY="${PY:-python3}"
-"$PY" -c 'import coincurve' 2>/dev/null || {
-  echo "cookiecutter: installing coincurve into a local venv"
-  "$PY" -m venv "$HERE/.venv" && "$HERE/.venv/bin/pip" -q install coincurve
+PY="${PY:-${PYTHON:-python3}}"
+if ! "$PY" -c 'import coincurve' 2>/dev/null; then
+  # coincurve ships wheels for CPython 3.9-3.13 only; 3.14 falls back to a
+  # source build (needs libsecp256k1 + a C toolchain) and usually fails.
+  if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info < (3,14) else 1)'; then
+    echo "python $("$PY" -V 2>&1) cannot use the coincurve wheel; looking for 3.12/3.11"
+    for c in python3.12 python3.11 python3.13 python3.10; do
+      if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
+    done
+    if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info < (3,14) else 1)'; then
+      echo "!! no python < 3.14 available. Install one and re-run:"
+      echo "     brew install python@3.12"
+      echo "     PY=\"$(brew --prefix python@3.12)/bin/python3.12\" ./20_proof_regtest.sh"
+      exit 1
+    fi
+  fi
+  echo "installing coincurve into $HERE/.venv (using $($"$PY" -V 2>&1))"
+  "$PY" -m venv "$HERE/.venv" && "$HERE/.venv/bin/pip" -q install coincurve || {
+    echo "!! pip install coincurve failed"; exit 1; }
   PY="$HERE/.venv/bin/python"
-}
+fi
 
 echo "== self-test of the transaction builder (no node needed) =="
 "$PY" "$HERE/regtest_attack.py" --self-test || exit 1
