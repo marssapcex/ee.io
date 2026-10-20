@@ -30,12 +30,14 @@ BTC_USER=rsk
 BTC_PASS=rsk
 KEEP=0
 CHECK=0
+NATIVE_JVM=0
 FROM=build
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep) KEEP=1 ;;
     --check) CHECK=1 ;;
+    --native) NATIVE_JVM=1 ;;
     --from) FROM="$2"; shift ;;
     --work) WORK="$2"; shift ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
@@ -66,17 +68,52 @@ die() { c_bad "FAILED: $*"; exit 1; }
 # ---------------------------------------------------------------------------
 c_step "0. preflight"
 
-if ! java -version 2>&1 | grep -q 'version "17'; then
-  for h in "$(brew --prefix openjdk@17 2>/dev/null)/libexec/openjdk.jdk/Contents/Home" \
-           /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
-           /usr/lib/jvm/java-17-openjdk-amd64; do
-    if [ -x "$h/bin/java" ]; then
-      export JAVA_HOME="$h"; export PATH="$h/bin:$PATH"; break
-    fi
-  done
+JAVA_CMD=""
+ARCH_PREFIX=""
+
+# The federate node starts a bitcoinj SPV wallet (WalletAppKit) and bitcoinj
+# binds leveldb through leveldbjni 1.8. That jar ships native libraries for
+# macOS x86_64 and i386 only -- there is no arm64 build, in any release, and the
+# aarch64 forks only cover Linux. Rootstock's own integration-test README says to
+# use an x86_64 JDK with Rosetta on ARM machines. So on Apple Silicon the only
+# way to run the real node is an x86_64 JVM under Rosetta; everything else here
+# (bitcoind, the PoC, the RSK code itself) stays native arm64.
+if [ "$(uname -m)" = "arm64" ] && [ "$NATIVE_JVM" != "1" ]; then
+  if ! arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+    c_bad "  Rosetta 2 is not installed."
+    echo "    softwareupdate --install-rosetta --agree-to-license"
+    die "an x86_64 JVM is required for the federator (leveldbjni has no arm64 build)"
+  fi
+
+  JDK_X64="${JAVA_X64:-$WORK/jdk-x64}"
+  if [ ! -x "$JDK_X64/Contents/Home/bin/java" ]; then
+    echo "  downloading an x86_64 JDK 17 for the federator (one time, ~180 MB)"
+    mkdir -p "$JDK_X64"
+    curl -fL --retry 3 -o "$WORK/jdk-x64.tar.gz" \
+      "https://api.adoptium.net/v3/binary/latest/17/ga/mac/x64/jdk/hotspot/normal/eclipse" \
+      || die "could not download the x86_64 JDK"
+    tar -xzf "$WORK/jdk-x64.tar.gz" -C "$JDK_X64" --strip-components=1 \
+      || die "could not unpack the x86_64 JDK"
+    rm -f "$WORK/jdk-x64.tar.gz"
+  fi
+  [ -x "$JDK_X64/Contents/Home/bin/java" ] || die "x86_64 JDK missing after unpack"
+
+  ARCH_PREFIX="arch -x86_64"
+  JAVA_CMD="$ARCH_PREFIX $JDK_X64/Contents/Home/bin/java"
+  echo "  JVM: x86_64 JDK 17 under Rosetta (leveldbjni has no arm64 build)"
+else
+  if ! java -version 2>&1 | grep -q 'version "17'; then
+    for h in "$(brew --prefix openjdk@17 2>/dev/null)/libexec/openjdk.jdk/Contents/Home" \
+             /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
+             /usr/lib/jvm/java-17-openjdk-amd64; do
+      [ -x "$h/bin/java" ] && { export JAVA_HOME="$h"; export PATH="$h/bin:$PATH"; break; }
+    done
+  fi
+  JAVA_CMD="java"
 fi
-java -version 2>&1 | head -1 | sed 's/^/  /'
-java -version 2>&1 | grep -q 'version "17' || die "need JDK 17"
+
+$JAVA_CMD -version 2>&1 | head -1 | sed 's/^/  /'
+$JAVA_CMD -version 2>&1 | grep -q 'version "17' || die "need JDK 17"
 
 command -v bitcoind >/dev/null || die "bitcoind not found in PATH"
 command -v bitcoin-cli >/dev/null || die "bitcoin-cli not found in PATH"
@@ -100,59 +137,24 @@ if [ "$CHECK" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-c_step "1. build rskj + powpeg-node"
+c_step "1. build powpeg-node"
 
+# Only the federate node is needed: FederateRunner embeds rskj (FedNodeContext
+# extends RskContext), so there is no separate RSK node jar to build here.
 REPOS="${REPOS:-$HOME/ee.io}"
 mkdir -p "$REPOS"
-[ -d "$REPOS/rskj/.git" ]        || git clone -q https://github.com/rsksmart/rskj "$REPOS/rskj"
 [ -d "$REPOS/powpeg-node/.git" ] || git clone -q https://github.com/rsksmart/powpeg-node "$REPOS/powpeg-node"
-
-( cd "$REPOS/rskj" && git fetch -q origin && git checkout -q "$RSKJ_COMMIT" ) || die "rskj checkout"
-( cd "$REPOS/powpeg-node" && git fetch -q origin && git checkout -q "$POWPEG_TAG" ) || die "powpeg checkout"
-
-RSKJ_JAR=$(ls "$REPOS"/rskj/rskj-core/build/libs/*-all.jar 2>/dev/null | head -1)
-if [ -z "${RSKJ_JAR:-}" ]; then
-  echo "  building rskj (this is the slow part, once ~8 min)"
-  ( cd "$REPOS/rskj" && ./configure.sh >/dev/null 2>&1; ./gradlew --no-daemon --console=plain :rskj-core:fatJar -x test ) \
-    > "$LOGS/build-rskj.log" 2>&1 || die "rskj build failed, see $LOGS/build-rskj.log"
-  RSKJ_JAR=$(ls "$REPOS"/rskj/rskj-core/build/libs/*-all.jar 2>/dev/null | head -1)
-fi
-[ -n "${RSKJ_JAR:-}" ] || die "rskj fat jar not found"
-echo "  rskj        $(basename "$RSKJ_JAR")"
+( cd "$REPOS/powpeg-node" && git fetch -q origin && git checkout -q "$POWPEG_TAG" ) || die "powpeg-node checkout"
 
 POWPEG_JAR=$(ls "$REPOS"/powpeg-node/build/libs/*-all.jar 2>/dev/null | head -1)
 if [ -z "${POWPEG_JAR:-}" ]; then
-  echo "  building powpeg-node (once ~4 min)"
+  echo "  building powpeg-node (once, ~5 min)"
   ( cd "$REPOS/powpeg-node" && ./configure.sh >/dev/null 2>&1; ./gradlew --no-daemon --console=plain fatJar -x test ) \
     > "$LOGS/build-powpeg.log" 2>&1 || die "powpeg build failed, see $LOGS/build-powpeg.log"
   POWPEG_JAR=$(ls "$REPOS"/powpeg-node/build/libs/*-all.jar 2>/dev/null | head -1)
 fi
 [ -n "${POWPEG_JAR:-}" ] || die "powpeg fat jar not found"
 echo "  powpeg-node $(basename "$POWPEG_JAR")"
-
-# ---------------------------------------------------------------------------
-FINISHED=0
-dump_logs() {
-  for f in "$LOGS"/powpeg-*.log; do
-    [ -s "$f" ] || continue
-    echo
-    c_bad "  ---- last 40 lines of $(basename "$f") ----"
-    grep -vE '^\s+at ' "$f" | tail -40 | sed 's/^/    /'
-  done
-}
-
-cleanup() {
-  local rc=$?
-  [ "$FINISHED" = "1" ] || dump_logs
-  [ "$KEEP" = "1" ] && { echo "  --keep: leaving nodes running"; return; }
-  echo
-  echo "  stopping nodes"
-  [ -n "${POWPEG_PID:-}" ] && kill "$POWPEG_PID" 2>/dev/null
-  [ -n "${RSKJ_PID:-}" ]   && kill "$RSKJ_PID" 2>/dev/null
-  bitcoin-cli -regtest -datadir="$WORK/btc" -rpcuser=$BTC_USER -rpcpassword=$BTC_PASS stop >/dev/null 2>&1
-  sleep 2
-}
-trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
 c_step "1b. clearing leftovers from previous runs"
@@ -318,7 +320,7 @@ federator {
 }
 EOF
   rm -f "$LOGS/powpeg-$gen.log"
-  ( cd "$WORK" && exec java -Drsk.conf.file="$WORK/powpeg.conf" -Dlogging.dir="$LOGS" -cp "$POWPEG_JAR" \
+  ( cd "$WORK" && exec $JAVA_CMD -Drsk.conf.file="$WORK/powpeg.conf" -Dlogging.dir="$LOGS" -cp "$POWPEG_JAR" \
        co.rsk.federate.FederateRunner --regtest "$@" ) \
        > "$LOGS/powpeg-$gen.log" 2>&1 &
   POWPEG_PID=$!
@@ -360,7 +362,7 @@ except Exception: sys.exit(1)" >/dev/null 2>&1; then
   if [ ! -s "$LOGS/powpeg-$gen.log" ] && [ ! -s "$LOGS/rsk.log" ]; then
     echo "  nothing was logged; re-running the JVM in the foreground for 20 s"
     echo "  ------------------------------------------------------------------"
-    ( cd "$WORK" && run_timeout 20 java -Drsk.conf.file="$WORK/powpeg.conf" -Dlogging.dir="$LOGS" \
+    ( cd "$WORK" && run_timeout 20 $JAVA_CMD -Drsk.conf.file="$WORK/powpeg.conf" -Dlogging.dir="$LOGS" \
         -cp "$POWPEG_JAR" co.rsk.federate.FederateRunner --regtest "$@" 2>&1 \
         | head -60 | sed 's/^/    /' )
     echo "  ------------------------------------------------------------------"
