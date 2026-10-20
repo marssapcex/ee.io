@@ -1594,60 +1594,112 @@ def stage_measure(label="t"):
 # stage: recover
 # ---------------------------------------------------------------------------
 
+def active_federation_age():
+    """(age in blocks, creation block) of the active federation."""
+    raw = bridge_call(sel("getFederationCreationBlockNumber()"))
+    created = int.from_bytes(raw[:32], "big")
+    blk = int(rsk("eth_blockNumber"), 16)
+    return blk - created, created
+
+
 def stage_recover():
-    log("[recover] waiting for the retiring federation to expire")
-    log("          (only updateCollections, sent by the active federation, clears it)")
+    """Drive the retirement, then wait for the frozen peg-ins to be credited.
 
-    h0 = btc_best_chain_height()
-    end = time.time() + 1800
-    while time.time() < end:
-        raw = dec_bytes("0x" + bridge_call(sel("getRetiringFederationAddress()")).hex()).decode(errors="ignore")
-        if not raw:
-            break
-        time.sleep(3)
-    else:
-        # a 30 minute wait is useless if the thing that clears the retiring
-        # federation is not running at all, so say that instead of timing out
-        try:
-            alive = btc_best_chain_height() != h0
-        except Exception:
-            alive = False
-        bridge_log_tail(30, FEDERATOR_PATTERN)
-        raise RuntimeError(
-            "the retiring federation never expired after 30 minutes."
-            + ("" if alive else
-               "\n  the Bridge BTC height did not move at all, so updateCollections is not"
-               "\n  being sent: the federator is not running (see the lines above)."))
+    Two consensus numbers decide this stage, both in FederationRegTestConstants:
 
-    log("[recover] retiring federation is gone; the same 40 txs are now valid peg-ins")
+        federationActivationAge             = 150
+        fundsMigrationAgeSinceActivationEnd = 150
 
-    # The Bridge re-evaluates those transactions on the federator's next turns
-    # (updateBridgeBtcTransactions, one turn every 15s x federation size), so the
-    # credit lands a turn or two later. Waiting a fixed 30s would make the verdict
-    # depend on that guess; wait for the effect and say how long it took.
+    FederationSupportImpl.getMigrationAgeEnd() adds them, so the retiring
+    federation's funds may only be migrated once the *active* federation is 300
+    blocks old (isActiveFederationPastMigrationAge,
+    FederationSupportImpl.java:892). The clearing itself happens in
+    processFundsMigration, which runs inside updateCollections
+    (BridgeSupport.java:1041 -> :1274). Both nodes run with
+    federator.updateCollections = false, so this stage is the caller. Without it
+    nothing is migrated, nothing is cleared, and the rejected transactions stay
+    rejected forever.
+
+    The previous version of this stage only waited, mined nothing, and then
+    blamed the federator because the Bridge's Bitcoin height had not moved --
+    a signal that could not move while no Bitcoin block was being mined.
+    """
     st = load_state()
+    caller = CALLER[0] or federation_caller()
+    offsets = {f: o for f, o in log_offsets().items()
+               if f.endswith(os.path.join("node-federator1", "rsk.log"))}
+    if not offsets:
+        offsets = log_offsets()
+
+    age, created = active_federation_age()
+    log("[recover] active federation created at RSK block %d, age %d blocks"
+        % (created, age))
+    log("          its funds may migrate once it is 300 blocks old "
+        "(activation 150 + migration 150)")
+    if age < 300:
+        log("          %d blocks to go, about %d minutes at one block per second"
+            % (300 - age, (300 - age) // 60))
+
+    start = int(rsk("eth_blockNumber"), 16)
+    deadline = start + 420
+    last_call = -100
+    last_print = 0.0
+
+    while True:
+        size = retiring_size()
+        blk = int(rsk("eth_blockNumber"), 16)
+        if size <= 0:
+            log("[recover] the retiring federation is gone at RSK block %d" % blk)
+            break
+        if blk > deadline:
+            age, _ = active_federation_age()
+            for line in log_since(r"processFundsMigration|Retiring federation|migration",
+                                  offsets)[-6:]:
+                log("    " + line.strip()[:200])
+            raise RuntimeError(
+                "recovery: the retiring federation (size %d) is still there after %d "
+                "blocks. The active federation is %d blocks old; migration starts at 300."
+                % (size, blk - start, age))
+
+        # one Bridge call every 8 blocks: it is what builds the migration tx and
+        # what finally clears the retiring federation
+        if blk - last_call >= 8:
+            send_update_collections(caller)
+            last_call = blk
+            mine(2)
+
+        mine(1)
+        time.sleep(1)
+
+        now = time.time()
+        if now - last_print > 25:
+            last_print = now
+            age, _ = active_federation_age()
+            log("             block %d: retiring size %d, active federation age %d/300"
+                % (blk, size, age))
+
+    # ---- the effect that matters: the frozen peg-ins get credited ----------
     vic = st["victim_rsk_address"]
+    log("[recover] retiring federation is gone; the 40 flood txs and the victim's "
+        "peg-in are now valid peg-ins")
     t0 = time.time()
     while time.time() - t0 < 240:
         bal = balance(vic)
         if bal > 0:
             log("[recover] victim credited after %ds: %s wei" % (time.time() - t0, bal))
             break
-        time.sleep(5)
+        mine(1)
+        time.sleep(3)
     else:
         log("[recover] WARNING: the victim is still not credited 240s after the retiring "
             "federation disappeared")
 
-    stage_measure("after")
-
     st = load_state()
+    stage_measure("after")
     last = st["measurements"][-1]
-    vic = st["victim_rsk_address"]
     log("[recover] victim final balance %s wei" % balance(vic))
     log("[recover] processed: %d/40 attack txs" % last["attacker_processed"])
 
-
-# ---------------------------------------------------------------------------
 
 def main():
     if len(sys.argv) < 2:
