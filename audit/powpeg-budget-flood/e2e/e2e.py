@@ -339,8 +339,28 @@ def bridge_call(data: bytes) -> bytes:
     return bytes.fromhex(res[2:] if res.startswith("0x") else res)
 
 
-def bridge_tx(data: bytes, frm: str):
-    return rsk("eth_sendTransaction", [{"from": frm, "to": BRIDGE, "data": "0x" + data.hex(), "gas": "0x7a120"}])
+def bridge_tx(data: bytes, frm: str, tries=25):
+    """Send a Bridge transaction from `frm`, surviving the nonce race.
+
+    The account we call Bridge methods from is also the account the node's own
+    federator sends registerBtcTransaction/registerBtcCoinbaseTransaction from --
+    that is the price of using a real federation member rather than a key the
+    Bridge would reject. Two writers on one account mean the wallet's nonce guess
+    can lose a race ('transaction nonce too high' / 'nonce too low'); the wallet
+    re-reads the nonce on every call, so retrying is enough. Without this, a
+    perfectly healthy recovery died on its sixth Bridge call.
+    """
+    tx = {"from": frm, "to": BRIDGE, "data": "0x" + data.hex(), "gas": "0x7a120"}
+    last = None
+    for attempt in range(tries):
+        try:
+            return rsk("eth_sendTransaction", [tx])
+        except Exception as e:
+            last = e
+            if "nonce" not in str(e).lower():
+                raise
+            time.sleep(1.5)
+    raise RuntimeError("could not send from %s after %d attempts: %s" % (frm, tries, last))
 
 
 # ---------------------------------------------------------------------------
@@ -1637,8 +1657,8 @@ def stage_recover():
     log("          its funds may migrate once it is 300 blocks old "
         "(activation 150 + migration 150)")
     if age < 300:
-        log("          %d blocks to go, about %d minutes at one block per second"
-            % (300 - age, (300 - age) // 60))
+        log("          %d blocks to go (~%d min at one block per second)"
+            % (300 - age, max(1, round((300 - age) / 60))))
 
     start = int(rsk("eth_blockNumber"), 16)
     deadline = start + 420
@@ -1664,7 +1684,11 @@ def stage_recover():
         # one Bridge call every 8 blocks: it is what builds the migration tx and
         # what finally clears the retiring federation
         if blk - last_call >= 8:
-            send_update_collections(caller)
+            try:
+                send_update_collections(caller)
+            except Exception as e:
+                log("             block %d: updateCollections failed (%s), retrying in 8 "
+                    "blocks" % (blk, str(e)[:90]))
             last_call = blk
             mine(2)
 
