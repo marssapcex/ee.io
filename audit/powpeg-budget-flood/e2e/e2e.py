@@ -187,7 +187,14 @@ RETIRING_SAT = 2_000             # above dust, far below the minimum
 FANOUT_VALUE = 702_000           # per branch: 500k + 2k + dust + change + fee
 ATTACK_COUNT = 40                # BtcToRskClient.MAXIMUM_REGISTER_BTC_LOCK_TXS_PER_TURN
 SPARE_TXS = 8                    # ground and broadcast only if the queue is short
-BIN_BITS = 7                     # mask 0x7f: bin 0 for any ConcurrentHashMap table
+# mask 0x7f. The federator keeps pending txs in a ConcurrentHashMap, whose bucket
+# is (h ^ (h >>> 16)) & (capacity - 1); with the low seven bits of the spread at
+# zero every attack tx lands in bucket 0, which is iterated first, so the 40 of
+# them fill the per-turn quota before any other tx is even offered. That only
+# holds while the map stays at capacity <= 128 (at 256 half of them would move to
+# bucket 128), i.e. under ~96 entries: 40 attack txs, at most 8 spares, the
+# victim and a handful of leftovers.
+BIN_BITS = 7
                                  # up to 128 buckets (96 pending txs). Bit 0..6 of the
                                  # bucket index are zero, so *every* attack tx sorts
                                  # ahead of anything else in getTransactionProofs(),
