@@ -1,5 +1,5 @@
 diff --git a/rskj-core/src/test/java/co/rsk/peg/PegUtilsEvaluatePeginTest.java b/rskj-core/src/test/java/co/rsk/peg/PegUtilsEvaluatePeginTest.java
-index 8539e07..c995cd6 100644
+index 8539e07..3637989 100644
 --- a/rskj-core/src/test/java/co/rsk/peg/PegUtilsEvaluatePeginTest.java
 +++ b/rskj-core/src/test/java/co/rsk/peg/PegUtilsEvaluatePeginTest.java
 @@ -22,6 +22,7 @@ import co.rsk.peg.pegin.RejectedPeginReason;
@@ -10,7 +10,7 @@ index 8539e07..c995cd6 100644
  import java.util.stream.Stream;
  import org.ethereum.config.blockchain.upgrades.ActivationConfig;
  import org.ethereum.config.blockchain.upgrades.ActivationConfigsForTest;
-@@ -282,4 +283,94 @@ class PegUtilsEvaluatePeginTest {
+@@ -282,4 +283,99 @@ class PegUtilsEvaluatePeginTest {
  
          assertEquals(PeginProcessAction.REGISTER, peginEvaluationResult.getPeginProcessAction());
      }
@@ -58,6 +58,10 @@ index 8539e07..c995cd6 100644
 +
 +        PeginInformation peginInformation = mock(PeginInformation.class);
 +        when(peginInformation.getProtocolVersion()).thenReturn(0);
++        // evaluatePegin() switches on the sender address type for protocol 0; a
++        // bare mock returns null there and the enum switch NPEs. This transaction
++        // is built with a P2PKH sender, so that is what parse() would produce.
++        when(peginInformation.getSenderBtcAddressType()).thenReturn(BtcLockSender.TxSenderAddressType.P2PKH);
 +
 +        PeginEvaluationResult peginEvaluationResult = PegUtils.evaluatePegin(
 +            btcTx,
@@ -93,6 +97,7 @@ index 8539e07..c995cd6 100644
 +        );
 +        PeginInformation peginInformation = mock(PeginInformation.class);
 +        when(peginInformation.getProtocolVersion()).thenReturn(0);
++        when(peginInformation.getSenderBtcAddressType()).thenReturn(BtcLockSender.TxSenderAddressType.P2PKH);
 +
 +        PeginEvaluationResult peginEvaluationResult = PegUtils.evaluatePegin(
 +            btcTx,

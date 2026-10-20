@@ -349,6 +349,17 @@ here only because it is the root of the "retried forever" behaviour.
 
 ## 6. What was proven, and what was not
 
+**Proven on real code, macOS arm64 (M4), JDK 17.0.20.1, 2026-10-20 run:**
+
+| repo | command | result |
+|---|---|---|
+| powpeg-node `3dc1d165` (VETIVER-9.0.4.0) | `./gradlew test --tests 'co.rsk.federate.BtcToRskClientTest'` | **BUILD SUCCESSFUL** — all 3 added tests green, every pre-existing test in the class still green |
+| rskj `1e95a3b03` | `./gradlew :rskj-core:test --tests 'co.rsk.peg.PegUtilsEvaluatePeginTest'` | **16/17 green**; `evaluatePegin_subMinimumOutputToAnotherLiveFederation_isRejectedWithInvalidAmount` **PASSED**. The 17th was a bug in the test itself (a bare Mockito mock returns `null` for `getSenderBtcAddressType()`, and `evaluateLegacyPegin()` switches on it → NPE); fixed in the patch by stubbing `P2PKH` |
+
+So `BtcToRskClient.updateBridgeBtcTransactions()` sending a Bridge-rejected
+peg-in, and the same entry being re-sent on the next turn, are no longer a
+deduction: they were executed against the production classes.
+
 Proven here, by execution (`poc/run_poc.sh`):
 
 * the 40 transactions are real, valid, signed Bitcoin transactions paying

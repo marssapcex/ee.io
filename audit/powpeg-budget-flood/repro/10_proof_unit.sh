@@ -154,12 +154,18 @@ git fetch -q --all --tags
 git checkout -q "$RSKJ_COMMIT" || { echo "cannot check out $RSKJ_COMMIT"; exit 1; }
 echo "HEAD: $(git rev-parse --short HEAD)"
 
-if git apply --check "$HERE/../patches/rskj-PegUtilsEvaluatePeginTest.patch" 2>/dev/null; then
-  git apply "$HERE/../patches/rskj-PegUtilsEvaluatePeginTest.patch"
-  echo "patch applied"
-else
-  echo "patch already applied (or conflicts -- run: git checkout -- .) "
-fi
+apply_patch() {   # $1 repo, $2 patch
+  local repo="$1" patch="$2"
+  if ( cd "$repo" && git apply --check "$patch" 2>/dev/null ); then
+    ( cd "$repo" && git apply "$patch" ); echo "patch applied"; return 0
+  fi
+  # most likely it is already applied: reset the test tree and try once more
+  echo "patch does not apply cleanly, resetting the working tree and retrying"
+  ( cd "$repo" && git checkout -- . && git apply "$patch" ) && echo "patch applied after reset" && return 0
+  echo "!! could not apply $patch"; return 1
+}
+
+apply_patch "$WORK/rskj" "$HERE/../patches/rskj-PegUtilsEvaluatePeginTest.patch" || exit 1
 
 ensure_wrapper "$WORK/rskj" || exit 1
 
@@ -181,12 +187,7 @@ git fetch -q --all --tags
 git checkout -q "$POWPEG_TAG" || exit 1
 echo "HEAD: $(git rev-parse --short HEAD)"
 
-if git apply --check "$HERE/../patches/powpeg-node-BtcToRskClientTest.patch" 2>/dev/null; then
-  git apply "$HERE/../patches/powpeg-node-BtcToRskClientTest.patch"
-  echo "patch applied"
-else
-  echo "patch already applied (or conflicts -- run: git checkout -- .)"
-fi
+apply_patch "$WORK/powpeg-node" "$HERE/../patches/powpeg-node-BtcToRskClientTest.patch" || exit 1
 
 ensure_wrapper "$WORK/powpeg-node" || exit 1
 

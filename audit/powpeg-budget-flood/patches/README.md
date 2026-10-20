@@ -5,6 +5,13 @@ JARs could not be fetched in the audit sandbox. These two patches remove that
 gap: they add the assertions **to the repositories themselves**, so
 `./gradlew test` runs them against the real classes.
 
+**Status (real run, macOS arm64 / JDK 17.0.20.1, 2026-10-20):**
+`powpeg-node` — BUILD SUCCESSFUL, all three added tests green.
+`rskj` — 16/17 green including the key `..._isRejectedWithInvalidAmount`; the
+one failure was a defect in the test (Mockito mock returns `null` for
+`getSenderBtcAddressType()`, and `evaluateLegacyPegin()` switches on it), now
+fixed by stubbing `P2PKH`, so a re-run should be fully green.
+
 Both patches were generated with `git diff` against the exact commits audited
 (`powpeg-node f5c3823`, `rskj 1e95a3b`) and are based on helper methods that
 already exist in those test trees — they were **not compiled here** (no JDK, no
