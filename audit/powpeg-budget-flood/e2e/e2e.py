@@ -1565,7 +1565,7 @@ def stage_measure(label="t"):
     out = {
         "label": label,
         "rsk_block": int(rsk("eth_blockNumber"), 16),
-        "retiring_present": bool(dec_bytes("0x" + bridge_call(sel("getRetiringFederationAddress()")).hex()).decode(errors="ignore")),
+        "retiring_present": retiring_size() > 0,
         "federator_nonce": fed_nonce,
         "victim_balance_wei": str(vic_bal),
         "victim_processed_height": vic_h,
@@ -1620,7 +1620,24 @@ def stage_recover():
                "\n  being sent: the federator is not running (see the lines above)."))
 
     log("[recover] retiring federation is gone; the same 40 txs are now valid peg-ins")
-    time.sleep(30)
+
+    # The Bridge re-evaluates those transactions on the federator's next turns
+    # (updateBridgeBtcTransactions, one turn every 15s x federation size), so the
+    # credit lands a turn or two later. Waiting a fixed 30s would make the verdict
+    # depend on that guess; wait for the effect and say how long it took.
+    st = load_state()
+    vic = st["victim_rsk_address"]
+    t0 = time.time()
+    while time.time() - t0 < 240:
+        bal = balance(vic)
+        if bal > 0:
+            log("[recover] victim credited after %ds: %s wei" % (time.time() - t0, bal))
+            break
+        time.sleep(5)
+    else:
+        log("[recover] WARNING: the victim is still not credited 240s after the retiring "
+            "federation disappeared")
+
     stage_measure("after")
 
     st = load_state()
