@@ -9,8 +9,12 @@
 #  powpeg-node built from the production tag, a real federation change, 40
 #  real ground Bitcoin transactions, one real victim, real eth_getBalance.
 #
-#  Stages:  build -> bitcoind -> rskj -> federation change -> powpeg
-#           -> attack -> measure -> recovery
+#  Two real powpeg nodes are needed, because RSKIP419 only hands a federation
+#  over after the SVP cycle has been signed by both the old and the new
+#  federation (see the comment at stage 3).
+#
+#  Stages:  build -> bitcoind -> node A + node B -> seed the federation
+#           -> federation change + SVP handover -> attack -> measure -> recovery
 #
 #  Everything is written under $WORK (default ~/powpeg-e2e):
 #     state/state.json     txids, addresses, every measurement
@@ -25,6 +29,7 @@ LOGS="$WORK/logs"
 RSKJ_COMMIT="1e95a3b039b2f2e12837400533e88dc4aedeefb8"
 POWPEG_TAG="VETIVER-9.0.4.0"
 RSK_RPC="http://127.0.0.1:4444"
+RSK_RPC_B="http://127.0.0.1:4445"
 BTC_RPC="http://127.0.0.1:18443"
 BTC_USER=rsk
 BTC_PASS=rsk
@@ -46,7 +51,7 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$WORK" "$STATE" "$LOGS"
-export WORK STATE RSK_RPC BTC_RPC BTC_USER BTC_PASS E2E_STATE="$STATE" E2E_LOGS="$LOGS"
+export WORK STATE RSK_RPC RSK_RPC_B BTC_RPC BTC_USER BTC_PASS E2E_STATE="$STATE" E2E_LOGS="$LOGS"
 
 c_ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
 c_bad()  { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -240,14 +245,15 @@ AUTH_C_KEY=$($PY -c "import os,sys; sys.path.insert(0, os.environ['E2E_HERE']); 
 [ -n "$AUTH_A_KEY" ] && [ -n "$AUTH_B_KEY" ] && [ -n "$AUTH_C_KEY" ] \
   || die "could not derive the authorizer keys"
 
-c_step "3. powpeg-node (this jar IS the RSK node: FederateRunner embeds rskj)"
+c_step "3. two powpeg nodes (this jar IS the RSK node: FederateRunner embeds rskj)"
 
-# The federate node is a full RSK node with the federator bolted on, so there is
-# no separate rskj process. It is started twice:
-#   federator1  -- a member of the CURRENT (genesis) federation, so that it is
-#                  allowed to send updateCollections, which is what actually
-#                  advances a federation change in RSKIP419+;
-#   e2e-fed-1   -- a member of the NEW federation, once that one is active.
+# Two federators, because RSKIP419 will not hand a federation over unless the SVP
+# cycle is signed twice:
+#   fund tx   -- paid by the ACTIVE (genesis) federation, needs 2 of its 3 keys
+#   spend tx  -- paid by the PROPOSED federation,        needs 2 of its 2 keys
+# The proposed federation is therefore {federator1, federator2}: the two keys
+# these two nodes run with. Each node is a full RSK node plus a federator; node A
+# mines and is the peer node B syncs from.
 gen_key() {  # $1 generator name -> hex private key (rskj's GenNodeKeyId rule)
   $PY - "$1" <<'PYEOF'
 import os, sys
@@ -257,37 +263,36 @@ print(keccak256(sys.argv[1].encode()).hex())
 PYEOF
 }
 
-start_powpeg() {  # $1 generator, $2 yes|no (wipe the database), rest = java args
-  local gen="$1"; local wipe="$2"; shift 2
+node_id() {  # $1 seed -> 128 hex chars, the uncompressed pubkey without 0x04
+  $PY - "$1" <<'PYEOF'
+import os, sys
+sys.path.insert(0, os.environ["E2E_HERE"])
+from e2e import keccak256, PrivateKey
+k = PrivateKey(keccak256(sys.argv[1].encode()))
+print(k.public_key.format(False)[1:].hex())
+PYEOF
+}
+
+POWPEG_PID_A=""
+POWPEG_PID_B=""
+NODE_A_ID=$(node_id federator1)
+[ -n "$NODE_A_ID" ] || die "could not derive node A's nodeId"
+
+start_powpeg() {  # $1 seed, $2 rpc port, $3 p2p port, $4 mine yes|no, $5 wipe yes|no, $6 peer nodeId or -
+  local gen="$1" rpcport="$2" p2pport="$3" mine="$4" wipe="$5" peerid="$6"
+
   rm -f "$WORK/$gen.key"
   gen_key "$gen" > "$WORK/$gen.key"
   chmod 400 "$WORK/$gen.key"
 
-  # Wiping is only correct for the *first* start. The second start (as a member
-  # of the new federation) must keep the chain, or the federation change we just
-  # made disappears with it.
   if [ "$wipe" = "yes" ]; then
-    rm -rf "$WORK/rskj-db"
-    rm -f "$LOGS"/rsk.log "$LOGS"/rskj-*.log.gz
+    rm -rf "$WORK/rskj-db-$gen" "$LOGS/node-$gen"
   fi
+  mkdir -p "$LOGS/node-$gen"
   rm -f "$WORK"/hs_err_pid*.log
-  cat > "$WORK/powpeg.conf" <<EOF
-blockchain.config.name = "regtest"
 
-# RSKIP419 (the SVP federation handover) is left inactive on this private chain.
-# With 419 active a quorum commit only stores a *proposed* federation and the
-# handover waits for an SVP fund/spend cycle driven by an external SVP server
-# (BridgeSupport.registerSvpSpendTx -> commitProposedFederation), so no retiring
-# federation is ever produced by voting alone. With 419 inactive the commit
-# performs the handover directly (legacyCommitPendingFederation) -- the exact
-# consensus mainnet ran before the Vetiver rollout. The window the attack needs
-# (a retiring federation that is still live next to a new active one) is the
-# same either way; nothing else in the node is changed.
-blockchain.config {
-    consensusRules {
-        rskip419 = -1
-    }
-}
+  cat > "$WORK/powpeg-$gen.conf" <<EOF
+blockchain.config.name = "regtest"
 
 rpc {
     providers {
@@ -295,11 +300,39 @@ rpc {
             http {
                 enabled = true
                 bind_address = "127.0.0.1"
-                port = 4444
+                port = $rpcport
                 hosts = [ "*" ]
             }
         }
     }
+    modules = [
+        { name: "eth",      version: "1.0", enabled: "true" },
+        { name: "net",      version: "1.0", enabled: "true" },
+        { name: "rpc",      version: "1.0", enabled: "true" },
+        { name: "web3",     version: "1.0", enabled: "true" },
+        { name: "evm",      version: "1.0", enabled: "true" },
+        { name: "mnr",      version: "1.0", enabled: "true" },
+        { name: "personal", version: "1.0", enabled: "true" },
+        { name: "fed",      version: "1.0", enabled: "true" },
+        { name: "rsk",      version: "1.0", enabled: "true" }
+    ]
+}
+
+peer {
+    privateKey = "$(gen_key "$gen")"
+    discovery.enabled = false
+    port = $p2pport
+EOF
+
+  if [ "$peerid" != "-" ]; then
+    cat >> "$WORK/powpeg-$gen.conf" <<EOF
+    active = [
+        { ip = "127.0.0.1", port = 50501, nodeId = "$peerid" }
+    ]
+EOF
+  fi
+
+  cat >> "$WORK/powpeg-$gen.conf" <<EOF
 }
 
 wallet {
@@ -307,134 +340,130 @@ wallet {
     accounts = [
         { privateKey = "$AUTH_A_KEY" },
         { privateKey = "$AUTH_B_KEY" },
-        { privateKey = "$AUTH_C_KEY" }
+        { privateKey = "$AUTH_C_KEY" },
+        { privateKey = "$(gen_key federator1)" },
+        { privateKey = "$(gen_key federator2)" }
     ]
 }
 
 miner {
-    server.enabled = true
+    server.enabled = $([ "$mine" = "yes" ] && echo true || echo false)
     client {
-        enabled = true
+        enabled = $([ "$mine" = "yes" ] && echo true || echo false)
         delayBetweenBlocks = 1 second
     }
     coinbase.secret = "auth-a"
 }
 
 database {
-    dir = "$WORK/rskj-db"
+    dir = "$WORK/rskj-db-$gen"
 }
 
 federator {
     enabled = true
     updateBridgeTimerEnabled = true
     signers {
-        BTC {
-            type = "keyFile"
-            path = "$WORK/$gen.key"
-        }
-        RSK {
-            type = "keyFile"
-            path = "$WORK/$gen.key"
-        }
-        MST {
-            type = "keyFile"
-            path = "$WORK/$gen.key"
-        }
+        BTC { type = "keyFile", path = "$WORK/$gen.key" }
+        RSK { type = "keyFile", path = "$WORK/$gen.key" }
+        MST { type = "keyFile", path = "$WORK/$gen.key" }
     }
     bitcoinPeerAddresses = [ "127.0.0.1:18444" ]
     gasPrice = 0
 }
 EOF
+
   rm -f "$LOGS/powpeg-$gen.log"
-  ( cd "$WORK" && exec $JAVA_CMD -Drsk.conf.file="$WORK/powpeg.conf" -Dlogging.dir="$LOGS" -cp "$POWPEG_JAR" \
-       co.rsk.federate.FederateRunner --regtest "$@" ) \
+  ( cd "$WORK" && exec $JAVA_CMD -Drsk.conf.file="$WORK/powpeg-$gen.conf" -Dlogging.dir="$LOGS/node-$gen" \
+       -cp "$POWPEG_JAR" co.rsk.federate.FederateRunner --regtest --reset ) \
        > "$LOGS/powpeg-$gen.log" 2>&1 &
-  POWPEG_PID=$!
-  echo "  powpeg-node pid $POWPEG_PID as '$gen'"
-  for i in $(seq 1 150); do
+  local pid=$!
+  echo "  powpeg-node pid $pid as '$gen' (rpc $rpcport, p2p $p2pport, miner $mine)"
+  for i in $(seq 1 180); do
     if $PY -c "
 import json,sys,urllib.request
 try:
-    r=urllib.request.urlopen(urllib.request.Request('$RSK_RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=2)
+    r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:$rpcport',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=2)
     print(json.loads(r.read())['result']); sys.exit(0)
 except Exception: sys.exit(1)" >/dev/null 2>&1; then
-      # the RPC binds before the federator starts; give it a moment to fall over
       sleep 8
-      if kill -0 "$POWPEG_PID" 2>/dev/null; then
+      if kill -0 "$pid" 2>/dev/null; then
+        if [ "$gen" = "federator1" ]; then POWPEG_PID_A="$pid"; else POWPEG_PID_B="$pid"; fi
         return 0
       fi
       break
     fi
-    kill -0 "$POWPEG_PID" 2>/dev/null || break
+    kill -0 "$pid" 2>/dev/null || break
     sleep 1
   done
   local rc=0
-  wait "$POWPEG_PID" 2>/dev/null; rc=$?
-  POWPEG_PID=""
-  c_bad "  the node never answered on 4444 (java exited with $rc)."
-
-  for f in "$LOGS/powpeg-$gen.log" "$LOGS/rsk.log"; do
+  wait "$pid" 2>/dev/null; rc=$?
+  c_bad "  the node never answered on $rpcport (java exited with $rc)."
+  for f in "$LOGS/powpeg-$gen.log" "$LOGS/node-$gen/rsk.log"; do
     if [ -s "$f" ]; then
       echo "  ---- $(basename "$f"): last 30 lines ----"
       grep -vE '^\s+at ' "$f" | tail -30 | sed 's/^/    /'
     fi
   done
-
-  if ls "$WORK"/hs_err_pid*.log >/dev/null 2>&1; then
-    echo "  ---- JVM crash report ----"
-    head -25 "$WORK"/hs_err_pid*.log | sed 's/^/    /'
-  fi
-
-  if [ ! -s "$LOGS/powpeg-$gen.log" ] && [ ! -s "$LOGS/rsk.log" ]; then
-    echo "  nothing was logged; re-running the JVM in the foreground for 20 s"
-    echo "  ------------------------------------------------------------------"
-    ( cd "$WORK" && run_timeout 20 $JAVA_CMD -Drsk.conf.file="$WORK/powpeg.conf" -Dlogging.dir="$LOGS" \
-        -cp "$POWPEG_JAR" co.rsk.federate.FederateRunner --regtest "$@" 2>&1 \
-        | head -60 | sed 's/^/    /' )
-    echo "  ------------------------------------------------------------------"
-    echo "  jar: $POWPEG_JAR"
-    ls -l "$POWPEG_JAR" 2>/dev/null | sed 's/^/    /'
-  fi
-
-  echo "  config used ($WORK/powpeg.conf):"
-  sed -E 's/(privateKey = )"[0-9a-f]+"/\1"<redacted>"/' "$WORK/powpeg.conf" | sed 's/^/    /'
+  echo "  config used ($WORK/powpeg-$gen.conf):"
+  sed -E 's/(privateKey = )"[0-9a-f]+"/\1"<redacted>"/' "$WORK/powpeg-$gen.conf" | sed 's/^/    /'
   die "powpeg-node startup failed ($gen)"
 }
 
 stop_powpeg() {
-  [ -n "${POWPEG_PID:-}" ] || return 0
-  kill "$POWPEG_PID" 2>/dev/null
-  for i in $(seq 1 30); do kill -0 "$POWPEG_PID" 2>/dev/null || break; sleep 1; done
-  kill -9 "$POWPEG_PID" 2>/dev/null
-  POWPEG_PID=""
+  local p
+  for p in "$POWPEG_PID_A" "$POWPEG_PID_B"; do
+    [ -n "$p" ] || continue
+    kill "$p" 2>/dev/null
+    for i in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+    kill -9 "$p" 2>/dev/null
+  done
+  POWPEG_PID_A=""; POWPEG_PID_B=""
   sleep 2
 }
 
-start_powpeg federator1 yes --reset
-$PY -c "
+c_step "3a. node A: miner + federator1"
+start_powpeg federator1 4444 50501 yes yes -
+c_step "3b. node B: federator2, syncing from node A"
+start_powpeg federator2 4445 50502 no yes "$NODE_A_ID"
+
+# node B has to be on the same chain as A; the federator on B cannot register
+# anything against a chain it has not caught up with yet
+echo "  waiting for node B to sync from node A"
+HEIGHT_A=$($PY -c "
 import json,urllib.request
-r=urllib.request.urlopen(urllib.request.Request('$RSK_RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=5)
-print('  RSK node up (embedded in powpeg-node), block', int(json.loads(r.read())['result'],16))"
+r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:4444',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=5)
+print(int(json.loads(r.read())['result'],16))")
+for i in $(seq 1 60); do
+  HEIGHT_B=$($PY -c "
+import json,urllib.request
+try:
+  r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:4445',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=5)
+  print(int(json.loads(r.read())['result'],16))
+except Exception: print(-1)")
+  [ "$HEIGHT_B" -ge "$((HEIGHT_A - 1))" ] && break
+  sleep 2
+done
+echo "  node A at $HEIGHT_A, node B at ${HEIGHT_B:--1}"
+[ "${HEIGHT_B:--1}" -ge "$((HEIGHT_A - 2))" ] \
+  || die "node B never caught up with node A (A=$HEIGHT_A B=$HEIGHT_B); the two nodes are not peering"
 
 # The federator must be alive before anything expensive happens. FedNodeRunner
 # gives up quietly when a requirement fails and the node then looks perfectly
 # healthy over RPC while never sending a single transaction to the Bridge.
-c_step "3b. the federator inside the node is actually running"
+c_step "3c. both federators are actually running"
 $PY "$HERE/e2e.py" federator-check federator1 --height || \
-  die "the node is up but its federator is not: see the lines above"
+  die "node A is up but its federator is not: see the lines above"
+$PY "$HERE/e2e.py" federator-check federator2 --node-b || \
+  die "node B is up but its federator is not: see the lines above"
 
 # ---------------------------------------------------------------------------
-c_step "4. real federation change (2-of-3 votes from auth-a/auth-b)"
-$PY "$HERE/e2e.py" federation || die "federation change failed"
+c_step "4. seed the genesis federation with real BTC"
+# RSKIP419's fund tx pays 2 x 500 000 sat to the proposed federation out of the
+# active federation's UTXOs. An empty federation cannot pay for its own handover.
+$PY "$HERE/e2e.py" peg || die "the pre-peg-in failed"
 
-c_step "5. restart the federator as a member of the NEW federation"
-stop_powpeg
-start_powpeg e2e-fed-1 no
-kill -0 "$POWPEG_PID" 2>/dev/null || { tail -30 "$LOGS/powpeg-e2e-fed-1.log"; die "node died after the restart"; }
-# no header requirement here: bitcoind is quiet during the attack, so the proof
-# of life is updateCollections coming from this member of the new federation
-$PY "$HERE/e2e.py" federator-check e2e-fed-1 || \
-  die "the restarted node is up but its federator is not: see the lines above"
+c_step "5. real federation change, then the RSKIP419 SVP handover (2-of-3 votes)"
+$PY "$HERE/e2e.py" federation || die "federation change failed"
 
 # ---------------------------------------------------------------------------
 c_step "6. attack: 40 ground Bitcoin txs + 1 honest victim peg-in"

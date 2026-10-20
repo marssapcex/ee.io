@@ -173,6 +173,7 @@ class PrivateKey:
 # ---------------------------------------------------------------------------
 
 RSK_RPC = os.environ.get("RSK_RPC", "http://127.0.0.1:4444")
+RSK_RPC_B = os.environ.get("RSK_RPC_B", "http://127.0.0.1:4445")
 BTC_RPC = os.environ.get("BTC_RPC", "http://127.0.0.1:18443")
 BTC_USER = os.environ.get("BTC_USER", "rsk")
 BTC_PASS = os.environ.get("BTC_PASS", "rsk")
@@ -274,8 +275,16 @@ def rpc(url, method, params=None, auth=None):
     return res.get("result")
 
 
+NODE_A = RSK_RPC          # miner + federator1
+NODE_B = RSK_RPC_B        # federator2, syncs from NODE_A
+
+
 def rsk(method, params=None):
     return rpc(RSK_RPC, method, params)
+
+
+def rsk_b(method, params=None):
+    return rpc(RSK_RPC_B, method, params)
 
 
 def btc(method, params=None):
@@ -356,7 +365,17 @@ def victim_rsk_address(priv: PrivateKey) -> str:
 AUTH_A = key("auth-a")
 AUTH_B = key("auth-b")
 AUTH_C = key("auth-c")
-FEDS = [key("e2e-fed-1"), key("e2e-fed-2"), key("e2e-fed-3")]
+
+# The new federation is {federator1, federator2}: 2 members, threshold 2.
+#
+# It has to be these two keys and not two fresh ones, because RSKIP419 only
+# hands the federation over after an SVP cycle, and that cycle needs
+#   1. the ACTIVE (genesis) federation to sign the fund tx      -> 2 of 3
+#   2. the PROPOSED federation to sign the spend tx             -> 2 of 2
+# Two powpeg nodes, one holding federator1 and one holding federator2, are
+# members of both federations, so the same two processes sign both steps. No
+# key swapping, no third node.
+FEDS = [key("federator1"), key("federator2")]
 ATTACKER = key("e2e-attacker")
 VICTIM = key("e2e-victim")
 
@@ -479,9 +498,11 @@ def _log_files():
     """Every log this run produced: rsk.log holds the node's own logback output,
     powpeg-<generator>.log holds the JVM's stdout/stderr."""
     d = os.environ.get("E2E_LOGS", "")
-    files = [os.path.join(d, "rsk.log")]
+    files = []
     try:
-        files += sorted(glob.glob(os.path.join(d, "powpeg-*.log")))
+        files += sorted(glob.glob(os.path.join(d, "node-*", "rsk.log")))  # one per node
+        files += sorted(glob.glob(os.path.join(d, "powpeg-*.log")))       # JVM stdout
+        files.append(os.path.join(d, "rsk.log"))                          # older layouts
     except Exception:
         pass
     return [f for f in files if os.path.exists(f)]
@@ -572,7 +593,7 @@ FEDERATOR_PATTERN = (
 )
 
 
-def federator_check(gen, need_height=True, timeout=120):
+def federator_check(gen, need_height=True, timeout=120, node=None):
     """Prove the federator inside the RSK node is actually running.
 
     FedNodeRunner.run() gives up silently when checkFederateRequirements() fails:
@@ -588,10 +609,11 @@ def federator_check(gen, need_height=True, timeout=120):
     "work" (nothing ever gets processed) while proving nothing at all, so this
     has to be checked before anything expensive happens.
     """
+    node = node or rsk
     addr = rsk_address(key(gen))
     log("[federator] checking that '%s' (%s) is alive" % (gen, addr[:10]))
     h0 = btc_best_chain_height()
-    n0 = int(rsk("eth_getTransactionCount", [addr, "latest"]), 16)
+    n0 = int(node("eth_getTransactionCount", [addr, "latest"]), 16)
     log("             start: bridge BTC height %d, nonce %d" % (h0, n0))
 
     end = time.time() + timeout
@@ -600,7 +622,7 @@ def federator_check(gen, need_height=True, timeout=120):
         time.sleep(5)
         try:
             h = btc_best_chain_height()
-            n = int(rsk("eth_getTransactionCount", [addr, "latest"]), 16)
+            n = int(node("eth_getTransactionCount", [addr, "latest"]), 16)
         except Exception:
             continue
         if n > n0 and (h > h0 or not need_height):
@@ -621,8 +643,161 @@ def federator_check(gen, need_height=True, timeout=120):
 
 
 # ---------------------------------------------------------------------------
+# federation helpers shared by the peg / svp stages
+# ---------------------------------------------------------------------------
+
+F1 = key("federator1")
+F2 = key("federator2")
+FUNDER = key("e2e-funder")
+
+SVP_FUND_OUTPUT = 500_000        # BridgeConstants.getSvpFundTxOutputsValue()
+                                 # = minimumPegoutTxValue * 2, paid twice per fund tx
+PEG_SAT = 3_000_000              # comfortably above 2 x SVP_FUND_OUTPUT + fee
+
+
+def proposed_size() -> int:
+    try:
+        return dec_uint("0x" + bridge_call(sel("getProposedFederationSize()")).hex())
+    except Exception:
+        return 0
+
+
+def address_script(addr):
+    """Resolve a base58 address to its scriptPubKey through bitcoind."""
+    for method in ("getaddressinfo", "validateaddress"):
+        try:
+            info = btc(method, [addr])
+        except Exception:
+            continue
+        spk = info.get("scriptPubKey")
+        if spk:
+            return bytes.fromhex(spk)
+    raise RuntimeError("could not resolve %s to a scriptPubKey" % addr)
+
+
+def svp_cycle(timeout_blocks=118):
+    """Drive RSKIP419's SVP cycle until the handover happens.
+
+    updateCollections is what creates the fund tx and, once the signed fund tx
+    has been registered, the spend tx. Only a member of the active/retiring
+    federation may call it, and federator1's key is in the node wallet (it is
+    also node A's own federator key), so the state machine can be nudged instead
+    of waiting for the 45 s federator turn.
+
+    Mining Bitcoin blocks in the same loop is what lets the two real federators
+    do their part: each of them signs every release tx it sees on a new best
+    block, the last signature makes the node broadcast it, and the signed tx has
+    to be confirmed (btc2RskMinimumAcceptableConfirmations = 3) before the
+    federators can register it with the Bridge.
+    """
+    addr_before = active_address()
+    start_block = int(rsk("eth_blockNumber"), 16)
+    deadline = start_block + timeout_blocks
+    next_nudge = 0.0
+    mined = 0
+    last_print = 0.0
+
+    while True:
+        blk = int(rsk("eth_blockNumber"), 16)
+        if active_address() != addr_before:
+            log("             handover done at block %d" % blk)
+            return True, ""
+        if not proposed_size():
+            return False, ("the proposed federation was cleared at block %d without "
+                           "a handover (SVP expired or failed)" % blk)
+        if blk > deadline:
+            return False, ("still no handover at block %d (started at %d, SVP "
+                           "validation period is 125 blocks)" % (blk, start_block))
+
+        now = time.time()
+        if now >= next_nudge:
+            next_nudge = now + 6
+            try:
+                txh = bridge_tx(sel("updateCollections()"), rsk_address(F1))
+                wait_rsk_tx(txh, 60)
+                log("             block %d: updateCollections sent (%s)" % (blk, txh[:12]))
+            except Exception as e:
+                log("             block %d: updateCollections failed: %s" % (blk, e))
+
+        # confirm whatever the federators just broadcast
+        try:
+            mine(2)
+            mined += 2
+        except Exception:
+            pass
+
+        if now - last_print > 15:
+            last_print = now
+            log("             block %d: proposed size %d, %d BTC blocks mined, "
+                "%d blocks of SVP budget left"
+                % (blk, proposed_size(), mined, deadline - blk))
+        time.sleep(2)
+
+
+# ---------------------------------------------------------------------------
 # stage: federation
 # ---------------------------------------------------------------------------
+
+def stage_peg():
+    """Put real BTC into the ACTIVE federation before changing it.
+
+    RSKIP419's fund tx pays 2 x 500 000 sat to the proposed federation, and
+    buildSvpFundTransaction uses the active federation's UTXOs. With an empty
+    federation there is nothing to spend, the Bridge only logs "Couldn't create
+    svp fund transaction" and the SVP silently expires after 125 blocks. So the
+    genesis federation has to hold funds first -- exactly like a real chain.
+    """
+    st = load_state()
+    addr = active_address()
+    spk = address_script(addr)
+    log("[peg] active federation %s" % addr)
+
+    if "peg_txid" in st:
+        log("[peg] already funded in a previous run, tx %s" % st["peg_txid"])
+        return
+
+    if not btc_best_chain_height():
+        log("[peg] waiting for the Bridge to see the Bitcoin chain")
+        end = time.time() + 300
+        while time.time() < end and not btc_best_chain_height():
+            time.sleep(4)
+
+    faddr = p2pkh_address(FUNDER.public_key.format(True))
+    fscript = p2pkh_script(FUNDER.public_key.format(True))
+    txid, vout, sat = fund_address(faddr, 0.05, fscript.hex())
+    log("[peg] funded the funder %s with %.8f BTC (%s:%d)" % (faddr, sat / 1e8, txid[:18], vout))
+
+    fee = 1_000
+    change = sat - PEG_SAT - fee
+    raw, peg_txid = sign_tx(FUNDER, bytes.fromhex(txid)[::-1], vout, fscript,
+                            [(PEG_SAT, spk), (change, fscript)])
+    btc("sendrawtransaction", [raw.hex()])
+    log("[peg] peg-in %s (%d sat) -> the genesis federation" % (peg_txid[::-1].hex(), PEG_SAT))
+
+    time.sleep(3)
+    mine(BTC_CONFIRMATIONS + 2)
+
+    target = btc("getblockcount")
+    end = time.time() + 420
+    while time.time() < end:
+        if btc_best_chain_height() >= target:
+            break
+        time.sleep(4)
+    log("[peg] Bridge BTC height %d (bitcoind %d)" % (btc_best_chain_height(), target))
+
+    end = time.time() + 420
+    while time.time() < end:
+        h = processed_height(peg_txid[::-1].hex())
+        if h >= 0:
+            log("[peg] the Bridge registered the peg-in at RSK block %d; the "
+                "federation now holds real BTC" % h)
+            st["peg_txid"] = peg_txid[::-1].hex()
+            save_state(st)
+            return
+        time.sleep(3)
+    bridge_log_tail(30, r"registerBtcTransaction|SVP|svp|peg")
+    raise RuntimeError("the pre-peg-in was never registered by the Bridge")
+
 
 def stage_federation():
     st = load_state()
@@ -645,6 +820,14 @@ def stage_federation():
     else:
         raise RuntimeError("the chain did not produce blocks")
     log("             block %d" % int(rsk("eth_blockNumber"), 16))
+
+    # a proposed federation left over from an interrupted run blocks
+    # createFederation with -4; either finish it or let it expire first
+    if proposed_size():
+        log("[federation] a proposed federation from an earlier attempt is still "
+            "stored; finishing or expiring it first")
+        ok, why = svp_cycle()
+        log("             %s" % ("handover done" if ok else "it expired: " + why))
 
     log("[federation] current federation")
     size = dec_uint("0x" + bridge_call(sel("getFederationSize()")).hex())
@@ -725,26 +908,35 @@ def stage_federation():
         raise RuntimeError("commitFederation did not clear the pending federation")
     log("             committed; the new federation activates in 150 blocks")
 
-    # With RSKIP419 active the commit only stores a *proposed* federation
-    # (FederationSupportImpl.commitPendingFederation) and the handover waits for
-    # an SVP cycle that a voting round can never complete. That state is easy to
-    # detect, and it would otherwise show up as a silent 15 minute timeout.
-    proposed = 0
-    try:
-        proposed = dec_uint("0x" + bridge_call(sel("getProposedFederationSize()")).hex())
-    except Exception:
-        pass
-    if proposed:
+    # ------------------------------------------------------------------
+    # RSKIP419: the commit stored a *proposed* federation. The handover needs an
+    # SVP cycle:
+    #   updateCollections -> fund tx (active fed pays the proposed fed)
+    #   both federators sign -> broadcast -> mine -> registered
+    #   updateCollections -> spend tx (proposed fed pays back)
+    #   both federators sign -> broadcast -> mine -> registered
+    #   registerSvpSpendTx -> commitProposedFederation -> handover
+    # The whole cycle has to finish inside validationPeriodDurationInBlocks
+    # (125 blocks in regtest) or the Bridge throws the proposal away.
+    # ------------------------------------------------------------------
+    if not proposed_size():
         bridge_log_tail()
         raise RuntimeError(
-            "the commit produced a PROPOSED federation (size %d), not a handover: "
-            "RSKIP419 is active on this chain.\n"
-            "  -> $WORK/powpeg.conf must contain blockchain.config.consensusRules.rskip419 = -1\n"
-            "  -> and the node must be started with a fresh database (./e2e/run.sh --keep off)" % proposed)
-    log("             no proposed federation: the handover was direct (RSKIP419 inactive)")
+            "commitFederation produced neither a proposed federation nor a handover")
 
+    log("[federation] proposed federation set (size %d); driving the SVP cycle"
+        % proposed_size())
+    ok, why = svp_cycle()
+    if not ok:
+        bridge_log_tail(40, r"SVP|svp|processSvp|commitProposed|Fund tx|Spend tx|registerBtc")
+        raise RuntimeError("the SVP cycle did not hand the federation over: " + why)
+    log("[federation] Handover done: the new federation is stored and will become "
+        "active in 150 blocks")
+
+    # wait for the handover to take effect: the new federation must reach
+    # federationActivationAge (150 blocks) before it replaces the old one
     log("[federation] waiting for the new federation to activate (150 blocks)")
-    end = time.time() + 900
+    end = time.time() + 600
     retiring = ""
     last_print = 0
     while time.time() < end:
@@ -757,13 +949,13 @@ def stage_federation():
             last_print = now
             try:
                 blk = int(rsk("eth_blockNumber"), 16)
-                act = active_address()
-                log("             block %d, active=%s, retiring=<not yet>" % (blk, act))
+                log("             block %d, active=%s, retiring=<not yet>"
+                    % (blk, active_address()))
             except Exception:
                 pass
         time.sleep(2)
     if not retiring:
-        raise RuntimeError("the retiring federation never appeared; the change did not go through")
+        raise RuntimeError("the retiring federation never appeared after the handover")
 
     new_addr = active_address()
     new_size = dec_uint("0x" + bridge_call(sel("getFederationSize()")).hex())
@@ -843,18 +1035,6 @@ def stage_attack():
     retiring = st["retiring_address"]
     log("[attack] active   %s" % active)
     log("[attack] retiring %s" % retiring)
-
-    def address_script(addr):
-        """Both federation addresses are P2SH; bitcoind can hand back the script."""
-        for method in ("getaddressinfo", "validateaddress"):
-            try:
-                info = btc(method, [addr])
-            except Exception:
-                continue
-            spk = info.get("scriptPubKey")
-            if spk:
-                return bytes.fromhex(spk)
-        raise RuntimeError("could not resolve %s to a scriptPubKey" % addr)
 
     spk_active = address_script(active)
     spk_retiring = address_script(retiring)
@@ -971,10 +1151,12 @@ def stage_attack():
     # turn) while none of the 40 hashes and not the victim's hash ever get a
     # processed height. If the victim is processed here the attack did not work
     # and there is no point in measuring.
-    fed_addr = rsk_address(key("e2e-fed-1"))
-    turn0 = int(rsk("eth_getTransactionCount", [fed_addr, "latest"]), 16)
-    log("[attack] federator %s has sent %d txs so far; watching for the retry loop"
-        % (fed_addr[:10], turn0))
+    n1 = int(rsk("eth_getTransactionCount", [rsk_address(F1), "latest"]), 16)
+    n2 = int(rsk_b("eth_getTransactionCount", [rsk_address(F2), "latest"]), 16)
+    turn0 = n1 + n2
+    log("[attack] the two federators have sent %d + %d txs so far "
+        "(federator1 %s, federator2 %s); watching for the retry loop"
+        % (n1, n2, rsk_address(F1)[:10], rsk_address(F2)[:10]))
     # bounded: the window is only 150 blocks long, so this may not eat more
     # than ~30 s of it even in the worst case
     end = time.time() + 30
@@ -988,7 +1170,11 @@ def stage_attack():
                 "starve registerBtcTransaction. Check that all 40 attack txs are in "
                 "bin 0 of the federator's pending map and that the retiring federation "
                 "is still live (see $LOGS/rsk.log, grep updateBridgeBtcTransactions)")
-        n = int(rsk("eth_getTransactionCount", [fed_addr, "latest"]), 16)
+        try:
+            n = (int(rsk("eth_getTransactionCount", [rsk_address(F1), "latest"]), 16)
+                 + int(rsk_b("eth_getTransactionCount", [rsk_address(F2), "latest"]), 16))
+        except Exception:
+            n = turn0
         blk = int(rsk("eth_blockNumber"), 16)
         log("[attack] block %d: federator nonce %d (+%d), victim still unprocessed"
             % (blk, n, n - turn0))
@@ -1029,10 +1215,12 @@ def stage_measure(label="t"):
     unprocessed = sum(1 for h in ah if h < 0)
     attacker_rsk = rsk_address(ATTACKER)
 
+    fed_nonce = -1
     try:
-        fed_nonce = int(rsk("eth_getTransactionCount", [rsk_address(key("e2e-fed-1")), "latest"]), 16)
+        fed_nonce = (int(rsk("eth_getTransactionCount", [rsk_address(F1), "latest"]), 16)
+                     + int(rsk_b("eth_getTransactionCount", [rsk_address(F2), "latest"]), 16))
     except Exception:
-        fed_nonce = -1
+        pass
 
     out = {
         "label": label,
@@ -1109,7 +1297,9 @@ def main():
         print(__doc__)
         return 1
     cmd = sys.argv[1]
-    if cmd == "federation":
+    if cmd == "peg":
+        stage_peg()
+    elif cmd == "federation":
         stage_federation()
     elif cmd == "attack":
         stage_attack()
@@ -1120,7 +1310,8 @@ def main():
     elif cmd == "federator-check":
         gen = sys.argv[2] if len(sys.argv) > 2 else "federator1"
         need_height = "--height" in sys.argv
-        federator_check(gen, need_height=need_height)
+        node = rsk_b if "--node-b" in sys.argv else rsk
+        federator_check(gen, need_height=need_height, node=node)
     elif cmd == "selftest":
         selftest()
     else:
