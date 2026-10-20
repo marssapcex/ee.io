@@ -1,0 +1,32 @@
+JVM: (25, 0, 2)  (libjvm.so)
+map: java.util.concurrent.ConcurrentHashMap, default constructor (BtcToRskClientFileData.java:18)
+key: hashCode() == org.bitcoinj.core.Sha256Hash.hashCode(wtxid)
+loaded: attack 40, control 40, honest 25
+
+--- A. baseline: honest pending map only ---
+  turn 1: 25 calls, honest 25
+
+--- B. control: 40 attack-shaped txs whose wtxids were not ground ---
+  pending entries 65, ConcurrentHashMap table length 128
+  iteration order (first 12 entries, A=attack H=honest): HCCCHHCHCCHC
+  turn 1: 40 calls, attacker 28, honest 12
+  all 1764 turns: attacker 49392, honest 21168  (useful registrations served: 21168)
+
+--- C. attack: the same 40 txs, wtxids ground to bin 0 ---
+  pending entries 65, ConcurrentHashMap table length 128
+  bin index of the first 44 entries in iteration order: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 11, 22, 24]
+  -> every attacker entry is in bin 0; the first 40 visited are all attacker
+     entries, before any other bin of the table is reached
+  note: 40 entries in one bin also makes the JVM treeify that bin
+     (ConcurrentHashMap$TreeBin) -- the bin is still visited first
+  iteration order (first 12 entries, A=attack H=honest): AAAAAAAAAAAA
+  turn 1: 40 calls, attacker 40, honest 0
+  all 1764 turns: attacker 70560, honest 0  (useful registrations served: 0)
+
+--- D. attack against a large honest backlog ---
+  pending entries 245, table length 512
+  turn 1: 40 calls, attacker 40, honest 0
+
+result: 40 ground wtxids occupy the whole 40-slot budget on every turn;
+        the number of honest registrations served during the 1764-turn
+        federation-change window is 0.
