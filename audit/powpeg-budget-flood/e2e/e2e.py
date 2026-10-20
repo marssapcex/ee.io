@@ -755,49 +755,41 @@ def _tx_pays(tx, spk_hex):
     return 0
 
 
-def enc_str(text: str) -> bytes:
-    """ABI-encode one dynamic string, positioned for a two-slot call head."""
-    raw = text.encode()
-    return (enc_uint(64) + enc_uint(len(raw)) + raw
-            + b"\x00" * ((32 - len(raw) % 32) % 32))
+def can_call_update_collections(addr, gas="0x7a120"):
+    """Dry-run updateCollections from `addr`; the Bridge wraps it in
+    activeAndRetiringFederationOnly (BridgeMethods.java:697), so a sender that
+    is not a member makes the call revert and eth_call raises."""
+    try:
+        rsk("eth_call", [{"from": addr, "to": BRIDGE, "gas": gas,
+                          "data": "0x" + sel("updateCollections()").hex()}, "latest"])
+        return True
+    except Exception:
+        return False
 
 
-def federation_rsk_members():
-    """RSK addresses of the *active* federation's members, read from the Bridge.
-
-    updateCollections is wrapped in activeAndRetiringFederationOnly
-    (BridgeMethods.java:697), so a call from anywhere else reverts. Which key is
-    a member is not something to guess: ask the Bridge for each member's RSK
-    public key and hash it the way rskj does.
-    """
-    size = int.from_bytes(bridge_call(sel("getFederationSize()"))[:32], "big")
-    members = []
-    for i in range(size):
-        raw = bridge_call(sel("getFederatorPublicKeyOfType(int256,string)")
-                          + enc_uint(i) + enc_str("rsk"))
-        pub = dec_bytes("0x" + raw.hex())
-        if len(pub) in (33, 65):
-            pub = pub[1:]
-        members.append((i, "0x" + keccak256(pub)[-20:].hex()))
-    return members
+CANDIDATE_KEYS = ("federator1", "federator2", "auth-a", "auth-b", "auth-c")
 
 
 def federation_caller():
-    """The member address we hold the key for, preferring a federator's own."""
-    ours = {}
-    for name in ("federator1", "federator2", "auth-a", "auth-b", "auth-c"):
-        ours[rsk_address(key(name))] = name
-    members = federation_rsk_members()
-    log("             active federation members: %s"
-        % ", ".join("%d:%s" % (i, a[:10]) for i, a in members))
-    for _, addr in members:
-        if addr in ours:
-            log("             we hold the key of member %s (%s), so it will be the "
-                "only caller of updateCollections" % (ours[addr], addr[:10]))
+    """Which account may call updateCollections: ask the Bridge, not the ABI.
+
+    Reading the members back with getFederatorPublicKeyOfType and hashing the
+    result looked reasonable and was wrong -- the bytes it returns do not hash to
+    the account addresses the Bridge accepts (measured, not guessed). A dry run
+    cannot be wrong: the same permission check that guards the real call decides
+    it, and the answer is a yes/no per candidate.
+    """
+    for name in CANDIDATE_KEYS:
+        addr = rsk_address(key(name))
+        if can_call_update_collections(addr):
+            log("             updateCollections dry run: %s (%s) is allowed, the "
+                "others are not members of the active federation" % (name, addr[:10]))
             return addr
     raise RuntimeError(
-        "none of the active federation's keys are in this node's wallet: %s"
-        % [a for _, a in members])
+        "no account in this node's wallet may call updateCollections. "
+        "The active federation's members are not among %s, so with "
+        "federator.updateCollections = false nobody can drive the SVP."
+        % (", ".join(CANDIDATE_KEYS),))
 
 
 def send_update_collections(who=None):
@@ -897,9 +889,26 @@ def svp_cycle(timeout_blocks=118):
     spend_requested = False
     last_print = 0.0
 
+    def call(reason):
+        """One updateCollections, and how many fund txs the Bridge built for it.
+
+        Attributable because this is the only caller. Two builds for one call
+        would mean the same RSK transaction was executed in more than one block;
+        one build per call means the stored hash did not survive to the next one.
+        """
+        nonlocal calls, last_call
+        blk_now = int(rsk("eth_blockNumber"), 16)
+        before = len(log_since(r"No svp values were found", offsets))
+        send_update_collections()
+        calls, last_call = calls + 1, blk_now
+        time.sleep(1)
+        built = len(log_since(r"No svp values were found", offsets)) - before
+        log("             call #%d at block %d (%s): the Bridge built %d fund tx"
+            % (calls, blk_now, reason, built))
+
     # first call: this is what creates the fund tx
-    send_update_collections()
-    calls, last_call = 1, start_block
+    calls, last_call = 0, start_block
+    call("start of the SVP")
 
     while True:
         blk = int(rsk("eth_blockNumber"), 16)
@@ -967,13 +976,11 @@ def svp_cycle(timeout_blocks=118):
                 spend_requested = True
                 log("             the Bridge recognised the signed fund tx; asking it to "
                     "build the spend tx")
-                send_update_collections()
-                calls, last_call = calls + 1, blk
+                call("fund tx recognised")
 
         # -- retries: the Bridge also needs turns to advance its own queues --
         if blk - last_call >= 12 and calls < 10:
-            send_update_collections()
-            calls, last_call = calls + 1, blk
+            call("periodic")
 
         mine(1)
         time.sleep(1.2)
