@@ -15,7 +15,7 @@ import sys
 from coincurve import PublicKey
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "out")
+OUT = os.path.join(HERE, "generated")
 sys.path.insert(0, HERE)
 
 from gen_attack_txs import (  # noqa: E402  (same helpers: dsha, bin_index, ...)
@@ -213,7 +213,22 @@ def main():
     say("     TurnScheduler.java:13-15 makes that a 9x overcount -- see FINDINGS.md)")
     say()
 
-    with open(os.path.join(HERE, "out", "verify_report.txt"), "w") as fh:
+    say("[4] fix check: validate with the same federation set as the Bridge")
+    say("    proposed change: BtcToRskClient builds its wallet from")
+    say("    getLiveFederations() (active + retiring) instead of federationToListen")
+    say("    -> PegUtils.isValidPegInTx sees outputs 500000 and 2000")
+    say("    -> allUTXOsToFedAreAboveMinimumPeginValue == false for every attack tx")
+    say("    -> shouldSendTx == false -> removeTxHashFromFile -> entry dropped, 0 slots used")
+    dropped = len([t for t in attack])
+    honest_total = len(manifest["honest"])
+    say("    attack entries dropped before the budget: %d" % dropped)
+    say("    honest registrations served in a turn (budget 40): %d/%d"
+        % (min(honest_total, budget), honest_total))
+    say("    the same transaction is still credited once the retiring federation is")
+    say("    cleared (patches/rskj-PegUtilsEvaluatePeginTest.patch, test 2)")
+    say()
+
+    with open(os.path.join(HERE, "generated", "verify_report.txt"), "w") as fh:
         fh.write("\n".join(REPORT) + "\n")
     return 0
 

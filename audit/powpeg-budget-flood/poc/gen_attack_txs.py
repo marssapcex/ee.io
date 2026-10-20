@@ -31,7 +31,7 @@ import os
 from coincurve import PrivateKey, PublicKey
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "out")
+OUT = os.path.join(HERE, "generated")
 
 # ---------------------------------------------------------------------------
 # Constants taken verbatim from the audited sources

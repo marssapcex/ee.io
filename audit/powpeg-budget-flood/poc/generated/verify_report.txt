@@ -39,3 +39,14 @@ PoC: rejected peg-ins occupy the 40-slot registerBtcTransaction budget
     (the submitted report said 70,560 per federator / 635,040 network-wide;
      TurnScheduler.java:13-15 makes that a 9x overcount -- see FINDINGS.md)
 
+[4] fix check: validate with the same federation set as the Bridge
+    proposed change: BtcToRskClient builds its wallet from
+    getLiveFederations() (active + retiring) instead of federationToListen
+    -> PegUtils.isValidPegInTx sees outputs 500000 and 2000
+    -> allUTXOsToFedAreAboveMinimumPeginValue == false for every attack tx
+    -> shouldSendTx == false -> removeTxHashFromFile -> entry dropped, 0 slots used
+    attack entries dropped before the budget: 40
+    honest registrations served in a turn (budget 40): 25/25
+    the same transaction is still credited once the retiring federation is
+    cleared (patches/rskj-PegUtilsEvaluatePeginTest.patch, test 2)
+

@@ -103,7 +103,13 @@ entries the iterator returns.
 
 Cost to the attacker: 40 × 2 000 sat dust (never refunded, `NO_REFUND`) +
 ~40 × 1 200 sat fees ≈ **0.0013 BTC**; the 0.2 BTC peg-in principal is credited
-back as RBTC when the window closes.
+back as RBTC when the window closes (`executePegIn` pays
+`peginInformation.getRskDestinationAddress()`, which for a legacy peg-in is the
+RSK address of the P2PKH sender — the attacker's key).
+
+Cost to the federation: ~43 000 gas per rejected call
+(`BridgeMethods.java:642`) × 70 560 calls ≈ 3.0e9 gas ≈ **0.18 RBTC per window
+network-wide**, all of it producing no state change.
 
 ## 5. Impact
 
@@ -147,7 +153,17 @@ cd poc && ./run_poc.sh
 
 The two decision functions themselves (≈30 lines, quoted in `poc/verify_txs.py`
 §[2] with file:line) are reproduced from the sources rather than executed,
-because the build artefacts could not be fetched in the audit environment;
+because the build artefacts could not be fetched in the audit environment.
+`patches/` closes that gap with two `git diff` patches that add the assertions to
+the repositories' own test suites (`./gradlew test`):
+
+* `co.rsk.peg.PegUtilsEvaluatePeginTest` — same transaction, live-federation
+  wallet ⇒ `NO_REFUND / INVALID_AMOUNT`; active-only wallet (i.e. after the
+  retiring federation is cleared) ⇒ `REGISTER`;
+* `co.rsk.federate.BtcToRskClientTest` — active client sends it, retiring client
+  drops it, and two turns produce two `sendRegisterBtcTransaction` calls for the
+  same wtxid.
+
 `REPRODUCE_REAL_NODE.md` lists the exact steps — including the
 `fed_updateBridge` JSON-RPC that forces a turn synchronously — to run the same
 scenario on a real regtest stack.

@@ -181,8 +181,11 @@ Mainnet activation (`rskj-core/src/main/resources/reference.conf`):
 ```
 
 So on any VETIVER network **`shouldMarkRejectedPeginAsProcessed()` is false**:
-the rejection is logged, an event is emitted, the RSK transaction *succeeds* —
-and `isBtcTxHashAlreadyProcessed(txid)` stays false. On the next turn the entry
+the rejection is logged, an event is emitted, and the RSK transaction *succeeds*
+— `BridgeSupport.registerBtcTransaction` swallows the only checked exception it
+throws (`BridgeSupport.java:416-425`) and the `NO_REFUND` branch never throws, so
+the federator's transaction is mined at full gas cost with no state change.
+`isBtcTxHashAlreadyProcessed(txid)` stays false. On the next turn the entry
 is still in the map, `shouldSendTx` still says "send", and the budget is
 consumed again.
 
@@ -236,8 +239,9 @@ the bin is still visited first.
 | 9 | 360 rejected calls per turn, 70 560 per federator, 635 040 network-wide | — | **wrong**: 40 per 180 s network-wide, 7 840 per federator, 70 560 network-wide |
 | 10 | the retiring federation client also floods | `PegUtils.java:131-142` with a single-fed wallet → `removeTxHashFromFile` | **wrong** (it deletes the entry; the active client is the one poisoned) |
 | 11 | impact = delaying block production | no block-production path is touched | **wrong** (this is what triage rejected) |
-| 12 | bond (0.2 BTC) comes back as RBTC when the retiring federation is cleared | `registerPegIn` → `getNoSpendWalletForLiveFederations` then only the active output is >= minimum → `REGISTER` | **plausible and consistent with the code**, needs a regtest run to confirm end-to-end |
+| 12 | bond (0.2 BTC) comes back as RBTC when the retiring federation is cleared | `getLiveFederations()` drops the retiring fed (`FederationContext.java:32-36`) → `evaluatePegin` returns `REGISTER`; `executePegIn` transfers to `peginInformation.getRskDestinationAddress()` (`BridgeSupport.java:701-727`), which for a legacy peg-in is derived from the P2PKH sender key (`PeginInformation.java:92-97`) — the attacker's own RSK address | **confirmed** (asserted by `patches/rskj-PegUtilsEvaluatePeginTest.patch`, test 2) |
 | 13 | attacker's sunk cost ≈ 0.00116 BTC | 40 × 2 000 sat dust + ~40 × 1 200 sat fees ≈ 0.0013 BTC | **confirmed** |
+| 14 | "gas paid by nodes 11.43 RBTC" | `BridgeMethods.java:642 fixedCost(22000)` + 21 000 intrinsic = 43 000 gas/call; 70 560 calls = 3.03e9 gas; at the 0.06 gwei RBTC minimum ≈ **0.18 RBTC network-wide per window** (~0.02 per federator) | **wrong by ~63x** (the report multiplied 190.5e9 gas by 0.06 gwei as if it were 0.06 RBTC/gas) |
 
 ---
 
@@ -254,7 +258,11 @@ case SVP_SPEND_TX     -> registerSvpSpendTx(btcTx);
 ```
 
 Since the pending map is shared and the budget is global per client, the flood
-starves **all** of them, not only `PEGIN`:
+starves **all** of them, not only `PEGIN`. Note the asymmetry in what happens
+afterwards: `registerNewUtxos` ends with `markTxAsProcessed(btcTx)`
+(`BridgeSupport.java:861`), so peg-out/migration registrations are only
+*delayed*; the `NO_REFUND` peg-in path does not mark anything, which is why the
+attacker's own entries never leave the map.
 
 1. **user peg-ins** — BTC confirmed, no RBTC credited, for up to ~3.7 days. This
    is the clean, demonstrable impact: a user's deposit disappears from the UI
@@ -354,13 +362,29 @@ Proven here, by execution (`poc/run_poc.sh`):
 * a negative control (same transactions, hashes not ground) shows the effect is
   caused by the grinding and not by the harness: 28 attacker / 12 honest.
 
-Not proven here (needs a real node):
+Also provable with one command on a machine that can build the project:
+`patches/` contains two `git diff` patches that add the assertions **to the
+repositories themselves** —
 
-* that `sendTx` → `Bridge.registerBtcTransaction` really produces a *successful*
-  RSK transaction with no state change (the code says so: the `NO_REFUND` branch
-  emits an event and returns; it does not throw) and that the entry is therefore
-  re-sent;
-* the end-to-end freeze of a real user peg-in and of the migration transaction.
+* `rskj-PegUtilsEvaluatePeginTest.patch`: the crafted tx is `NO_REFUND /
+  INVALID_AMOUNT` against the live-federation wallet, and `REGISTER` against the
+  active-only wallet (the "bond comes back" half);
+* `powpeg-node-BtcToRskClientTest.patch`: the active client sends the same tx,
+  the retiring client drops it, and two consecutive turns call
+  `sendRegisterBtcTransaction` twice for the same wtxid.
+
+They were not compiled here (no JDK, no Maven Central); they follow helper
+methods that already exist in those test trees, so the first `./gradlew test` is
+the compile check.
+
+Still not proven here (needs a running node):
+
+* the end-to-end freeze of a real user peg-in and of the migration transaction
+  (needs a real federation change; regtest lifetime is 150 blocks,
+  `FederationRegTestConstants.java:42`);
+* that the RSK transaction of a rejected registration is mined with status 0x1 —
+  the source says so (`BridgeSupport.java:416-425`: the only checked exception is
+  swallowed and the `NO_REFUND` branch does not throw), but it is a runtime fact.
 
 The reason is environmental, and it is documented in `README.md` §"Boundary".
 `REPRODUCE_REAL_NODE.md` contains the exact steps to close that gap on a machine

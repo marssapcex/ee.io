@@ -25,7 +25,7 @@ The send loop mirrors production line by line:
       sendTx(...); numberOfTxsSent++;
       if (numberOfTxsSent >= MAXIMUM_REGISTER_BTC_LOCK_TXS_PER_TURN) break;
 
-    python3 chm_order.py [out/wtxids.txt]
+    python3 chm_order.py [generated/wtxids.txt]
 """
 
 import os
@@ -229,7 +229,7 @@ def scenario(title, order, chm, kinds, show_bins=False):
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "out", "wtxids.txt")
+    path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "generated", "wtxids.txt")
     jvm = JVM_PATH
     CHM = JClass("java.util.concurrent.ConcurrentHashMap")
     say("JVM: %s  (%s)" % (jpype.getJVMVersion() if hasattr(jpype, "getJVMVersion") else "java",
@@ -287,7 +287,7 @@ def main():
     say("        the number of honest registrations served during the %d-turn" % NETWORK_TURNS)
     say("        federation-change window is 0.")
 
-    with open(os.path.join(HERE, "out", "chm_report.txt"), "w") as fh:
+    with open(os.path.join(HERE, "generated", "chm_report.txt"), "w") as fh:
         fh.write("\n".join(REPORT) + "\n")
     jpype.shutdownJVM()
     return 0

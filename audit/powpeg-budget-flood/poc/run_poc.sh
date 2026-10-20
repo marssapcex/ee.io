@@ -35,9 +35,9 @@ echo "== [1/2] verifying transactions + decisions"
 
 echo
 echo "== [2/2] replaying the budget loop on a real JVM"
-"$VENV/bin/python" chm_order.py out/wtxids.txt
+"$VENV/bin/python" chm_order.py generated/wtxids.txt
 
 echo
 echo "reports written to:"
-echo "  out/verify_report.txt   (transaction + decision verification)"
-echo "  out/chm_report.txt      (JVM replay)"
+echo "  generated/verify_report.txt   (transaction + decision verification)"
+echo "  generated/chm_report.txt      (JVM replay)"

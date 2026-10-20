@@ -98,7 +98,8 @@ The sandbox allows only `github.com`, `codeload.github.com`, `api.github.com`,
 
 So the two *decision* functions (≈30 lines in total) are transcribed from the
 sources in `poc/verify_txs.py` §[2] and quoted with file:line, instead of being
-executed. Everything else is executed. `REPRODUCE_REAL_NODE.md` gives the exact
+executed — and then re-stated as **JUnit tests** in `patches/` so they run inside
+the real builds on any machine with Maven Central. Everything else is executed. `REPRODUCE_REAL_NODE.md` gives the exact
 commands to close that gap on a machine with JDK 17 + Maven Central, including
 `fed_updateBridge` (a real JSON-RPC that forces a turn synchronously) and the two
 JUnit assertions that pin the asymmetry inside the real build.
@@ -110,12 +111,17 @@ README.md                  this file
 FINDINGS.md                source-level audit, claim-by-claim, severity, fix
 REPORT.md                  submission-ready bug report (rewritten)
 REPRODUCE_REAL_NODE.md     how to reproduce on the real stack
+patches/                   JUnit patches for both repos + how to run them
 poc/gen_attack_txs.py      real signed txs + wtxid grinding
 poc/verify_txs.py          independent verification + decision table
 poc/chm_order.py           updateBridgeBtcTransactions() on a live JVM
 poc/run_poc.sh             one command: build, verify, replay
-poc/out/                   generated certificates (txs, manifest, reports)
+poc/generated/                   generated certificates (txs, manifest, reports)
 ```
+
+Two of the four claims no longer need a running node at all: `patches/` adds the
+assertions to `powpeg-node`'s and `rskj`'s own test suites, so
+`./gradlew test` runs them against the real classes (see `patches/README.md`).
 
 ## 6. Reproduce
 
