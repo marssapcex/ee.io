@@ -635,11 +635,12 @@ def stage_federation():
     log("[federation] pending federation hash 0x%s" % pend.hex())
 
     log("[federation] commitFederation")
-    before = active_address()
+    # A successful commit clears the pending federation; the *active* one only
+    # changes 150 blocks later (federationActivationAge), which is the wait below.
     if not vote_round(sel("commitFederation(bytes)") + enc_bytes(pend),
-                      lambda: active_address() != before, "commit"):
-        raise RuntimeError("commitFederation did not change the active federation")
-    log("             active federation is now %s" % active_address())
+                      lambda: pending_hash() == b"", "commit"):
+        raise RuntimeError("commitFederation did not clear the pending federation")
+    log("             committed; the new federation activates in 150 blocks")
 
     log("[federation] waiting for the new federation to activate (150 blocks)")
     end = time.time() + 900
