@@ -655,11 +655,52 @@ SVP_FUND_OUTPUT = 500_000        # BridgeConstants.getSvpFundTxOutputsValue()
 PEG_SAT = 3_000_000              # comfortably above 2 x SVP_FUND_OUTPUT + fee
 
 
+def log_offsets():
+    """Byte offsets of the logs right now, so a marker written by an earlier
+    stage (or an earlier run) cannot be mistaken for what happens next."""
+    out = {}
+    for f in _log_files():
+        try:
+            out[f] = os.path.getsize(f)
+        except OSError:
+            pass
+    return out
+
+
+def log_since(pattern, offsets, context=0):
+    """Lines matching `pattern` written after `offsets` was taken."""
+    import re
+    rx = re.compile(pattern)
+    hits = []
+    for path, off in offsets.items():
+        try:
+            with open(path, errors="replace") as f:
+                f.seek(off)
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        for i, line in enumerate(lines):
+            if rx.search(line):
+                lo, hi = max(0, i - context), min(len(lines), i + context + 1)
+                hits.extend(lines[lo:hi])
+    return hits
+
+
+SVP_LOG = (r"updateSvpState|processSvp|Couldn't create svp|Fund tx signed|"
+           r"Spend tx|commitProposedFederation|Handover to new federation|"
+           r"Exception onBlock|SigHash could not be obtained|not enabled to run")
+
+
 def proposed_size() -> int:
+    """getProposedFederationSize() returns -1 (FEDERATION_NON_EXISTENT) when
+    there is no proposed federation, and the ABI value is a *signed* int256.
+    Reading it unsigned turns -1 into 2**256-1, which looks like a live
+    proposal and burns the whole 125-block SVP window."""
     try:
-        return dec_uint("0x" + bridge_call(sel("getProposedFederationSize()")).hex())
+        raw = bridge_call(sel("getProposedFederationSize()"))
+        return int.from_bytes(raw[:32], "big", signed=True) if len(raw) >= 32 else -1
     except Exception:
-        return 0
+        return -1
 
 
 def address_script(addr):
@@ -676,35 +717,41 @@ def address_script(addr):
 
 
 def svp_cycle(timeout_blocks=118):
-    """Drive RSKIP419's SVP cycle until the handover happens.
+    """Drive RSKIP419's SVP cycle and report exactly where it stops.
 
-    updateCollections is what creates the fund tx and, once the signed fund tx
-    has been registered, the spend tx. Only a member of the active/retiring
-    federation may call it, and federator1's key is in the node wallet (it is
-    also node A's own federator key), so the state machine can be nudged instead
-    of waiting for the 45 s federator turn.
-
-    Mining Bitcoin blocks in the same loop is what lets the two real federators
-    do their part: each of them signs every release tx it sees on a new best
-    block, the last signature makes the node broadcast it, and the signed tx has
-    to be confirmed (btc2RskMinimumAcceptableConfirmations = 3) before the
-    federators can register it with the Bridge.
+    The state machine, all of it observable in the node log:
+      updateCollections -> fund tx created      "[updateSvpState] No svp values..."
+                        -> fund tx signed      (both federators sign, one broadcasts)
+                        -> spend tx created    "[updateSvpState] Fund tx signed..."
+                        -> spend tx signed
+                        -> registerSvpSpendTx  -> commitProposedFederation
+    The handover's own line is "[commitProposedFederation] Committed to proposed
+    federation <addr>", and the proposed federation then disappears. The ACTIVE
+    address does NOT change here: the new federation still has to reach
+    federationActivationAge (150 blocks) first, so it is useless as a success
+    signal.
     """
-    addr_before = active_address()
     start_block = int(rsk("eth_blockNumber"), 16)
     deadline = start_block + timeout_blocks
+    offsets = log_offsets()
     next_nudge = 0.0
     mined = 0
     last_print = 0.0
 
     while True:
         blk = int(rsk("eth_blockNumber"), 16)
-        if active_address() != addr_before:
+        handover = log_since(r"Committed to proposed federation|"
+                             r"Handover to new federation completed", offsets)
+        size = proposed_size()
+
+        if handover and size <= 0:
             log("             handover done at block %d" % blk)
+            for line in handover[-3:]:
+                log("               " + line.strip()[:170])
             return True, ""
-        if not proposed_size():
-            return False, ("the proposed federation was cleared at block %d without "
-                           "a handover (SVP expired or failed)" % blk)
+        if size <= 0:
+            return False, ("the proposed federation was cleared at block %d without a "
+                           "handover: the SVP expired or failed" % blk)
         if blk > deadline:
             return False, ("still no handover at block %d (started at %d, SVP "
                            "validation period is 125 blocks)" % (blk, start_block))
@@ -714,12 +761,23 @@ def svp_cycle(timeout_blocks=118):
             next_nudge = now + 6
             try:
                 txh = bridge_tx(sel("updateCollections()"), rsk_address(F1))
-                wait_rsk_tx(txh, 60)
-                log("             block %d: updateCollections sent (%s)" % (blk, txh[:12]))
+                rc = wait_rsk_tx(txh, 60)
+                if rc.get("status") not in ("0x1", 1, True):
+                    # the Bridge wraps the cause in a VMException; the node log
+                    # has the real one
+                    raise RuntimeError(
+                        "updateCollections reverted at block %d (tx %s). "
+                        "The node log says:\n    %s"
+                        % (blk, txh,
+                           "\n    ".join(l.strip()[:200]
+                                         for l in log_since(SVP_LOG, offsets)[-8:])))
+                log("             block %d: updateCollections ok (%s)"
+                    % (blk, txh[:12]))
+            except RuntimeError:
+                raise
             except Exception as e:
                 log("             block %d: updateCollections failed: %s" % (blk, e))
 
-        # confirm whatever the federators just broadcast
         try:
             mine(2)
             mined += 2
@@ -729,8 +787,9 @@ def svp_cycle(timeout_blocks=118):
         if now - last_print > 15:
             last_print = now
             log("             block %d: proposed size %d, %d BTC blocks mined, "
-                "%d blocks of SVP budget left"
-                % (blk, proposed_size(), mined, deadline - blk))
+                "%d blocks of SVP budget left" % (blk, size, mined, deadline - blk))
+            for line in log_since(SVP_LOG, offsets)[-3:]:
+                log("               " + line.strip()[:170])
         time.sleep(2)
 
 
@@ -823,7 +882,7 @@ def stage_federation():
 
     # a proposed federation left over from an interrupted run blocks
     # createFederation with -4; either finish it or let it expire first
-    if proposed_size():
+    if proposed_size() > 0:
         log("[federation] a proposed federation from an earlier attempt is still "
             "stored; finishing or expiring it first")
         ok, why = svp_cycle()
