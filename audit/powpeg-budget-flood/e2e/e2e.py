@@ -1491,39 +1491,71 @@ def stage_attack():
     # before this check existed. So: wait for the mempool, top up with a spare if
     # the queue is short, and refuse to go on if it still is.
     def queue_size():
+        """Per node: how many attack txids that node's federator has in its mempool.
+
+        Both nodes are federation members and each sends its own quota, so a
+        queue that is full on node A and one short on node B is still a hole.
+        """
         import re as _re
-        seen = set()
-        for line in log_since(r"\[onTransaction\] [0-9a-f]{64}", offsets):
-            m = _re.search(r"\[onTransaction\] ([0-9a-f]{64})", line)
-            if m:
-                seen.add(m.group(1))
-        return sum(1 for a in attack if a["txid"] in seen)
+        out = {}
+        for path, off in offsets.items():
+            if "node-federator" not in path:
+                continue
+            seen = set()
+            for line in log_since(r"\[onTransaction\] [0-9a-f]{64}", {path: off}):
+                m = _re.search(r"\[onTransaction\] ([0-9a-f]{64})", line)
+                if m:
+                    seen.add(m.group(1))
+            name = path.split("node-")[-1].split(os.sep)[0]
+            out[name] = sum(1 for a in attack if a["txid"] in seen)
+        return out
+
+    def seen_in_mempool(txid, timeout):
+        """Per node: has this txid been logged as received from the mempool?"""
+        import re as _re
+        end = time.time() + timeout
+        while True:
+            out = {}
+            for path, off in offsets.items():
+                if "node-federator" not in path:
+                    continue
+                hit = any(txid in line for line in
+                          log_since(r"\[onTransaction\] " + txid, {path: off}))
+                out[path.split("node-")[-1].split(os.sep)[0]] = hit
+            if out and all(out.values()):
+                return out
+            if time.time() >= end:
+                return out
+            time.sleep(3)
 
     def wait_for_queue(want, timeout):
         end = time.time() + timeout
-        n = queue_size()
-        while n < want and time.time() < end:
+        q = queue_size()
+        while (not q or min(q.values()) < want) and time.time() < end:
             time.sleep(3)
-            n = queue_size()
-        return n
+            q = queue_size()
+        return q
+
+    def show(q):
+        return ", ".join("%s %d" % (k, v) for k, v in sorted(q.items())) or "no node logs"
 
     queued = wait_for_queue(ATTACK_COUNT, 90)
-    log("[attack] %d/%d reached the federator's mempool before any block"
-        % (queued, len(attack)))
+    log("[attack] in each federator's mempool before any block: %s (of %d sent)"
+        % (show(queued), len(attack)))
     slot = ATTACK_COUNT
-    while queued < ATTACK_COUNT and slot < ATTACK_COUNT + SPARE_TXS:
+    while (not queued or min(queued.values()) < ATTACK_COUNT) \
+            and slot < ATTACK_COUNT + SPARE_TXS:
         rec = broadcast_one(slot)
         slot += 1
         queued = wait_for_queue(ATTACK_COUNT, 60)
-        log("[attack] spare %s broadcast (slot %d); %d/%d now queued"
-            % (rec["txid"][:12], rec["slot"], queued, len(attack)))
-    if queued < ATTACK_COUNT:
+        log("[attack] spare %s broadcast (slot %d); now %s"
+            % (rec["txid"][:12], rec["slot"], show(queued)))
+    if not queued or min(queued.values()) < ATTACK_COUNT:
         raise RuntimeError(
-            "only %d of the attack txs reached the federator's mempool, and %d spares "
-            "did not make up the difference. The per-turn quota is %d sendable txs; "
-            "with a shorter queue the victim gets the last slot and the flood proves "
-            "nothing, so there is no point in measuring."
-            % (queued, SPARE_TXS, ATTACK_COUNT))
+            "the attack queue never filled: %s. Each federator sends at most %d "
+            "sendable txs per turn, so a shorter queue leaves a slot for the victim "
+            "and the flood would prove nothing. Spares (%d) did not make up the "
+            "difference." % (show(queued), ATTACK_COUNT, SPARE_TXS))
 
     # ---- the victim: one ordinary, perfectly valid peg-in --------------
     if "victim_txid" not in st:
@@ -1542,7 +1574,19 @@ def stage_attack():
         v_outs = [(VICTIM_PEGIN_SAT, spk_active), (v_change, v_script)]
         v_raw, v_txid = sign_tx(VICTIM, v_prev, vf["vout"], v_script, v_outs)
         btc("sendrawtransaction", [v_raw.hex()])
-        log("[attack] victim peg-in %s (%d sat) -> %s" % (v_txid[::-1].hex(), VICTIM_PEGIN_SAT, vaddr))
+        log("[attack] victim peg-in %s (%d sat) -> %s"
+            % (v_txid[::-1].hex(), VICTIM_PEGIN_SAT, vaddr))
+        # The victim needs its proof too: a tx the federator only meets inside a
+        # block is skipped forever, and then it would never be credited even
+        # after the window closes -- a false 'frozen' and a broken recovery.
+        seen = seen_in_mempool(v_txid[::-1].hex(), 60)
+        log("[attack] victim tx reached the mempool of: %s"
+            % ", ".join("%s %s" % (k, "yes" if v else "NO") for k, v in sorted(seen.items())))
+        if not seen or not all(seen.values()):
+            raise RuntimeError(
+                "the victim's peg-in never reached every federator's mempool (%s), so "
+                "no merkle proof would ever be stored for it and the measurement would "
+                "be meaningless." % seen)
         st["victim_txid"] = v_txid[::-1].hex()
         st["victim_btc_address"] = vaddr
         st["victim_rsk_address"] = victim_rsk_address(VICTIM)
@@ -1552,12 +1596,9 @@ def stage_attack():
     save_state(st)
 
     # ---- confirm everything on Bitcoin --------------------------------
-    # the federator's SPV wallet learns a tx from the mempool (onTransaction adds
-    # it to the pending map) and only stores its merkle proof when it later sees
-    # the block (onBlock). Give the mempool relay a moment so the tx is already in
-    # the map when the block arrives, otherwise no proof is ever stored for it and
-    # it is silently skipped forever.
-    time.sleep(3)
+    # Every tx above (attack and victim) is now known to be in both federators'
+    # mempools, which is the condition onBlock needs to store a merkle proof for
+    # it. Mining is what confirms them.
     mine(BTC_CONFIRMATIONS + 2)
     log("[attack] %d BTC blocks mined" % (BTC_CONFIRMATIONS + 2))
 
