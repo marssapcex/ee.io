@@ -686,6 +686,29 @@ def log_since(pattern, offsets, context=0):
     return hits
 
 
+# release_requested(bytes32 rskTxHash, bytes32 btcTxHash, uint256 amount), the
+# first two indexed (BridgeEvents.java:50). The Bridge emits it for the pegout
+# queue in general and for the SVP fund tx in particular, which makes the hash it
+# built readable straight from the receipt.
+RELEASE_REQUESTED_TOPIC = "0x" + keccak256(
+    b"release_requested(bytes32,bytes32,uint256)").hex()
+
+
+def release_requested_hashes(receipt):
+    """The BTC tx hashes the Bridge asked to release in this transaction."""
+    out = []
+    for entry in receipt.get("logs", []) or []:
+        topics = entry.get("topics") or []
+        if len(topics) < 3:
+            continue
+        if (entry.get("address") or "").lower() != BRIDGE.lower():
+            continue
+        if topics[0].lower() != RELEASE_REQUESTED_TOPIC:
+            continue
+        out.append(topics[2].lower().replace("0x", ""))
+    return out
+
+
 SVP_LOG = (r"updateSvpState|processSvp|Couldn't create svp|Fund tx signed|"
            r"Spend tx|commitProposedFederation|Handover to new federation|"
            r"Exception onBlock|SigHash could not be obtained|not enabled to run")
@@ -809,7 +832,7 @@ def send_update_collections(who=None):
         bridge_log_tail(10, SVP_LOG)
         raise RuntimeError("updateCollections reverted (tx %s); the lines above say why"
                            % txhash)
-    return txhash
+    return receipt
 
 
 def diagnose_fund_tx(fund_txid, seen_type, offsets):
@@ -896,18 +919,24 @@ def svp_cycle(timeout_blocks=118):
         would mean the same RSK transaction was executed in more than one block;
         one build per call means the stored hash did not survive to the next one.
         """
-        nonlocal calls, last_call
+        nonlocal calls, last_call, built
         blk_now = int(rsk("eth_blockNumber"), 16)
         before = len(log_since(r"No svp values were found", offsets))
-        send_update_collections()
+        receipt = send_update_collections()
         calls, last_call = calls + 1, blk_now
         time.sleep(1)
-        built = len(log_since(r"No svp values were found", offsets)) - before
-        log("             call #%d at block %d (%s): the Bridge built %d fund tx"
-            % (calls, blk_now, reason, built))
+        n = len(log_since(r"No svp values were found", offsets)) - before
+        released = release_requested_hashes(receipt)
+        if n and released:
+            built.extend(released)
+        log("             call #%d at block %d (%s): the Bridge built %d fund tx%s"
+            % (calls, blk_now, reason, n,
+               (", asked to release %s" % ", ".join(h[:16] for h in released))
+               if released else ""))
 
     # first call: this is what creates the fund tx
     calls, last_call = 0, start_block
+    built = []          # BTC tx hashes the Bridge asked to release, in order
     call("start of the SVP")
 
     while True:
@@ -953,6 +982,15 @@ def svp_cycle(timeout_blocks=118):
                         fund = (tx["txid"], paid, scan)
                         log("             block %d: fund tx %s on Bitcoin, %d sat to the "
                             "proposed federation" % (scan, tx["txid"], paid))
+                        if built:
+                            same = built[-1] == tx["txid"].lower()
+                            log("             the Bridge built %s, %s" %
+                                (built[-1][:16],
+                                 "the same tx: the stored hash was simply gone by the "
+                                 "time this tx was registered"
+                                 if same else
+                                 "a DIFFERENT tx: the stored hash can never match the "
+                                 "tx the federation signed"))
                 elif spend is None and any(
                         (i.get("txid") or "") == fund[0] for i in tx.get("vin", [])):
                     spend = tx["txid"]
