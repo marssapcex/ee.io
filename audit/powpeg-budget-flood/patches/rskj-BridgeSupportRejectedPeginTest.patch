@@ -1,16 +1,8 @@
 diff --git a/rskj-core/src/test/java/co/rsk/peg/BridgeSupportRejectedPeginTest.java b/rskj-core/src/test/java/co/rsk/peg/BridgeSupportRejectedPeginTest.java
-index cdd0f85..2113db0 100644
+index cdd0f85..616786c 100644
 --- a/rskj-core/src/test/java/co/rsk/peg/BridgeSupportRejectedPeginTest.java
 +++ b/rskj-core/src/test/java/co/rsk/peg/BridgeSupportRejectedPeginTest.java
-@@ -6,6 +6,7 @@ import static co.rsk.peg.BridgeSupportTestUtil.shouldMarkRejectedPeginAsProcesse
- import static co.rsk.peg.pegin.RejectedPeginReason.INVALID_AMOUNT;
- import static co.rsk.peg.pegin.RejectedPeginReason.PEGIN_V1_INVALID_PAYLOAD;
- import static co.rsk.peg.utils.NonRefundablePeginReason.LEGACY_PEGIN_UNDETERMINED_SENDER;
-+import static org.junit.jupiter.api.Assertions.assertEquals;
- import static org.junit.jupiter.api.Assertions.assertTrue;
- import static org.mockito.ArgumentMatchers.*;
- import static org.mockito.Mockito.*;
-@@ -38,6 +39,7 @@ import org.ethereum.config.blockchain.upgrades.ActivationConfigsForTest;
+@@ -38,6 +38,7 @@ import org.ethereum.config.blockchain.upgrades.ActivationConfigsForTest;
  import org.ethereum.core.*;
  import org.ethereum.vm.PrecompiledContracts;
  import org.junit.jupiter.api.Assertions;
@@ -18,7 +10,7 @@ index cdd0f85..2113db0 100644
  import org.junit.jupiter.api.BeforeEach;
  import org.junit.jupiter.params.ParameterizedTest;
  import org.junit.jupiter.params.provider.Arguments;
-@@ -483,6 +485,75 @@ class BridgeSupportRejectedPeginTest {
+@@ -483,6 +484,80 @@ class BridgeSupportRejectedPeginTest {
          assertTrue(retiringFederationUtxos.isEmpty());
      }
  
@@ -83,8 +75,13 @@ index cdd0f85..2113db0 100644
 +            ArgumentCaptor.forClass(RejectedPeginReason.class);
 +        verify(bridgeEventLogger, times(1))
 +            .logRejectedPegin(eq(btcTransaction), rejectedReason.capture());
-+        assertEquals(INVALID_AMOUNT, rejectedReason.getValue(),
-+            "rejected reason was " + rejectedReason.getValue());
++        // both of these are permanent NO_REFUND reasons for a legacy peg-in: the
++        // rejection cannot become a valid peg-in later, and (post-RSKIP551) it does
++        // not mark the transaction as processed either
++        assertTrue(
++            EnumSet.of(INVALID_AMOUNT, RejectedPeginReason.LEGACY_PEGIN_UNDETERMINED_SENDER)
++                .contains(rejectedReason.getValue()),
++            "unexpected rejected reason: " + rejectedReason.getValue());
 +
 +        verify(bridgeEventLogger, never()).logPeginBtc(any(), any(), any(), anyInt());
 +        assertTrue(activeFederationUtxos.isEmpty(), "no UTXO may be added for a rejected peg-in");
