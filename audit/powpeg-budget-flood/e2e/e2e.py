@@ -467,6 +467,28 @@ def save_state(st):
         json.dump(st, f, indent=2)
 
 
+LOG_FILES = [os.path.join(os.environ.get("E2E_LOGS", ""), name)
+             for name in ("rsk.log", "powpeg-federator1.log")]
+
+
+def bridge_log_tail(n=25, pattern=r"voteFederationChange|createPendingFederation|addFederator|commitFederation|amAwaiting|Bridge|ERROR"):
+    """The node's own account of what the Bridge did with our votes."""
+    import re
+    rx = re.compile(pattern)
+    for path in LOG_FILES:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, errors="replace") as f:
+                lines = [l for l in f if rx.search(l)]
+        except OSError:
+            continue
+        if lines:
+            print("  --- %s (filtered) ---" % os.path.basename(path))
+            for line in lines[-n:]:
+                print("    " + line.rstrip()[:220])
+
+
 def log(msg):
     print(msg, flush=True)
 
@@ -541,6 +563,7 @@ def stage_federation():
         for who, k in (("auth-a", a), ("auth-b", b)):
             code = vote_dry_run(data, k)
             if code != 1:
+                bridge_log_tail()
                 raise RuntimeError(
                     "vote '%s' rejected by the Bridge for %s: code %d (%s)"
                     % (label, who, code, FED_CODE.get(code, "unknown")))
@@ -551,8 +574,27 @@ def stage_federation():
             log("             %s voted via %s  (%s)" % (label, who, txh[:18]))
             time.sleep(0.4)
 
-    log("[federation] createFederation")
-    vote(sel("createFederation()"), "create")
+    # createFederation can legitimately report success from the dry run while the
+    # winning execution is refused (age gate, an election already cleared, a
+    # stale view). Verify the outcome, and retry the round if there is none.
+    create_data = sel("createFederation()")
+    for attempt in range(1, 4):
+        log("[federation] createFederation (attempt %d)" % attempt)
+        vote(create_data, "create")
+        pend = b""
+        for _ in range(20):
+            pend = pending_hash()
+            if pend:
+                break
+            time.sleep(1)
+        if pend:
+            break
+        log("             no pending federation yet, waiting 30 s before retrying")
+        bridge_log_tail(10)
+        time.sleep(30)
+    else:
+        bridge_log_tail()
+        raise RuntimeError("createFederation had no effect after 3 attempts")
 
     log("[federation] addFederatorPublicKeyMultikey x%d" % len(FEDS))
     for k in FEDS:
@@ -563,7 +605,8 @@ def stage_federation():
 
     pend = pending_hash()
     if not pend:
-        raise RuntimeError("the pending federation was not created: hash is empty")
+        bridge_log_tail()
+        raise RuntimeError("the pending federation disappeared before commit")
     log("[federation] pending federation hash 0x%s" % pend.hex())
 
     log("[federation] commitFederation")

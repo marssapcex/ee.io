@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$WORK" "$STATE" "$LOGS"
-export WORK STATE RSK_RPC BTC_RPC BTC_USER BTC_PASS E2E_STATE="$STATE"
+export WORK STATE RSK_RPC BTC_RPC BTC_USER BTC_PASS E2E_STATE="$STATE" E2E_LOGS="$LOGS"
 
 c_ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
 c_bad()  { printf '\033[31m%s\033[0m\n' "$*"; }
