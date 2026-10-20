@@ -363,13 +363,6 @@ federator {
     enabled = true
     updateBridgeTimerEnabled = true
 
-    # updateCollections is what CREATES the SVP fund tx, and the Bridge stores
-    # its hash so it can recognise the signed tx later. If two federators (or a
-    # script and a federator) call it before the fund tx is signed, the stored
-    # hash is overwritten and the tx the federators actually signed is no longer
-    # recognised -- it then gets classified as a PEGOUT and the SVP dies of old
-    # age. Exactly one actor may call it: node A's own turn timer.
-    updateCollections = $([ "$mine" = "yes" ] && echo true || echo false)
     signers {
         BTC { type = "keyFile", path = "$WORK/$gen.key" }
         RSK { type = "keyFile", path = "$WORK/$gen.key" }
