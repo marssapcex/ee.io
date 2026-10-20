@@ -13,6 +13,36 @@ rejection path) · **Severity:** High — temporary freezing of funds
 
 ---
 
+## 0. Reproduce
+
+```bash
+./proof.sh
+```
+
+One command. It clones rskj at `1e95a3b` and powpeg-node at `VETIVER-9.0.4.0`,
+applies the three patches in `patches/`, runs the tests against the production
+classes and prints a PASS/FAIL line per claim. `./proof.sh --budget` adds the
+40-slot / 1 764-turn JVM proof (`poc/`).
+
+### Verified results (macOS arm64, JDK 17.0.20.1, 2026-10-20)
+
+```
+powpeg-node 3dc1d165  BtcToRskClientTest                  BUILD SUCCESSFUL
+                                                          320 tests, 0 failures
+              ..._activeClient_shouldBeInformed            PASSED
+              ..._retiringClient_shouldNotBeInformed       PASSED
+              ..._isSentAgainOnNextTurn                    PASSED
+rskj        1e95a3b03  PegUtilsEvaluatePeginTest           17 tests, 0 failures
+              ..._isRejectedWithInvalidAmount              PASSED
+              ..._isRegistered (after the window)          PASSED
+```
+
+Remaining: `BridgeSupportRejectedPeginTest..._shouldRejectAndStayUnprocessed`
+(the "not marked processed" link) is included in `proof.sh` but has not been
+executed on a real machine yet — it is the one result still to confirm.
+
+---
+
 ## 1. Summary
 
 A federator validates a peg-in against the **single** federation it listens to,
@@ -129,44 +159,26 @@ so it is **High — temporary freezing of funds**, not Critical.
 
 ## 6. Proof of concept
 
-Artifacts: `poc/` in this bundle.
+`./proof.sh` — one command, six claims, PASS/FAIL table.
 
-```bash
-cd poc && ./run_poc.sh
-```
+What "real" means here: the six assertions run inside `powpeg-node`'s and
+`rskj`'s own Gradle builds, against `BtcToRskClient.updateBridgeBtcTransactions()`,
+`PegUtils.evaluatePegin()` and `BridgeSupport.registerBtcTransaction()` — the
+production classes, real storage, real event logger, real active + retiring
+federation. Nothing in the decision path is re-implemented.
 
-1. `gen_attack_txs.py` builds the 40 attack transactions and 40 control
-   transactions with **real secp256k1 signatures** (libsecp256k1, RFC-6979),
-   legacy `SIGHASH_ALL`, real txids; the attack group is ground into bin 0, the
-   control group is not.
-2. `verify_txs.py` re-parses every transaction, **re-verifies every ECDSA
-   signature** and txid, checks the two federation outputs, the fee, and the bin
-   placement. Result: 40/40 valid and in bin 0; 40/40 valid and not in bin 0.
-3. `chm_order.py` runs a **live JVM** with a real
-   `java.util.concurrent.ConcurrentHashMap` (the exact class the node uses), keys
-   whose `hashCode()` is the bitcoinj `Sha256Hash.hashCode()` of the real wtxids,
-   and the production send loop. Reading the JVM's own table by reflection shows
-   the 40 attacker entries physically in **bin 0**; the loop sends 40 attacker
-   transactions and 0 honest ones on every turn. Negative control: without
-   grinding, 28 attacker / 12 honest. With a 245-entry honest backlog, still
-   40 / 0.
+The independent JVM proof (`./proof.sh --budget`, source in `poc/`) uses 40
+Bitcoin transactions signed with libsecp256k1 whose wtxids are ground into bin 0
+of a real `java.util.concurrent.ConcurrentHashMap` in a real JVM: the production
+send loop then emits 40 attacker entries and 0 honest ones on every turn for all
+1 764 turns of the window. Negative control (same transactions, hashes not
+ground): 28 attacker / 12 honest — so the effect comes from the grinding, not
+from the harness.
 
-The two decision functions themselves (≈30 lines, quoted in `poc/verify_txs.py`
-§[2] with file:line) are reproduced from the sources rather than executed,
-because the build artefacts could not be fetched in the audit environment.
-`patches/` closes that gap with two `git diff` patches that add the assertions to
-the repositories' own test suites (`./gradlew test`):
-
-* `co.rsk.peg.PegUtilsEvaluatePeginTest` — same transaction, live-federation
-  wallet ⇒ `NO_REFUND / INVALID_AMOUNT`; active-only wallet (i.e. after the
-  retiring federation is cleared) ⇒ `REGISTER`;
-* `co.rsk.federate.BtcToRskClientTest` — active client sends it, retiring client
-  drops it, and two turns produce two `sendRegisterBtcTransaction` calls for the
-  same wtxid.
-
-`REPRODUCE_REAL_NODE.md` lists the exact steps — including the
-`fed_updateBridge` JSON-RPC that forces a turn synchronously — to run the same
-scenario on a real regtest stack.
+patches/  rskj-PegUtilsEvaluatePeginTest           Bridge rejects / registers after the window
+          rskj-BridgeSupportRejectedPeginTest      rejection does not mark processed
+          powpeg-node-BtcToRskClientTest           sends it, retiring client drops it, re-sends it
+repro/    regtest_attack.py + 20_proof_regtest.sh  optional live regtest run (needs a federation change)
 
 ## 7. Fix
 
