@@ -29,14 +29,16 @@ BTC_RPC="http://127.0.0.1:18443"
 BTC_USER=rsk
 BTC_PASS=rsk
 KEEP=0
+CHECK=0
 FROM=build
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep) KEEP=1 ;;
+    --check) CHECK=1 ;;
     --from) FROM="$2"; shift ;;
     --work) WORK="$2"; shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
   esac
   shift
 done
@@ -94,6 +96,17 @@ fi
 [ -n "$PY" ] || die "no Python with coincurve; run: brew install python@3.12 && python3.12 -m pip install coincurve"
 $PY -c "import coincurve" || die "coincurve unavailable"
 echo "  python $($PY -V 2>&1 | awk '{print $2}')  coincurve ok"
+command -v git >/dev/null || die "git not found"
+
+DF_GB=$(df -g "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+echo "  free disk   ${DF_GB:-?} GB   (the two fat jars need ~4 GB)"
+
+if [ "$CHECK" = "1" ]; then
+  echo
+  c_ok "preflight OK -- everything the end-to-end run needs is installed"
+  echo "  next:  ./e2e/run.sh          (about 20-25 min on a first build)"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 c_step "1. build rskj + powpeg-node"
