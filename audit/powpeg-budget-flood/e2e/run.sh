@@ -71,31 +71,11 @@ command -v bitcoind >/dev/null || die "bitcoind not found in PATH"
 command -v bitcoin-cli >/dev/null || die "bitcoin-cli not found in PATH"
 echo "  bitcoind $(bitcoind --version | head -1 | awk '{print $NF}')"
 
-# coincurve has no wheel for Python 3.14, so prefer an interpreter that has one
-PY=""
-if [ -x "$WORK/venv/bin/python" ] && "$WORK/venv/bin/python" -c "import coincurve" 2>/dev/null; then
-  PY="$WORK/venv/bin/python"
-else
-  for cand in python3.13 python3.12 python3.11 python3.10 python3; do
-    command -v "$cand" >/dev/null 2>&1 || continue
-    "$cand" -c "import coincurve" >/dev/null 2>&1 && { PY="$cand"; break; }
-  done
-  if [ -z "$PY" ]; then
-    for cand in python3.13 python3.12 python3.11 python3.10 python3; do
-      command -v "$cand" >/dev/null 2>&1 || continue
-      echo "  trying $cand for a venv with coincurve"
-      rm -rf "$WORK/venv"
-      "$cand" -m venv "$WORK/venv" >/dev/null 2>&1 || continue
-      if "$WORK/venv/bin/pip" -q install --upgrade pip coincurve >/dev/null 2>&1 \
-         && "$WORK/venv/bin/python" -c "import coincurve" 2>/dev/null; then
-        PY="$WORK/venv/bin/python"; break
-      fi
-    done
-  fi
-fi
-[ -n "$PY" ] || die "no Python with coincurve; run: brew install python@3.12 && python3.12 -m pip install coincurve"
-$PY -c "import coincurve" || die "coincurve unavailable"
-echo "  python $($PY -V 2>&1 | awk '{print $2}')  coincurve ok"
+PY=python3
+command -v python3 >/dev/null 2>&1 || die "python3 not found"
+$PY -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" \
+  || die "python3 >= 3.8 required"
+echo "  python $($PY -V 2>&1 | awk '{print $2}')  (stdlib only, no pip)"
 command -v git >/dev/null || die "git not found"
 
 DF_GB=$(df -g "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')

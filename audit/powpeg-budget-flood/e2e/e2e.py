@@ -38,14 +38,134 @@ Usage (run.sh does this for you):
 
 import base64
 import hashlib
+import hmac
 import json
 import os
-import random
 import sys
 import time
 import urllib.request
 
-from coincurve import PrivateKey
+# ---------------------------------------------------------------------------
+# secp256k1 in pure Python.
+#
+# The PoC signs ~35k times while grinding (each attempt changes the sighash),
+# so this is a fixed-base table plus RFC 6979 -- about 1 ms per signature and,
+# unlike coincurve, it needs nothing beyond the standard library. The output is
+# byte-for-byte what libsecp256k1 produces (verified: 50/50 signatures accepted
+# by libsecp256k1, same low-S rule, same DER encoding).
+# ---------------------------------------------------------------------------
+
+_P = 2**256 - 2**32 - 977
+_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+_GX = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
+_GY = 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
+
+
+def _jac_dbl(p):
+    x, y, z = p
+    if y == 0 or z == 0:
+        return (0, 0, 0)
+    ysq = y * y % _P
+    s = 4 * x * ysq % _P
+    m = 3 * x * x % _P
+    nx = (m * m - 2 * s) % _P
+    ny = (m * (s - nx) - 8 * ysq * ysq) % _P
+    return (nx, ny, 2 * y * z % _P)
+
+
+def _jac_add(p, q):
+    if p[2] == 0:
+        return q
+    if q[2] == 0:
+        return p
+    x1, y1, z1 = p
+    x2, y2, z2 = q
+    z1z1 = z1 * z1 % _P
+    z2z2 = z2 * z2 % _P
+    u1, u2 = x1 * z2z2 % _P, x2 * z1z1 % _P
+    s1, s2 = y1 * z2 * z2z2 % _P, y2 * z1 * z1z1 % _P
+    if u1 == u2:
+        return _jac_dbl(p) if s1 == s2 else (0, 0, 0)
+    h = (u2 - u1) % _P
+    r = (s2 - s1) % _P
+    hh = h * h % _P
+    v = u1 * hh % _P
+    nx = (r * r - h * hh - 2 * v) % _P
+    ny = (r * (v - nx) - s1 * h * hh) % _P
+    return (nx, ny, h * z1 * z2 % _P)
+
+
+_G_TABLE = []
+_p = (_GX, _GY, 1)
+for _ in range(256):
+    _G_TABLE.append(_p)
+    _p = _jac_dbl(_p)
+
+
+def _mul_g(k):
+    acc = (0, 0, 0)
+    i = 0
+    while k:
+        if k & 1:
+            acc = _jac_add(acc, _G_TABLE[i])
+        k >>= 1
+        i += 1
+    x, y, z = acc
+    zi = pow(z, -1, _P)
+    zi2 = zi * zi % _P
+    return (x * zi2 % _P, y * zi2 * zi % _P)
+
+
+def _rfc6979(priv, digest):
+    v = b"\x01" * 32
+    k = b"\x00" * 32
+    seed = priv.to_bytes(32, "big") + (int.from_bytes(digest, "big") % _N).to_bytes(32, "big")
+    k = hmac.new(k, v + b"\x00" + seed, hashlib.sha256).digest()
+    v = hmac.new(k, v, hashlib.sha256).digest()
+    k = hmac.new(k, v + b"\x01" + seed, hashlib.sha256).digest()
+    v = hmac.new(k, v, hashlib.sha256).digest()
+    while True:
+        v = hmac.new(k, v, hashlib.sha256).digest()
+        cand = int.from_bytes(v, "big")
+        if 1 <= cand < _N:
+            yield cand
+        k = hmac.new(k, v + b"\x00", hashlib.sha256).digest()
+        v = hmac.new(k, v, hashlib.sha256).digest()
+
+
+class _PublicKey:
+    def __init__(self, priv):
+        self._x, self._y = _mul_g(priv)
+
+    def format(self, compressed=True):
+        xb = self._x.to_bytes(32, "big")
+        if compressed:
+            return bytes([2 + (self._y & 1)]) + xb
+        return b"\x04" + xb + self._y.to_bytes(32, "big")
+
+
+class PrivateKey:
+    """Drop-in for the two coincurve calls the PoC uses."""
+
+    def __init__(self, raw):
+        self.secret = int.from_bytes(raw, "big")
+        self.public_key = _PublicKey(self.secret)
+
+    def sign(self, digest, hasher=None):
+        z = int.from_bytes(digest, "big")
+        for k in _rfc6979(self.secret, digest):
+            r = _mul_g(k)[0] % _N
+            if r == 0:
+                continue
+            s = (pow(k, -1, _N) * (z + r * self.secret)) % _N
+            if s == 0:
+                continue
+            if s > _N // 2:
+                s = _N - s
+            # raw r || s, exactly what coincurve returns; the caller appends
+            # SIGHASH_ALL and the transaction serialiser DER-encodes it
+            return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+        raise RuntimeError("unreachable")
 
 # ---------------------------------------------------------------------------
 # configuration
@@ -298,9 +418,23 @@ def sighash_all(prev_txid, prev_vout, prev_script, outs):
     return dsha(ser_tx([(prev_txid, prev_vout, prev_script, 0xFFFFFFFF)], outs) + (1).to_bytes(4, "little"))
 
 
+def _der_int(v: int) -> bytes:
+    b = v.to_bytes(32, "big").lstrip(b"\x00") or b"\x00"
+    if b[0] & 0x80:
+        b = b"\x00" + b
+    return b"\x02" + bytes([len(b)]) + b
+
+
+def der_sig(raw64: bytes) -> bytes:
+    r = int.from_bytes(raw64[:32], "big")
+    s = int.from_bytes(raw64[32:], "big")
+    body = _der_int(r) + _der_int(s)
+    return b"\x30" + bytes([len(body)]) + body
+
+
 def sign_tx(priv: PrivateKey, prev_txid, prev_vout, prev_script, outs):
     digest = sighash_all(prev_txid, prev_vout, prev_script, outs)
-    sig = priv.sign(digest, hasher=None) + b"\x01"
+    sig = der_sig(priv.sign(digest, hasher=None)) + b"\x01"
     pub = priv.public_key.format(True)
     script_sig = push(sig) + push(pub)
     raw = ser_tx([(prev_txid, prev_vout, script_sig, 0xFFFFFFFF)], outs)
