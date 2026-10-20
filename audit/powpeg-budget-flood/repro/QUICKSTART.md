@@ -58,11 +58,12 @@ Nó làm: clone `rskj@1e95a3b` + `powpeg-node@VETIVER-9.0.4.0` vào `~/powpeg-pr
 áp 2 patch trong `../patches/`, chạy 2 test class bằng Gradle, copy log + JUnit
 XML vào `repro/results/unit/`.
 
-**5 test phải xanh:**
+**6 test phải xanh (2 file rskj + 1 file powpeg-node):**
 
 ```
 rskj         evaluatePegin_subMinimumOutputToAnotherLiveFederation_isRejectedWithInvalidAmount
 rskj         evaluatePegin_sameTxOnceRetiringFederationIsCleared_isRegistered
+rskj         registerBtcTransaction_whenPeginIsValidForActiveFedButBelowMinimumForRetiringFed_shouldRejectAndStayUnprocessed
 powpeg-node  updateBridgeBtcTransactions_peginWithSubMinimumOutputToRetiringFed_activeClient_shouldBeInformed
 powpeg-node  updateBridgeBtcTransactions_peginWithSubMinimumOutputToRetiringFed_retiringClient_shouldNotBeInformed
 powpeg-node  updateBridgeBtcTransactions_peginWithSubMinimumOutputToRetiringFed_isSentAgainOnNextTurn
@@ -148,3 +149,40 @@ Cần python3 + mạng tới PyPI (~6 giây). Cái này chạy được ngay c�
 40 tx ký thật, grind vào bin 0, và **JVM thật** với
 `ConcurrentHashMap` thật → 40 attacker / 0 honest suốt 1 764 turn; đối chứng
 không grind 28/12.
+
+---
+
+## Kết quả thật đã chạy (M4, 20/10/2026)
+
+```
+rskj  PegUtilsEvaluatePeginTest      17 tests, failures=0   (sau khi fix NPE)
+rskj  BridgeSupportRejectedPeginTest ... shouldRejectAndStayUnprocessed   PASSED
+powpeg BtcToRskClientTest            320 tests, failures=0
+      ..._activeClient_shouldBeInformed          PASSED
+      ..._retiringClient_shouldNotBeInformed     PASSED
+      ..._isSentAgainOnNextTurn                  PASSED
+```
+
+Nếu `./30_collect_and_push.sh` báo `failures=1` kèm `tests=17 failures=1` **và**
+`tests=17 failures=0` cùng lúc: đó là XML cũ còn sót. Bản mới đã xoá XML cũ
+trước khi copy (`find results -name 'TEST-*.xml' -delete`). Muốn chắc:
+`rm -rf results/unit && ./10_proof_unit.sh`.
+
+## Chỉ chạy lại đúng 1 test (nhanh nhất)
+
+```bash
+cd ~/powpeg-proof/rskj
+git checkout -- .
+git apply ~/ee.io/ee.io/audit/powpeg-budget-flood/patches/rskj-PegUtilsEvaluatePeginTest.patch
+git apply ~/ee.io/ee.io/audit/powpeg-budget-flood/patches/rskj-BridgeSupportRejectedPeginTest.patch
+./gradlew --no-daemon :rskj-core:test \
+  --tests 'co.rsk.peg.PegUtilsEvaluatePeginTest' \
+  --tests 'co.rsk.peg.BridgeSupportRejectedPeginTest'
+```
+
+```bash
+cd ~/powpeg-proof/powpeg-node
+git checkout -- .
+git apply ~/ee.io/ee.io/audit/powpeg-budget-flood/patches/powpeg-node-BtcToRskClientTest.patch
+./gradlew --no-daemon test --tests 'co.rsk.federate.BtcToRskClientTest'
+```

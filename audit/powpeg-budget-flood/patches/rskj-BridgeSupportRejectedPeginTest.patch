@@ -1,0 +1,96 @@
+diff --git a/rskj-core/src/test/java/co/rsk/peg/BridgeSupportRejectedPeginTest.java b/rskj-core/src/test/java/co/rsk/peg/BridgeSupportRejectedPeginTest.java
+index cdd0f85..2113db0 100644
+--- a/rskj-core/src/test/java/co/rsk/peg/BridgeSupportRejectedPeginTest.java
++++ b/rskj-core/src/test/java/co/rsk/peg/BridgeSupportRejectedPeginTest.java
+@@ -6,6 +6,7 @@ import static co.rsk.peg.BridgeSupportTestUtil.shouldMarkRejectedPeginAsProcesse
+ import static co.rsk.peg.pegin.RejectedPeginReason.INVALID_AMOUNT;
+ import static co.rsk.peg.pegin.RejectedPeginReason.PEGIN_V1_INVALID_PAYLOAD;
+ import static co.rsk.peg.utils.NonRefundablePeginReason.LEGACY_PEGIN_UNDETERMINED_SENDER;
++import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ import static org.mockito.ArgumentMatchers.*;
+ import static org.mockito.Mockito.*;
+@@ -38,6 +39,7 @@ import org.ethereum.config.blockchain.upgrades.ActivationConfigsForTest;
+ import org.ethereum.core.*;
+ import org.ethereum.vm.PrecompiledContracts;
+ import org.junit.jupiter.api.Assertions;
++import org.mockito.ArgumentCaptor;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.params.ParameterizedTest;
+ import org.junit.jupiter.params.provider.Arguments;
+@@ -483,6 +485,75 @@ class BridgeSupportRejectedPeginTest {
+         assertTrue(retiringFederationUtxos.isEmpty());
+     }
+ 
++    /*
++     * Regression test for the "registerBtcTransaction budget flood" report.
++     *
++     * The transaction is valid from the point of view of the federation the federator
++     * watches (500_000 sat to the active federation, i.e. >= minimumPeginTxValue) but
++     * carries a sub-minimum output to the OTHER live federation (the retiring one).
++     * evaluatePegin() looks at all live federations, so the Bridge rejects it with
++     * INVALID_AMOUNT; and after RSKIP551 that rejection does not mark the transaction as
++     * processed, which is what makes the federator re-send it on every single turn.
++     */
++    @ParameterizedTest
++    @MethodSource("activationsProvider")
++    void registerBtcTransaction_whenPeginIsValidForActiveFedButBelowMinimumForRetiringFed_shouldRejectAndStayUnprocessed(
++        ActivationConfig.ForBlock activations
++    ) throws BlockStoreException, BridgeIllegalArgumentException, IOException {
++        // arrange
++        Coin amountToRetiringFed = Coin.valueOf(2_000L);   // above dust, far below the minimum
++        BtcTransaction btcTransaction = new BtcTransaction(btcMainnetParams);
++        btcTransaction.addInput(BitcoinTestUtils.createHash(1), FIRST_OUTPUT_INDEX,
++            new Script(new byte[]{}));
++        btcTransaction.addOutput(minimumPeginTxValue, activeFederation.getAddress());
++        btcTransaction.addOutput(amountToRetiringFed, retiringFederation.getAddress());
++
++        when(federationStorageProvider.getOldFederation(federationMainnetConstants,
++            activations)).thenReturn(retiringFederation);
++        FederationSupport federationSupport = FederationSupportBuilder.builder()
++            .withFederationConstants(federationMainnetConstants)
++            .withFederationStorageProvider(federationStorageProvider)
++            .withActivations(activations)
++            .withRskExecutionBlock(rskExecutionBlock)
++            .build();
++
++        BridgeSupport bridgeSupport = BridgeSupportBuilder.builder()
++            .withBtcBlockStoreFactory(mockFactory)
++            .withBridgeConstants(bridgeMainnetConstants)
++            .withRepository(repository)
++            .withProvider(provider)
++            .withActivations(activations)
++            .withEventLogger(bridgeEventLogger)
++            .withBtcLockSenderProvider(btcLockSenderProvider)
++            .withPeginInstructionsProvider(peginInstructionsProvider)
++            .withExecutionBlock(rskExecutionBlock)
++            .withFederationSupport(federationSupport)
++            .build();
++
++        // act
++        bridgeSupport.registerBtcTransaction(
++            rskTx,
++            btcTransaction.bitcoinSerialize(),
++            heightAtWhichToStartUsingPegoutIndex,
++            createPmtAndMockBlockStore(btcTransaction).bitcoinSerialize()
++        );
++
++        // assert: rejected, and with RSKIP551 active it is NOT marked as processed,
++        // which is exactly why the powpeg node keeps re-sending it
++        assertInvalidPeginMarkedAsProcessed(activations);
++
++        ArgumentCaptor<RejectedPeginReason> rejectedReason =
++            ArgumentCaptor.forClass(RejectedPeginReason.class);
++        verify(bridgeEventLogger, times(1))
++            .logRejectedPegin(eq(btcTransaction), rejectedReason.capture());
++        assertEquals(INVALID_AMOUNT, rejectedReason.getValue(),
++            "rejected reason was " + rejectedReason.getValue());
++
++        verify(bridgeEventLogger, never()).logPeginBtc(any(), any(), any(), anyInt());
++        assertTrue(activeFederationUtxos.isEmpty(), "no UTXO may be added for a rejected peg-in");
++        assertTrue(retiringFederationUtxos.isEmpty(), "no UTXO may be added for a rejected peg-in");
++    }
++
+     // flyover pegin
+     @ParameterizedTest
+     @MethodSource("activationsProvider")

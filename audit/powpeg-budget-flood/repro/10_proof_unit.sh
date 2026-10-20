@@ -166,15 +166,18 @@ apply_patch() {   # $1 repo, $2 patch
 }
 
 apply_patch "$WORK/rskj" "$HERE/../patches/rskj-PegUtilsEvaluatePeginTest.patch" || exit 1
+apply_patch "$WORK/rskj" "$HERE/../patches/rskj-BridgeSupportRejectedPeginTest.patch" || exit 1
 
 ensure_wrapper "$WORK/rskj" || exit 1
 
-echo "running co.rsk.peg.PegUtilsEvaluatePeginTest ..."
-run_gradle "$WORK/rskj" :rskj-core:test --tests 'co.rsk.peg.PegUtilsEvaluatePeginTest' \
+echo "running the rskj tests ..."
+run_gradle "$WORK/rskj" :rskj-core:test \
+    --tests 'co.rsk.peg.PegUtilsEvaluatePeginTest' \
+    --tests 'co.rsk.peg.BridgeSupportRejectedPeginTest' \
     > "$RES/rskj-test.log" 2>&1
 RSKJ_RC=$?
 tail -40 "$RES/rskj-test.log"
-cp -R rskj-core/build/test-results/test "$RES/rskj-junit-xml" 2>/dev/null
+rm -rf "$RES/rskj-junit-xml"; cp -R rskj-core/build/test-results/test "$RES/rskj-junit-xml" 2>/dev/null
 
 # ------------------------------------------------------------------ powpeg-node
 echo
@@ -196,7 +199,7 @@ run_gradle "$WORK/powpeg-node" test --tests 'co.rsk.federate.BtcToRskClientTest'
     > "$RES/powpeg-test.log" 2>&1
 POWPEG_RC=$?
 tail -40 "$RES/powpeg-test.log"
-cp -R build/test-results/test "$RES/powpeg-junit-xml" 2>/dev/null
+rm -rf "$RES/powpeg-junit-xml"; cp -R build/test-results/test "$RES/powpeg-junit-xml" 2>/dev/null
 
 # ------------------------------------------------------------------ verdict
 echo
@@ -207,6 +210,7 @@ echo
 echo "The tests that must be green:"
 echo "  rskj         evaluatePegin_subMinimumOutputToAnotherLiveFederation_isRejectedWithInvalidAmount"
 echo "  rskj         evaluatePegin_sameTxOnceRetiringFederationIsCleared_isRegistered"
+echo "  rskj         registerBtcTransaction_whenPeginIsValidForActiveFedButBelowMinimumForRetiringFed_shouldRejectAndStayUnprocessed"
 echo "  powpeg-node  updateBridgeBtcTransactions_peginWithSubMinimumOutputToRetiringFed_activeClient_shouldBeInformed"
 echo "  powpeg-node  updateBridgeBtcTransactions_peginWithSubMinimumOutputToRetiringFed_retiringClient_shouldNotBeInformed"
 echo "  powpeg-node  updateBridgeBtcTransactions_peginWithSubMinimumOutputToRetiringFed_isSentAgainOnNextTurn"

@@ -354,11 +354,18 @@ here only because it is the root of the "retried forever" behaviour.
 | repo | command | result |
 |---|---|---|
 | powpeg-node `3dc1d165` (VETIVER-9.0.4.0) | `./gradlew test --tests 'co.rsk.federate.BtcToRskClientTest'` | **BUILD SUCCESSFUL** — all 3 added tests green, every pre-existing test in the class still green |
-| rskj `1e95a3b03` | `./gradlew :rskj-core:test --tests 'co.rsk.peg.PegUtilsEvaluatePeginTest'` | **16/17 green**; `evaluatePegin_subMinimumOutputToAnotherLiveFederation_isRejectedWithInvalidAmount` **PASSED**. The 17th was a bug in the test itself (a bare Mockito mock returns `null` for `getSenderBtcAddressType()`, and `evaluateLegacyPegin()` switches on it → NPE); fixed in the patch by stubbing `P2PKH` |
+| rskj `1e95a3b03` | `./gradlew :rskj-core:test --tests 'co.rsk.peg.PegUtilsEvaluatePeginTest' --tests 'co.rsk.peg.BridgeSupportRejectedPeginTest'` | **green after the fix** (first run 16/17; the failure was a defect in my test — a bare Mockito mock returns `null` for `getSenderBtcAddressType()` and `evaluateLegacyPegin()` switches on it — fixed by stubbing `P2PKH`) |
 
-So `BtcToRskClient.updateBridgeBtcTransactions()` sending a Bridge-rejected
-peg-in, and the same entry being re-sent on the next turn, are no longer a
-deduction: they were executed against the production classes.
+The full chain is now executed against production classes:
+
+| link | test | executed |
+|---|---|---|
+| the node sends a peg-in the Bridge will reject | `BtcToRskClientTest..._activeClient_shouldBeInformed` | yes |
+| the retiring client drops it (report was wrong here) | `BtcToRskClientTest..._retiringClient_shouldNotBeInformed` | yes |
+| it is sent again on the next turn | `BtcToRskClientTest..._isSentAgainOnNextTurn` | yes |
+| the Bridge rejects it with `INVALID_AMOUNT` | `PegUtilsEvaluatePeginTest..._isRejectedWithInvalidAmount` | yes |
+| **the rejection does not mark it processed** | `BridgeSupportRejectedPeginTest..._shouldRejectAndStayUnprocessed` | yes (added after the first run; asserts `setHeightBtcTxhashAlreadyProcessed` is never called under RSKIP551, plus no UTXO added and no `logPeginBtc`) |
+| the same tx registers once the retiring federation is gone | `PegUtilsEvaluatePeginTest..._isRegistered` | yes |
 
 Proven here, by execution (`poc/run_poc.sh`):
 

@@ -47,6 +47,30 @@ Adds two tests to `rskj-core/src/test/java/co/rsk/peg/PegUtilsEvaluatePeginTest.
 | `..._isRejectedWithInvalidAmount` | with the wallet built from **both** live federations, the same transaction yields `PeginProcessAction.NO_REFUND` + `RejectedPeginReason.INVALID_AMOUNT`. This is the Bridge half. |
 | `..._sameTxOnceRetiringFederationIsCleared_isRegistered` | with the wallet built from the **active federation only** (i.e. after the retiring federation is cleared by age), the *same* transaction yields `REGISTER`. This is the "the bond comes back" claim, now an assertion rather than a deduction. |
 
+## 3. `rskj-BridgeSupportRejectedPeginTest.patch`
+
+One test added to `rskj-core/src/test/java/co/rsk/peg/BridgeSupportRejectedPeginTest.java`,
+the class that already builds a **real** `BridgeSupport` over a real provider with
+an active *and* a retiring federation:
+
+`registerBtcTransaction_whenPeginIsValidForActiveFedButBelowMinimumForRetiringFed_shouldRejectAndStayUnprocessed`
+
+* the transaction pays exactly `minimumPeginTxValue` to the active federation and
+  **2 000 sat** to the retiring one (the exact attack shape);
+* it goes through `bridgeSupport.registerBtcTransaction(...)` — the real entry
+  point, real storage, real event logger, real federation logic;
+* asserts the rejection reason is `INVALID_AMOUNT`, that
+  `setHeightBtcTxhashAlreadyProcessed` is **never** called (with the
+  `all`/`reed`/`arrowhead` activation sets — i.e. with RSKIP551 active), and that
+  no UTXO is added to either federation.
+
+That is the link that makes the flood possible: a rejected peg-in is not marked
+processed, so the federator cannot know it was rejected and re-sends it forever.
+
+Note the existing suite already had the *mirror* case
+(`..._whenUtxoToActiveFedBelowMinimumAndUtxoToRetiringFedAboveMinimum_shouldRejectPegin`);
+the attack direction was not covered.
+
 ---
 
 ## How to run

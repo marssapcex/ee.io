@@ -14,6 +14,9 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
 echo "== collecting =="
 mkdir -p "$OUT"
+# a previous run may have left an older XML next to the new one; that made the
+# summary report both results at once ("tests=17 failures=1" and "failures=0")
+find "$OUT" -name 'TEST-*.xml' -delete 2>/dev/null
 if [ -d "$OUT" ]; then
   echo "unit:    $(ls -1 "$OUT/unit" 2>/dev/null | tr '\n' ' ')"
   echo "regtest: $(ls -1 "$OUT/regtest" 2>/dev/null | tr '\n' ' ')"
