@@ -1664,14 +1664,16 @@ def stage_attack():
         blk = int(rsk("eth_blockNumber"), 16)
         log("[attack] block %d: federator nonce %d (+%d), victim still unprocessed"
             % (blk, n, n - turn0))
-        if n > turn0 + 80:
+        if n > turn0:
             working = True
             break
     if not working:
-        log("[attack] WARNING: the federator nonce did not climb; measuring anyway")
+        log("[attack] WARNING: neither federator sent anything for 30s, so the retry "
+            "loop is not visible; the measurement below would still show the freeze, "
+            "but check $LOGS/powpeg-federator1.log for 'updateBridgeBtcTransactions'")
     else:
-        log("[attack] flood confirmed on chain: txs are being (re)sent every turn and "
-            "nothing gets marked processed")
+        log("[attack] flood confirmed on chain: %d registerBtcTransaction txs sent in "
+            "30s and nothing got marked processed" % (n - turn0))
 
 
 # ---------------------------------------------------------------------------
@@ -1845,11 +1847,16 @@ def stage_recover():
         log("[recover] WARNING: the victim is still not credited 240s after the retiring "
             "federation disappeared")
 
-    st = load_state()
     stage_measure("after")
+    # reload: stage_measure appended to state.json itself, and the copy loaded
+    # before it would report the last in-window sample (0 of 40) instead of what
+    # the recovery actually credited
+    st = load_state()
     last = st["measurements"][-1]
     log("[recover] victim final balance %s wei" % balance(vic))
-    log("[recover] processed: %d/40 attack txs" % last["attacker_processed"])
+    log("[recover] the 40 flood txs are valid peg-ins again: %d processed, %d pending"
+        % (last["attacker_processed"], last["attacker_unprocessed"]))
+    log("[recover] attacker principal back: %s wei" % last["attacker_balance_wei"])
 
 
 def main():
