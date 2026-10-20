@@ -151,17 +151,30 @@ done
 echo "  bitcoind up on 18443/18444"
 
 CNT=$(bitcoin-cli -regtest -datadir="$BTC_DIR" -rpcuser=$BTC_USER -rpcpassword=$BTC_PASS -rpcport=18443 getblockcount)
-# a wallet is needed for sendtoaddress/listunspent
-if [ -z "$(bitcoin-cli -regtest -datadir="$BTC_DIR" -rpcuser=$BTC_USER -rpcpassword=$BTC_PASS -rpcport=18443 listwallets)" ] \
-   || [ "$(bitcoin-cli -regtest -datadir="$BTC_DIR" -rpcuser=$BTC_USER -rpcpassword=$BTC_PASS -rpcport=18443 listwallets)" = "[]" ]; then
-  bitcoin-cli -regtest -datadir="$BTC_DIR" -rpcuser=$BTC_USER -rpcpassword=$BTC_PASS -rpcport=18443 \
-      createwallet e2e >/dev/null 2>&1 || true
+# a wallet is needed for sendtoaddress/listunspent; bitcoind >= 28 never
+# creates one implicitly
+btc() {
+  bitcoin-cli -regtest -datadir="$BTC_DIR" -rpcuser=$BTC_USER -rpcpassword=$BTC_PASS \
+      -rpcport=18443 "$@"
+}
+
+if ! btc listwallets 2>/dev/null | grep -q '"'; then
+  if ! btc createwallet e2e >/dev/null 2>&1; then
+    btc loadwallet e2e >/dev/null 2>&1 || {
+      c_bad "  cannot create or load the bitcoind wallet:"
+      btc createwallet e2e 2>&1 | sed 's/^/    /'
+      die "wallet setup failed"
+    }
+  fi
+  echo "  wallet 'e2e' created"
 fi
 
+CNT=$(btc getblockcount)
 if [ "$CNT" -lt 120 ]; then
-  ADDR=$(bitcoin-cli -regtest -datadir="$BTC_DIR" -rpcuser=$BTC_USER -rpcpassword=$BTC_PASS -rpcport=18443 getnewaddress "" legacy)
-  bitcoin-cli -regtest -datadir="$BTC_DIR" -rpcuser=$BTC_USER -rpcpassword=$BTC_PASS -rpcport=18443 \
-      generatetoaddress 120 "$ADDR" >/dev/null
+  ADDR=$(btc getnewaddress "" legacy) || die "getnewaddress failed"
+  [ -n "$ADDR" ] || die "bitcoind returned an empty address"
+  btc generatetoaddress 120 "$ADDR" >/dev/null || die "generatetoaddress failed"
+  [ "$(btc getblockcount)" -ge 120 ] || die "bitcoind did not mine"
   echo "  mined 120 blocks (coinbase maturity)"
 else
   echo "  chain already at $CNT blocks"
@@ -177,20 +190,33 @@ cat > "$WORK/rskj.conf" <<EOF
 blockchain.config.name = "regtest"
 
 rpc {
-    enabled = true
-    port = 4444
-    bind_address = "127.0.0.1"
+    providers {
+        web {
+            http {
+                enabled = true
+                bind_address = "127.0.0.1"
+                port = 4444
+                hosts = [ "*" ]
+            }
+        }
+    }
 }
 
+# accounts are objects with a privateKey field, not bare strings
 wallet {
     enabled = true
-    accounts = [ "$AUTH_A_KEY", "$AUTH_B_KEY" ]
+    accounts = [
+        { privateKey = "$AUTH_A_KEY" },
+        { privateKey = "$AUTH_B_KEY" }
+    ]
 }
 
 miner {
     server.enabled = true
-    client.enabled = true
-    client.delayBetweenBlocks = 1 second
+    client {
+        enabled = true
+        delayBetweenBlocks = 1 second
+    }
     coinbase.secret = "auth-a"
 }
 
@@ -219,7 +245,11 @@ done
 $PY -c "
 import json,urllib.request
 r=urllib.request.urlopen(urllib.request.Request('$RSK_RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=5)
-print('  rskj up, block', int(json.loads(r.read())['result'],16))" || die "rskj RPC not reachable, see $LOGS/rskj.log"
+print('  rskj up, block', int(json.loads(r.read())['result'],16))" || {
+  c_bad "  rskj did not answer on 4444. last lines of $LOGS/rskj.log:"
+  tail -30 "$LOGS/rskj.log" | sed 's/^/    /'
+  die "rskj startup failed"
+}
 
 # ---------------------------------------------------------------------------
 if [ "$FROM" = "build" ] || [ "$FROM" = "federation" ]; then
