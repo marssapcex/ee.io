@@ -348,6 +348,7 @@ def victim_rsk_address(priv: PrivateKey) -> str:
 
 AUTH_A = key("auth-a")
 AUTH_B = key("auth-b")
+AUTH_C = key("auth-c")
 FEDS = [key("e2e-fed-1"), key("e2e-fed-2"), key("e2e-fed-3")]
 ATTACKER = key("e2e-attacker")
 VICTIM = key("e2e-victim")
@@ -528,6 +529,18 @@ def pending_hash() -> bytes:
     return dec_bytes("0x" + bridge_call(sel("getPendingFederationHash()")).hex())
 
 
+def pending_size() -> int:
+    return int.from_bytes(bridge_call(sel("getPendingFederationSize()"))[:32], "big")
+
+
+def active_address() -> str:
+    return dec_bytes("0x" + bridge_call(sel("getFederationAddress()")).hex()).decode(errors="ignore")
+
+
+def retiring_address() -> str:
+    return dec_bytes("0x" + bridge_call(sel("getRetiringFederationAddress()")).hex()).decode(errors="ignore")
+
+
 # ---------------------------------------------------------------------------
 # stage: federation
 # ---------------------------------------------------------------------------
@@ -557,51 +570,63 @@ def stage_federation():
 
     a = rsk_address(AUTH_A)
     b = rsk_address(AUTH_B)
-    log("[federation] authorizers: auth-a=%s auth-b=%s" % (a, b))
+    c = rsk_address(AUTH_C)
+    log("[federation] authorizers: %s %s %s" % (a[:10], b[:10], c[:10]))
+    wallet_accounts = [x.lower() for x in (rsk("eth_accounts") or [])]
+    for who, k in (("auth-a", a), ("auth-b", b), ("auth-c", c)):
+        present = "in wallet" if k.lower() in wallet_accounts else "NOT IN WALLET"
+        log("             %s %s" % (who, present))
 
-    def vote(data, label, expect=1):
-        for who, k in (("auth-a", a), ("auth-b", b)):
-            code = vote_dry_run(data, k)
-            if code != 1:
-                bridge_log_tail()
-                raise RuntimeError(
-                    "vote '%s' rejected by the Bridge for %s: code %d (%s)"
-                    % (label, who, code, FED_CODE.get(code, "unknown")))
-            txh = bridge_tx(data, k)
-            rc = wait_rsk_tx(txh, timeout=120)
-            if rc.get("status") not in ("0x1", 1, True):
-                raise RuntimeError("vote '%s' from %s reverted: %s" % (label, who, rc))
-            log("             %s voted via %s  (%s)" % (label, who, txh[:18]))
-            time.sleep(0.4)
+    def send_vote(data, who, k):
+        """One real vote. Returns True when the transaction was mined."""
+        code = vote_dry_run(data, k)
+        if code != 1:
+            bridge_log_tail()
+            raise RuntimeError("vote dry run rejected for %s: code %d (%s)"
+                               % (who, code, FED_CODE.get(code, "unknown")))
+        txh = bridge_tx(data, k)
+        rc = wait_rsk_tx(txh, timeout=120)
+        sender = (rc.get("from") or "").lower()
+        if sender and sender != k.lower():
+            raise RuntimeError("tx signed by %s but %s was requested" % (sender, who))
+        if rc.get("status") not in ("0x1", 1, True):
+            raise RuntimeError("vote from %s reverted: %s" % (who, rc))
+        log("             %s voted (%s)" % (who, txh[:18]))
+        return True
 
-    # createFederation can legitimately report success from the dry run while the
-    # winning execution is refused (age gate, an election already cleared, a
-    # stale view). Verify the outcome, and retry the round if there is none.
-    create_data = sel("createFederation()")
-    for attempt in range(1, 4):
-        log("[federation] createFederation (attempt %d)" % attempt)
-        vote(create_data, "create")
-        pend = b""
-        for _ in range(20):
-            pend = pending_hash()
-            if pend:
-                break
-            time.sleep(1)
-        if pend:
-            break
-        log("             no pending federation yet, waiting 30 s before retrying")
-        bridge_log_tail(10)
-        time.sleep(30)
-    else:
+    def vote_round(data, effect, label):
+        """Vote until `effect` is observed. A round needs 2 of the 3 authorizers,
+        and the Bridge only executes a winner once the majority is reached, so
+        the outcome -- not the return code -- decides whether we are done."""
+        if effect():
+            return True
+        for who, k in (("auth-a", a), ("auth-b", b), ("auth-c", c)):
+            send_vote(data, who, k)
+            for _ in range(15):
+                if effect():
+                    return True
+                time.sleep(1)
         bridge_log_tail()
-        raise RuntimeError("createFederation had no effect after 3 attempts")
+        return False
+
+    # Every round is decided by the observed outcome, never by a return code:
+    # createFederation/addFederatorPublicKeyMultikey report the dry-run result,
+    # and the winning (non-dry) execution is a different code path.
+    log("[federation] createFederation")
+    if not vote_round(sel("createFederation()"), lambda: pending_hash() != b"", "create"):
+        raise RuntimeError("createFederation produced no pending federation")
+    log("             pending federation exists, size %d" % pending_size())
 
     log("[federation] addFederatorPublicKeyMultikey x%d" % len(FEDS))
-    for k in FEDS:
-        btc_pub = k.public_key.format(True)                        # 33 bytes, compressed
-        ec_pub = k.public_key.format(False)                         # 65 bytes, uncompressed
+    for i, k in enumerate(FEDS, start=1):
+        btc_pub = k.public_key.format(True)      # 33 bytes, compressed
+        ec_pub = k.public_key.format(False)      # 65 bytes, uncompressed
         data = sel("addFederatorPublicKeyMultikey(bytes,bytes,bytes)") + enc_bytes3(btc_pub, ec_pub, ec_pub)
-        vote(data, "add " + rsk_address(k)[:10])
+        want = i
+        ok = vote_round(data, lambda w=want: pending_size() >= w, "add %d" % i)
+        if not ok:
+            raise RuntimeError("federator %d was not added" % i)
+        log("             %s added, pending federation size %d" % (rsk_address(k)[:10], pending_size()))
 
     pend = pending_hash()
     if not pend:
@@ -610,14 +635,18 @@ def stage_federation():
     log("[federation] pending federation hash 0x%s" % pend.hex())
 
     log("[federation] commitFederation")
-    vote(sel("commitFederation(bytes)") + enc_bytes(pend), "commit")
+    before = active_address()
+    if not vote_round(sel("commitFederation(bytes)") + enc_bytes(pend),
+                      lambda: active_address() != before, "commit"):
+        raise RuntimeError("commitFederation did not change the active federation")
+    log("             active federation is now %s" % active_address())
 
     log("[federation] waiting for the new federation to activate (150 blocks)")
     end = time.time() + 900
     retiring = ""
     last_print = 0
     while time.time() < end:
-        raw = dec_bytes("0x" + bridge_call(sel("getRetiringFederationAddress()")).hex()).decode(errors="ignore")
+        raw = retiring_address()
         if raw:
             retiring = raw
             break
@@ -626,7 +655,7 @@ def stage_federation():
             last_print = now
             try:
                 blk = int(rsk("eth_blockNumber"), 16)
-                act = dec_bytes("0x" + bridge_call(sel("getFederationAddress()")).hex()).decode(errors="ignore")
+                act = active_address()
                 log("             block %d, active=%s, retiring=<not yet>" % (blk, act))
             except Exception:
                 pass
@@ -634,7 +663,7 @@ def stage_federation():
     if not retiring:
         raise RuntimeError("the retiring federation never appeared; the change did not go through")
 
-    new_addr = dec_bytes("0x" + bridge_call(sel("getFederationAddress()")).hex()).decode()
+    new_addr = active_address()
     new_size = dec_uint("0x" + bridge_call(sel("getFederationSize()")).hex())
     log("[federation] ACTIVE   %s (size %d)" % (new_addr, new_size))
     log("[federation] RETIRING %s   <-- the old federation, still live" % retiring)

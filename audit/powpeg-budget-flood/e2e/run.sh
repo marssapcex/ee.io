@@ -230,7 +230,9 @@ fi
 export E2E_HERE="$HERE"
 AUTH_A_KEY=$($PY -c "import os,sys; sys.path.insert(0, os.environ['E2E_HERE']); from e2e import keccak256; print(keccak256(b'auth-a').hex())")
 AUTH_B_KEY=$($PY -c "import os,sys; sys.path.insert(0, os.environ['E2E_HERE']); from e2e import keccak256; print(keccak256(b'auth-b').hex())")
-[ -n "$AUTH_A_KEY" ] && [ -n "$AUTH_B_KEY" ] || die "could not derive the authorizer keys"
+AUTH_C_KEY=$($PY -c "import os,sys; sys.path.insert(0, os.environ['E2E_HERE']); from e2e import keccak256; print(keccak256(b'auth-c').hex())")
+[ -n "$AUTH_A_KEY" ] && [ -n "$AUTH_B_KEY" ] && [ -n "$AUTH_C_KEY" ] \
+  || die "could not derive the authorizer keys"
 
 c_step "3. powpeg-node (this jar IS the RSK node: FederateRunner embeds rskj)"
 
@@ -281,7 +283,8 @@ wallet {
     enabled = true
     accounts = [
         { privateKey = "$AUTH_A_KEY" },
-        { privateKey = "$AUTH_B_KEY" }
+        { privateKey = "$AUTH_B_KEY" },
+        { privateKey = "$AUTH_C_KEY" }
     ]
 }
 
