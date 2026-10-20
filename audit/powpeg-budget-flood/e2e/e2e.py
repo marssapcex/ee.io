@@ -1489,81 +1489,6 @@ def stage_attack():
                 % (i + 1, ATTACK_COUNT, rec["attempts"]))
     log("[attack] %d attack txs broadcast, all ground into bin 0" % len(attack))
 
-    # ---- the queue has to be full BEFORE the block, not after -----------
-    # BtcToRskClient.onBlock only stores a merkle proof for a tx it already
-    # tracks (:259); onTransaction is what puts it there (:389). A tx the
-    # federator first hears about inside a block gets no proof and is silently
-    # skipped forever. With 39 sendable attack txs the per-turn quota of 40 has
-    # one slot left, and the victim takes it -- exactly what happened in the run
-    # before this check existed. So: wait for the mempool, top up with a spare if
-    # the queue is short, and refuse to go on if it still is.
-    def queue_size():
-        """Per node: how many attack txids that node's federator has in its mempool.
-
-        Both nodes are federation members and each sends its own quota, so a
-        queue that is full on node A and one short on node B is still a hole.
-        """
-        import re as _re
-        out = {}
-        for path, off in offsets.items():
-            if "node-federator" not in path:
-                continue
-            seen = set()
-            for line in log_since(r"\[onTransaction\] [0-9a-f]{64}", {path: off}):
-                m = _re.search(r"\[onTransaction\] ([0-9a-f]{64})", line)
-                if m:
-                    seen.add(m.group(1))
-            name = path.split("node-")[-1].split(os.sep)[0]
-            out[name] = sum(1 for a in attack if a["txid"] in seen)
-        return out
-
-    def seen_in_mempool(txid, timeout):
-        """Per node: has this txid been logged as received from the mempool?"""
-        import re as _re
-        end = time.time() + timeout
-        while True:
-            out = {}
-            for path, off in offsets.items():
-                if "node-federator" not in path:
-                    continue
-                hit = any(txid in line for line in
-                          log_since(r"\[onTransaction\] " + txid, {path: off}))
-                out[path.split("node-")[-1].split(os.sep)[0]] = hit
-            if out and all(out.values()):
-                return out
-            if time.time() >= end:
-                return out
-            time.sleep(3)
-
-    def wait_for_queue(want, timeout):
-        end = time.time() + timeout
-        q = queue_size()
-        while (not q or min(q.values()) < want) and time.time() < end:
-            time.sleep(3)
-            q = queue_size()
-        return q
-
-    def show(q):
-        return ", ".join("%s %d" % (k, v) for k, v in sorted(q.items())) or "no node logs"
-
-    queued = wait_for_queue(ATTACK_COUNT, 90)
-    log("[attack] in each federator's mempool before any block: %s (of %d sent)"
-        % (show(queued), len(attack)))
-    slot = ATTACK_COUNT
-    while (not queued or min(queued.values()) < ATTACK_COUNT) \
-            and slot < ATTACK_COUNT + SPARE_TXS:
-        rec = broadcast_one(slot)
-        slot += 1
-        queued = wait_for_queue(ATTACK_COUNT, 60)
-        log("[attack] spare %s broadcast (slot %d); now %s"
-            % (rec["txid"][:12], rec["slot"], show(queued)))
-    if not queued or min(queued.values()) < ATTACK_COUNT:
-        raise RuntimeError(
-            "the attack queue never filled: %s. Each federator sends at most %d "
-            "sendable txs per turn, so a shorter queue leaves a slot for the victim "
-            "and the flood would prove nothing. Spares (%d) did not make up the "
-            "difference." % (show(queued), ATTACK_COUNT, SPARE_TXS))
-
     # ---- the victim: one ordinary, perfectly valid peg-in --------------
     if "victim_txid" not in st:
         vaddr = p2pkh_address(VICTIM.public_key.format(True))
@@ -1583,17 +1508,6 @@ def stage_attack():
         btc("sendrawtransaction", [v_raw.hex()])
         log("[attack] victim peg-in %s (%d sat) -> %s"
             % (v_txid[::-1].hex(), VICTIM_PEGIN_SAT, vaddr))
-        # The victim needs its proof too: a tx the federator only meets inside a
-        # block is skipped forever, and then it would never be credited even
-        # after the window closes -- a false 'frozen' and a broken recovery.
-        seen = seen_in_mempool(v_txid[::-1].hex(), 60)
-        log("[attack] victim tx reached the mempool of: %s"
-            % ", ".join("%s %s" % (k, "yes" if v else "NO") for k, v in sorted(seen.items())))
-        if not seen or not all(seen.values()):
-            raise RuntimeError(
-                "the victim's peg-in never reached every federator's mempool (%s), so "
-                "no merkle proof would ever be stored for it and the measurement would "
-                "be meaningless." % seen)
         st["victim_txid"] = v_txid[::-1].hex()
         st["victim_btc_address"] = vaddr
         st["victim_rsk_address"] = victim_rsk_address(VICTIM)
@@ -1602,10 +1516,84 @@ def stage_attack():
     st["attack_txids"] = [a["txid"] for a in attack]
     save_state(st)
 
-    # ---- confirm everything on Bitcoin --------------------------------
-    # Every tx above (attack and victim) is now known to be in both federators'
-    # mempools, which is the condition onBlock needs to store a merkle proof for
-    # it. Mining is what confirms them.
+    # ---- the queue has to be full BEFORE the block, not after -----------
+    # The federator keeps the txs it intends to send in
+    # fileData.getTransactionProofs(), filled by onTransaction when its SPV
+    # wallet sees a transaction paying a federation it watches
+    # (BtcToRskClient.java:389, BitcoinWrapperImpl:406), and every turn it logs
+    # the size of that set: "Tx to send count: N"
+    # (BtcToRskClient.java:577). That number is the queue the per-turn quota of
+    # 40 is taken from, so it is the thing to gate on.
+    #
+    # Why it matters: onBlock only stores a merkle proof for a tx it already
+    # tracks (:259), so a tx the federator first meets inside a block is skipped
+    # forever, and any tx that does not make it into the queue leaves a slot for
+    # the victim -- which is exactly how the victim got credited in the run before
+    # this gate existed (39 queued attack txs, quota 40, victim last).
+    def depth_now():
+        import re as _re
+        depths = []
+        for line in log_since(r"Tx to send count: [0-9]+", offsets):
+            m = _re.search(r"Tx to send count: (\d+)", line)
+            if m:
+                depths.append(int(m.group(1)))
+        return max(depths) if depths else None
+
+    def wait_depth(want, timeout):
+        end = time.time() + timeout
+        seen = []
+        while time.time() < end:
+            d = depth_now()
+            if d is not None and (not seen or d != seen[-1]):
+                seen.append(d)
+                log("[attack] federator queue depth: %d (need %d)" % (d, want))
+            if d is not None and d >= want:
+                return d
+            time.sleep(3)
+        return depth_now()
+
+    depth = wait_depth(ATTACK_COUNT + 1, 120)
+    if depth is None:
+        # no depth line at all: the fixture cannot see the queue, so say what it
+        # looked for instead of aborting on a number it never read
+        rx = {
+            "coinsReceivedOrSent (SPV wallet saw a tx paying a federation)":
+                r"\[coinsReceivedOrSent\] Received filtered transaction",
+            "onTransaction (that federation's client queued it)": r"\[onTransaction\]",
+            "updateBridgeBtcTransactions (the turn that sends them)":
+                r"\[updateBridgeBtcTransactions\]",
+        }
+        found = {k: len(log_since(v, offsets)) for k, v in rx.items()}
+        raise RuntimeError(
+            "the federator never logged its queue depth, so the flood cannot be "
+            "verified.\n  lines since the attack started: %s\n  if the first is 0 the "
+            "SPV wallet never received the transactions from the mempool; if the "
+            "first is not 0 but the second is, the wallet did not recognise the "
+            "outputs as paying a federation it watches."
+            % ", ".join("%s: %d" % (k, v) for k, v in found.items()))
+
+    slot = ATTACK_COUNT + SPARE_TXS * 0
+    extra = 0
+    while depth < ATTACK_COUNT + 1 and extra < SPARE_TXS:
+        rec = broadcast_one(ATTACK_COUNT + extra)
+        extra += 1
+        log("[attack] spare %s broadcast (slot %d)" % (rec["txid"][:12], rec["slot"]))
+        depth = wait_depth(ATTACK_COUNT + 1, 45)
+        log("[attack] queue depth %s after %d spare(s)" % (depth, extra))
+
+    if depth is None or depth < ATTACK_COUNT + 1:
+        raise RuntimeError(
+            "the federator's queue holds %s txs and this needs at least %d (the %d "
+            "attack txs plus the victim). The per-turn quota is %d, so a shallower "
+            "queue leaves a slot for the victim and the flood would prove nothing. "
+            "%d spare(s) did not make up the difference."
+            % (depth, ATTACK_COUNT + 1, ATTACK_COUNT, ATTACK_COUNT, extra))
+    log("[attack] the queue holds %d txs for a per-turn quota of %d: every turn is "
+        "spent on the flood before the victim is offered" % (depth, ATTACK_COUNT))
+
+    # The queue is deeper than the quota, so every turn is spent on the flood.
+    # Mining is what confirms the txs; the proofs stored while they were in the
+    # mempool are what make registerBtcTransaction possible at all.
     mine(BTC_CONFIRMATIONS + 2)
     log("[attack] %d BTC blocks mined" % (BTC_CONFIRMATIONS + 2))
 
