@@ -206,6 +206,7 @@ PYEOF
 
 start_powpeg() {  # $1 generator, $2 extra args
   local gen="$1"; shift
+  rm -f "$WORK/$gen.key"
   gen_key "$gen" > "$WORK/$gen.key"
   chmod 400 "$WORK/$gen.key"
   cat > "$WORK/powpeg.conf" <<EOF
@@ -249,9 +250,18 @@ federator {
     enabled = true
     updateBridgeTimerEnabled = true
     signers {
-        BTC { type = "keyFile" path = "$WORK/$gen.key" }
-        RSK { type = "keyFile" path = "$WORK/$gen.key" }
-        MST { type = "keyFile" path = "$WORK/$gen.key" }
+        BTC {
+            type = "keyFile"
+            path = "$WORK/$gen.key"
+        }
+        RSK {
+            type = "keyFile"
+            path = "$WORK/$gen.key"
+        }
+        MST {
+            type = "keyFile"
+            path = "$WORK/$gen.key"
+        }
     }
     bitcoinPeerAddresses = [ "127.0.0.1:18444" ]
     gasPrice = 0
