@@ -50,6 +50,17 @@ c_ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
 c_bad()  { printf '\033[31m%s\033[0m\n' "$*"; }
 c_step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
+# macOS has no `timeout(1)`
+run_timeout() {  # $1 seconds, rest = command
+  local secs="$1"; shift
+  "$@" & local pid=$!
+  ( sleep "$secs"; kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null ) &
+  local watcher=$!
+  wait "$pid" 2>/dev/null
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+}
+
 die() { c_bad "FAILED: $*"; exit 1; }
 
 # ---------------------------------------------------------------------------
@@ -241,6 +252,13 @@ start_powpeg() {  # $1 generator, $2 extra args
   rm -f "$WORK/$gen.key"
   gen_key "$gen" > "$WORK/$gen.key"
   chmod 400 "$WORK/$gen.key"
+
+  # always start from an empty chain: this PoC owns the regtest, and a database
+  # left locked by a killed run is the difference between "starts" and "exits 1
+  # with no output at all"
+  rm -rf "$WORK/rskj-db"
+  rm -f "$LOGS"/rsk.log "$LOGS"/rskj-*.log.gz
+  rm -f "$WORK"/hs_err_pid*.log
   cat > "$WORK/powpeg.conf" <<EOF
 blockchain.config.name = "regtest"
 
@@ -300,8 +318,8 @@ federator {
 }
 EOF
   rm -f "$LOGS/powpeg-$gen.log"
-  java -Drsk.conf.file="$WORK/powpeg.conf" -cp "$POWPEG_JAR" \
-       co.rsk.federate.FederateRunner --regtest "$@" \
+  ( cd "$WORK" && exec java -Drsk.conf.file="$WORK/powpeg.conf" -Dlogging.dir="$LOGS" -cp "$POWPEG_JAR" \
+       co.rsk.federate.FederateRunner --regtest "$@" ) \
        > "$LOGS/powpeg-$gen.log" 2>&1 &
   POWPEG_PID=$!
   echo "  powpeg-node pid $POWPEG_PID as '$gen'"
@@ -326,18 +344,32 @@ except Exception: sys.exit(1)" >/dev/null 2>&1; then
   wait "$POWPEG_PID" 2>/dev/null; rc=$?
   POWPEG_PID=""
   c_bad "  the node never answered on 4444 (java exited with $rc)."
-  if [ -s "$LOGS/powpeg-$gen.log" ]; then
-    echo "  last 40 lines of $LOGS/powpeg-$gen.log:"
-    grep -vE '^\s+at ' "$LOGS/powpeg-$gen.log" | tail -40 | sed 's/^/    /'
-  else
-    echo "  the log is empty; running the JVM in the foreground for 20 s:"
-    echo "  ------------------------------------------------------------------"
-    ( cd "$WORK" && timeout 20 java -Drsk.conf.file="$WORK/powpeg.conf" \
-        -cp "$POWPEG_JAR" co.rsk.federate.FederateRunner --regtest "$@" 2>&1 | head -60 | sed 's/^/    /' )
-    echo "  ------------------------------------------------------------------"
-    echo "  config used ($WORK/powpeg.conf):"
-    sed -E 's/(privateKey = )"[0-9a-f]+"/\1"<redacted>"/' "$WORK/powpeg.conf" | sed 's/^/    /'
+
+  for f in "$LOGS/powpeg-$gen.log" "$LOGS/rsk.log"; do
+    if [ -s "$f" ]; then
+      echo "  ---- $(basename "$f"): last 30 lines ----"
+      grep -vE '^\s+at ' "$f" | tail -30 | sed 's/^/    /'
+    fi
+  done
+
+  if ls "$WORK"/hs_err_pid*.log >/dev/null 2>&1; then
+    echo "  ---- JVM crash report ----"
+    head -25 "$WORK"/hs_err_pid*.log | sed 's/^/    /'
   fi
+
+  if [ ! -s "$LOGS/powpeg-$gen.log" ] && [ ! -s "$LOGS/rsk.log" ]; then
+    echo "  nothing was logged; re-running the JVM in the foreground for 20 s"
+    echo "  ------------------------------------------------------------------"
+    ( cd "$WORK" && run_timeout 20 java -Drsk.conf.file="$WORK/powpeg.conf" -Dlogging.dir="$LOGS" \
+        -cp "$POWPEG_JAR" co.rsk.federate.FederateRunner --regtest "$@" 2>&1 \
+        | head -60 | sed 's/^/    /' )
+    echo "  ------------------------------------------------------------------"
+    echo "  jar: $POWPEG_JAR"
+    ls -l "$POWPEG_JAR" 2>/dev/null | sed 's/^/    /'
+  fi
+
+  echo "  config used ($WORK/powpeg.conf):"
+  sed -E 's/(privateKey = )"[0-9a-f]+"/\1"<redacted>"/' "$WORK/powpeg.conf" | sed 's/^/    /'
   die "powpeg-node startup failed ($gen)"
 }
 
