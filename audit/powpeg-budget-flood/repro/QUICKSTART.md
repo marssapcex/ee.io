@@ -20,7 +20,7 @@ cd audit/powpeg-budget-flood/repro
 ## 1. Cài công cụ (một lệnh, ~5 phút)
 
 ```bash
-chmod +x 00_install_tools.sh 10_proof_unit.sh 20_proof_regtest.sh 30_collect_and_push.sh
+chmod +x *.sh
 ./00_install_tools.sh
 ```
 
@@ -130,6 +130,7 @@ Nếu bạn muốn tôi mở/merge PR hộ, nói một câu — tôi có `gh` tr
 | `java -version` ra 21/24 | jenv / SDKMAN / brew mặc định | `source env.sh` rồi `java -version` phải là 17; hoặc `export JAVA_HOME=$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home` |
 | `error: invalid source release: 17` | đang dùng JDK 8/11 | như trên |
 | `Could not find or load main class org.gradle.wrapper.GradleWrapperMain` | **cả rskj và powpeg-node** đều không kèm `gradle/wrapper/gradle-wrapper.jar` | script đã tự chạy `./configure.sh` cho **cả hai** repo (bản cũ chỉ làm cho powpeg-node). Chạy tay: `cd ~/powpeg-proof/rskj && ./configure.sh` |
+| `Verification of Gradle distribution failed!` | file `gradle-8.6-bin.zip` tải về bị hỏng (CDN/proxy) | `./fix_gradle.sh` — tự xoá cache sai hash, tải lại, verify `9631d53c…`, giải nén. `10_proof_unit.sh` cũng tự làm bước này |
 | `pip install coincurve` lỗi khi build | Python 3.14 | `brew install python@3.12` rồi `PY=$(brew --prefix python@3.12)/bin/python3.12 ./20_proof_regtest.sh` |
 | Gradle tải rất lâu lần đầu | tải deps từ Maven Central | bình thường, 5–15 phút. `./gradlew --no-daemon` đã set sẵn |
 | `Failed to apply patch` | bạn đã áp rồi | `cd ~/powpeg-proof/powpeg-node && git checkout -- .` rồi chạy lại |

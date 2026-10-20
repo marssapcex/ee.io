@@ -29,6 +29,97 @@ mkdir -p "$WORK" "$RES"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing $1 (run 00_install_tools.sh)"; exit 1; }; }
 
+
+# ---------------------------------------------------------------------------
+# Gradle plumbing
+#
+# Both repos pin gradle-8.6-bin.zip with distributionSha256Sum in
+# gradle/wrapper/gradle-wrapper.properties. A flaky CDN or a proxy can hand back
+# a truncated/rewritten zip, and the wrapper then aborts with
+#   "Verification of Gradle distribution failed!"
+# The helpers below purge the bad download and fall back to a manual
+# download+unzip into $WORK/tools, which needs no wrapper at all.
+# ---------------------------------------------------------------------------
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+  else sha256sum "$1" | cut -d' ' -f1; fi
+}
+
+wrapper_prop() {   # $1 repo, $2 key
+  local props="$1/gradle/wrapper/gradle-wrapper.properties"
+  [ -f "$props" ] || return 1
+  grep -E "^$2=" "$props" | head -1 | cut -d= -f2- | sed 's/\\:/:/g'
+}
+
+purge_corrupt_gradle_zips() {
+  local name="$1" sum="$2" zip got
+  [ -d "$HOME/.gradle/wrapper/dists" ] || return 0
+  while IFS= read -r zip; do
+    [ -z "$zip" ] && continue
+    got=$(sha256_of "$zip")
+    if [ "$got" != "$sum" ]; then
+      echo "  gradle dist corrupt: $zip"
+      echo "    expected $sum"
+      echo "    actual   $got"
+      echo "    -> removing $(dirname "$zip") so it is fetched again"
+      rm -rf "$(dirname "$zip")"
+    fi
+  done < <(find "$HOME/.gradle/wrapper/dists" -name "$name" -type f 2>/dev/null)
+}
+
+install_gradle_manually() {   # $1 repo -> echoes the gradle binary to use
+  local repo="$1" url name sum dest dir
+  url=$(wrapper_prop "$repo" distributionUrl) || return 1
+  sum=$(wrapper_prop "$repo" distributionSha256Sum) || return 1
+  name=$(basename "$url")
+  mkdir -p "$WORK/tools"
+  dest="$WORK/tools/$name"
+  echo "  downloading $url" >&2
+  curl -fL --retry 5 --retry-delay 2 --retry-all-errors -o "$dest" "$url" || return 1
+  if [ "$(sha256_of "$dest")" != "$sum" ]; then
+    echo "  checksum mismatch after re-download; giving up on the CDN" >&2
+    rm -f "$dest"; return 1
+  fi
+  echo "  checksum ok ($sum)" >&2
+  dir="${dest%-bin.zip}"
+  [ -d "$dir" ] || ( cd "$WORK/tools" && unzip -q "$dest" ) || return 1
+  [ -x "$dir/bin/gradle" ] || return 1
+  echo "$dir/bin/gradle"
+}
+
+run_gradle() {   # $1 repo, rest: gradle args
+  local repo="$1"; shift
+  local log="$WORK/gradle-last.log"
+  ( cd "$repo" && ./gradlew --no-daemon --console=plain "$@" ) 2>&1 | tee "$log"
+  local rc=${PIPESTATUS[0]}
+  if [ "$rc" -eq 0 ]; then return 0; fi
+
+  if grep -q "Verification of Gradle distribution failed" "$log" 2>/dev/null; then
+    echo
+    echo "!! Gradle distribution verification failed -- recovering"
+    purge_corrupt_gradle_zips "$(basename "$(wrapper_prop "$repo" distributionUrl)")" \
+                              "$(wrapper_prop "$repo" distributionSha256Sum)"
+    ( cd "$repo" && ./gradlew --no-daemon --console=plain "$@" ) 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+    [ "$rc" -eq 0 ] && return 0
+  fi
+
+  # last resort: fetch and unpack Gradle ourselves, no wrapper involved
+  echo
+  echo "!! falling back to a manual Gradle download"
+  local gradle_bin
+  gradle_bin=$(install_gradle_manually "$repo") || {
+    echo "   could not fetch Gradle. Manual fix:" >&2
+    echo "     curl -fL -o /tmp/gradle-8.6-bin.zip https://services.gradle.org/distributions/gradle-8.6-bin.zip" >&2
+    echo "     shasum -a 256 /tmp/gradle-8.6-bin.zip   # must be 9631d53cf3e74bfa726893aee1f8994fee4e060c401335946dba2156f440f24c" >&2
+    echo "     unzip -q /tmp/gradle-8.6-bin.zip -d \$HOME/powpeg-proof/tools" >&2
+    return 1
+  }
+  echo "   using $gradle_bin"
+  ( cd "$repo" && "$gradle_bin" --no-daemon --console=plain "$@" ) 2>&1 | tee "$log"
+  return ${PIPESTATUS[0]}
+}
+
 # Neither rskj nor powpeg-node ships gradle/wrapper/gradle-wrapper.jar (only the
 # .properties file); both ship ./configure.sh, which downloads it and checks a
 # pinned SHA256. Call it whenever the jar is missing.
@@ -73,10 +164,10 @@ fi
 ensure_wrapper "$WORK/rskj" || exit 1
 
 echo "running co.rsk.peg.PegUtilsEvaluatePeginTest ..."
-./gradlew --no-daemon --console=plain :rskj-core:test \
-    --tests 'co.rsk.peg.PegUtilsEvaluatePeginTest' \
-    2>&1 | tee "$RES/rskj-test.log" | tail -40
-RSKJ_RC=${PIPESTATUS[0]}
+run_gradle "$WORK/rskj" :rskj-core:test --tests 'co.rsk.peg.PegUtilsEvaluatePeginTest' \
+    > "$RES/rskj-test.log" 2>&1
+RSKJ_RC=$?
+tail -40 "$RES/rskj-test.log"
 cp -R rskj-core/build/test-results/test "$RES/rskj-junit-xml" 2>/dev/null
 
 # ------------------------------------------------------------------ powpeg-node
@@ -100,10 +191,10 @@ fi
 ensure_wrapper "$WORK/powpeg-node" || exit 1
 
 echo "running co.rsk.federate.BtcToRskClientTest ..."
-./gradlew --no-daemon --console=plain test \
-    --tests 'co.rsk.federate.BtcToRskClientTest' \
-    2>&1 | tee "$RES/powpeg-test.log" | tail -40
-POWPEG_RC=${PIPESTATUS[0]}
+run_gradle "$WORK/powpeg-node" test --tests 'co.rsk.federate.BtcToRskClientTest' \
+    > "$RES/powpeg-test.log" 2>&1
+POWPEG_RC=$?
+tail -40 "$RES/powpeg-test.log"
 cp -R build/test-results/test "$RES/powpeg-junit-xml" 2>/dev/null
 
 # ------------------------------------------------------------------ verdict
