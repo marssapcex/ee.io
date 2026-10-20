@@ -144,6 +144,26 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
+c_step "1b. clearing leftovers from previous runs"
+
+# a stale FederateRunner keeps 4444 and the rskj database locked, which makes a
+# new one die before it can even log anything
+STALE=$(pgrep -f co.rsk.federate.FederateRunner 2>/dev/null || true)
+if [ -n "$STALE" ]; then
+  echo "  killing stale FederateRunner: $STALE"
+  echo "$STALE" | xargs kill 2>/dev/null || true
+  sleep 3
+  STALE=$(pgrep -f co.rsk.federate.FederateRunner 2>/dev/null || true)
+  [ -n "$STALE" ] && echo "$STALE" | xargs kill -9 2>/dev/null || true
+fi
+if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:4444 -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "  something is still listening on 4444:"
+  lsof -nP -iTCP:4444 -sTCP:LISTEN | sed 's/^/    /'
+  lsof -nP -t -iTCP:4444 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+  sleep 2
+fi
+
+# ---------------------------------------------------------------------------
 c_step "2. bitcoind regtest"
 
 BTC_DIR="$WORK/btc"
@@ -279,6 +299,7 @@ federator {
     gasPrice = 0
 }
 EOF
+  rm -f "$LOGS/powpeg-$gen.log"
   java -Drsk.conf.file="$WORK/powpeg.conf" -cp "$POWPEG_JAR" \
        co.rsk.federate.FederateRunner --regtest "$@" \
        > "$LOGS/powpeg-$gen.log" 2>&1 &
@@ -301,16 +322,21 @@ except Exception: sys.exit(1)" >/dev/null 2>&1; then
     kill -0 "$POWPEG_PID" 2>/dev/null || break
     sleep 1
   done
-  c_bad "  the node never answered on 4444."
+  local rc=0
+  wait "$POWPEG_PID" 2>/dev/null; rc=$?
+  POWPEG_PID=""
+  c_bad "  the node never answered on 4444 (java exited with $rc)."
   if [ -s "$LOGS/powpeg-$gen.log" ]; then
-    echo "  last lines of $LOGS/powpeg-$gen.log:"
-    tail -30 "$LOGS/powpeg-$gen.log" | sed 's/^/    /'
+    echo "  last 40 lines of $LOGS/powpeg-$gen.log:"
+    grep -vE '^\s+at ' "$LOGS/powpeg-$gen.log" | tail -40 | sed 's/^/    /'
   else
-    echo "  $LOGS/powpeg-$gen.log is empty -- the JVM died before logging"
+    echo "  the log is empty; running the JVM in the foreground for 20 s:"
+    echo "  ------------------------------------------------------------------"
+    ( cd "$WORK" && timeout 20 java -Drsk.conf.file="$WORK/powpeg.conf" \
+        -cp "$POWPEG_JAR" co.rsk.federate.FederateRunner --regtest "$@" 2>&1 | head -60 | sed 's/^/    /' )
+    echo "  ------------------------------------------------------------------"
     echo "  config used ($WORK/powpeg.conf):"
-    sed 's/^/    /' "$WORK/powpeg.conf" | grep -v privateKey
-    echo "  reproduce by hand:"
-    echo "    java -Drsk.conf.file=$WORK/powpeg.conf -cp $POWPEG_JAR co.rsk.federate.FederateRunner --regtest"
+    sed -E 's/(privateKey = )"[0-9a-f]+"/\1"<redacted>"/' "$WORK/powpeg.conf" | sed 's/^/    /'
   fi
   die "powpeg-node startup failed ($gen)"
 }
