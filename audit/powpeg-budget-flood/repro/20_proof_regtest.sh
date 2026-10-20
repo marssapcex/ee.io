@@ -20,6 +20,9 @@ COUNT="${COUNT:-40}"
 RES="$HERE/results/regtest"
 mkdir -p "$RES"
 
+# shellcheck disable=SC1091
+[ -f "$HERE/env.sh" ] && . "$HERE/env.sh"
+
 PY="${PY:-python3}"
 "$PY" -c 'import coincurve' 2>/dev/null || {
   echo "cookiecutter: installing coincurve into a local venv"

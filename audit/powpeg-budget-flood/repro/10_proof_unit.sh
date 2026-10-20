@@ -23,6 +23,10 @@ POWPEG_TAG="VETIVER-9.0.4.0"
 
 mkdir -p "$WORK" "$RES"
 
+# pick up JAVA_HOME / PYTHON written by 00_install_tools.sh
+# shellcheck disable=SC1091
+[ -f "$HERE/env.sh" ] && . "$HERE/env.sh"
+
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing $1 (run 00_install_tools.sh)"; exit 1; }; }
 need git; need java
 JAVA_MAJOR="$(java -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
