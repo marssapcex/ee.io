@@ -36,7 +36,7 @@ WHAT RSKJ SAYS IT WILL DO (read from source; this is what the run should confirm
       TransactionPoolImpl:309-311 accepts a same-nonce pool replacement only if
       newPrice > oldPrice and newPrice >= oldPrice * 140 / 100.  So +10-15% is
       rejected with "gas price not enough to bump transaction".
-  P2e retractBlock -> addTransactions: an orphaned block's transactions are
+  P2f retractBlock -> addTransactions: an orphaned block's transactions are
       re-added to the pool, so the deposit comes back unless it is replaced.
 
 GAS PRICE GRANULARITY
@@ -54,10 +54,13 @@ unlocked account: transactions are signed here and pushed with
 eth_sendRawTransaction.  The signing key is the account premined in rskj's own
 regtest genesis (genesis/rsk-dev.json, cd2a3d9f938e13cd947ec05abc7fe734df8dd826).
 
-The run is deterministic: both databases are wiped at the start, every node must
-prove it is listening on its peer port and that it does not mine on its own, and
-the script refuses to run if a node from an earlier attempt is still holding a
-port.
+The run is deterministic: rskj processes left behind by an earlier attempt are
+killed before anything is measured, both databases are wiped, every node has to
+prove that its peer port is listening, that its RPC answer comes from the JVM
+this script just launched, and that it does not mine on its own.  A `jvm.pid`
+file per node and an `lsof` check on the ports are what make that possible; the
+first version of this file did neither and spent ten minutes measuring a node it
+had not started.
 """
 
 import argparse
@@ -75,6 +78,9 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ethsign
+
+# ports of the two PoC nodes: the only ports this script may ever clean up
+NODE_PORTS = (4444, 4445, 50501, 50502)
 
 CHAIN_ID = 33                     # Constants.REGTEST_CHAIN_ID
 COW_KEY = ethsign.COW_KEY         # premined in genesis/rsk-dev.json
@@ -181,25 +187,71 @@ miner {{
 """)
 
     # -- process -----------------------------------------------------------
+    @property
+    def pid_path(self):
+        return os.path.join(self.base, "jvm.pid")
+
+    def _kill_previous_jvm(self):
+        """Kill the JVM this node directory started last time, if it is alive.
+
+        This is the fix for the run that mined 43k blocks and then "connected":
+        the previous attempt left its JVM behind, the next one failed to bind
+        (java.net.BindException: Address already in use) and every RPC call went
+        to the corpse, which was still linked to the other corpse.
+        """
+        try:
+            with open(self.pid_path) as fh:
+                pid = int(fh.read().strip())
+        except (OSError, ValueError):
+            pid = None
+        if pid and alive(pid) and pid in pids_running("co.rsk.Start"):
+            self.log(f"     {self.name}: stopping the JVM this directory started "
+                     f"last time (pid {pid})")
+            kill_hard(pid, self.log)
+        try:
+            os.unlink(self.pid_path)
+        except OSError:
+            pass
+
+    def _free_ports(self):
+        ports = (self.rpc_port, self.peer_port)
+        busy = [p for p in ports if not self.port_free(p)]
+        if busy:
+            for port, rows in lsof_holders(busy).items():
+                for pid, name in rows:
+                    if pid in (os.getpid(), os.getppid()):
+                        continue
+                    if name.lower() != "java":
+                        raise PocError(
+                            f"{self.name}: port {port} is held by pid {pid} ({name}), "
+                            f"which is not an rskj JVM.  Stop it yourself; this script "
+                            f"will not kill something it does not recognise.")
+                    self.log(f"     {self.name}: killing leftover rskj pid {pid} "
+                             f"on port {port}")
+                    kill_hard(pid, self.log)
+            busy = [p for p in ports if not self.port_free(p)]
+        if busy:
+            raise PocError(
+                f"{self.name}: port(s) {busy} are still in use.\n"
+                f"  {port_holders(busy)}\n"
+                f"  kill them by hand (kill -9 <pid>) or run: pkill -f co.rsk.Start")
+
     def start(self, self_mining_check=True):
         self.write_config()
-        for port in (self.rpc_port, self.peer_port):
-            if not self.port_free(port):
-                raise PocError(
-                    f"{self.name}: port {port} is already in use, so I would be "
-                    f"talking to somebody else's node.\n"
-                    f"  a node from an earlier attempt is still alive; stop it with:\n"
-                    f"    pkill -f co.rsk.Start\n"
-                    f"  then run this script again.")
+        self._kill_previous_jvm()
+        self._free_ports()
         cmd = [str(self.java),
                f"-Drsk.conf.file={self.conf_path}",
                "-Duser.language=en",
                "-cp", str(self.jar),
                "co.rsk.Start", "--regtest"]
+        # deliberately NOT start_new_session: if this script is interrupted the
+        # JVM has to die with it, which is exactly what did not happen last time
         with open(self.stdout_path, "ab") as out:
             self.proc = subprocess.Popen(cmd, stdout=out,
-                                         stderr=subprocess.STDOUT,
-                                         cwd=self.base, start_new_session=True)
+                                         stderr=subprocess.STDOUT, cwd=self.base)
+        with open(self.pid_path, "w") as fh:
+            fh.write(str(self.proc.pid))
 
         deadline = time.time() + 120
         while time.time() < deadline:
@@ -215,6 +267,16 @@ miner {{
         else:
             raise PocError(f"{self.name} did not answer RPC on port {self.rpc_port}"
                            f"\n{self.tail()}")
+
+        # the answer must come from the JVM that was just launched, not from a
+        # leftover that happens to own the port
+        owners = lsof_pids([self.rpc_port]).get(self.rpc_port, [])
+        if owners and self.proc.pid not in owners:
+            raise PocError(
+                f"{self.name}: port {self.rpc_port} is answered by pid {owners}, not "
+                f"by the JVM I started (pid {self.proc.pid}).\n"
+                f"  that is somebody else's node; every number after this would be "
+                f"theirs.  Kill it and run again.")
 
         # the P2P listener is not optional here: a node that answers RPC but
         # never binds its peer port cannot take part in the experiment at all
@@ -248,19 +310,20 @@ miner {{
     def stop(self):
         if self.proc and self.proc.poll() is None:
             self.log(f"     stopping {self.name} (pid {self.proc.pid})")
-            try:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
+            self.proc.terminate()
             try:
                 self.proc.wait(timeout=20)
             except subprocess.TimeoutExpired:
+                self.proc.kill()
                 try:
-                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
+                    self.proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
                     pass
-                self.proc.wait(timeout=10)
         self.proc = None
+        try:
+            os.unlink(self.pid_path)
+        except OSError:
+            pass
         # both ports must be free again: the RPC port proves the process is gone,
         # the peer port proves the listening socket was released.  Restarting on
         # a peer port still held leaves the node up but deaf, which looks exactly
@@ -566,23 +629,35 @@ def phase_reorg(n1, n2, gp):
         raise PocError("the victim and the control were not mined")
     hv = int(rv["blockNumber"], 16)
     old_hash = n1.block(hv)["hash"]
+    a_txs = [t["hash"].lower()
+             for t in (n1.block(hv, True) or {}).get("transactions", [])]
     record("P2a", "the victim and the control are mined in the same block of chain A",
-           rv["blockNumber"] == rk["blockNumber"] and n1.block(hv, True) is not None,
-           f"height {hv} = {old_hash}, victim {victim[:16]}... (nonce {n}), "
-           f"control {control[:16]}... (nonce {n + 1}); chain A is {n1.height()} blocks long")
+           rv["blockNumber"] == rk["blockNumber"]
+           and victim.lower() in a_txs and control.lower() in a_txs,
+           f"height {hv} = {old_hash} holds {len(a_txs)} transaction(s); "
+           f"victim {victim[:16]}... (nonce {n}) present: {victim.lower() in a_txs}, "
+           f"control {control[:16]}... (nonce {n + 1}) present: {control.lower() in a_txs}; "
+           f"chain A is {n1.height()} blocks long")
 
     n2.start()
-    target = n1.height() + 2                      # chain B must be strictly longer
+    target = n1.height() + 2                      # chain B must be strictly heavier
     n2.mine(target)
     isolated = n1.peers() == 0 and n2.peers() == 0
-    record("P2b", "node 2 builds a longer chain B while isolated",
-           n2.height() > n1.height() and isolated,
-           f"chain A {n1.height()} blocks (node1), chain B {n2.height()} blocks (node2); "
-           f"peers node1={n1.peers()} node2={n2.peers()} "
-           f"-> {'no path between them' if isolated else 'THEY ARE ALREADY CONNECTED'}")
+    td_a = int(n1.block(n1.height())["totalDifficulty"], 16)
+    td_b = int(n2.block(n2.height())["totalDifficulty"], 16)
+    record("P2b", "node 2 builds a heavier chain B while isolated",
+           td_b > td_a and isolated,
+           f"chain A: height {n1.height()}, total difficulty {td_a}\n"
+           f"chain B: height {n2.height()}, total difficulty {td_b} "
+           f"(+{td_b - td_a})\n"
+           f"peers node1={n1.peers()} node2={n2.peers()} -> "
+           f"{'no path between them' if isolated else 'THEY ARE ALREADY CONNECTED'}")
     if not isolated:
         raise PocError("the nodes were already connected; this is not an isolated "
-                       "longer chain and the run is not evidence")
+                       "chain and the run is not evidence")
+    if td_b <= td_a:
+        raise PocError(f"chain B (TD {td_b}) is not heavier than chain A (TD {td_a}), "
+                       f"so no node would ever switch to it")
 
     print(f"     connecting node 2 -> node 1 (enode://{n1.node_id[:16]}...@{n1.peer_port})")
     n2.stop()
@@ -612,6 +687,21 @@ def phase_reorg(n1, n2, gp):
                                 "reject", "difficulty")))
         raise PocError("node 1 never adopted the longer chain")
 
+    def same_tip():
+        return (n1.height() == n2.height()
+                and n1.block(n1.height())["hash"] == n2.block(n2.height())["hash"])
+
+    try:
+        converged = wait_until(same_tip, 20, "the two nodes to agree on a tip")
+    except PocError:
+        converged = False
+    tip1 = n1.block(n1.height())
+    tip2 = n2.block(n2.height())
+    record("P2e", "both nodes end up on the same tip, so the switch is complete",
+           converged,
+           f"node1 {n1.height()} {tip1['hash']}\n"
+           f"node2 {n2.height()} {tip2['hash']}")
+
     vt = n1.tx(victim)
     kt = n1.tx(control)
     pooled = n1.pool()
@@ -627,7 +717,7 @@ def phase_reorg(n1, n2, gp):
         pool_seen = "txpool_content not available"
     else:
         pool_seen = f"{len(pooled)} transaction(s): {sorted(pooled)}"
-    record("P2e", "both orphaned transactions are retracted into node 1's pool",
+    record("P2f", "both orphaned transactions are retracted into node 1's pool",
            back and corroborated,
            f"account nonce is back to {n1.nonce()}; eth_getTransactionByHash -> "
            f"victim {v_seen}, control {k_seen}; {pool_seen}")
@@ -676,35 +766,70 @@ def phase_reorg(n1, n2, gp):
 # ---------------------------------------------------------------------------
 
 
-def list_rskj(work=None):
-    """Every rskj JVM on this machine, with the config file it was given."""
+def _ps_table():
+    """(pid, command) for every process, on macOS and Linux alike.
+
+    `ps -axo pid=,etime=,command=` printed nothing at all on macOS arm64, so the
+    earlier version of this file cheerfully reported "no rskj processes" while
+    two of them were holding every port it needed.  Separate -o options with an
+    explicit -ww to defeat BSD's terminal-width truncation.
+    """
     try:
-        out = subprocess.run(["ps", "-axo", "pid=,etime=,command="],
+        out = subprocess.run(["ps", "-A", "-ww", "-o", "pid=", "-o", "command="],
                              capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     rows = []
-    me = os.getpid()
     for line in out.splitlines():
-        line = line.strip()
-        pid_s, _, rest = line.partition(" ")
+        pid_s, _, cmd = line.strip().partition(" ")
         try:
-            pid = int(pid_s)
+            rows.append((int(pid_s), cmd.strip()))
         except ValueError:
-            continue
-        if pid in (me, os.getppid()) or "co.rsk.Start" not in rest:
-            continue
-        etime, _, cmd = rest.strip().partition(" ")
-        conf = "(no -Drsk.conf.file)"
-        for token in cmd.split():
-            if token.startswith("-Drsk.conf.file="):
-                conf = token.split("=", 1)[1]
-        rows.append((pid, etime, conf))
+            pass
     return rows
 
 
-def port_holders(ports):
-    """pid/program listening on each port, via lsof (macOS and Linux)."""
+def cmdlines():
+    return dict(_ps_table())
+
+
+def pids_running(marker):
+    return {pid for pid, cmd in _ps_table() if marker in cmd}
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def kill_hard(pid, log=print, grace=10.0):
+    if pid in (os.getpid(), os.getppid()):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.time() + grace
+    while time.time() < deadline:
+        if not alive(pid):
+            log(f"     pid {pid} stopped on SIGTERM")
+            return
+        time.sleep(0.2)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return
+    deadline = time.time() + 5
+    while time.time() < deadline and alive(pid):
+        time.sleep(0.2)
+    log(f"     pid {pid} needed SIGKILL")
+
+
+def lsof_holders(ports):
+    """{port: [(pid, command name)]} for listeners, via lsof."""
     found = {}
     if shutil.which("lsof") is None:
         return found
@@ -715,22 +840,77 @@ def port_holders(ports):
                 capture_output=True, text=True, timeout=15).stdout
         except (OSError, subprocess.SubprocessError):
             continue
-        pid = cmd = None
+        rows, pid = [], None
         for line in out.splitlines():
             if line.startswith("p"):
-                pid = line[1:]
-            elif line.startswith("c"):
-                cmd = line[1:]
-        if pid:
-            found[port] = f"pid {pid} ({cmd})"
+                pid = int(line[1:]) if line[1:].isdigit() else None
+            elif line.startswith("c") and pid is not None:
+                rows.append((pid, line[1:]))
+                pid = None
+        if rows:
+            found[port] = rows
     return found
+
+
+def lsof_pids(ports):
+    return {port: [pid for pid, _ in rows]
+            for port, rows in lsof_holders(ports).items()}
+
+
+def port_holders(ports):
+    """'pid 123 (java)' for whoever listens on each port."""
+    return {port: ", ".join(f"pid {pid} ({cmd})" for pid, cmd in rows)
+            for port, rows in lsof_holders(ports).items()}
+
+
+def list_rskj():
+    """Every rskj JVM on this machine, with the config file it was given."""
+    rows = []
+    for pid, cmd in _ps_table():
+        if "co.rsk.Start" not in cmd:
+            continue
+        conf = "(no -Drsk.conf.file)"
+        for token in cmd.split():
+            if token.startswith("-Drsk.conf.file="):
+                conf = token.split("=", 1)[1]
+        rows.append((pid, conf))
+    return rows
+
+
+def cleanup_rskj(work, ports, log=print):
+    """Kill rskj processes that belong to this experiment, and nothing else.
+
+    Belongs = launched with this workdir's rsk.conf, or listening on one of the
+    ports the PoC uses.  A mainnet node on another port is left alone.
+    """
+    work = os.path.abspath(work)
+    cmds = cmdlines()
+    targets = set()
+    for pid, cmd in cmds.items():
+        if "co.rsk.Start" not in cmd or pid in (os.getpid(), os.getppid()):
+            continue
+        if f"-Drsk.conf.file={work}" in cmd:
+            targets.add(pid)
+    for port, rows in lsof_holders(ports).items():
+        for pid, name in rows:
+            if pid in (os.getpid(), os.getppid()):
+                continue
+            if name.lower() == "java" or "co.rsk.Start" in cmds.get(pid, ""):
+                targets.add(pid)
+    for pid in sorted(targets):
+        conf = next((t.split("=", 1)[1] for t in cmds.get(pid, "").split()
+                     if t.startswith("-Drsk.conf.file=")), "(no -Drsk.conf.file)")
+        log(f"note: stopping leftover rskj pid {pid}  [{conf}]")
+        kill_hard(pid, log)
+    return sorted(targets)
 
 
 def probe(jar, java, work):
     """Start one node from an empty database and report what it actually does.
 
-    Read-only with respect to earlier runs: it never kills anything, never
-    touches the node1/node2 directories, and uses its own ports and datadir.
+    Read-only with respect to earlier runs: it touches neither the node1/node2
+    directories nor their ports, and it uses its own datadir.  The only process
+    it may stop is a leftover holding its own two ports.
     """
     print("=" * 74)
     print("probe: what does one rskj regtest node actually do here?")
@@ -755,8 +935,8 @@ def probe(jar, java, work):
     rows = list_rskj()
     if not rows:
         print("  none")
-    for pid, etime, conf in rows:
-        print(f"  pid {pid:<7} up {etime:<12} {conf}")
+    for pid, conf in rows:
+        print(f"  pid {pid:<7} {conf}")
     holders = port_holders((4444, 4445, 50501, 50502, 4446, 50503))
     if not holders:
         print("  no listener on 4444/4445/50501/50502/4446/50503")
@@ -827,47 +1007,6 @@ def probe(jar, java, work):
     print(f"\nprobe finished{'' if n == 0 else ' with problems'}; "
           f"{node.base} can be deleted")
     return n
-
-
-def reap_stale(work):
-    """Kill rskj processes that this workdir started in an earlier attempt."""
-    marker = os.path.abspath(work)
-    try:
-        out = subprocess.run(["ps", "-axo", "pid=,command="],
-                             capture_output=True, text=True, timeout=20).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
-    me = os.getpid()
-    # only the JVMs this workdir launched carry this exact property, so a stray
-    # shell that merely mentions the paths cannot be caught by mistake
-    needle = f"-Drsk.conf.file={marker}"
-    killed = []
-    for line in out.splitlines():
-        pid_s, _, cmd = line.strip().partition(" ")
-        try:
-            pid = int(pid_s)
-        except ValueError:
-            continue
-        if pid in (me, os.getppid()):
-            continue
-        if needle not in cmd or "co.rsk.Start" not in cmd:
-            continue
-        try:
-            os.kill(pid, signal.SIGTERM)
-            killed.append(pid)
-        except OSError:
-            pass
-    if killed:
-        time.sleep(3)
-        for pid in killed:
-            try:
-                os.kill(pid, 0)
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-        print(f"note: stopped {len(killed)} rskj process(es) left over from an "
-              f"earlier attempt: {killed}")
-    return killed
 
 
 def resolve_jar(value, ap):
@@ -962,12 +1101,16 @@ def main():
         os.makedirs(work, exist_ok=True)
         return probe(args.rskj_jar, args.java, work)
 
+    # nothing from an earlier attempt may survive: a leftover JVM keeps the
+    # ports and, worse, keeps answering on them, which is how a previous run
+    # spent ten minutes measuring a node it had not started
+    cleanup_rskj(work, NODE_PORTS)
+
     # every run starts from the same genesis: keeping a database would let an
     # earlier attempt decide this one's heights
     if os.path.exists(work):
         shutil.rmtree(work)
     os.makedirs(work, exist_ok=True)
-    reap_stale(work)
 
     n1 = Node("node1", os.path.join(work, "node1"), 4444, 50501,
               ethsign.keccak256(b"poc-node-1")[:32], args.rskj_jar, args.java)
@@ -1029,6 +1172,23 @@ def main():
     failed = [r for r in RESULTS if not r[2]]
     print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed "
           f"in {time.time() - T0:.1f}s")
+
+    summary = {
+        "when": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "jar": args.rskj_jar,
+        "java": args.java,
+        "workdir": work,
+        "elapsed_seconds": round(time.time() - T0, 1),
+        "passed": len(RESULTS) - len(failed),
+        "total": len(RESULTS),
+        "checks": [{"phase": p, "claim": c, "ok": o,
+                    "detail": d, "at_seconds": round(a, 1)}
+                   for p, c, o, d, a in sorted(RESULTS)],
+    }
+    result_path = os.path.join(work, "result.json")
+    with open(result_path, "w") as fh:
+        json.dump(summary, fh, indent=2)
+    print(f"result.json: {result_path}")
     if args.keep:
         print(f"logs kept in {work}")
     else:
@@ -1042,7 +1202,7 @@ Reading of a full pass
        it on the nonce, so no replace-by-fee exists for something already mined.
   P1c  even in the pool the bump has to clear transaction.gasPriceBump = 40%,
        so the "+10-15%" in the report would be rejected; +100% is accepted.
-  P2e  the reorg returns the transaction to the pool.  On its own that is the
+  P2f  the reorg returns the transaction to the pool.  On its own that is the
        opposite of a corpse: the deposit would be re-mined.
   P3b  what kills it is the replacement, which is only possible AFTER the reorg.
        Once the same-nonce transaction is mined, the original hash is unknown to
