@@ -1,0 +1,117 @@
+diff --git a/src/test/java/co/rsk/federate/BtcToRskClientTest.java b/src/test/java/co/rsk/federate/BtcToRskClientTest.java
+index 5873e42..198674e 100644
+--- a/src/test/java/co/rsk/federate/BtcToRskClientTest.java
++++ b/src/test/java/co/rsk/federate/BtcToRskClientTest.java
+@@ -3625,6 +3625,112 @@ class BtcToRskClientTest {
+                 // assert
+                 assertTxSentToBridgeByActiveFedClient(peginBtcTx);
+             }
++
++            /*
++             * Regression tests for the "registerBtcTransaction budget flood" report.
++             *
++             * A peg-in that the Bridge will reject (a sub-minimum output to the OTHER live
++             * federation) is still considered sendable by the client that watches the active
++             * federation, and it is sent again on every turn, because after RSKIP551 the
++             * Bridge does not mark a rejected non-refundable peg-in as processed.
++             */
++
++            @Test
++            void updateBridgeBtcTransactions_peginWithSubMinimumOutputToRetiringFed_activeClient_shouldBeInformed() throws Exception {
++                // arrange
++                Federation retiringFederation = TestUtils.createP2shP2wshErpFederation(
++                    MAINNET_BTC_PARAMS,
++                    9
++                );
++                Federation activeFederation = TestUtils.createP2shP2wshErpFederation(
++                    MAINNET_BTC_PARAMS,
++                    20
++                );
++                setUpRetiringFedClient(retiringFederation);
++                setUpActiveFedClient(activeFederation);
++
++                BtcTransaction peginBtcTx = createTxFromP2pkh(MAINNET_BTC_PARAMS);
++                addOutputToFedWithMinimumPeginValue(peginBtcTx, activeFederation.getAddress());
++                addOutputToFedBelowMinimumPeginValue(peginBtcTx, retiringFederation.getAddress());
++
++                setUpTx(activeFedClient, peginBtcTx, DEFAULT_BLOCK_WITH_TX_INDEX);
++
++                // act
++                activeFedClient.updateBridgeBtcTransactions();
++
++                // assert
++                // the client builds its wallet from federationToListen only, so the 500_000 sat
++                // output to the active federation is enough for it to send the tx; the 2_000 sat
++                // output to the retiring federation is invisible to it, while the Bridge counts
++                // it and rejects the whole transaction with INVALID_AMOUNT
++                assertTxSentToBridgeByActiveFedClient(peginBtcTx);
++            }
++
++            @Test
++            void updateBridgeBtcTransactions_peginWithSubMinimumOutputToRetiringFed_retiringClient_shouldNotBeInformed() throws Exception {
++                // arrange
++                Federation retiringFederation = TestUtils.createP2shP2wshErpFederation(
++                    MAINNET_BTC_PARAMS,
++                    9
++                );
++                Federation activeFederation = TestUtils.createP2shP2wshErpFederation(
++                    MAINNET_BTC_PARAMS,
++                    20
++                );
++                setUpRetiringFedClient(retiringFederation);
++                setUpActiveFedClient(activeFederation);
++
++                BtcTransaction peginBtcTx = createTxFromP2pkh(MAINNET_BTC_PARAMS);
++                addOutputToFedWithMinimumPeginValue(peginBtcTx, activeFederation.getAddress());
++                addOutputToFedBelowMinimumPeginValue(peginBtcTx, retiringFederation.getAddress());
++
++                setUpTx(activeFedClient, peginBtcTx, DEFAULT_BLOCK_WITH_TX_INDEX);
++                setUpTx(retiringFedClient, peginBtcTx, DEFAULT_BLOCK_WITH_TX_INDEX);
++
++                // act
++                retiringFedClient.updateBridgeBtcTransactions();
++
++                // assert
++                // from the retiring federation's point of view the only output it owns is the
++                // 2_000 sat one, which is below the minimum, so the entry is dropped there
++                assertTxNotSentToBridge(peginBtcTx);
++            }
++
++            @Test
++            void updateBridgeBtcTransactions_peginWithSubMinimumOutputToRetiringFed_isSentAgainOnNextTurn() throws Exception {
++                // arrange
++                Federation retiringFederation = TestUtils.createP2shP2wshErpFederation(
++                    MAINNET_BTC_PARAMS,
++                    9
++                );
++                Federation activeFederation = TestUtils.createP2shP2wshErpFederation(
++                    MAINNET_BTC_PARAMS,
++                    20
++                );
++                setUpRetiringFedClient(retiringFederation);
++                setUpActiveFedClient(activeFederation);
++
++                BtcTransaction peginBtcTx = createTxFromP2pkh(MAINNET_BTC_PARAMS);
++                addOutputToFedWithMinimumPeginValue(peginBtcTx, activeFederation.getAddress());
++                addOutputToFedBelowMinimumPeginValue(peginBtcTx, retiringFederation.getAddress());
++
++                setUpTx(activeFedClient, peginBtcTx, DEFAULT_BLOCK_WITH_TX_INDEX);
++
++                // act: two consecutive turns
++                activeFedClient.updateBridgeBtcTransactions();
++                activeFedClient.updateBridgeBtcTransactions();
++
++                // assert
++                // the entry is never removed (the Bridge rejected it and did not mark it as
++                // processed), so the client spends a budget slot on it on every turn
++                Transaction peginTx = ThinConverter.toOriginalInstance(MAINNET_BTC_PARAMS_STRING, peginBtcTx);
++                PartialMerkleTree pmt = getPMT(btcToRskActiveFedClientFileStorage, peginTx);
++                verify(federatorSupport, times(2)).sendRegisterBtcTransaction(
++                    peginTx,
++                    DEFAULT_BLOCK_WITH_TX_INDEX,
++                    pmt
++                );
++            }
+         }
+ 
+         @Nested

@@ -1,0 +1,52 @@
+==============================================================================
+PoC: rejected peg-ins occupy the 40-slot registerBtcTransaction budget
+==============================================================================
+
+[1] transaction verification (libsecp256k1, real DER signatures)
+    attack  40/40 valid, all in bin 0 of the pending map
+    control 40/40 valid, 0 in bin 0 (negative control)
+    sample  290 bytes, fee 1200 sat, 418 ECDSA attempts to grind
+
+[2] the same transaction, evaluated by the two components
+
+    powpeg-node  BtcToRskClient.shouldSendTx -> PegUtils.isValidPegInTx
+      powpeg-node/PegUtils.java:131-142
+        fedUtxos = btcTx.getWalletOutputs(fedWallet);   // fedWallet = ONE federation
+        allMatch(o -> o.value >= 500_000)
+      outputs of this tx paying the listened (active) federation: 500000 -> OK
+      the 2000 sat output pays the OTHER live federation -> invisible to this wallet
+      => shouldSendTx = true  => sendTx()  => the 40-slot budget is consumed
+
+    rskj Bridge  BridgeSupport.registerPegIn -> PegUtils.evaluatePegin
+      rskj/PegUtils.java:67-85  (fedWallet = BridgeBtcWallet over getLiveFederations())
+      outputs paying ANY live federation: 500000 and 2000
+      allMatch(value >= 500_000) = false
+      => PeginProcessAction.NO_REFUND, RejectedPeginReason.INVALID_AMOUNT
+         (rskj/PegUtils.java:213)
+      => post-RSKIP551 the tx is NOT marked processed
+         (BridgeSupport.java:567 -> shouldMarkRejectedPeginAsProcessed() == false)
+      => isBtcTxHashAlreadyProcessed() stays false; the entry stays in the map
+
+    Net effect: the component that decides whether to *send* and the component
+    that decides whether to *accept* use different federation sets.
+
+[3] arithmetic of the window (TurnScheduler: interval = participants * period)
+    window                10585 RSK blocks / 3.68 days
+    network-wide turns    1764 (one federator per 180 s)
+    turns per federator   196 (every 1620 s)
+    sends  network-wide   70560  = 1764 turns x 40 budget
+    sends  per federator  7840
+    (the submitted report said 70,560 per federator / 635,040 network-wide;
+     TurnScheduler.java:13-15 makes that a 9x overcount -- see FINDINGS.md)
+
+[4] fix check: validate with the same federation set as the Bridge
+    proposed change: BtcToRskClient builds its wallet from
+    getLiveFederations() (active + retiring) instead of federationToListen
+    -> PegUtils.isValidPegInTx sees outputs 500000 and 2000
+    -> allUTXOsToFedAreAboveMinimumPeginValue == false for every attack tx
+    -> shouldSendTx == false -> removeTxHashFromFile -> entry dropped, 0 slots used
+    attack entries dropped before the budget: 40
+    honest registrations served in a turn (budget 40): 25/25
+    the same transaction is still credited once the retiring federation is
+    cleared (patches/rskj-PegUtilsEvaluatePeginTest.patch, test 2)
+
