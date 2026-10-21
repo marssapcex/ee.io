@@ -51,6 +51,7 @@ regtest genesis (genesis/rsk-dev.json, cd2a3d9f938e13cd947ec05abc7fe734df8dd826)
 """
 
 import argparse
+import glob
 import json
 import os
 import shutil
@@ -411,6 +412,67 @@ def phase_reorg(n1, n2, gp):
 # ---------------------------------------------------------------------------
 
 
+def resolve_jar(value, ap):
+    """
+    Find the rskj fat jar.  Accepts a path, a glob (the shell may hand over a
+    literal '~' or a pattern zsh refused to expand), and falls back to the
+    usual build output locations.
+    """
+    looked = []
+    candidates = []
+    if value:
+        expanded = os.path.expanduser(os.path.expandvars(value))
+        looked.append(expanded)
+        if any(ch in expanded for ch in "*?["):
+            candidates.extend(sorted(glob.glob(expanded), key=os.path.getmtime))
+        elif os.path.isfile(expanded):
+            return expanded
+    for pattern in (
+        "~/rskj*.jar",
+        "~/powpeg-deps/rskj/rskj-core/build/libs/rskj-core-*-all.jar",
+        "~/rskj/rskj-core/build/libs/rskj-core-*-all.jar",
+        "~/src/rskj/rskj-core/build/libs/rskj-core-*-all.jar",
+        "~/ee.io/**/rskj-core-*-all.jar",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "**",
+                     "rskj-core-*-all.jar"),
+    ):
+        looked.append(pattern)
+        candidates.extend(sorted(glob.glob(os.path.expanduser(pattern),
+                                           recursive=True), key=os.path.getmtime))
+    if candidates:
+        jar = candidates[-1]
+        if value:
+            print(f"note: used {jar} (from --rskj-jar {value})")
+        else:
+            print(f"note: found {jar}")
+        return jar
+    ap.error(
+        "no rskj fat jar found.\n"
+        "  I looked at: " + ", ".join(looked) + "\n"
+        "  Get one either way:\n"
+        "    curl -L -o ~/rskj.jar https://github.com/rsksmart/rskj/releases/"
+        "download/VETIVER-9.0.4/rskj-core-9.0.4-VETIVER-all.jar\n"
+        "    (or) git clone --depth 1 -b VETIVER-9.0.4 "
+        "https://github.com/rsksmart/rskj.git && cd rskj && ./gradlew fatJar\n"
+        "  then: --rskj-jar \"$HOME/rskj.jar\"   (quote $HOME, not ~)")
+
+
+def resolve_java(value):
+    if value:
+        return value
+    home = os.environ.get("JAVA_HOME")
+    if home:
+        cand = os.path.join(home, "bin", "java")
+        if os.path.exists(cand):
+            return cand
+    for cand in ("/opt/homebrew/opt/openjdk@17/bin/java",
+                 "/usr/local/opt/openjdk@17/bin/java",
+                 "/opt/homebrew/opt/openjdk/bin/java"):
+        if os.path.exists(cand):
+            return cand
+    return "java"
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Prove what happens to a mined RSK transaction that a reorg "
@@ -418,18 +480,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rskj-jar", default=os.environ.get("RSKJ_JAR"),
                     help="path to rskj-core-<version>-all.jar (or set RSKJ_JAR)")
-    ap.add_argument("--java", default=os.environ.get("JAVA_HOME", "") and
-                    os.path.join(os.environ["JAVA_HOME"], "bin", "java") or "java")
+    ap.add_argument("--java", default=None,
+                    help="java binary; defaults to $JAVA_HOME/bin/java, then a "
+                         "Homebrew openjdk@17, then whatever is on PATH")
     ap.add_argument("--workdir", default="./regtest-reorg-poc")
     ap.add_argument("--keep", action="store_true", help="keep node dirs and logs")
     ap.add_argument("--skip-policy", action="store_true")
     args = ap.parse_args()
 
-    if not args.rskj_jar or not os.path.exists(args.rskj_jar):
-        ap.error("--rskj-jar is required (or set RSKJ_JAR). Get it from "
-                 "https://github.com/rsksmart/rskj/releases, or build with "
-                 "`./gradlew fatJar` and use rskj-core/build/libs/rskj-core-*-all.jar")
+    args.rskj_jar = resolve_jar(args.rskj_jar, ap)
 
+    args.java = resolve_java(args.java)
     work = os.path.abspath(args.workdir)
     if os.path.exists(work) and not args.keep:
         shutil.rmtree(work)
