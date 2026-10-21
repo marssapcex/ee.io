@@ -672,6 +672,9 @@ def reap_stale(work):
     except (OSError, subprocess.SubprocessError):
         return []
     me = os.getpid()
+    # only the JVMs this workdir launched carry this exact property, so a stray
+    # shell that merely mentions the paths cannot be caught by mistake
+    needle = f"-Drsk.conf.file={marker}"
     killed = []
     for line in out.splitlines():
         pid_s, _, cmd = line.strip().partition(" ")
@@ -679,7 +682,9 @@ def reap_stale(work):
             pid = int(pid_s)
         except ValueError:
             continue
-        if pid == me or "co.rsk.Start" not in cmd or marker not in cmd:
+        if pid in (me, os.getppid()):
+            continue
+        if needle not in cmd or "co.rsk.Start" not in cmd:
             continue
         try:
             os.kill(pid, signal.SIGTERM)
