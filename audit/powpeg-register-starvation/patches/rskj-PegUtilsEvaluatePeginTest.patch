@@ -1,0 +1,112 @@
+diff --git a/rskj-core/src/test/java/co/rsk/peg/PegUtilsEvaluatePeginTest.java b/rskj-core/src/test/java/co/rsk/peg/PegUtilsEvaluatePeginTest.java
+index 8539e07..3637989 100644
+--- a/rskj-core/src/test/java/co/rsk/peg/PegUtilsEvaluatePeginTest.java
++++ b/rskj-core/src/test/java/co/rsk/peg/PegUtilsEvaluatePeginTest.java
+@@ -22,6 +22,7 @@ import co.rsk.peg.pegin.RejectedPeginReason;
+ import co.rsk.peg.pegininstructions.PeginInstructionsException;
+ import java.util.Collections;
+ import java.util.List;
++import java.util.Optional;
+ import java.util.stream.Stream;
+ import org.ethereum.config.blockchain.upgrades.ActivationConfig;
+ import org.ethereum.config.blockchain.upgrades.ActivationConfigsForTest;
+@@ -282,4 +283,99 @@ class PegUtilsEvaluatePeginTest {
+ 
+         assertEquals(PeginProcessAction.REGISTER, peginEvaluationResult.getPeginProcessAction());
+     }
++
++    /*
++     * Regression tests for the "registerBtcTransaction budget flood" report.
++     *
++     * evaluatePegin() receives the wallet of *all* live federations. A transaction that
++     * pays the minimum to the active federation but a sub-minimum amount to the other
++     * live federation (the retiring one during a federation change) is rejected with
++     * NO_REFUND/INVALID_AMOUNT, and -- after RSKIP551 -- that rejection does not mark the
++     * transaction as processed, so the federator keeps re-sending it.
++     */
++
++    private BtcTransaction createPeginTxWithSubMinimumOutputTo(
++        Federation otherLiveFederation,
++        Coin amountToOtherLiveFederation
++    ) {
++        BtcTransaction btcTx = new BtcTransaction(networkParameters);
++        btcTx.addInput(
++            BitcoinTestUtils.createHash(1),
++            0,
++            ScriptBuilder.createInputScript(null, new BtcECKey())
++        ); // legacy p2pkh sender
++        btcTx.addOutput(minimumPegInTxValue, activeFederation.getAddress());
++        btcTx.addOutput(amountToOtherLiveFederation, otherLiveFederation.getAddress());
++        return btcTx;
++    }
++
++    @Test
++    void evaluatePegin_subMinimumOutputToAnotherLiveFederation_isRejectedWithInvalidAmount() {
++        Federation retiringFederation = createP2shErpFederation(
++            bridgeMainnetConstants.getFederationConstants(),
++            BitcoinTestUtils.getBtcEcKeysFromSeeds(
++                new String[]{"fb01", "fb02", "fb03", "fb04", "fb05"}, true
++            )
++        );
++        Wallet liveFederationsWallet = new BridgeBtcWallet(
++            context, List.of(activeFederation, retiringFederation)
++        );
++
++        BtcTransaction btcTx = createPeginTxWithSubMinimumOutputTo(
++            retiringFederation, Coin.valueOf(2_000)
++        );
++
++        PeginInformation peginInformation = mock(PeginInformation.class);
++        when(peginInformation.getProtocolVersion()).thenReturn(0);
++        // evaluatePegin() switches on the sender address type for protocol 0; a
++        // bare mock returns null there and the enum switch NPEs. This transaction
++        // is built with a P2PKH sender, so that is what parse() would produce.
++        when(peginInformation.getSenderBtcAddressType()).thenReturn(BtcLockSender.TxSenderAddressType.P2PKH);
++
++        PeginEvaluationResult peginEvaluationResult = PegUtils.evaluatePegin(
++            btcTx,
++            peginInformation,
++            minimumPegInTxValue,
++            liveFederationsWallet,
++            activations
++        );
++
++        assertEquals(PeginProcessAction.NO_REFUND, peginEvaluationResult.getPeginProcessAction());
++        assertEquals(
++            Optional.of(RejectedPeginReason.INVALID_AMOUNT),
++            peginEvaluationResult.getRejectedPeginReason()
++        );
++    }
++
++    @Test
++    void evaluatePegin_sameTxOnceRetiringFederationIsCleared_isRegistered() {
++        Federation retiringFederation = createP2shErpFederation(
++            bridgeMainnetConstants.getFederationConstants(),
++            BitcoinTestUtils.getBtcEcKeysFromSeeds(
++                new String[]{"fb01", "fb02", "fb03", "fb04", "fb05"}, true
++            )
++        );
++        BtcTransaction btcTx = createPeginTxWithSubMinimumOutputTo(
++            retiringFederation, Coin.valueOf(2_000)
++        );
++
++        // the retiring federation's lifetime is over: it is no longer in the live set,
++        // so its 2_000 sat output no longer drags the transaction below the minimum
++        Wallet activeFederationOnlyWallet = new BridgeBtcWallet(
++            context, List.of(activeFederation)
++        );
++        PeginInformation peginInformation = mock(PeginInformation.class);
++        when(peginInformation.getProtocolVersion()).thenReturn(0);
++        when(peginInformation.getSenderBtcAddressType()).thenReturn(BtcLockSender.TxSenderAddressType.P2PKH);
++
++        PeginEvaluationResult peginEvaluationResult = PegUtils.evaluatePegin(
++            btcTx,
++            peginInformation,
++            minimumPegInTxValue,
++            activeFederationOnlyWallet,
++            activations
++        );
++
++        assertEquals(PeginProcessAction.REGISTER, peginEvaluationResult.getPeginProcessAction());
++    }
+ }
