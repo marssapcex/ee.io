@@ -1059,8 +1059,7 @@ def resolve_jar(value, ap):
         "~/powpeg-deps/rskj/rskj-core/build/libs/rskj-core-*-all.jar",
         "~/rskj/rskj-core/build/libs/rskj-core-*-all.jar",
         "~/src/rskj/rskj-core/build/libs/rskj-core-*-all.jar",
-        "~/ee.io/**/rskj-core-*-all.jar",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "**",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "**",
                      "rskj-core-*-all.jar"),
     ):
         looked.append(pattern)
