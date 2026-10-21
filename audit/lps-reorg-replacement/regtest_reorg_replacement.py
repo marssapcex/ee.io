@@ -174,6 +174,14 @@ miner {{
                     f"last lines of {self.log_path}:\n{self.tail()}")
             try:
                 self.rpc("eth_blockNumber", [])
+                # RPC is up; make sure the P2P listener came up too, otherwise the
+                # node can never take part in the experiment
+                for _ in range(25):
+                    if not self.port_free(self.peer_port):
+                        return self
+                    time.sleep(0.4)
+                print(f"     warning: {self.name} answers RPC but is not listening on "
+                      f"peer port {self.peer_port}")
                 return self
             except Exception:
                 time.sleep(0.4)
@@ -192,18 +200,41 @@ miner {{
                 os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
                 self.proc.wait(timeout=10)
         self.proc = None
-        for _ in range(40):
-            with socket.socket() as s:
-                if s.connect_ex(("127.0.0.1", self.rpc_port)) != 0:
-                    return
+        # both ports must be free again: the RPC port proves the process is gone,
+        # the peer port proves the listening socket was released - restarting on a
+        # peer port still in TIME_WAIT leaves the node up but unable to accept
+        # peers, which looks exactly like "the reorg never happened"
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if (self.port_free(self.rpc_port) and self.port_free(self.peer_port)):
+                return
             time.sleep(0.25)
+        print(f"     warning: {self.name} still holds a port after shutdown")
 
-    def tail(self, n=40):
-        try:
-            with open(self.log_path, "r", errors="replace") as fh:
-                return "".join(fh.readlines()[-n:])
-        except OSError:
-            return "(no log)"
+    @staticmethod
+    def port_free(port):
+        """True if nothing is listening on the port."""
+        with socket.socket() as s:
+            s.settimeout(0.3)
+            return s.connect_ex(("127.0.0.1", port)) != 0
+
+    def tail(self, n=40, only=None):
+        """stdout of the JVM, plus the lines logback wrote to logs/rsk.log."""
+        text = ""
+        for path in (os.path.join(self.base, "logs", "rsk.log"), self.log_path):
+            try:
+                with open(path, "r", errors="replace") as fh:
+                    lines = fh.readlines()
+            except OSError:
+                continue
+            if only:
+                keep = [ln for ln in lines
+                        if any(k in ln.lower() for k in only)]
+                if keep:
+                    lines = keep
+            if lines:
+                text += f"--- {path} ---\n" + "".join(lines[-n:]) + "\n"
+        return text or "(no log)"
 
     # -- rpc ---------------------------------------------------------------
     def rpc(self, method, params):
@@ -274,13 +305,35 @@ def send(node, nonce, gas_price, note=""):
 RESULTS = []
 
 
-def record(phase, claim, got, want_ok, detail=""):
-    ok = want_ok
+def record(phase, claim, ok, detail=""):
+    ok = bool(ok)
     RESULTS.append((phase, claim, ok, detail))
     print(f"  [{'PASS' if ok else 'FAIL'}] {phase}: {claim}")
     if detail:
         print(f"         {detail}")
     return ok
+
+
+def wait_for_switch(n1, n2, height, old_hash, timeout, label):
+    """Poll until node1's block at `height` stops being the one we mined."""
+    deadline = time.time() + timeout
+    next_report = 0.0
+    while time.time() < deadline:
+        try:
+            blk = n1.block(height)
+            if blk and blk["hash"] != old_hash:
+                return True
+        except Exception:                       # noqa: BLE001 - node may be restarting
+            blk = None
+        if time.time() >= next_report:
+            next_report = time.time() + 5
+            try:
+                print(f"     ... {label}: node1 h={n1.height()} peers={n1.peers()} | "
+                      f"node2 h={n2.height()} peers={n2.peers()}")
+            except Exception:                   # noqa: BLE001
+                print(f"     ... {label}: one of the nodes is not answering")
+        time.sleep(0.4)
+    return False
 
 
 def wait_until(pred, timeout, what):
@@ -358,19 +411,28 @@ def phase_reorg(n1, n2, gp):
            f"node2 height {n2.height()} vs node1 height {n1.height()}, "
            f"peers {n1.peers()} (isolated)")
 
-    print("     connecting node 2 -> node 1 and waiting for the switch")
+    enode = f"enode://{n1.node_id}@127.0.0.1:{n1.peer_port}"
+    print(f"     node 2 will dial {enode[:34]}...")
     n2.stop()
     n2.active = [(n1.node_id, n1.peer_port)]
     n2.start()
-    try:
-        wait_until(lambda: n1.block(h) is not None
-                   and n1.block(h)["hash"] != old_hash, 90,
-                   "node 1 to switch to the longer chain")
-    except RuntimeError:
+
+    switched = wait_for_switch(n1, n2, h, old_hash, 75, "attempt 1: node2 dials node1")
+    if not switched:
+        print("     attempt 1 did not switch; trying the other direction "
+              "(node 1 dials node 2)")
+        n1.stop()
+        n1.active = [(n2.node_id, n2.peer_port)]
+        n1.start()
+        switched = wait_for_switch(n1, n2, h, old_hash, 75, "attempt 2: node1 dials node2")
+    if not switched:
         record("P2c", "node 1 adopts the longer chain", False,
-               f"still on {n1.block(h)['hash'][:18]}... after 90 s; "
-               f"peers={n1.peers()}\n{n1.tail(25)}")
-        raise
+               "no switch after both directions. Diagnostics:")
+        print(f"     node1 peers={n1.peers()} height={n1.height()}")
+        print(f"     node2 peers={n2.peers()} height={n2.height()}")
+        print(n1.tail(30, only=("peer", "connect", "sync", "block", "header", "reject")))
+        print(n2.tail(30, only=("peer", "connect", "sync", "block", "header", "reject")))
+        raise RuntimeError("node 1 never adopted node 2's chain")
     new_hash = n1.block(h)["hash"]
     record("P2c", "node 1 adopts the longer chain and orphans the block",
            True, f"height {h} is now {new_hash[:18]}... (was {old_hash[:18]}...)")
