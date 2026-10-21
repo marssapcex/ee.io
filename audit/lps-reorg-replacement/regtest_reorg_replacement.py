@@ -85,7 +85,11 @@ NODE_PORTS = (4444, 4445, 50501, 50502)
 CHAIN_ID = 33                     # Constants.REGTEST_CHAIN_ID
 COW_KEY = ethsign.COW_KEY         # premined in genesis/rsk-dev.json
 GAS_LIMIT = 21000
-THROWAWAY = bytes.fromhex("00" * 19 + "01")
+# a plain, codeless address.  The first version of this file sent the wei to
+# 0x00..01, which is the ecrecover precompile: with gasLimit == 21000 the call
+# has no gas left, the call fails, and the receipt says status 0x0 even though
+# the transaction was mined.  Every transaction here must end 0x1.
+RECIPIENT = bytes.fromhex("00" * 18 + "dead")
 POOL_GAS = 1000                   # wei: big enough that +15% is an integer
 
 
@@ -421,6 +425,10 @@ miner {{
                             out[tx["hash"].lower()] = nonce
         return out
 
+    def balance(self, addr):
+        return int(self.rpc("eth_getBalance",
+                            ["0x" + bytes(addr).hex(), "latest"]), 16)
+
     def nonce(self):
         return int(self.rpc("eth_getTransactionCount",
                             ["0x" + ethsign.address_of(COW_KEY).hex(), "latest"]), 16)
@@ -458,7 +466,7 @@ miner {{
 
 def send(node, nonce, gas_price, note=""):
     raw, digest, sender = ethsign.sign_tx(
-        nonce, gas_price, GAS_LIMIT, THROWAWAY, 1, b"", CHAIN_ID, COW_KEY)
+        nonce, gas_price, GAS_LIMIT, RECIPIENT, 1, b"", CHAIN_ID, COW_KEY)
     try:
         node.rpc("eth_sendRawTransaction", ["0x" + raw.hex()])
         return digest, None
@@ -572,9 +580,13 @@ def phase_policy(n1, chain_gp):
         raise PocError(f"the first transaction was rejected: {err}")
     blk = n1.mine(1)
     rc = wait_receipt(n1, a)
-    record("P1a", "a normal transaction is mined", rc is not None,
-           f"nonce {n} at {hi} wei -> block {int(rc['blockNumber'], 16)} "
-           f"(status {rc['status']}), node height {blk}" if rc else "no receipt")
+    paid = n1.balance(RECIPIENT)
+    ok_status = rc is not None and int(rc.get("status", "0x0"), 16) == 1
+    record("P1a", "a normal transaction is mined and its 1 wei actually arrives",
+           rc is not None and ok_status and paid == 1,
+           f"nonce {n} at {hi} wei -> block {int(rc['blockNumber'], 16)}, "
+           f"height {blk}, receipt status {rc['status']}, "
+           f"recipient balance {paid} wei" if rc else "no receipt")
 
     _, err = send(n1, n, hi * 2)
     record("P1b", "replacing the MINED transaction is refused on the nonce, not on the price",
@@ -717,10 +729,13 @@ def phase_reorg(n1, n2, gp):
         pool_seen = "txpool_content not available"
     else:
         pool_seen = f"{len(pooled)} transaction(s): {sorted(pooled)}"
+    paid = n1.balance(RECIPIENT)
     record("P2f", "both orphaned transactions are retracted into node 1's pool",
-           back and corroborated,
-           f"account nonce is back to {n1.nonce()}; eth_getTransactionByHash -> "
-           f"victim {v_seen}, control {k_seen}; {pool_seen}")
+           back and corroborated and n1.nonce() == n and paid == 0,
+           f"account nonce is back to {n1.nonce()} (was {n + 2} before the reorg) "
+           f"and the recipient balance is back to {paid} wei, so the state was "
+           f"rolled back and not just the block hashes; "
+           f"eth_getTransactionByHash -> victim {v_seen}, control {k_seen}; {pool_seen}")
     if not back:
         raise PocError("the orphaned transactions did not come back to the pool; "
                        "the rest of the experiment has nothing to act on")
@@ -756,11 +771,14 @@ def phase_reorg(n1, n2, gp):
            f"{n1.tx(victim)!r}")
 
     print("\nP4  control: the other transaction in the same orphaned block, untouched")
+    paid = n1.balance(RECIPIENT)
     record("P4", "an orphaned transaction is re-mined on its own if nothing replaces it",
-           ck is not None and ck.get("blockNumber") is not None,
+           ck is not None and ck.get("blockNumber") is not None and paid == 2,
            f"control {control[:16]}... is back on chain in block "
            f"{int(ck['blockNumber'], 16) if ck else None} "
-           f"(it was orphaned at height {hv} together with the victim)")
+           f"(it was orphaned at height {hv} together with the victim); "
+           f"recipient balance is {paid} wei = the replacement plus the control, "
+           f"and never the victim")
 
 
 # ---------------------------------------------------------------------------
