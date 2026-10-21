@@ -181,7 +181,7 @@ miner {{
 """)
 
     # -- process -----------------------------------------------------------
-    def start(self):
+    def start(self, self_mining_check=True):
         self.write_config()
         for port in (self.rpc_port, self.peer_port):
             if not self.port_free(port):
@@ -233,7 +233,7 @@ miner {{
 
         # a node that mines without being asked makes every height in this run
         # meaningless - check once, on the first, isolated start
-        if not self.active and not self._checked_self_mining:
+        if self_mining_check and not self.active and not self._checked_self_mining:
             h0 = self.height()
             time.sleep(2.5)
             h1 = self.height()
@@ -373,6 +373,19 @@ miner {{
             return int(self.rpc("net_peerCount", []), 16)
         except RpcError:
             return -1
+
+    def net_listening(self):
+        """True if rskj's peer server is bound and accepting connections."""
+        try:
+            return bool(self.rpc("net_listening", []))
+        except RpcError:
+            return False
+
+    def client_version(self):
+        try:
+            return self.rpc("web3_clientVersion", [])
+        except RpcError:
+            return "?"
 
 
 # ---------------------------------------------------------------------------
@@ -663,6 +676,159 @@ def phase_reorg(n1, n2, gp):
 # ---------------------------------------------------------------------------
 
 
+def list_rskj(work=None):
+    """Every rskj JVM on this machine, with the config file it was given."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,etime=,command="],
+                             capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    rows = []
+    me = os.getpid()
+    for line in out.splitlines():
+        line = line.strip()
+        pid_s, _, rest = line.partition(" ")
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        if pid in (me, os.getppid()) or "co.rsk.Start" not in rest:
+            continue
+        etime, _, cmd = rest.strip().partition(" ")
+        conf = "(no -Drsk.conf.file)"
+        for token in cmd.split():
+            if token.startswith("-Drsk.conf.file="):
+                conf = token.split("=", 1)[1]
+        rows.append((pid, etime, conf))
+    return rows
+
+
+def port_holders(ports):
+    """pid/program listening on each port, via lsof (macOS and Linux)."""
+    found = {}
+    if shutil.which("lsof") is None:
+        return found
+    for port in ports:
+        try:
+            out = subprocess.run(
+                ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-F", "pc"],
+                capture_output=True, text=True, timeout=15).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        pid = cmd = None
+        for line in out.splitlines():
+            if line.startswith("p"):
+                pid = line[1:]
+            elif line.startswith("c"):
+                cmd = line[1:]
+        if pid:
+            found[port] = f"pid {pid} ({cmd})"
+    return found
+
+
+def probe(jar, java, work):
+    """Start one node from an empty database and report what it actually does.
+
+    Read-only with respect to earlier runs: it never kills anything, never
+    touches the node1/node2 directories, and uses its own ports and datadir.
+    """
+    print("=" * 74)
+    print("probe: what does one rskj regtest node actually do here?")
+    print("=" * 74)
+
+    print("\nenvironment")
+    print(f"  python : {sys.version.split()[0]} ({sys.executable})")
+    print(f"  java   : {java}")
+    try:
+        ver = subprocess.run([java, "-version"], capture_output=True,
+                             text=True, timeout=60)
+        for line in (ver.stderr or ver.stdout).strip().splitlines()[:2]:
+            print(f"           {line}")
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"           could not run java: {exc}")
+    if os.path.isfile(jar):
+        print(f"  jar    : {jar} ({os.path.getsize(jar)} bytes)")
+    else:
+        print(f"  jar    : {jar}  ** does not exist **")
+
+    print("\nrskj processes already running")
+    rows = list_rskj()
+    if not rows:
+        print("  none")
+    for pid, etime, conf in rows:
+        print(f"  pid {pid:<7} up {etime:<12} {conf}")
+    holders = port_holders((4444, 4445, 50501, 50502, 4446, 50503))
+    if not holders:
+        print("  no listener on 4444/4445/50501/50502/4446/50503")
+    for port, who in sorted(holders.items()):
+        print(f"  port {port}: {who}")
+
+    node = Node("probe", os.path.join(work, "probe"), 4446, 50503,
+                ethsign.keccak256(b"poc-probe")[:32], jar, java)
+    shutil.rmtree(node.base, ignore_errors=True)   # the probe always starts empty
+    n = 0
+    try:
+        print("\nstarting one node from an empty database (no self-mining check)")
+        print(f"  config: {node.conf_path}")
+        node.start(self_mining_check=False)
+        n = 0
+        first = node.height()
+        print(f"  eth_blockNumber right after start : {first}"
+              + ("   <- 0 is what a fresh database looks like"
+                 if first == 0 else
+                 "   ** NOT 0: this is not a fresh chain, look for a leftover node **"))
+        print(f"  web3_clientVersion                : {node.client_version()}")
+        print(f"  net_listening                     : {node.net_listening()}")
+        print(f"  peer port 50503 accepting         : {not node.port_free(50503)}")
+        print(f"  net_peerCount                     : {node.peers()}")
+        print(f"  eth_gasPrice                      : {node.gas_price()} wei")
+        try:
+            bal = int(node.rpc("eth_getBalance",
+                               ["0x" + ethsign.address_of(COW_KEY).hex(), "latest"]), 16)
+            print(f"  premined account balance          : {bal} wei")
+        except RpcError as exc:
+            print(f"  premined account balance          : RPC error {exc}")
+
+        seen = [first]
+        for _ in range(4):
+            time.sleep(1.0)
+            seen.append(node.height())
+        grew = seen[-1] != seen[0]
+        print(f"  heights over 4 s                  : {seen}")
+        print("  self-mining                       : "
+              + ("NONE - block production is under the script's control"
+                 if not grew else
+                 "YES ** the node mines on its own; every height in a PoC run "
+                 "would be meaningless **"))
+
+        node.mine(1)
+        print(f"  evm_mine works                    : height {node.height()}")
+    except Exception as exc:                   # noqa: BLE001 - this is a diagnosis
+        n = 1
+        print(f"\nPROBE FAILED: {exc}")
+    finally:
+        try:
+            node.stop()
+            print("  node stopped, its ports are free again")
+        except Exception as exc:               # noqa: BLE001
+            n = 1
+            print(f"  could not stop the node cleanly: {exc}")
+
+    log = node.read_log(node.chainlog_path)
+    interesting = [ln for ln in log.splitlines()
+                   if any(k in ln for k in ("Unable to start peer server",
+                                            "BindException", "Address already in use",
+                                            "Loaded up to block", "Network upgrade",
+                                            "NodeId:", "Listening for incoming"))]
+    print("\nwhat the node itself said")
+    for line in interesting[:20]:
+        print(f"  {line}")
+    print(f"  ({len(log.splitlines())} lines in {node.chainlog_path})")
+    print(f"\nprobe finished{'' if n == 0 else ' with problems'}; "
+          f"{node.base} can be deleted")
+    return n
+
+
 def reap_stale(work):
     """Kill rskj processes that this workdir started in an earlier attempt."""
     marker = os.path.abspath(work)
@@ -778,6 +944,12 @@ def main():
     ap.add_argument("--workdir", default="./regtest-reorg-poc")
     ap.add_argument("--keep", action="store_true",
                     help="keep the node databases and logs after the run")
+    ap.add_argument("--probe", action="store_true",
+                    help="diagnose this machine instead of running the PoC: "
+                         "report leftover rskj processes and port holders, then "
+                         "start ONE node from an empty database and say whether "
+                         "it binds its peer port, whether it mines on its own, "
+                         "and whether evm_mine works")
     ap.add_argument("--skip-policy", action="store_true",
                     help="skip P1 and go straight to the reorg")
     args = ap.parse_args()
@@ -785,6 +957,10 @@ def main():
     args.rskj_jar = resolve_jar(args.rskj_jar, ap)
     args.java = resolve_java(args.java)
     work = os.path.abspath(args.workdir)
+
+    if args.probe:
+        os.makedirs(work, exist_ok=True)
+        return probe(args.rskj_jar, args.java, work)
 
     # every run starts from the same genesis: keeping a database would let an
     # earlier attempt decide this one's heights
