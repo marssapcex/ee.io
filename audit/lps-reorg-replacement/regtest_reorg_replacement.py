@@ -1,78 +1,20 @@
 #!/usr/bin/env python3
 """
-regtest_reorg_replacement.py - what happens to an RSK transaction that a reorg
-orphans, and that a same-nonce transaction then replaces?
+Two rskj regtest nodes, one question: a transaction is mined, a reorg orphans
+it, a same-nonce transaction takes its nonce - does the first one come back?
 
-The LP binds a deposit to a quote, the deposit disappears, and the watcher keeps
-retrying a transaction hash that no longer exists on chain.  This script asks
-that question of two real rskj nodes instead of arguing about it.
+  P1  pool rules: mined is final, a pooled replacement needs +40%.
+  P2  build --prefix blocks, sync node2, split, diverge, reconnect, reorg.
+  P3  replace the retracted transaction at +15% and +100%, then scan every
+      surviving block for the original hash.
+  P4  the control transaction, orphaned in the same block and never replaced,
+      is mined again - so it is the replacement that killed the other one.
 
-WHAT THE POC DOES, IN ORDER
-  1. starts rskj node1 on a fresh regtest database and measures the replacement
-     rules of the transaction pool with ordinary transfers: a mined transaction
-     cannot be replaced, a pooled one needs +40% (so +15% is refused, +100% is
-     accepted), and once accepted the old hash is gone;
-  2. grows the chain to --prefix blocks.  That history is the thing the reorg
-     must NOT touch;
-  3. starts node2, points it at node1 and waits until node2 reports node1's tip
-     hash at node1's height, so both nodes own exactly the same history;
-  4. disconnects them (peer count 0/0, asserted) and lets the chains diverge:
-     node1 mines one block holding the victim and the control, node2 mines three
-     empty blocks on the same parent.  Node2's chain now has the larger total
-     difficulty - read from both nodes and printed;
-  5. reconnects them and waits for node1 to switch: the block with the two
-     transactions is orphaned, its hash changes, the prefix blocks keep their
-     hashes, and the two transactions go back into node1's pool with the account
-     nonce and balance rolled back to their pre-fork values;
-  6. sends a same-nonce replacement for the victim at +15% (refused, still) and
-     +100% (accepted), mines three blocks, and reads every surviving block for
-     the victim's hash.  It is nowhere: the replacement took its nonce.  The
-     control - orphaned in the same block, never replaced - is mined again
-     normally, which is what shows the reorg alone does not kill a transaction.
+No mock, no emulator, no patched constant, no database touched by hand.
+Needs JRE 17+ and rskj-core-*-all.jar; transactions are signed in ethsign.py.
 
-  No database is written by hand, no rskj constant is patched, there is no
-  emulator and no mock: two JVMs, real blocks, real P2P, real fork choice.
-
-WHY THE ANSWER IS "NEVER COMES BACK"
-  A reorg by itself RESCUES the transaction: retractBlock -> addTransactions
-  returns the orphaned block's transactions to the pool and they are mined
-  again.  What kills it is the replacement, which is only possible after the
-  reorg, and which needs +40%: reference.conf:306 sets
-  transaction.gasPriceBump = 40 and TransactionPoolImpl:309-311 accepts a
-  same-nonce replacement only when new >= old * 140 / 100.  Once the original
-  is mined, TxValidatorNonceRangeValidator compares its nonce with the account
-  nonce at the best block and answers "transaction nonce too low" - mining is
-  final, a reorg is not.
-
-GAS PRICE GRANULARITY
-  Regtest quotes 1 wei, and 15% of 1 wei does not exist, so every transfer here
-  uses 1000 wei: +15% is 1150, +100% is 2000.
-
-OUTPUT
-  one line per measurement, numbers only, grouped P1..P4:
-      P1a ok   tx mined, 1 wei             blk=2 status=1 bal=1
-      P2d ok   B heavier, same parent      A h=15 td=16 | B h=17 td=18
-      P2f ok   switch, prefix intact       blk15 0xec9e5986->0xdbb931f1 blk1..14 intact
-      P3c ok   victim in any block         blk15..20: none replacement blk=18
-  plus result.json next to it with the same rows and their timestamps.  The
-  only prose is the one line an abort prints before it stops.
-
-USAGE
-  python3 regtest_reorg_replacement.py --rskj-jar /path/to/rskj-core-*-all.jar
-  python3 regtest_reorg_replacement.py --rskj-jar ... --prefix 20
-  python3 regtest_reorg_replacement.py --rskj-jar ... --keep     # keep node dirs
-  python3 regtest_reorg_replacement.py --rskj-jar ... --probe    # diagnose the box
-  python3 ethsign.py                                             # crypto self-test
-
-Needs a JRE 17+ and the rskj fat jar.  Nothing else - no docker, no web3, no
-unlocked account: transactions are signed here and pushed with
-eth_sendRawTransaction.  The key is the account premined in rskj's own regtest
-genesis (genesis/rsk-dev.json, cd2a3d9f938e13cd947ec05abc7fe734df8dd826).
-
-Before anything is measured, rskj processes left by an earlier attempt are
-stopped, both databases are wiped, every node has to prove that its peer port is
-listening, that its RPC answer comes from the JVM this script just launched, and
-that it does not mine on its own.
+usage: regtest_reorg_replacement.py --rskj-jar ~/rskj.jar [--prefix 12]
+                                   [--keep] [--probe] [--skip-policy]
 """
 
 import argparse
@@ -97,10 +39,8 @@ NODE_PORTS = (4444, 4445, 50501, 50502)
 CHAIN_ID = 33                     # Constants.REGTEST_CHAIN_ID
 COW_KEY = ethsign.COW_KEY         # premined in genesis/rsk-dev.json
 GAS_LIMIT = 21000
-# a plain, codeless address.  The first version of this file sent the wei to
-# 0x00..01, which is the ecrecover precompile: with gasLimit == 21000 the call
-# has no gas left, the call fails, and the receipt says status 0x0 even though
-# the transaction was mined.  Every transaction here must end 0x1.
+# codeless address, so a 21000-gas transfer always ends status 1.
+# 0x00..01 is ecrecover: the call runs out of gas and the receipt says 0x0.
 RECIPIENT = bytes.fromhex("00" * 18 + "dead")
 POOL_GAS = 1000                   # wei: big enough that +15% is an integer
 
@@ -192,9 +132,7 @@ rpc {{
     }}
 }}
 
-# the miner server answers eth_getWork; the miner CLIENT is what produces
-# blocks on a timer.  We want neither self-mining nor a second miner: every
-# block in this experiment comes from an explicit evm_mine call.
+# no self-mining and no timer: every block comes from an explicit evm_mine
 miner {{
     server.enabled = true
     client.enabled = false
@@ -208,13 +146,8 @@ miner {{
         return os.path.join(self.base, "jvm.pid")
 
     def _kill_previous_jvm(self):
-        """Kill the JVM this node directory started last time, if it is alive.
-
-        This is the fix for the run that mined 43k blocks and then "connected":
-        the previous attempt left its JVM behind, the next one failed to bind
-        (java.net.BindException: Address already in use) and every RPC call went
-        to the corpse, which was still linked to the other corpse.
-        """
+        """Kill the JVM this directory started last time; a leftover still
+        answers its port, and every number would then be that node's."""
         try:
             with open(self.pid_path) as fh:
                 pid = int(fh.read().strip())
@@ -261,8 +194,7 @@ miner {{
                "-Duser.language=en",
                "-cp", str(self.jar),
                "co.rsk.Start", "--regtest"]
-        # deliberately NOT start_new_session: if this script is interrupted the
-        # JVM has to die with it, which is exactly what did not happen last time
+        # no start_new_session: if this script is killed the JVM must die too
         with open(self.stdout_path, "ab") as out:
             self.proc = subprocess.Popen(cmd, stdout=out,
                                          stderr=subprocess.STDOUT, cwd=self.base)
@@ -284,8 +216,7 @@ miner {{
             raise PocError(f"{self.name} did not answer RPC on port {self.rpc_port}"
                            f"\n{self.tail()}")
 
-        # the answer must come from the JVM that was just launched, not from a
-        # leftover that happens to own the port
+        # the answer has to come from the JVM just launched, not a leftover
         owners = lsof_pids([self.rpc_port]).get(self.rpc_port, [])
         if owners and self.proc.pid not in owners:
             raise PocError(
@@ -294,8 +225,7 @@ miner {{
                 f"  that is somebody else's node; every number after this would be "
                 f"theirs.  Kill it and run again.")
 
-        # the P2P listener is not optional here: a node that answers RPC but
-        # never binds its peer port cannot take part in the experiment at all
+        # a node that answers RPC but never binds its peer port is useless here
         deadline = time.time() + 40
         while time.time() < deadline:
             if not self.port_free(self.peer_port):
@@ -309,8 +239,7 @@ miner {{
             raise PocError(f"{self.name}: rskj failed to start its peer server."
                            f"\n{self.tail(25)}")
 
-        # a node that mines without being asked makes every height in this run
-        # meaningless - check once, on the first, isolated start
+        # self-mining would make every height in this run meaningless
         if self_mining_check and not self.active and not self._checked_self_mining:
             h0 = self.height()
             time.sleep(2.5)
@@ -340,10 +269,8 @@ miner {{
             os.unlink(self.pid_path)
         except OSError:
             pass
-        # both ports must be free again: the RPC port proves the process is gone,
-        # the peer port proves the listening socket was released.  Restarting on
-        # a peer port still held leaves the node up but deaf, which looks exactly
-        # like "the reorg never happened".
+        # both ports must be free: a node up on a stale peer port is deaf, and
+        # a deaf node looks exactly like "the reorg never happened"
         deadline = time.time() + 30
         while time.time() < deadline:
             if self.port_free(self.rpc_port) and self.port_free(self.peer_port):
@@ -399,7 +326,7 @@ miner {{
         return self.rpc("eth_getBlockByNumber", [hex(h), full])
 
     def mine(self, n=1):
-        """Mine exactly n blocks, here and now, and prove the height moved."""
+        """Mine n blocks now, and prove the height moved."""
         if n < 1 or n > 10:
             raise PocError(f"refusing to mine {n} blocks in one go - the point of "
                            f"the reorg is three blocks, not a chain build")
@@ -421,8 +348,7 @@ miner {{
         return self.rpc("eth_getTransactionReceipt", [h])
 
     def pool(self):
-        """Every transaction the node is holding, as {hash: nonce}; None if the
-        node does not answer txpool_content (it is only ever corroboration)."""
+        """{hash: nonce} of what the node holds, or None if unanswered."""
         out = {}
         try:
             content = self.rpc("txpool_content", [])
@@ -507,11 +433,10 @@ def note(text):
 
 def row(phase, label, value, ok=True):
     if not isinstance(ok, bool):
-        raise PocError(f"internal: row({phase}) was given {ok!r}, which is not a "
-                       f"verdict; a non-empty string must never decide a phase")
+        raise PocError(f"row({phase}) got {ok!r}; a verdict must be a bool")
     RESULTS.append((phase, label, ok, str(value), time.time() - T0))
-    mark = _c("32", "ok  ") if ok else _c("1;31", "FAIL")
-    print(f"     {phase:<4}{mark} {label:<32}{value}")
+    mark = _c("32", "✓") if ok else _c("1;31", "✗")
+    print(f"  {mark} {phase:<4}{label:<10}{value}")
     return ok
 
 
@@ -519,8 +444,7 @@ _PROGRESS = 0
 
 
 def progress(text):
-    """One line that keeps being overwritten - and only on a terminal, so a
-    redirected log stays clean instead of filling up with redraws."""
+    """Redraw one line, on a terminal only, so a piped log stays clean."""
     global _PROGRESS
     if not sys.stdout.isatty():
         return
@@ -573,7 +497,7 @@ def wait_peers(nodes, want, timeout, label):
 
 
 def wait_for_switch(n1, n2, height, old_hash, timeout, label):
-    """Poll until node1's block at `height` stops being the one we mined."""
+    """Poll until node1's block at `height` is no longer the one we mined."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -611,7 +535,7 @@ def where_mined(node, needle, from_h, to_h):
 
 def phase_policy(n1, gp):
     """P1 - what rskj does with a same-nonce transaction."""
-    section("P1  replacement rules")
+    section("P1  pool rules")
 
     n = n1.nonce()
     a, err = send(n1, n, POOL_GAS)
@@ -621,14 +545,14 @@ def phase_policy(n1, gp):
     rc = wait_receipt(n1, a)
     bal = n1.balance(RECIPIENT)
     status = int(rc["status"], 16) if rc else -1
-    row("P1a", "tx mined, 1 wei",
-        f"blk={int(rc['blockNumber'], 16) if rc else '-'} status={status} bal={bal}",
+    row("P1a", "mined",
+        f"blk {int(rc['blockNumber'], 16) if rc else '-'}  status {status}  bal {bal}",
         rc is not None and status == 1 and bal == 1)
 
     # the same nonce, after the account nonce has moved past it
     _, err = send(n1, n, POOL_GAS * 2)
-    row("P1b", "same nonce after mining",
-        f"nonce={n} at {POOL_GAS * 2} wei -> {err}",
+    row("P1b", "remine",
+        f"nonce {n}  {POOL_GAS * 2} wei  →  {err}",
         err is not None and "nonce" in err.lower())
 
     n = n1.nonce()
@@ -637,29 +561,29 @@ def phase_policy(n1, gp):
         raise PocError(f"the pool transaction was rejected: {err}")
     small = POOL_GAS * 115 // 100
     _, err_s = send(n1, n, small)
-    row("P1c", "in pool, +15%",
-        f"{small}/{POOL_GAS} -> {err_s}",
+    row("P1c", "+15%",
+        f"{small}/{POOL_GAS}  →  {err_s}",
         err_s is not None and "bump" in err_s.lower())
 
     big = POOL_GAS * 2
     b, err_b = send(n1, n, big)
     gone = n1.tx(a) is None
-    row("P1d", "in pool, +100%",
-        f"{big}/{POOL_GAS} -> {'accepted' if err_b is None else err_b},"
-        f" old hash {'gone' if gone else 'still there'}",
+    row("P1d", "+100%",
+        f"{big}/{POOL_GAS}  →  {'accepted' if err_b is None else err_b}"
+        f"  old hash {'gone' if gone else 'here'}",
         err_b is None and gone)
 
     n1.mine(1)
     rc = wait_receipt(n1, b)
-    row("P1e", "which one is on chain",
-        f"blk={int(rc['blockNumber'], 16) if rc else '-'} "
-        f"original={n1.receipt(a)}",
+    row("P1e", "which",
+        f"blk {int(rc['blockNumber'], 16) if rc else '-'}  original receipt "
+        f"{n1.receipt(a)}",
         rc is not None and n1.receipt(a) is None)
 
 
 def phase_reorg(n1, n2, prefix):
     """P2/P3/P4 - reorg of the tip on a chain that has history, then replacement."""
-    section("P2  reorg of the tip")
+    section("P2  reorg")
 
     for i in range(1, prefix + 1):
         if i == prefix // 2:            # one real transfer, so the prefix holds state
@@ -669,7 +593,7 @@ def phase_reorg(n1, n2, prefix):
     tip0 = n1.block(h0)["hash"]
     prefix_hashes = {k: n1.block(k)["hash"] for k in range(1, h0 + 1)}
     bal0 = n1.balance(RECIPIENT)
-    note(f"prefix  h={h0}  tip={tip0[:10]}  bal={bal0}  nonce={n1.nonce()}")
+    note(f"prefix  h {h0}   tip {tip0[:10]}   bal {bal0}   nonce {n1.nonce()}")
 
     # node2 must own the same history before the two chains diverge
     n2.active = [(n1.node_id, n1.peer_port)]
@@ -680,7 +604,7 @@ def phase_reorg(n1, n2, prefix):
             90, "node2 to sync the prefix")
     except PocError:
         synced = False
-    row("P2a", "node2 synced the tip", f"h={n2.height()} {tip0[:16]}", synced)
+    row("P2a", "sync", f"node2 h {n2.height()}  tip {tip0[:10]}", synced)
     if not synced:
         print(n2.tail(30, only=("sync", "peer", "block", "connect", "reject")))
         raise PocError("node2 never reached node1's tip, so there is no shared "
@@ -695,8 +619,8 @@ def phase_reorg(n1, n2, prefix):
         isolated = True
     except PocError:
         isolated = False
-    row("P2b", "both isolated",
-        f"h={n1.height()}/{n2.height()} peers={n1.peers()}/{n2.peers()}", isolated)
+    row("P2b", "split",
+        f"h {n1.height()}/{n2.height()}  peers {n1.peers()}/{n2.peers()}", isolated)
     if not isolated:
         raise PocError("the nodes are still connected; the next block would travel "
                        "over and the run would not be evidence")
@@ -714,15 +638,15 @@ def phase_reorg(n1, n2, prefix):
     if not wait_receipt(n1, victim) or not wait_receipt(n1, control):
         raise PocError("the victim and the control were not mined")
     bal_mined = n1.balance(RECIPIENT)
-    row("P2c", "victim + control mined",
-        f"blk={hA} {hash_A[:16]} txs={len(a_txs)}",
+    row("P2c", "mine",
+        f"blk {hA}  {hash_A[:10]}  txs {len(a_txs)}",
         victim.lower() in a_txs and control.lower() in a_txs)
 
     td_a = int(n1.block(n1.height())["totalDifficulty"], 16)
     n2.mine(3)
     td_b = int(n2.block(n2.height())["totalDifficulty"], 16)
-    row("P2d", "B heavier, same parent",
-        f"A h={n1.height()} td={td_a} | B h={n2.height()} td={td_b}", td_b > td_a)
+    row("P2d", "diff",
+        f"A h {n1.height()} td {td_a}   |   B h {n2.height()} td {td_b}", td_b > td_a)
     if td_b <= td_a:
         raise PocError(f"chain B (td {td_b}) is not heavier than chain A (td {td_a})")
 
@@ -730,7 +654,7 @@ def phase_reorg(n1, n2, prefix):
     n2.active = [(n1.node_id, n1.peer_port)]
     n2.start()
     linked = wait_peers([n1, n2], 1, 45, "p2p")
-    row("P2e", "p2p session", f"peers={n1.peers()}/{n2.peers()}", linked)
+    row("P2e", "join", f"peers {n1.peers()}/{n2.peers()}", linked)
     if not linked:
         print(n1.tail(30, only=("peer", "connect", "sync", "handshake", "reject")))
         raise PocError("no P2P session, so no reorg could be attempted")
@@ -743,8 +667,8 @@ def phase_reorg(n1, n2, prefix):
 
     now_A = n1.block(hA)["hash"]
     prefix_ok = all(n1.block(k)["hash"] == h for k, h in prefix_hashes.items())
-    row("P2f", "switch, prefix intact",
-        f"blk{hA} {hash_A[:8]}->{now_A[:8]} blk1..{h0} "
+    row("P2f", "switch",
+        f"blk {hA}  {hash_A[:8]} → {now_A[:8]}   blk 1..{h0} "
         f"{'intact' if prefix_ok else 'REWRITTEN'}", prefix_ok)
     if not prefix_ok:
         raise PocError("the reorg rewrote blocks before the fork, so this is not a "
@@ -760,7 +684,7 @@ def phase_reorg(n1, n2, prefix):
     tipblk = n1.block(n1.height()) or {}
     tip = tipblk.get("hash", "")
     td_tip = int(tipblk["totalDifficulty"], 16) if tipblk.get("totalDifficulty") else -1
-    row("P2g", "tips", f"h={n1.height()}/{n2.height()} {tip[:16]} td={td_tip}",
+    row("P2g", "tips", f"h {n1.height()}/{n2.height()}  {tip[:10]}  td {td_tip}",
         converged and td_tip == td_b)
 
     vt, kt = n1.tx(victim), n1.tx(control)
@@ -769,42 +693,42 @@ def phase_reorg(n1, n2, prefix):
             and kt is not None and kt.get("blockNumber") is None)
     nonce_now, bal_now = n1.nonce(), n1.balance(RECIPIENT)
     in_pool = pooled is None or (victim.lower() in pooled and control.lower() in pooled)
-    row("P2h", "pool + state rollback",
-        f"nonce={nonce_now} bal={bal_now} pool="
+    row("P2h", "rollback",
+        f"nonce {nonce_now}  bal {bal_now}  pool "
         f"{len(pooled) if pooled is not None else '?'}",
         back and in_pool and nonce_now == n and bal_now == bal0)
     if not back:
         raise PocError("the orphaned transactions did not come back to the pool; "
                        "the rest of the experiment has nothing to act on")
 
-    section("P3  replacement after the reorg")
+    section("P3  replace")
     small = POOL_GAS * 115 // 100
     _, err_s = send(n1, n, small)
-    row("P3a", "replacement +15%", f"{small}/{POOL_GAS} -> {err_s}",
+    row("P3a", "+15%", f"{small}/{POOL_GAS}  →  {err_s}",
         err_s is not None and "bump" in err_s.lower())
 
     b, err_b = send(n1, n, POOL_GAS * 2)
     gone = n1.tx(victim) is None
-    row("P3b", "replacement +100%",
-        f"{POOL_GAS * 2}/{POOL_GAS} -> {'accepted' if err_b is None else err_b} "
-        f"victim={'null' if gone else 'still there'}", err_b is None and gone)
+    row("P3b", "+100%",
+        f"{POOL_GAS * 2}/{POOL_GAS}  →  {'accepted' if err_b is None else err_b}"
+        f"  victim {'null' if gone else 'here'}", err_b is None and gone)
 
     n1.mine(1)
     rc = wait_receipt(n1, b)
     n1.mine(2)
     last = n1.height()
     hits = where_mined(n1, victim, hA, last)
-    row("P3c", "victim in any block",
-        f"blk{hA}..{last}: {'found in ' + str(hits) if hits else 'none'} "
-        f"replacement blk={int(rc['blockNumber'], 16) if rc else '-'}",
+    row("P3c", "scan",
+        f"blk {hA}..{last}  {'found ' + str(hits) if hits else 'none'}"
+        f"   new blk {int(rc['blockNumber'], 16) if rc else '-'}",
         rc is not None and not hits and n1.receipt(victim) is None)
 
     section("P4  control")
     ck = n1.receipt(control)
     ck_blk = int(ck["blockNumber"], 16) if ck and ck.get("blockNumber") else -1
     bal_final = n1.balance(RECIPIENT)
-    row("P4", "control mined again",
-        f"blk={ck_blk} bal={bal_final} = bal@P2c",
+    row("P4", "mined",
+        f"blk {ck_blk}  bal {bal_final}  (same as P2c)",
         ck_blk >= hA and bal_final == bal_mined)
 
 
@@ -920,11 +844,8 @@ def list_rskj():
 
 
 def cleanup_rskj(work, ports, log=print):
-    """Kill rskj processes that belong to this experiment, and nothing else.
-
-    Belongs = launched with this workdir's rsk.conf, or listening on one of the
-    ports the PoC uses.  A mainnet node on another port is left alone.
-    """
+    """Kill rskj started with this workdir's config or holding the PoC's ports.
+    A node on any other port is left alone."""
     work = os.path.abspath(work)
     cmds = cmdlines()
     targets = set()
@@ -948,12 +869,7 @@ def cleanup_rskj(work, ports, log=print):
 
 
 def probe(jar, java, work):
-    """Start one node from an empty database and report what it actually does.
-
-    Read-only with respect to earlier runs: it touches neither the node1/node2
-    directories nor their ports, and it uses its own datadir.  The only process
-    it may stop is a leftover holding its own two ports.
-    """
+    """One node, empty database, its own ports: report what it does."""
     print("=" * 74)
     print("probe: what does one rskj regtest node actually do here?")
     print("=" * 74)
@@ -1052,11 +968,7 @@ def probe(jar, java, work):
 
 
 def resolve_jar(value, ap):
-    """
-    Find the rskj fat jar.  Accepts a path, a glob (the shell may hand over a
-    literal '~' or a pattern zsh refused to expand), and falls back to the
-    usual build output locations.
-    """
+    """Path, glob, or the usual build output dirs."""
     looked = []
     candidates = []
     if value:
@@ -1144,9 +1056,7 @@ def main():
         os.makedirs(work, exist_ok=True)
         return probe(args.rskj_jar, args.java, work)
 
-    # nothing from an earlier attempt may survive: a leftover JVM keeps the ports
-    # and keeps answering on them, which is how a previous run spent ten minutes
-    # measuring a node it had not started
+    # a leftover JVM keeps its ports and keeps answering: wipe first
     cleanup_rskj(work, NODE_PORTS)
     if os.path.exists(work):
         shutil.rmtree(work)
@@ -1163,11 +1073,11 @@ def main():
                          ["0x" + ethsign.address_of(COW_KEY).hex(), "latest"]), 16)
         gp = n1.gas_price()
         acct = "0x" + ethsign.address_of(COW_KEY).hex()
-        print(_c("1", f"rskj {n1.client_version()}"))
-        print(f"regtest  ·  gas {POOL_GAS} wei (quoted {gp})  ·  "
-              f"prefix {args.prefix} blocks")
-        print(f"node1 :4444/:50501  ·  node2 :4445/:50502")
-        print(f"account {acct[:8]}…{acct[-4:]}  bal={bal}")
+        ver = n1.client_version().split("/")[-1]
+        print(_c("1", f"rskj {ver} · regtest"))
+        print(f"gas {POOL_GAS} wei (node quotes {gp}) · prefix {args.prefix}"
+              f" · node1 4444/50501 · node2 4445/50502")
+        print(f"account {acct[:8]}..{acct[-4:]}  bal {bal}")
         if bal <= 0:
             raise PocError("the premined regtest account has no balance - wrong genesis?")
 
@@ -1198,9 +1108,9 @@ def main():
     passed = sum(1 for r in RESULTS if r[2])
     failed = [r for r in RESULTS if not r[2]]
     elapsed = time.time() - T0
-    head = _c("1;32", f"{passed}/{len(RESULTS)} ok") if not failed \
-        else _c("1;31", f"{passed}/{len(RESULTS)} ok, {len(failed)} FAIL")
-    print(f"\n  {head}  ·  {elapsed:.1f} s")
+    head = (f"{passed}/{len(RESULTS)}" if not failed
+            else f"{passed}/{len(RESULTS)}  ✗ " + " ".join(p for p, *_ in failed))
+    print(f"\n  {_c('1;32' if not failed else '1;31', head)}   {elapsed:.1f} s")
 
     summary = {
         "when": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
