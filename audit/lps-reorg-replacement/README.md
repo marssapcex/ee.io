@@ -55,21 +55,35 @@ genesis.
 
 ## Reading the output
 
-One line per measurement, nothing interpreted:
+One line per measurement, numbers only, grouped by stage:
 
 ```
-phase      measurement                           value
-P1a ok    mined, 1 wei delivered              blk=2 status=1 bal=1
-P1c ok    in the pool, +15%                   1150/1000 -> gas price not enough to bump transaction
-P2c ok    victim + control in one block       blk=15 0xec9e598603db3d75 txs=3
-P2d ok    B is heavier on the same parent      A h=15 td=16 | B h=17 td=18
-P2f ok    node1 switched, history untouched     blk15 0xec9e5986->0xdbb931f1 blk1..14 intact
-P2h ok    pool + state rolled back            nonce=3 bal=3 pool=2
-P3c ok    victim in any surviving block       blk15..20: none replacement blk=18
-P4  ok    control re-mined                    blk=18 bal=5 (replacement + control, never the victim)
+rskj RskJ/9.0.4/…/VETIVER-731b9d8
+regtest  ·  gas 1000 wei (quoted 1)  ·  prefix 12 blocks
+node1 :4444/:50501  ·  node2 :4445/:50502
+account 0xcd2a3d…d826  bal=…
+
+P1  replacement rules
+     P1a ok   tx mined, 1 wei             blk=2 status=1 bal=1
+     P1c ok   in pool, +15%               1150/1000 -> gas price not enough to bump transaction
+     P1d ok   in pool, +100%              2000/1000 -> accepted, old hash gone
+P2  reorg of the tip
+     P2c ok   victim + control mined      blk=15 0xec9e598603db3d75 txs=3
+     P2d ok   B heavier, same parent      A h=15 td=16 | B h=17 td=18
+     P2f ok   switch, prefix intact       blk15 0xec9e5986->0xdbb931f1 blk1..14 intact
+     P2h ok   pool + state rollback       nonce=3 bal=1 pool=2
+P3  replacement after the reorg
+     P3c ok   victim in any block         blk15..20: none replacement blk=18
+P4  control
+     P4  ok   control mined again         blk=18 bal=3 = bal@P2c
+
+  17/17 ok  ·  41.2 s
 ```
 
-(That block is the *format*, not a run. The pasted log of a real run goes here.)
+(The layout is real, the numbers are placeholders - the log of an actual run goes
+here once it has been produced.) `ok` is green and `FAIL` red on a terminal;
+`NO_COLOR=1` turns that off. Redirected output carries no progress redraws, so
+the file is exactly what is printed above.
 
 ## Where those numbers come from in rskj
 

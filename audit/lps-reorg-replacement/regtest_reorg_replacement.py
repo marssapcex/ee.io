@@ -49,12 +49,13 @@ GAS PRICE GRANULARITY
   uses 1000 wei: +15% is 1150, +100% is 2000.
 
 OUTPUT
-  one line per measurement, numbers first, nothing interpreted:
-      P1a ok    mined, 1 wei delivered              blk=2 status=1 bal=1
-      P2d ok    B is heavier on the same parent      A h=15 td=16 | B h=17 td=18
-      P2f ok    node1 switched, history untouched     blk15 0xec9e5986->0xdbb931f1 blk1..14 intact
-      P3c ok    victim in any surviving block        blk15..20: none replacement blk=18
-  and result.json next to it with the same rows and their timestamps.
+  one line per measurement, numbers only, grouped P1..P4:
+      P1a ok   tx mined, 1 wei             blk=2 status=1 bal=1
+      P2d ok   B heavier, same parent      A h=15 td=16 | B h=17 td=18
+      P2f ok   switch, prefix intact       blk15 0xec9e5986->0xdbb931f1 blk1..14 intact
+      P3c ok   victim in any block         blk15..20: none replacement blk=18
+  plus result.json next to it with the same rows and their timestamps.  The
+  only prose is the one line an abort prints before it stops.
 
 USAGE
   python3 regtest_reorg_replacement.py --rskj-jar /path/to/rskj-core-*-all.jar
@@ -489,12 +490,19 @@ RESULTS = []
 T0 = time.time()
 
 
+_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _c(code, text):
+    return f"\033[{code}m{text}\033[0m" if _COLOR else text
+
+
 def section(text):
-    print(f"\n{text}")
+    print(f"\n{_c('1', text)}")
 
 
 def note(text):
-    print(f"     {text}")
+    print(f"     {_c('2', text)}")
 
 
 def row(phase, label, value, ok=True):
@@ -502,7 +510,8 @@ def row(phase, label, value, ok=True):
         raise PocError(f"internal: row({phase}) was given {ok!r}, which is not a "
                        f"verdict; a non-empty string must never decide a phase")
     RESULTS.append((phase, label, ok, str(value), time.time() - T0))
-    print(f"{phase:<4}{'ok' if ok else 'FAIL':<6}{label:<38}{value}")
+    mark = _c("32", "ok  ") if ok else _c("1;31", "FAIL")
+    print(f"     {phase:<4}{mark} {label:<32}{value}")
     return ok
 
 
@@ -510,19 +519,22 @@ _PROGRESS = 0
 
 
 def progress(text):
-    """One line that keeps being overwritten, so waiting prints no history."""
+    """One line that keeps being overwritten - and only on a terminal, so a
+    redirected log stays clean instead of filling up with redraws."""
     global _PROGRESS
-    sys.stdout.write("\r     " + text[:100].ljust(100))
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write("\r     " + _c("2", text[:96].ljust(96)))
     sys.stdout.flush()
     _PROGRESS = len(text)
 
 
 def progress_done():
     global _PROGRESS
-    if _PROGRESS:
-        sys.stdout.write("\r" + " " * 110 + "\r")
+    if _PROGRESS and sys.stdout.isatty():
+        sys.stdout.write("\r" + " " * 104 + "\r")
         sys.stdout.flush()
-        _PROGRESS = 0
+    _PROGRESS = 0
 
 
 def wait_until(pred, timeout, what):
@@ -599,7 +611,7 @@ def where_mined(node, needle, from_h, to_h):
 
 def phase_policy(n1, gp):
     """P1 - what rskj does with a same-nonce transaction."""
-    section(f"P1  same-nonce replacement   price {POOL_GAS} wei (eth_gasPrice {gp})")
+    section("P1  replacement rules")
 
     n = n1.nonce()
     a, err = send(n1, n, POOL_GAS)
@@ -609,13 +621,13 @@ def phase_policy(n1, gp):
     rc = wait_receipt(n1, a)
     bal = n1.balance(RECIPIENT)
     status = int(rc["status"], 16) if rc else -1
-    row("P1a", "mined, 1 wei delivered",
+    row("P1a", "tx mined, 1 wei",
         f"blk={int(rc['blockNumber'], 16) if rc else '-'} status={status} bal={bal}",
         rc is not None and status == 1 and bal == 1)
 
     # the same nonce, after the account nonce has moved past it
     _, err = send(n1, n, POOL_GAS * 2)
-    row("P1b", "same nonce, already mined",
+    row("P1b", "same nonce after mining",
         f"nonce={n} at {POOL_GAS * 2} wei -> {err}",
         err is not None and "nonce" in err.lower())
 
@@ -625,29 +637,29 @@ def phase_policy(n1, gp):
         raise PocError(f"the pool transaction was rejected: {err}")
     small = POOL_GAS * 115 // 100
     _, err_s = send(n1, n, small)
-    row("P1c", "in the pool, +15%",
+    row("P1c", "in pool, +15%",
         f"{small}/{POOL_GAS} -> {err_s}",
         err_s is not None and "bump" in err_s.lower())
 
     big = POOL_GAS * 2
     b, err_b = send(n1, n, big)
     gone = n1.tx(a) is None
-    row("P1d", "in the pool, +100%",
+    row("P1d", "in pool, +100%",
         f"{big}/{POOL_GAS} -> {'accepted' if err_b is None else err_b},"
         f" old hash {'gone' if gone else 'still there'}",
         err_b is None and gone)
 
     n1.mine(1)
     rc = wait_receipt(n1, b)
-    row("P1e", "which of the two is on chain",
+    row("P1e", "which one is on chain",
         f"blk={int(rc['blockNumber'], 16) if rc else '-'} "
-        f"original receipt={n1.receipt(a)}",
+        f"original={n1.receipt(a)}",
         rc is not None and n1.receipt(a) is None)
 
 
 def phase_reorg(n1, n2, prefix):
     """P2/P3/P4 - reorg of the tip on a chain that has history, then replacement."""
-    section(f"P2  reorg of the tip   chain grows to {prefix} blocks first")
+    section("P2  reorg of the tip")
 
     for i in range(1, prefix + 1):
         if i == prefix // 2:            # one real transfer, so the prefix holds state
@@ -657,7 +669,7 @@ def phase_reorg(n1, n2, prefix):
     tip0 = n1.block(h0)["hash"]
     prefix_hashes = {k: n1.block(k)["hash"] for k in range(1, h0 + 1)}
     bal0 = n1.balance(RECIPIENT)
-    note(f"chain A  h={h0} tip={tip0[:16]} bal={bal0} nonce={n1.nonce()}")
+    note(f"prefix  h={h0}  tip={tip0[:10]}  bal={bal0}  nonce={n1.nonce()}")
 
     # node2 must own the same history before the two chains diverge
     n2.active = [(n1.node_id, n1.peer_port)]
@@ -668,7 +680,7 @@ def phase_reorg(n1, n2, prefix):
             90, "node2 to sync the prefix")
     except PocError:
         synced = False
-    row("P2a", "node2 synced the same tip", f"h={n2.height()} {tip0[:16]}", synced)
+    row("P2a", "node2 synced the tip", f"h={n2.height()} {tip0[:16]}", synced)
     if not synced:
         print(n2.tail(30, only=("sync", "peer", "block", "connect", "reject")))
         raise PocError("node2 never reached node1's tip, so there is no shared "
@@ -683,7 +695,7 @@ def phase_reorg(n1, n2, prefix):
         isolated = True
     except PocError:
         isolated = False
-    row("P2b", "both nodes isolated",
+    row("P2b", "both isolated",
         f"h={n1.height()}/{n2.height()} peers={n1.peers()}/{n2.peers()}", isolated)
     if not isolated:
         raise PocError("the nodes are still connected; the next block would travel "
@@ -702,14 +714,14 @@ def phase_reorg(n1, n2, prefix):
     if not wait_receipt(n1, victim) or not wait_receipt(n1, control):
         raise PocError("the victim and the control were not mined")
     bal_mined = n1.balance(RECIPIENT)
-    row("P2c", "victim + control in one block",
+    row("P2c", "victim + control mined",
         f"blk={hA} {hash_A[:16]} txs={len(a_txs)}",
         victim.lower() in a_txs and control.lower() in a_txs)
 
     td_a = int(n1.block(n1.height())["totalDifficulty"], 16)
     n2.mine(3)
     td_b = int(n2.block(n2.height())["totalDifficulty"], 16)
-    row("P2d", "B is heavier on the same parent",
+    row("P2d", "B heavier, same parent",
         f"A h={n1.height()} td={td_a} | B h={n2.height()} td={td_b}", td_b > td_a)
     if td_b <= td_a:
         raise PocError(f"chain B (td {td_b}) is not heavier than chain A (td {td_a})")
@@ -731,7 +743,7 @@ def phase_reorg(n1, n2, prefix):
 
     now_A = n1.block(hA)["hash"]
     prefix_ok = all(n1.block(k)["hash"] == h for k, h in prefix_hashes.items())
-    row("P2f", "node1 switched, history untouched",
+    row("P2f", "switch, prefix intact",
         f"blk{hA} {hash_A[:8]}->{now_A[:8]} blk1..{h0} "
         f"{'intact' if prefix_ok else 'REWRITTEN'}", prefix_ok)
     if not prefix_ok:
@@ -757,7 +769,7 @@ def phase_reorg(n1, n2, prefix):
             and kt is not None and kt.get("blockNumber") is None)
     nonce_now, bal_now = n1.nonce(), n1.balance(RECIPIENT)
     in_pool = pooled is None or (victim.lower() in pooled and control.lower() in pooled)
-    row("P2h", "pool + state rolled back",
+    row("P2h", "pool + state rollback",
         f"nonce={nonce_now} bal={bal_now} pool="
         f"{len(pooled) if pooled is not None else '?'}",
         back and in_pool and nonce_now == n and bal_now == bal0)
@@ -765,7 +777,7 @@ def phase_reorg(n1, n2, prefix):
         raise PocError("the orphaned transactions did not come back to the pool; "
                        "the rest of the experiment has nothing to act on")
 
-    section("P3  replacement of the retracted transaction")
+    section("P3  replacement after the reorg")
     small = POOL_GAS * 115 // 100
     _, err_s = send(n1, n, small)
     row("P3a", "replacement +15%", f"{small}/{POOL_GAS} -> {err_s}",
@@ -782,17 +794,17 @@ def phase_reorg(n1, n2, prefix):
     n1.mine(2)
     last = n1.height()
     hits = where_mined(n1, victim, hA, last)
-    row("P3c", "victim in any surviving block",
+    row("P3c", "victim in any block",
         f"blk{hA}..{last}: {'found in ' + str(hits) if hits else 'none'} "
         f"replacement blk={int(rc['blockNumber'], 16) if rc else '-'}",
         rc is not None and not hits and n1.receipt(victim) is None)
 
-    section("P4  control: same orphaned block, never replaced")
+    section("P4  control")
     ck = n1.receipt(control)
     ck_blk = int(ck["blockNumber"], 16) if ck and ck.get("blockNumber") else -1
     bal_final = n1.balance(RECIPIENT)
-    row("P4", "control re-mined",
-        f"blk={ck_blk} bal={bal_final} (replacement + control, never the victim)",
+    row("P4", "control mined again",
+        f"blk={ck_blk} bal={bal_final} = bal@P2c",
         ck_blk >= hA and bal_final == bal_mined)
 
 
@@ -1150,12 +1162,12 @@ def main():
         bal = int(n1.rpc("eth_getBalance",
                          ["0x" + ethsign.address_of(COW_KEY).hex(), "latest"]), 16)
         gp = n1.gas_price()
-        print(f"rskj     {n1.client_version()}")
-        print(f"node1    127.0.0.1:4444  peer 50501  id {n1.node_id[:16]}...")
-        print(f"node2    127.0.0.1:4445  peer 50502  id {n2.node_id[:16]}...")
-        print(f"account  0x{ethsign.address_of(COW_KEY).hex()}  bal={bal}")
-        print(f"gasPrice {gp} wei   prefix {args.prefix} blocks")
-        print(f"{'phase':<4}{'':<6}{'measurement':<38}value")
+        acct = "0x" + ethsign.address_of(COW_KEY).hex()
+        print(_c("1", f"rskj {n1.client_version()}"))
+        print(f"regtest  ·  gas {POOL_GAS} wei (quoted {gp})  ·  "
+              f"prefix {args.prefix} blocks")
+        print(f"node1 :4444/:50501  ·  node2 :4445/:50502")
+        print(f"account {acct[:8]}…{acct[-4:]}  bal={bal}")
         if bal <= 0:
             raise PocError("the premined regtest account has no balance - wrong genesis?")
 
@@ -1166,7 +1178,7 @@ def main():
 
     except Exception as exc:            # noqa: BLE001 - the point is to report it
         progress_done()
-        print(f"\nABORTED  {exc}")
+        print(f"\n  {_c('1;31', 'ABORTED')}  {exc}")
         for node in (n2, n1):
             try:
                 node.stop()
@@ -1186,9 +1198,9 @@ def main():
     passed = sum(1 for r in RESULTS if r[2])
     failed = [r for r in RESULTS if not r[2]]
     elapsed = time.time() - T0
-    print(f"\n{passed}/{len(RESULTS)} ok   {elapsed:.1f}s")
-    if failed:
-        print("failed: " + " ".join(f"{p} ({v})" for p, _l, _o, v, _a in failed))
+    head = _c("1;32", f"{passed}/{len(RESULTS)} ok") if not failed \
+        else _c("1;31", f"{passed}/{len(RESULTS)} ok, {len(failed)} FAIL")
+    print(f"\n  {head}  ·  {elapsed:.1f} s")
 
     summary = {
         "when": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -1206,13 +1218,10 @@ def main():
     result_path = os.path.join(work, "result.json")
     with open(result_path, "w") as fh:
         json.dump(summary, fh, indent=2)
-    print(f"result.json  {result_path}")
-    if args.keep:
-        print(f"logs         {work}")
-    else:
+    print(f"  {_c('2', result_path)}")
+    if not args.keep:
         for name in ("node1", "node2"):
             shutil.rmtree(os.path.join(work, name), ignore_errors=True)
-        print(f"logs kept:   {result_path} (node dirs removed; --keep keeps them)")
     return 0 if not failed else 1
 
 
