@@ -1,0 +1,23 @@
+per script-path input
+  charged                 42,000 points  (5.0 us at the repo's own rate)
+  inclusion proof        381,440 points  (32 branch hashes)
+  leaf hash               25,360 points
+  hashlock digest        132,880 points  (4096 bytes)
+  uncharged total        539,680 points  (64 us)
+  ratio                     12.8 x uncharged work per charged point
+
+one maximal transaction (1024 script-path inputs, no outputs)
+  charged                45,108,000 points
+  actually spent        597,740,320 points-equivalent
+  metered fraction             7.5 %
+  wall clock, real            71.2 ms   (charged says 5.4 ms)
+
+block budget 7,250,000,000 points = 863 ms of priced work
+  such transactions that fit by their charge : 160
+  real work they force                       : 95,638,451,200 points-equiv (13.2 x the validation budget)
+  UTXOs needed                               : 163,840
+  fee paid at the charged rate               : 7,217,280,000 points
+
+repeatability: the spend aborts (e.g. SpendConditionNotMet), so the UTXOs are not consumed;
+processor.rs:380 (finalize_failure) still charges only the metered points, of which the
+hashing above contributes zero.

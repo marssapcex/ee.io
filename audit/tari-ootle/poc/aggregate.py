@@ -1,7 +1,7 @@
 import glob, json, datetime
 sections, total_pass, total_fail = {}, 0, 0
 for f in sorted(glob.glob('poc/last_run.*.json')):
-    name = f.split('.')[1]
+    name = f.split('last_run.')[1].rsplit('.json', 1)[0]
     d = json.load(open(f))
     sections[name] = d
     total_pass += d.get('pass', 0)

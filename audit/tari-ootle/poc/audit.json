@@ -1,9 +1,9 @@
 {
   "target": "tari-project/tari-ootle @ 3460b2ff19640c5a3b758de9ec407eac8e372044",
   "artefact": "@tari-project/ootle-wasm 0.48.0 (npm, 2026-10-29T12:11Z, commit 6a25dbc5)",
-  "generated": "2026-10-30T05:50:27.675390Z",
+  "generated": "2026-10-30T09:03:08.188526Z",
   "totals": {
-    "pass": 27,
+    "pass": 42,
     "fail": 0
   },
   "sections": {
@@ -18,7 +18,7 @@
         {
           "name": "address: bech32m round-trip preserves keys, network and destination tag",
           "ok": true,
-          "detail": "otl_esm_1d3kyda2almszgx4w9\u2026"
+          "detail": "otl_esm_1rf4tax32nn8y8cuex\u2026"
         },
         {
           "name": "address: single-character corruption is rejected (bech32m checksum)",
@@ -128,7 +128,7 @@
         {
           "name": "stealth: recipient unblinds value+mask from the on-chain commitment",
           "ok": true,
-          "detail": "commitment=66cbb9333eafe575\u2026 value=123456"
+          "detail": "commitment=fcc0e9ea67edc41c\u2026 value=123456"
         },
         {
           "name": "stealth: recipient derives the committed one-time spend key (output is spendable)",
@@ -168,7 +168,98 @@
         {
           "name": "limits: duplicate input commitments are rejected by validate_transfer",
           "ok": true,
-          "detail": "Stealth transfer validation failed: Invalid spend: Duplicate input commitment d2e576bad83821502"
+          "detail": "Stealth transfer validation failed: Invalid spend: Duplicate input commitment 10c59279649627a33"
+        }
+      ]
+    },
+    "math_binding": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "section": "math_binding",
+      "pass": 8,
+      "fail": 0,
+      "results": [
+        {
+          "name": "binding: swapping two output commitments (same set, different slots) is rejected",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: swapping minimum_value_promise between two slots is rejected",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: swapping viewable-balance proofs between two slots is rejected",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid confidential proof: ViewableBalanceProof provided for a resource that is not"
+        },
+        {
+          "name": "binding: reordering the output list is rejected",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: an odd output count (3) still binds every slot",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: 5 outputs \u2014 permuting the last two, which pad into the same aggregation block",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: revealed_output cannot be retargeted to another amount after signing",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i"
+        },
+        {
+          "name": "binding: revealed_input cannot be raised after signing (P2: computed != moved)",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i"
+        }
+      ]
+    },
+    "math_extremes": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "section": "math_extremes",
+      "pass": 7,
+      "fail": 0,
+      "results": [
+        {
+          "name": "extremes: value 0 output with mvp 0 is either refused or carries a sound proof",
+          "ok": true,
+          "detail": "accepted with a range proof over a zero value (sound: 0 is provable)"
+        },
+        {
+          "name": "extremes: mvp > amount is refused at build time",
+          "ok": true,
+          "detail": "Stealth crypto error: minimum_value_promise (11) must be <= amount (10)"
+        },
+        {
+          "name": "extremes: value = 2^64-1 is accepted and range-proved (top of the u64 domain)",
+          "ok": true,
+          "detail": "u64::MAX accepted, u64::MAX-1 + 1 revealed balances exactly"
+        },
+        {
+          "name": "extremes: value = 2^64 (outside the range-proof domain) cannot produce a valid statement",
+          "ok": true,
+          "detail": "refused at build: amount must be an integer in [0, 2^64 - 1]"
+        },
+        {
+          "name": "extremes: two outputs at 2^63 each, funded by one 2^64-1 input",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i"
+        },
+        {
+          "name": "extremes: the aggregation ceiling is reachable \u2014 16 outputs build, 17 are refused",
+          "ok": true,
+          "detail": "limit is enforced by the prover and by the verifier (range_proof.rs:47)"
+        },
+        {
+          "name": "extremes: negative revealed_amount is refused by the validator",
+          "ok": true,
+          "detail": "JSON deserialization failed: out of range integral type conversion attempted at line 1 column 154"
         }
       ]
     },

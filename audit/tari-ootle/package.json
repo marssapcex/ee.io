@@ -1,1 +1,1 @@
-{ "name": "ootle-audit", "private": true, "type": "module" }
+{"name":"ootle-audit","private":true,"type":"module","dependencies":{"@tari-project/ootle-wasm":"^0.48.0","@tari-project/ootle-wasm-bor":"^0.48.0"}}

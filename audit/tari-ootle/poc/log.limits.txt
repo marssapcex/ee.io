@@ -1,4 +1,4 @@
 PASS  limits [OBS-2]: the pre-flight validator has no statement-size bound of its own :: 256 duplicate inputs accepted by the builder; the engine bounds this with check_stealth_transfer_limits (STEALTH_LIMITS)
-PASS  limits: duplicate input commitments are rejected by validate_transfer :: Stealth transfer validation failed: Invalid spend: Duplicate input commitment d2e576bad83821502
+PASS  limits: duplicate input commitments are rejected by validate_transfer :: Stealth transfer validation failed: Invalid spend: Duplicate input commitment 10c59279649627a33
 
 ──────── limits: checks=2 pass=2 fail=0 ────────

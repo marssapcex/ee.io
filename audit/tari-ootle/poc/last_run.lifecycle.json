@@ -9,7 +9,7 @@
     {
       "name": "stealth: recipient unblinds value+mask from the on-chain commitment",
       "ok": true,
-      "detail": "commitment=66cbb9333eafe575… value=123456"
+      "detail": "commitment=fcc0e9ea67edc41c… value=123456"
     },
     {
       "name": "stealth: recipient derives the committed one-time spend key (output is spendable)",

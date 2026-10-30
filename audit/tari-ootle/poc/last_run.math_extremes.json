@@ -1,0 +1,43 @@
+{
+  "artifact": "@tari-project/ootle-wasm@0.48.0",
+  "section": "math_extremes",
+  "pass": 7,
+  "fail": 0,
+  "results": [
+    {
+      "name": "extremes: value 0 output with mvp 0 is either refused or carries a sound proof",
+      "ok": true,
+      "detail": "accepted with a range proof over a zero value (sound: 0 is provable)"
+    },
+    {
+      "name": "extremes: mvp > amount is refused at build time",
+      "ok": true,
+      "detail": "Stealth crypto error: minimum_value_promise (11) must be <= amount (10)"
+    },
+    {
+      "name": "extremes: value = 2^64-1 is accepted and range-proved (top of the u64 domain)",
+      "ok": true,
+      "detail": "u64::MAX accepted, u64::MAX-1 + 1 revealed balances exactly"
+    },
+    {
+      "name": "extremes: value = 2^64 (outside the range-proof domain) cannot produce a valid statement",
+      "ok": true,
+      "detail": "refused at build: amount must be an integer in [0, 2^64 - 1]"
+    },
+    {
+      "name": "extremes: two outputs at 2^63 each, funded by one 2^64-1 input",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i"
+    },
+    {
+      "name": "extremes: the aggregation ceiling is reachable — 16 outputs build, 17 are refused",
+      "ok": true,
+      "detail": "limit is enforced by the prover and by the verifier (range_proof.rs:47)"
+    },
+    {
+      "name": "extremes: negative revealed_amount is refused by the validator",
+      "ok": true,
+      "detail": "JSON deserialization failed: out of range integral type conversion attempted at line 1 column 154"
+    }
+  ]
+}

@@ -14,7 +14,7 @@
     {
       "name": "limits: duplicate input commitments are rejected by validate_transfer",
       "ok": true,
-      "detail": "Stealth transfer validation failed: Invalid spend: Duplicate input commitment d2e576bad83821502"
+      "detail": "Stealth transfer validation failed: Invalid spend: Duplicate input commitment 10c59279649627a33"
     }
   ]
 }

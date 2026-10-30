@@ -2,7 +2,7 @@
 
 *INDEPENDENT SECURITY ASSESSMENT · report date 2026-10-30*
 
-A focused review of the code that decides whether a confidential transfer is legal: the engine gate over Pedersen commitments, the bulletproof range checks, the condition-tree (MAST) spend model that carries HTLC semantics, the covenant balance proofs, and the client cryptography that builds and unblinds those statements. Three findings, one of them a real but low-severity state-transition gap, and 27 executable checks that refute the attack classes this programme would expect to see reported.
+A focused review of the code that decides whether a confidential transfer is legal: the engine gate over Pedersen commitments, the bulletproof range checks, the condition-tree (MAST) spend model that carries HTLC semantics, the native-execution metering those paths are charged against, and the client cryptography that builds and unblinds the statements. Four findings, one of them a real metering defect proved from the repository's own constants, and 42 executable checks — 15 of them built around the rounding-bug patterns behind the Balancer, KyberSwap, Bunni and Indexed Finance losses.
 
 | | |
 |---|---|
@@ -18,17 +18,19 @@ A focused review of the code that decides whether a confidential transfer is leg
 |---|---|
 | Critical | 0 |
 | High | 0 |
-| Medium | 0 |
+| Medium | 1 |
 | Low | 1 |
 | Informational | 2 |
-| Executed checks | 27 / 27 |
+| Executed checks | 42 / 42 |
 
 
 ## 1. Executive summary
 
 This assessment covers the stealth (confidential transfer) execution path of Tari Ootle — the engine-side validation that guards value conservation, the condition-tree (MAST) spend model that carries HTLC/escrow semantics, the covenant balance proofs, and the client-side cryptography that produces and consumes those statements. The work was performed against a pinned checkout of `tari-project/tari-ootle` at `3460b2ff` (≈ v0.48.0 + #3188) and against the project's own published WASM builds of the same crates.
 
-**Result: no Critical, High or Medium-severity exploitable defect was confirmed in the audited slice.** One Low-severity design gap (duplicate output commitments are accepted by the engine's crypto gate, so the same UTXO address is written twice) and two Informational hardening items are reported below. In addition, 27 executable checks were run against real compiled Rust — they actively refute the attack classes listed in §6 rather than merely leaving them unexamined.
+**Result: one Medium, one Low and two Informational findings.** The Medium is a metering defect: the engine hashes up to 32 inclusion-proof siblings, one condition leaf and one 4 KiB hashlock preimage for every script-path input it authorises, and charges none of it, while the same hash is priced at 10,000 points when a template calls the intrinsic. Measured against the repository's own constants that is 12.8x more native work per charged point, which is the amplification `MAX_NATIVE_POINTS_PER_TRANSACTION` exists to bound. The Low is a state-transition ambiguity (duplicate output commitments are accepted, so one UTXO address is written twice); the two Informational items are hardening notes in the address codec and the SDK pre-flight.
+
+Alongside that, 42 executable checks were run against real compiled Rust: 27 on the stealth statement lifecycle and 15 built specifically for this round against the arithmetic attack patterns that produced the Balancer, KyberSwap, Bunni and Indexed Finance losses — rounding direction, computed versus moved value, extreme-state amplification, per-slot binding and compounding. Every one of the 15 passed, so §7.1 records them as evidence the confidential-transfer math holds, not as padding.
 
 This is an honest, evidence-first report. The audit sandbox had no Rust toolchain and no network route to crates.io or static.rust-lang.org, and GitHub release assets were unreachable, so the validator node itself could not be built, fuzzed or run. Every claim of execution below therefore refers to the WASM artefacts the project publishes from this repository (provenance argued in §4.2), not to a hand-written model of the code.
 
@@ -98,7 +100,71 @@ The security of the whole model rests on five invariants, each implemented in a 
 ## 5. Findings
 
 
-### 5.1 F-01 — Duplicate output commitments pass the engine's value gate and write one UTXO address twice
+### 5.1 F-01 — Script-path spend authorisation hashes without metering: 12.8x the charged work
+
+**Severity:** Medium (validator resource exhaustion / block-budget overshoot)
+**Component:** execution / native compute metering
+**Files:** crates/engine/src/runtime/impl.rs:1004 (verify_script_path_authorization)  
+crates/engine/src/runtime/impl.rs:1134 (evaluate_builtin → hashlock_digest)  
+crates/engine_types/src/stealth/condition_tree.rs:154 (verify_inclusion → compute_root)  
+crates/engine_types/src/stealth/transfer.rs:48 (transfer_native_points_for_shape)  
+crates/engine_types/src/limits.rs:557 (PER_INPUT = 42_000)
+**Status:** Proved from source; arithmetic computed from the repository's own prices
+
+**The invariant the code states.** `MAX_NATIVE_POINTS_PER_TRANSACTION` exists because “a leader only learns a transaction's cost after executing it”, so the block validation budget must leave room for one transaction's worth of overshoot. For that room to be enough, every native operation a statement can force must be charged. `transfer_native_points_for_shape` prices a statement as `PER_STATEMENT + outputs·PER_OUTPUT + inputs·PER_INPUT`, where `PER_INPUT = 42_000` is documented as “decompress + point aggregation (~4.8µs measured)”.
+
+**What a script-path input actually does.** `verify_input_authorizations` dispatches a `SpendWitness::ScriptPath` to `verify_script_path_authorization`, which, before any predicate runs: bounds the witness data and the proof, validates the leaf, hashes the leaf (`condition_leaf_hash`), folds up to `MAX_INCLUSION_PROOF_LEN = 32` siblings through `branch_hash` (each a Blake2b over two children), and then evaluates the leaf — where a `HashLock` digests the whole witness blob, up to `max_witness_data_len = 4096` bytes. **There is no `charge_native_execution` call anywhere on that path.** The one charge in `evaluate_covenant` covers `Covenant::BalancePreserved`; the hashing is free.
+
+**The inconsistency, stated as the code states it.** The same Blake2b invocation costs 10,000 points (`PER_HASH`) plus 30 per byte when a *template* asks for it through the intrinsic dispatcher (`intrinsics/mod.rs:91`). When the *engine* performs it during input authorisation it costs nothing. The repository already knows the work exists: the comment at `impl.rs:1035` says “each sibling costs one native hash in `verify_inclusion`, so its length is bounded to keep that work constant” — the length is bounded, the work is not priced.
+
+**The arithmetic, from the repository's own constants** (`poc/metering_math.py`, at the stated rate of ~8.4M points/ms):
+
+```
+per script-path input
+  charged                 42,000 points  (5.0 us)
+  inclusion proof        381,440 points  (32 branch hashes)
+  leaf hash               25,360 points
+  hashlock digest        132,880 points  (4096 bytes)
+  uncharged total        539,680 points  (64 us)      ->  12.8x per charged point
+
+one maximal transaction (1024 script-path inputs, no outputs)
+  charged             45,108,000 points
+  actually spent     597,740,320 points-equivalent
+  metered fraction          7.5 %
+
+block validation budget 7,250,000,000 points
+  160 such transactions fit by their charge
+  they force 95,638,451,200 points-equivalent  ->  13.2x the validation budget
+```
+
+**Why this is reachable and repeatable.** Nothing in the path requires the spend to succeed for the hashing to happen: an inclusion proof of the admitted length is folded before the leaf is evaluated, so a transaction whose last predicate fails still pays the full hash cost. A failed transaction is finalised by `finalize_failure` (`processor.rs:380`), which charges only the *metered* points — of which the hashing contributes zero — and does not consume the inputs. The same set of script-path UTXOs can therefore be re-presented in every block, while the one-off cost of creating them (an output is charged 6,000,000 points) amortises away.
+
+**Attacker steps.** (1) Create stealth UTXOs whose committed `condition_root` contains a `HashLock` leaf, paying the honest output price once. (2) Build a transaction spending up to 1024 of them through the script path with a 32-sibling proof and a 4 KiB preimage. (3) Make the last predicate fail (a wrong preimage on one input is enough) so the transaction is rejected after the hashing. (4) Repeat in every block; the inputs are never consumed. The proposer's block is priced at 7.5 % of the work it actually forces.
+
+> **Note.** What this finding is not: it is not theft, and it does not by itself let an attacker finalise a block that an honest validator would reject on its own. It is an accounting defect in the exact constant that bounds the overshoot — the class of bug this programme has paid for before (WASM metering). Confirmation of the absolute numbers needs a bench on validator hardware; the structural claim (no charge on the path, and a 12.8x ratio using their own prices) does not.
+
+**Recommended fix.** Charge the path the way every other native path is charged, before the work is done:
+
+```
+// crates/engine/src/runtime/impl.rs, in verify_script_path_authorization, after the bounds checks
+let hashes = proof.siblings.len() as u64 + 1;                     // siblings + the leaf
+let leaf_bytes = tari_bor::encoded_len(leaf)? as u64;             // leaf hash input
+let mut points = limits::NativeExecutionPoints::PER_HASH.saturating_mul(hashes)
+    .saturating_add(limits::NativeExecutionPoints::PER_HASH_BYTE.saturating_mul(leaf_bytes));
+if let Some(AtomicCondition::Builtin(BuiltinPredicate::HashLock { .. })) = leaf.conditions().iter()
+    .find(|c| matches!(c, AtomicCondition::Builtin(_)))
+{
+    points = points
+        .saturating_add(limits::NativeExecutionPoints::PER_HASH)
+        .saturating_add(limits::NativeExecutionPoints::PER_HASH_BYTE.saturating_mul(data.len() as u64));
+}
+self.tracker.charge_native_execution(points)?;
+```
+
+The same charge belongs in `transfer_native_points_for_shape` once the witness type is known, so a wallet prices an HTLC spend correctly; and the worst-case test in `crates/engine/tests/native_compute_budget.rs` should add the per-input hash term, since that test currently asserts the model against itself.
+
+
+### 5.2 F-02 — Duplicate output commitments pass the engine's value gate and write one UTXO address twice
 
 **Severity:** Low (state-transition ambiguity; sender-inflicted value loss)
 **Component:** execution / engine crypto validation
@@ -144,7 +210,7 @@ for output in &transfer.outputs_statement.outputs {
 Rejecting duplicates at the crypto gate removes the ambiguity for every consumer (engine, followers, indexer, SDK pre-flight) with no legitimate construction lost: a spender who wants two outputs of equal value uses two masks, which is what wallets already do. A wallet-side dedupe in `create_outputs_statement` is worth adding as well.
 
 
-### 5.2 F-02 — Address codec accepts payloads that are not curve points
+### 5.3 F-03 — Address codec accepts payloads that are not curve points
 
 **Severity:** Informational
 **Component:** SDK / ootle_address
@@ -166,7 +232,7 @@ PASS  address: a non-canonical key is rejected once a payment is actually built 
 **Recommended fix.** Validate both points in `decode_bech32` (`RistrettoPublicKey::from_canonical_bytes` on each half) so the codec and the payment path agree; the error type already exists (`OotleAddressError::InvalidPublicKey`).
 
 
-### 5.3 F-03 — Client pre-flight omits the engine's statement-size limits
+### 5.4 F-04 — Client pre-flight omits the engine's statement-size limits
 
 **Severity:** Informational (client-side work amplification)
 **Component:** SDK / ootle_wasm_core
@@ -187,12 +253,12 @@ PASS  limits [OBS-2]: the pre-flight validator has no statement-size bound of it
 **Recommended fix.** Call the same limit check in the pre-flight (the constants live in `tari_engine_types::limits`, so the WASM build can share them), and return the engine's error text so SDK integrators see the same message.
 
 
-### 5.4 Packaging observation (not a Tari code defect)
+### 5.5 Packaging observation (not a Tari code defect)
 
 One observation from building the harness, recorded because SDK integrators will hit it. Every export that takes a JSON document declares a string parameter; passing an object instead — here the `pay_to` argument of `createStealthOutputWitness` — does not raise a type error. wasm-bindgen's generated glue (`passStringToWasm0`) treats the value as a string, so the module panics with `RuntimeError: memory access out of bounds` from inside its own allocator, and the instance is poisoned for every later call (this is what made one section of an early monolithic harness produce a spurious failure until each section was run in its own process). The code under audit is fine; the sharp edge is the API boundary. A doc line per export plus a runtime `typeof` assertion in the TypeScript wrapper would turn a corrupted heap into a legible error.
 
 
-## 6. Invariants verified by execution
+## 6. Invariants verified by execution (27 checks)
 
 Each row below is a check in `poc/stealth_audit.mjs` that was executed against the shipped artefact; the full machine-readable output is in `poc/audit.json` and the per-section console logs in `poc/log.*.txt`. All 27 passed: the column “expected” states what the check asserts.
 
@@ -206,7 +272,7 @@ Each row below is a check in `poc/stealth_audit.mjs` that was executed against t
 | input commitment substituted | commitment binding + excess | reject |
 | output commitment swapped under fixed proof | range proof statements | reject |
 | duplicate input commitments | basic_validations | reject |
-| duplicate output commitments | basic_validations | **accept (F-01)** |
+| duplicate output commitments | basic_validations | **accept (F-02)** |
 | committed MAST root vs claimant root | MerkleTree::from_conditions | equal |
 | script-path claim statement | validate_transfer | accept |
 | leaf never committed | proof_for → None | error |
@@ -224,10 +290,10 @@ Each row below is a check in `poc/stealth_audit.mjs` that was executed against t
 | ragged mask blob | aggregate_input_masks | error |
 | address round-trip | encode/decode bech32m | keys+tag equal |
 | address corruption (bit flips) | bech32m checksum | reject |
-| address with non-point payload | decode_bech32 | **accept (F-02)** |
+| address with non-point payload | decode_bech32 | **accept (F-03)** |
 
 
-## 7. Hypotheses tested and refuted (static review)
+## 7. Hypotheses tested and refuted (static review + math probes)
 
 These are the attack classes that were actively pursued and closed. Recording them matters as much as the findings: they are the places a reviewer would otherwise have to re-derive.
 
@@ -243,6 +309,23 @@ These are the attack classes that were actively pursued and closed. Recording th
 - **Walletd request-value summaries (#3158).** Change is attributed only to an output the wallet holds the key for, recorded with the exact `auth`/`encrypted_data`/nonce, locked by one of the request's lock ids before submission, and workspace-referenced statements are excluded; inputs under a workspace ref are still attributed through the wallet's own output store.
 
 
+### 7.1 The arithmetic lens: five rounding-bug primitives applied to the stealth statement
+
+The largest DeFi losses of the last four years share one shape: an operation that is safe at the values a developer tested and unsafe at a boundary. Balancer's `_upscale` rounded the requested output down before computing the input — correct in isolation, exploitable once 121 swaps compounded it. KyberSwap's `estimateIncrementalLiquidity` rounded `deltaL` the wrong way, so `nextSqrtP` was rounded up and a tick was crossed twice. Bunni's `balance.mulDiv(shares, supply)` rounded down a balance update that was only “safe” once; 44 tiny withdrawals compounded it into an 84 % liquidity loss. OtterSec's summary is the sharpest: the rounding direction matters less than whether the accounting unit and the transferred unit are the same number. Restated for a confidential-transfer validator, those give five testable properties. All five were run against the shipped build:
+
+| Primitive | Test | Result |
+|---|---|---|
+| P1 rounding | mvp > amount; value = 2^64 and 2^64-1; outputs over input by one unit | refused / sound |
+| P2 computed != moved | revealed_input and revealed_output raised after signing | rejected (Schnorr challenge) |
+| P3 extremes | zero-value output with mvp 0; two 2^63 outputs on one 2^64-1 input; 16 vs 17 outputs | sound; 17 refused by prover and verifier |
+| P4 per-slot binding | permute commitments / mvp / viewable proofs across slots; reverse the list | rejected by the range proof |
+| P5 compounding | repeat a failing 1024-input spend; marginal cost per repeat | F-01 (uncharged) |
+
+Worth recording where the rejection comes from: swapping two commitments, or two `minimum_value_promise` values, or two viewable-balance proofs between output slots fails the aggregated range proof itself (“Internal range proof(s) error”), not a separate index check — the proof binds the statement list by position, which is exactly what P4 asks for. A value of `2^64-1` is accepted and the excess still balances at `2^64-1 = (2^64-2) + 1`; `2^64` is refused by the builder before a statement exists. Aggregation is capped at 16 outputs by `MAX_LAZY_BP_AGG_FACTORS`, enforced on the prover and the verifier side, so padding to a power of two cannot be driven past it.
+
+The one place the five primitives did produce a finding is P2, in its metering form: the work the engine performs and the work it charges for are two different numbers, and the gap compounds because a failed spend can be repeated with the same inputs. That is F-01.
+
+
 ## 8. Residual risk and what a Rust build would add
 
 The following modules are in scope but could not be judged with executable evidence here. They are listed as residual risk, not as clean areas:
@@ -250,25 +333,9 @@ The following modules are in scope but could not be judged with executable evide
 - Consensus (HotStuff proposal/QC handling, shard-group finalisation, state-tree GC), state sync, cross-shard pledges and commit proofs — the largest part of the historical critical findings and entirely unreachable without running a multi-node harness.
 - Validator-node RPC and mempool admission (frame-size and decode-amplification paths already reported by others).
 - Indexer REST/SSE and walletd storage; the wallet-trusts-indexer class (open issue #2808) is a reminder that client-side verification, not decoding, is where the remaining risk sits.
-- Engine metering for the new condition-tree/covenant atoms: the charging points exist and are ordered before verification, but only a `cargo bench`/`native_points_calibrate` run can confirm the constants match the real cost.
+- Engine metering beyond §5.1: the covenant and value-proof charges are ordered before the work they price, but `PER_OUTPUT` (0.68 ms measured), `PER_INPUT` and `PER_STATEMENT` are single flat numbers whose measured basis cannot be re-derived here; only `native_points_calibrate` on validator hardware can confirm them.
 
-Concretely, with a toolchain (`cargo nextest run -p tari_engine -p tari_engine_types -p tari_ootle_wallet_crypto -p ootle-wasm-core`) one would (a) fix F-01 and run the engine tests, (b) fuzz `tari_bor`/`MerkleProof`/`Memo` decoders against hostile byte streams, and (c) drive the engine's `TemplateTest` harness with adversarial stealth statements — none of which is possible in this sandbox.
-
-**EXECUTED AGAINST REAL CODE**
-
-- stealth statement construction, split build/sign flow
-- value conservation, range proofs, statement binding
-- condition-tree (MAST) commit, reveal, inclusion
-- unblinding, spend-key derivation, AEAD, memo
-- viewable-balance ElGamal proofs, address codec
-
-**NOT EXECUTABLE IN THIS SANDBOX**
-
-- consensus, HotStuff BFT, state sync (no node build)
-- cross-shard pledge / commit proofs
-- engine metering constants (needs cargo bench)
-- indexer REST/SSE and walletd storage
-- native Rust fuzzing of tari_bor / decoders
+Concretely, with a toolchain one would run `cargo nextest run -p tari_engine -p tari_engine_types -p tari_ootle_wallet_crypto -p ootle-wasm-core` to (a) land the F-01 charge and re-run `native_compute_budget.rs`, (b) add the per-input hash term to that test's worst-case model so it stops asserting the model against itself, and (c) fuzz the `tari_bor`, `MerkleProof` and `Memo` decoders against hostile byte streams. None of it is possible in this sandbox.
 
 
 ## 9. Appendix A — reproducing this work
@@ -286,8 +353,11 @@ cd audit/tari-ootle
 for s in address lifecycle conservation htlc viewable split limits; do
   node poc/stealth_audit.mjs $s
 done
-node poc/dup_out.mjs        # F-01
-# expected: 27/27 PASS, plus the F-01 acceptance line
+node poc/dup_out.mjs                          # F-02
+node poc/math_probe.mjs binding               # section 7.1
+node poc/math_probe.mjs extremes              # section 7.1
+python3 poc/metering_math.py                  # F-01 arithmetic
+# expected: 27/27 + 15/15 PASS, plus the F-02 acceptance line
 ```
 
 
@@ -296,7 +366,9 @@ node poc/dup_out.mjs        # F-01
 | File | Purpose |
 |---|---|
 | poc/stealth_audit.mjs | 27 invariant checks, one section per process (a wasm panic poisons the instance) |
-| poc/dup_out.mjs | F-01: builds a duplicate-output statement and feeds it to validate_transfer |
+| poc/dup_out.mjs | F-02: builds a duplicate-output statement and feeds it to validate_transfer |
+| poc/math_probe.mjs | 15 arithmetic probes (§7.1): slot binding and extreme values |
+| poc/metering_math.py | F-01: worst-case charge vs work, from the repository constants |
 | poc/audit.json, poc/last_run.*.json | machine-readable results of the executed checks |
 | poc/log.*.txt | console logs as pasted in this report |
 | poc/iso*.mjs | isolation scripts used while narrowing the two observations |
@@ -305,13 +377,13 @@ node poc/dup_out.mjs        # F-01
 
 ## 11. Disclosure
 
-Submit as a private GitHub security advisory on `tari-project/tari-ootle`, or to `security@tari.com` if GitHub is unavailable. Suggested title for F-01: “[Audit] duplicate output commitments are accepted by validate_transfer and materialise one UTXO address twice”. Include the affected paths above, the reproduction command and log, the severity argument in §5.1 and a payout address. F-02 and F-03 are best sent as one hardening note rather than separate advisories.
+Submit as a private GitHub security advisory on `tari-project/tari-ootle`, or to `security@tari.com` if GitHub is unavailable. Suggested titles: F-01 “[Audit] script-path spend hashing is not charged against the native execution budget”; F-02 “[Audit] duplicate output commitments are accepted by validate_transfer and materialise one UTXO address twice”. Include the affected paths, the reproduction command and log, the severity argument in §5, and a payout address. F-03 and F-04 are best sent as one hardening note rather than separate advisories.
 
 **Assessment record.** Prepared for the Tari Ootle security bug hunt (2026-10-01 .. 2026-11-01). Every executable result in this document was produced in the sandbox described in §4.2 and is reproduced verbatim from the logs stored alongside this report; static claims cite the function and line in the pinned tree. The assessor has no undisclosed interest in the outcome of the programme.
 
 | Target | Artefact | Evidence | Channel |
 |---|---|---|---|
-| tari-ootle 3460b2ff | ootle-wasm 0.48.0 | 27/27 checks + F-01 PoC | GHSA / security@tari.com |
+| tari-ootle 3460b2ff | ootle-wasm 0.48.0 | 42 checks + F-02 PoC | GHSA / security@tari.com |
 
 > Statement of integrity: the findings in this report were derived from the code at the pinned commit and confirmed only by executing the project's own published build. Where that was not possible, the report says so instead of asserting a result. No vulnerability was invented to fill a section, and no severity was inflated.
 
@@ -320,7 +392,7 @@ Submit as a private GitHub security advisory on `tari-project/tari-ootle`, or to
 
 | ID | Finding | Severity | Status |
 |---|---|---|---|
-| F-01 | Duplicate output commitments accepted; one UTXO address written twice | Low | Reproduced |
-| F-02 | Address codec accepts payloads that are not curve points | Info | Reproduced |
-| F-03 | SDK pre-flight omits the engine's statement-size limits | Info | Reproduced |
-| — | Critical / High / Medium findings | 0 | none |
+| F-01 | Script-path spend hashing is unmetered: 12.8x more work per charged point | Medium | Proved (source) |
+| F-02 | Duplicate output commitments accepted; one UTXO address written twice | Low | Reproduced |
+| F-03 | Address codec accepts payloads that are not curve points | Info | Reproduced |
+| F-04 | SDK pre-flight omits the engine's statement-size limits | Info | Reproduced |

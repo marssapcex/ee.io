@@ -1,0 +1,9 @@
+PASS  extremes: value 0 output with mvp 0 is either refused or carries a sound proof :: accepted with a range proof over a zero value (sound: 0 is provable)
+PASS  extremes: mvp > amount is refused at build time :: Stealth crypto error: minimum_value_promise (11) must be <= amount (10)
+PASS  extremes: value = 2^64-1 is accepted and range-proved (top of the u64 domain) :: u64::MAX accepted, u64::MAX-1 + 1 revealed balances exactly
+PASS  extremes: value = 2^64 (outside the range-proof domain) cannot produce a valid statement :: refused at build: amount must be an integer in [0, 2^64 - 1]
+PASS  extremes: two outputs at 2^63 each, funded by one 2^64-1 input :: Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i
+PASS  extremes: the aggregation ceiling is reachable — 16 outputs build, 17 are refused :: limit is enforced by the prover and by the verifier (range_proof.rs:47)
+PASS  extremes: negative revealed_amount is refused by the validator :: JSON deserialization failed: out of range integral type conversion attempted at line 1 column 154
+
+──────── math/extremes: checks=7 pass=7 fail=0 ────────

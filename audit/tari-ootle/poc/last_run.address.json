@@ -9,7 +9,7 @@
     {
       "name": "address: bech32m round-trip preserves keys, network and destination tag",
       "ok": true,
-      "detail": "otl_esm_1d3kyda2almszgx4w9…"
+      "detail": "otl_esm_1rf4tax32nn8y8cuex…"
     },
     {
       "name": "address: single-character corruption is rejected (bech32m checksum)",

@@ -1,4 +1,4 @@
-PASS  stealth: recipient unblinds value+mask from the on-chain commitment :: commitment=66cbb9333eafe575… value=123456
+PASS  stealth: recipient unblinds value+mask from the on-chain commitment :: commitment=fcc0e9ea67edc41c… value=123456
 PASS  stealth: recipient derives the committed one-time spend key (output is spendable) :: P = H(vR).G + A reproduced from (a, v, R)
 PASS  stealth: unblind rejects a tampered ciphertext and a wrong key :: tamper="Stealth crypto error: AEAD error: …" wrongKey="Stealth crypto error: AEAD error: …"
 PASS  stealth: memo round-trips and is dropped only when skip_memo is set :: memo intact, skip_memo honoured
