@@ -1,0 +1,20 @@
+{
+  "artifact": "@tari-project/ootle-wasm@0.48.0",
+  "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+  "node": "v22.22.3",
+  "section": "viewable",
+  "pass": 2,
+  "fail": 0,
+  "results": [
+    {
+      "name": "viewable balance: proof decrypts to the true value; a lying range yields nothing",
+      "ok": true,
+      "detail": "value=42, out-of-range=undefined"
+    },
+    {
+      "name": "viewable balance: proof is bound to its commitment",
+      "ok": true,
+      "detail": "Stealth crypto error: Invalid confidential proof: Invalid viewable balance proof (eC + C' != s_"
+    }
+  ]
+}

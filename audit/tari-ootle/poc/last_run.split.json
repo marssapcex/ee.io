@@ -1,0 +1,20 @@
+{
+  "artifact": "@tari-project/ootle-wasm@0.48.0",
+  "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+  "node": "v22.22.3",
+  "section": "split",
+  "pass": 2,
+  "fail": 0,
+  "results": [
+    {
+      "name": "flow parity: separate inputs/outputs/balance-proof calls produce a valid statement",
+      "ok": true,
+      "detail": "both verifiers agree"
+    },
+    {
+      "name": "flow parity: aggregateInputMasks rejects a non-multiple-of-32 mask blob",
+      "ok": true,
+      "detail": "Invalid byte length for masks_concat: expected 32, got 31"
+    }
+  ]
+}

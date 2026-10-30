@@ -1,0 +1,35 @@
+{
+  "artifact": "@tari-project/ootle-wasm@0.48.0",
+  "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+  "node": "v22.22.3",
+  "section": "lifecycle",
+  "pass": 5,
+  "fail": 0,
+  "results": [
+    {
+      "name": "stealth: recipient unblinds value+mask from the on-chain commitment",
+      "ok": true,
+      "detail": "commitment=66cbb9333eafe575… value=123456"
+    },
+    {
+      "name": "stealth: recipient derives the committed one-time spend key (output is spendable)",
+      "ok": true,
+      "detail": "P = H(vR).G + A reproduced from (a, v, R)"
+    },
+    {
+      "name": "stealth: unblind rejects a tampered ciphertext and a wrong key",
+      "ok": true,
+      "detail": "tamper=\"Stealth crypto error: AEAD error: …\" wrongKey=\"Stealth crypto error: AEAD error: …\""
+    },
+    {
+      "name": "stealth: memo round-trips and is dropped only when skip_memo is set",
+      "ok": true,
+      "detail": "memo intact, skip_memo honoured"
+    },
+    {
+      "name": "stealth: output for network LocalNet is not spendable under Esmeralda key derivation",
+      "ok": true,
+      "detail": "network byte is domain-separated"
+    }
+  ]
+}

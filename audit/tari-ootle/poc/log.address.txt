@@ -1,0 +1,6 @@
+PASS  address: bech32m round-trip preserves keys, network and destination tag :: otl_esm_1d3kyda2almszgx4w9…
+PASS  address: single-character corruption is rejected (bech32m checksum) :: no corruption accepted
+PASS  address [OBS-1]: codec accepts 64 arbitrary bytes as an address payload (no curve-point validation) :: parsed OK; owner_key=5a5a5a5a5a5a5a5a… is not a Ristretto point
+PASS  address: a non-canonical key is rejected once a payment is actually built :: Invalid public key: Could not create a ByteArray when converting from a different format: 
+
+──────── address: checks=4 pass=4 fail=0 ────────
