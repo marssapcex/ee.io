@@ -1,0 +1,14 @@
+This version of µWS is not compatible with your Node.js build:
+2.0M pool, 1000x, tenor 90d, exit at  1d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,007,952 ATK_NET=-  75,207 pool_cash_before=1,783,158 after=913,926
+2.0M pool, 1000x, tenor 90d, exit at  3d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,014,728 ATK_NET=-  68,430 pool_cash_before=1,783,158 after=908,165
+2.0M pool, 1000x, tenor 90d, exit at  7d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,028,290 ATK_NET=-  54,869 pool_cash_before=1,783,158 after=896,638
+2.0M pool, 1000x, tenor 90d, exit at 10d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,038,467 ATK_NET=-  44,691 pool_cash_before=1,783,158 after=887,988
+2.0M pool, 1000x, tenor 90d, exit at 14d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,052,045 ATK_NET=-  31,113 pool_cash_before=1,783,158 after=876,446
+2.0M pool, 1000x, tenor 90d, exit at 21d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,075,832 ATK_NET=-   7,327 pool_cash_before=1,783,158 after=856,228
+2.0M pool, 1000x, tenor 90d, exit at 28d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,099,648 ATK_NET=+  16,490 pool_cash_before=1,783,158 after=835,983
+2.0M pool, 1000x, tenor 90d, exit at 45d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,157,615 ATK_NET=+  74,457 pool_cash_before=1,783,158 after=786,712
+2.0M pool, 1000x, tenor 90d, exit at 60d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,208,912 ATK_NET=+ 125,754 pool_cash_before=1,783,158 after=743,109
+2.0M pool, 1000x, tenor 90d, exit at 90d             notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,311,926 ATK_NET=+ 228,768 pool_cash_before=1,783,158 after=655,547
+2.0M pool, 300x, tenor 90d, exit at 90d              notional=22,200,000,000,471,597,000 fixed= 1.897% atk_spend=1,076,772 atk_out=1,087,017 ATK_NET=+  10,245 pool_cash_before=1,776,772 after=841,292
+2.0M pool, 500x, tenor 90d, exit at 90d              notional=37,000,000,000,651,620,000 fixed= 1.829% atk_spend=1,078,597 atk_out=1,148,161 ATK_NET=+  69,564 pool_cash_before=1,778,597 after=790,871
+2.0M pool, 750x, tenor 90d, exit at 90d              notional=55,500,000,001,081,510,000 fixed= 1.744% atk_spend=1,080,877 atk_out=1,228,100 ATK_NET=+ 147,223 pool_cash_before=1,780,877 after=724,861

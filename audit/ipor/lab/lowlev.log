@@ -1,0 +1,5 @@
+This version of µWS is not compatible with your Node.js build:
+2.0M pool, lev 100x,  1 swap  (notional   7.4M)      notional=7,400,000,000,185,386,000 fixed= 1.966% atk_spend=1,074,947 atk_out=1,028,378 ATK_NET=-  46,569 pool_cash_before=1,774,947 after=889,584
+2.0M pool, lev 100x,  5 swaps (notional  37M)        notional=7,400,000,000,185,386,000 fixed= 1.966% atk_spend=1,074,947 atk_out=1,149,130 ATK_NET=- 225,607 pool_cash_before=2,074,737 after=1,041,766
+2.0M pool, lev 100x, 10 swaps (notional  74M)        FAILED
+2.0M pool, lev  50x, 20 swaps (notional  74M)        FAILED

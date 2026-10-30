@@ -369,8 +369,8 @@ picks his exit block; a `closeSwapsUsdc` sitting in the public mempool can be fr
 The sequence that actually wins is **pause first (from a hot guardian key, privately), then close the swaps, then unpause** —
 after the pause his redeem reverts (`IPOR_015`) and the close costs him his collateral.
 
-**9.4 Break-even, so the severity is not overstated.** With `p` = probability that nobody notices and closes inside the
-tenor:
+**9.4 Break-even, so the severity is not overstated.** With `p` = probability that nobody notices and closes while the
+position is open (which is ~24 days, not 90 — see §10.1):
 
 * 1 M pool: `p·293 692 − (1−p)·41 597` ⇒ profitable for `p > 12.4 %`;
 * 200 k pool: `p·51 920 − (1−p)·66 534` ⇒ profitable for `p > 56.2 %`.
@@ -381,7 +381,69 @@ entire derivatives TVL is 484 k and which has no on-chain alarm — but this is 
 a guaranteed loss for LPs only if the swap is left open, and the protocol has the power to close it.**
 
 ---
-## 10. Fix
+## 10. How long does it actually have to stay open, and how loud is it?
+
+Both questions were measured, and both answers are less favourable to the attacker than "90 days, undetected".
+
+**10.1 The 90-day tenor is not a 90-day lock-up.** Redeeming is independent of the swap's maturity, so the attacker exits
+the moment the accrued mark covers his losses. Tenor 90 d, 2 M pool, 1000×, `lab/elapsed.log`:
+
+| exit day | 1 | 3 | 7 | 10 | 14 | 21 | 28 | 45 | 60 | 90 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| net (USDC) | −75 207 | −68 430 | −54 869 | −44 691 | −31 113 | −7 327 | **+16 490** | +74 457 | +125 754 | +228 768 |
+
+Break-even is **~24 days**, and roughly **+5 000 USDC per extra day** after that. The reason is simply the accrual rate:
+`74 M × (5 % index − 1.66 % fixed) / 365 ≈ 6.8 k/day` of phantom interest. So the exposure window the operator has to miss is
+**three to four weeks, not three months** — that is the single most important correction to a naive reading of the bug.
+
+**10.2 The real gate is leverage, not time.** Same 2 M pool, 90 days (`lab/elapsed.log`, `lab/lowlev.log`):
+
+| signed `maxLeveragePerLeg` | notional | net |
+|---|---|---|
+| 100× | 7.4 M | −46 569 |
+| 250× | 18.5 M | −4 194 |
+| 300× | 22.2 M | +10 245 |
+| 500× | 37.0 M | +69 564 |
+| 750× | 55.5 M | +147 223 |
+| 1000× | 74.0 M | **+228 768** |
+
+Splitting into more swaps does **not** substitute for leverage — it makes it worse, because every extra swap adds another
+74 000 of collateral that the attacker can lose, while the pool's cash (and therefore his dilution) grows with it:
+
+```
+2.0M pool, lev 100x,  1 swap  (notional  7.4M)  NET = -46,569
+2.0M pool, lev 100x,  5 swaps (notional 37M)    NET = -225,607
+2.0M pool, lev 100x, 10 swaps                   reverts
+```
+
+The lab uses `maxLeveragePerLeg = 1000e18`, which is **the repo's own default** (`test/TestCommons.sol:100`, also 125/136/167/178).
+In production these six numbers are *not* stored on-chain — they arrive inside the risk-indicator signature
+(`RiskIndicatorsInputs.expiration` / `maxLeveragePerLeg`), produced by IPOR's off-chain risk service, so **the live value cannot
+be read from the code or from the contracts.** Stated plainly: if production signs ≤250×, this attack does not pay at today's
+depth; at 1000× it pays in ~24 days. Everything in this report should be read with that one unknown attached.
+
+**10.3 It cannot be executed unattended, and it is loud.** What an operator (or any watcher) sees, all of it public:
+
+| signal | value at open | why it stands out |
+|---|---|---|
+| `swap.notional / swap.collateral` | 1000× | the protocol's own risk params cap collateral, not notional |
+| `swap.notional / lpDepth` | 37× (2 M pool) | a swap 37× larger than the pool that must pay it |
+| account pattern | fresh EOA supplies ~50 % of the pool, then opens a swap in the next transaction | no history, no hedging motivation |
+| `getExchangeRate` for a stablecoin pool | +0.47 % in **one day**, → 1.43 after 90 d (≈ +170 %/yr) against a 5 % index | impossible for any honest LP flow |
+| treasury cash | falls monotonically from day 1 | `AmmTreasury` balance is a public view |
+
+Against that, **the contracts contain no automated defence at all**: no `notional ≤ k × lpDepth` bound at open, no circuit
+breaker on the exchange rate, no alert-on-deviation, and the two kill switches (§9) are both human-triggered — a pause guardian
+key and the owner/liquidator. So detection is *easy* and response is *entirely manual*.
+
+**10.4 Honest severity.** The two conditions the attacker needs are: (a) the risk service signed ~1000× leverage for that
+asset/tenor, and (b) nobody looks at the pool's exchange rate or its new swaps for ~24 days. Neither is a privilege and neither
+is exotic — but this is not an "instant, silent drain" either. It is a slow, extremely visible theft that succeeds only against
+an operator who does not monitor. That is exactly why §9's beat: `pause` → `emergencyClose` stops it at any point before the
+redeem, and the attacker's exit is the only block that matters.
+
+---
+## 11. Fix
 
 The mark used for pricing redemptions must never exceed what the pool can actually collect. In order of preference:
 
@@ -394,7 +456,7 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 
 ---
 
-## 11. Tried and failed (do not repeat)
+## 12. Tried and failed (do not repeat)
 
 | attempt | result |
 |---|---|
@@ -408,7 +470,7 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 
 ---
 
-## 12. Repo layout of this deliverable
+## 13. Repo layout of this deliverable
 
 ```
 audit/ipor/
@@ -435,5 +497,7 @@ audit/ipor/
     ├── multi.js/.log      <- N swaps per attacker: maxSwapCollateralAmount is not a notional cap
     ├── scale3.js/.log     <- 1M / 2M / 4M pools at constant 50% attacker share: flat ~50% ROI
     ├── cure.js/.log       <- pause / emergencyClose / whitelisted liquidator: what the attacker actually loses
+    ├── elapsed.js/.log    <- exit day vs profit (break-even ~24d) and leverage sensitivity
+    ├── lowlev.js/.log     <- more swaps at low leverage does not replace high leverage
     └── artifacts.json     <- generated by compile.js (not committed)
 ```
