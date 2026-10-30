@@ -1,0 +1,17 @@
+{
+  "name": "ipor-lab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reproducer for the IPOR LP share-price / SOAP finding (see ../REPORT.md)",
+  "scripts": {
+    "build": "node compile.js contracts/tokens/IpToken.sol contracts/oracles/IporOracle.sol contracts/amm/spread/Spread28Days.sol contracts/amm/spread/Spread60Days.sol contracts/amm/spread/Spread90Days.sol contracts/amm/spread/SpreadStorageLens.sol contracts/amm/spread/SpreadStorageService.sol contracts/amm/spread/SpreadCloseSwapService.sol contracts/amm/spread/SpreadRouter.sol contracts/amm/AmmStorage.sol contracts/amm/AmmTreasury.sol contracts/amm/AmmPoolsService.sol contracts/amm/AmmOpenSwapService.sol contracts/amm/AmmCloseSwapServiceUsdc.sol contracts/base/amm/services/AmmGovernanceServiceBaseV1.sol contracts/chains/ethereum/router/IporProtocolRouterEthereum.sol node_modules/@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol mocks/Mocks.sol",
+    "poc": "node poc-final.js",
+    "close": "node closecheck.js",
+    "sweep": "node sweep.js"
+  },
+  "dependencies": {
+    "ethers": "^6.17.0",
+    "ganache": "^7.9.2",
+    "solc": "0.8.26"
+  }
+}

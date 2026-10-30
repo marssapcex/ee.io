@@ -1,0 +1,25 @@
+This version of µWS is not compatible with your Node.js build:
+=== 1. honest state: two LPs, 500k each, ipUSDC at 1.000000 ===
+ipUSDC supply=999,999.00 liquidityPool=1,000,000.00 exchangeRate=1.000000
+=== 2. the IPOR index is published (5% APR) by the oracle service ===
+index=5.00% APR
+=== 3. attacker opens ONE 90d receive-fixed swap at maximum leverage ===
+gas used=485977  collateral=74,000,000,001,573,170.00 notional=74,000,000,001,573,160,000.00
+fixed rate offered by the AMM = 0.949%  (index 5.000% -> the demand spread floors it)
+the trader paid 83,158.29 USDC in total (collateral + opening fee + deposit + pub fee)
+=== 4. 90 days pass; the index accrues and SOAP marks the pool a profit on the notional ===
+liquidityPool (storage) = 1,009,122.29  <- unchanged, the profit exists only in SOAP
+SOAP (receive-fixed leg) = -744,583.96  ->  it is booked as a 744,583.96 USDC profit for the pool
+marked exchange rate = 1.753708  (1 ipUSDC = 1.75 USDC)
+but the trader's loss is capped at his collateral: 74,000.00 USDC (SwapLogicBaseV1.normalizePnlValue)
+=== 5. attacker redeems ALL of his ipTokens at the marked price ===
+burned 499,998.00 ipUSDC (500,000 minus the two 1-ipUSDC rate probes) -> received 876,850.64 USDC
+redemption price = 1.753708 (deposits were made at 1.000000)
+=== 6. the honest LP is left behind ===
+honest LP redeemed 5% of his ipTokens -> 43,842.71 USDC
+a full redemption reverts with execution reverted: "IPOR_409"
+=== 7. profit and loss ===
+attacker : -500,000.00 (liquidity) -83,158.29 (swap) +876,850.64 (redemption)
+attacker : NET +293,692.35 USDC
+honest LP: -500,000.00 +43,842.71 -> NET -456,157.29 USDC (87,673.74 of the pool cash is still stuck behind the redeem guards)
+pool cash left: 131,516.45 USDC (74,000.00 of it is the abandoned collateral the pool can still collect)

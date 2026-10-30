@@ -1,0 +1,9 @@
+This version of µWS is not compatible with your Node.js build:
+days=28 C=74000 lev=1000x notional=74,000,000 fixed=0.936% atk_spend=576,873 atk_out=617,023 ATK_NET=+40,150 LP_LOSS=109,127 cash_left=390,873
+days=60 C=74000 lev=1000x notional=74,000,000 fixed=0.943% atk_spend=580,117 atk_out=751,005 ATK_NET=+170,887 LP_LOSS=220,254 cash_left=279,746
+days=90 C=74000 lev=1000x notional=74,000,000 fixed=0.949% atk_spend=583,158 atk_out=876,854 ATK_NET=+293,695 LP_LOSS=324,641 cash_left=175,359
+days=90 C=20000 lev=1000x notional=20,000,000 fixed=1.818% atk_spend=522,501 atk_out=580,350 ATK_NET=+57,850 LP_LOSS=124,172 cash_left=375,828
+days=90 C=99000 lev=1000x notional=99,000,000 fixed=0.252% atk_spend=611,240 atk_out=0 ATK_NET=-611,240 LP_LOSS=-461,240 cash_left=961,240
+days=90 C=74000 lev=100x notional=7,400,000 fixed=1.929% atk_spend=574,947 atk_out=528,717 ATK_NET=-46,230 LP_LOSS=35,704 cash_left=464,296
+days=90 C=74000 lev=200x notional=14,800,000 fixed=1.858% atk_spend=575,860 atk_out=558,738 ATK_NET=-17,121 LP_LOSS=60,447 cash_left=439,553
+days=90 C=74000 lev=1000x notional=74,000,000 fixed=1.347% atk_spend=333,158 atk_out=386,196 ATK_NET=+53,037 LP_LOSS=195,082 cash_left=804,918
