@@ -282,7 +282,8 @@ the pool (`lab/scale3.log`, `lab/multi.log`):
 | 4.0 M (2 M + 2 M) | 4 | 296 M | 2 083 158 | 3 416 884 | **+1 084 251** | 52.0 % | 3 732 633 → 778 386 |
 
 The ROI is flat at ~50 % per cycle and the absolute theft scales with the pool. A bigger pool is a bigger prize, not a
-safer one; the honest LPs are left with 13–21 % of the cash in every row.
+safer one: the attacker walks out with everything he put in plus ~50 %, and the honest LP — who never traded — recovers
+only **35 %, 38 % and 39 % of his principal** in the three rows above.
 
 **8.2 `maxSwapCollateralAmount` caps the collateral of *one* swap, not the notional of the position.** The guard is
 `require(collateral <= poolCfg.maxSwapCollateralAmount, AmmErrors.COLLATERAL_AMOUNT_TOO_HIGH)` —
