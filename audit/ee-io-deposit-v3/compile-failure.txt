@@ -1,0 +1,14 @@
+DeclarationError: Undeclared identifier. "createProxy" is not (or not yet) visible at this point.
+   --> DepositProxyFactory.sol:145:16:
+    |
+145 |         return createProxy(salt, fromToken, toToken, destination, minOut);
+    |                ^^^^^^^^^^^
+
+
+DeclarationError: Undeclared identifier. "createProxy" is not (or not yet) visible at this point.
+   --> DepositProxyFactory.sol:164:17:
+    |
+164 |         proxy = createProxy(salt, fromToken, toToken, destination, minOut);
+    |                 ^^^^^^^^^^^
+
+
