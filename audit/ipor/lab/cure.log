@@ -1,0 +1,10 @@
+This version of µWS is not compatible with your Node.js build:
+A  baseline, hold 90d                          cash 933,158,287,673 -> 175,361  atk_out=876,851  NET=+293,692
+B  owner emergencyCloseSwapsUsdc on day 30     swap closed, paid to attacker 0 (collateral was 83,158)
+   then redeem at day 90                       cash 933,158,287,673 -> 460,336  atk_out=541,562  NET=-41,597
+   paused(redeemFromAmmPoolUsdc) = 1
+C  pause(redeemFromAmmPoolUsdc) at day 90      redeem of 1 ipUSDC -> reverted with "execution reverted: "IPOR_015""
+   pool cash is untouched: 933,158, attacker still holds 500,000,000,000,000,000 ipUSDC (unredeemable until unpause)
+D  whitelisted liquidator closeSwapsUsdc day 30  swap closed, liquidator fee 25
+   then redeem at day 90                       atk_out=541,562  NET=-41,597
+F  thin 200k pool, owner closes at day 30       atk_out=66,625  NET=-66,534

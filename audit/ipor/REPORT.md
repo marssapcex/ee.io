@@ -49,6 +49,11 @@ The AMM itself hands out the negative fixed rate: `calculateReceiveFixedOfferedR
 
 ## 3. PoC — real contracts, real log
 
+**Measurement note.** Every profit figure below is a delta of the attacker's own `USDC.balanceOf` — real tokens, no model.
+The "pool cash" columns are the treasury's *raw* `USDC.balanceOf(AmmTreasury)`; the treasury also parks part of the LP cash in
+asset management (`AmmTreasury.depositToAssetManagement`, 15 % of the deposit in the lab), which it pulls back during a
+redeem, so that column moves by more than the payout and is indicative only.
+
 `lab/` compiles the repo's own sources with solc 0.8.26 (`compile.js`), deploys the whole USDC stack on an in-process EVM exactly in the order of `test/utils/factory/IporProtocolFactory.sol` (`poc.js`: IpToken, IporOracle proxy, Spread28/60/90 + SpreadRouter, AmmStorage proxy, AmmTreasury proxy, AmmOpenSwapService, AmmCloseSwapServiceUsdc, AmmPoolsService, AmmGovernanceServiceBaseV1, IporProtocolRouterEthereum proxy + `upgradeTo`), then runs the attack through the router only.
 
 ```
@@ -327,7 +332,56 @@ So the realistic total exposure of this bug is **the whole 484 k**, taken chain 
 20–230 k of a single pool — and it is repeatable as long as LPs keep refilling the pools.
 
 ---
-## 9. Fix
+## 9. Can the protocol stop it? Kill switches, measured
+
+The attacker needs 90 days. That raises the obvious question: can IPOR interrupt him, or can they only watch? They have
+four levers, all privileged, all usable at any moment during the attack. All four were run on the deployed stack
+(`lab/cure.log`).
+
+**9.1 The levers.**
+
+| lever | who | code | effect |
+|---|---|---|---|
+| `pause([redeemFromAmmPoolUsdc.selector])` | any pause guardian, instant | `AccessControl.pause`, checked in `IporProtocolRouterEthereum` for `IAmmPoolsService.redeemFromAmmPoolUsdc` (`contracts/router/AccessControl.sol:122`, reverts `IPOR_015`) | freezes the exit, **does not touch the mark** |
+| `emergencyCloseSwapsUsdc([], [swapId], risk)` | router owner | `AmmCloseSwapServiceUsdcBaseV2.sol:38` → `_emergencyCloseSwaps`; the closable-status check is skipped when the caller is the owner (`SwapCloseLogicLibBaseV1.getClosableStatusForSwap:122`) | closes **any** swap, realises the loss at `−collateral`, and `rebalanceWhenCloseSwap` sets `hypotheticalInterestCumulative = 0` when the leg is emptied → **the inflation disappears** |
+| `closeSwapsUsdc` | a whitelisted liquidator (`AmmConfigurationManager.isSwapLiquidator`) | same service, normal path | same effect, without the multisig; the liquidator is paid the liquidation deposit |
+| `upgradeTo` | router owner | `IporProtocolRouterAbstract._authorizeUpgrade` (UUPS, `onlyOwner`) | permanent fix |
+
+**9.2 What happens to the attacker, measured** (1 M pool, 500 k attacker LP, 74 k collateral, 90-day tenor; the killer acts
+on day 30, the attacker still redeems on day 90):
+
+| scenario | attacker out | net | verdict |
+|---|---|---|---|
+| A — nobody acts | 876 851 | **+293 692** | theft succeeds |
+| B — owner `emergencyCloseSwapsUsdc` at d30 | 541 562 | **−41 597** | attack dead, LPs whole |
+| D — whitelisted liquidator at d30 (fee 25 USDC) | 541 562 | **−41 597** | attack dead, no multisig needed |
+| C — `pause(redeem)` at d90 only | 0 (frozen) | — | attacker's 500 000 ipUSDC is stuck; the mark is still inflated, so an unpause without a fix pays him **more** |
+| F — thin 200 k pool, owner closes at d30 | 66 625 | **−66 534** | attack dead at the depth that exists |
+
+So the answer is concrete: **he does not lose everything, but he loses the whole trade.** On day 30 the emergency close paid
+him **0** for his 83 158 USDC (74 000 collateral + fee, all consumed by the capped loss), and his LP principal came back at the
+now-higher exchange rate (541 562 for 500 000 deposited). His maximum loss is exactly what he put into the swap; the LP
+deposit is not forfeit because nothing in the protocol can seize ipTokens. Conversely, once he has redeemed, the profit is
+final — there is no clawback path in the code at all.
+
+**9.3 The real question is the race, not the mechanism.** Redemption is permissionless and instantaneous, so the attacker
+picks his exit block; a `closeSwapsUsdc` sitting in the public mempool can be front-run by his redeem in the same block.
+The sequence that actually wins is **pause first (from a hot guardian key, privately), then close the swaps, then unpause** —
+after the pause his redeem reverts (`IPOR_015`) and the close costs him his collateral.
+
+**9.4 Break-even, so the severity is not overstated.** With `p` = probability that nobody notices and closes inside the
+tenor:
+
+* 1 M pool: `p·293 692 − (1−p)·41 597` ⇒ profitable for `p > 12.4 %`;
+* 200 k pool: `p·51 920 − (1−p)·66 534` ⇒ profitable for `p > 56.2 %`.
+
+At today's depth a thin pool therefore only pays if the operator is more likely than not to stay asleep for three months.
+The large-pool case (which is the scaling law in §8) needs only a ~1-in-8 miss. Both are realistic for a protocol whose
+entire derivatives TVL is 484 k and which has no on-chain alarm — but this is the honest boundary of the finding: **the bug is
+a guaranteed loss for LPs only if the swap is left open, and the protocol has the power to close it.**
+
+---
+## 10. Fix
 
 The mark used for pricing redemptions must never exceed what the pool can actually collect. In order of preference:
 
@@ -340,7 +394,7 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 
 ---
 
-## 10. Tried and failed (do not repeat)
+## 11. Tried and failed (do not repeat)
 
 | attempt | result |
 |---|---|
@@ -354,7 +408,7 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 
 ---
 
-## 11. Repo layout of this deliverable
+## 12. Repo layout of this deliverable
 
 ```
 audit/ipor/
@@ -380,5 +434,6 @@ audit/ipor/
     ├── long.js/.log       <- redemption at / past maturity: the take saturates at the pool's cash
     ├── multi.js/.log      <- N swaps per attacker: maxSwapCollateralAmount is not a notional cap
     ├── scale3.js/.log     <- 1M / 2M / 4M pools at constant 50% attacker share: flat ~50% ROI
+    ├── cure.js/.log       <- pause / emergencyClose / whitelisted liquidator: what the attacker actually loses
     └── artifacts.json     <- generated by compile.js (not committed)
 ```
