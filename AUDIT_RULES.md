@@ -3,12 +3,16 @@
 Người dùng đặt luật này ngày 2026-10-30. Áp dụng cho **mọi** lần audit/tìm bug sau này,
 không cần hỏi lại, không cần nhắc lại.
 
-## 1. Chỉ báo bug thoả CẢ BA
+## 1. Chỉ báo bug thoả CẢ HAI
 
 1. **Không cần quyền** — khai thác được bởi người lạ chỉ có RPC và tiền gas.
-   Không tính: owner/admin/relayer, "nếu owner làm X", key bị lộ, config sai.
-2. **Điều kiện khai thác chặt** — kịch bản cụ thể, tái lập được. Không phải "có thể nếu…".
-3. **Cướp được tiền** — tiền của người khác bị lấy, hoặc mất không lấy lại được.
+   Không tính: owner/admin/relayer/keeper, "nếu owner làm X", key bị lộ, config sai,
+   phải chờ ai đó làm gì đó. Đây là bộ lọc **duy nhất** về điều kiện.
+2. **Cướp được tiền** — tiền của người khác bị lấy, hoặc mất không lấy lại được.
+
+**Điều kiện khai thác KHÔNG cần chặt.** Không cần hiếm, không cần khó, không cần kịch bản
+đẹp. Bug xảy ra ở đường mặc định, ai cũng chạm được, thậm chí không cần attacker — vẫn báo,
+và là loại nặng nhất. Đừng tự loại một bug chỉ vì "điều kiện dễ quá" hay "ai cũng làm được".
 
 ## 2. Mọi thứ khác thì im
 
