@@ -173,11 +173,20 @@ The loss is not a temporary mark-to-market: `liquidityPool` is unchanged after t
 
 A flash loan only helps if the profit can be taken inside the same transaction that creates it. It cannot, and this is provable from the code and reproduced on-chain locally (`lab/capital.log`, section A).
 
-**Mechanism.** `AmmOpenSwapService._beforeOpenSwap` stores the rebalancing/pay-fixed indicator with `dt = 0`, and
-`InterestRates.addContinuousCompoundInterestUsingRatePeriodMultiplication` computes `rate·dt`, so the indicator is
-`exp(0) = 1` at the opening block — no interest, no mark. The value that inflates the ipToken price, `hypotheticalInterestCumulative`
-inside `SoapIndicatorLogic`, is an explicit function of *elapsed time* and of the notional; it is created by the passage of
-blocks, not by the transaction.
+**Mechanism.** `SoapIndicatorRebalanceLogic.rebalanceWhenOpenSwap` (`contracts/amm/libraries/SoapIndicatorRebalanceLogic.sol:20`)
+freezes the hypothetical interest *before* adding the new notional, and the SOAP delta itself is
+`contracts/amm/libraries/SoapIndicatorLogic.sol:68`:
+
+```solidity
+return totalNotional.calculateContinuousCompoundInterestUsingRatePeriodMultiplication(
+    averageInterestRate * (calculateTimestamp - lastRebalanceTimestamp)   // rate * dt
+);
+```
+
+with `rebalanceTimestamp = block.timestamp` set at open. `dt = 0` ⇒ `exp(0) = 1` ⇒ delta `= 0`: the swap contributes
+**exactly nothing** to the mark in its opening block, and everything afterwards, in proportion to elapsed time. The value that
+inflates the ipToken price (`hypotheticalInterestCumulative`) is therefore created by the passage of blocks, not by the
+transaction — which is precisely why this cannot be flash-loaned.
 
 **Measured on the deployed stack** (one 74 000 USDC collateral, 74 000 000 001 573 160 000 notional, 90-day receive-fixed leg):
 
