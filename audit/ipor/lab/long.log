@@ -1,0 +1,6 @@
+This version of µWS is not compatible with your Node.js build:
+honest 500k, atk 500k | redeem at 90d (on maturity)    notional=74,000,000,001,573,160,000 fixed= 0.949% atk_spend=  583,158 atk_out=  876,854 ATK_NET=+ 293,695 pool_cash_before=933,158 after=175,359
+honest 500k, atk 500k | redeem 90d + 90d  = 180d open  notional=74,000,000,001,573,160,000 fixed= 0.949% atk_spend=  583,158 atk_out=  932,820 ATK_NET=+ 349,662 pool_cash_before=933,158 after=119,601
+honest 500k, atk 500k | redeem 90d + 275d = 365d open notional=74,000,000,001,573,160,000 fixed= 0.949% atk_spend=  583,158 atk_out=  927,194 ATK_NET=+ 344,036 pool_cash_before=933,158 after=125,633
+honest 500k, atk 500k | redeem 90d + 640d = 730d open notional=74,000,000,001,573,160,000 fixed= 0.949% atk_spend=  583,158 atk_out=  912,846 ATK_NET=+ 329,688 pool_cash_before=933,158 after=140,562
+thin 200k,  atk  50k | redeem 90d + 90d  = 180d open  notional=74,000,000,001,573,160,000 fixed= 0.000% atk_spend=  133,158 atk_out=  183,558 ATK_NET=+  50,400 pool_cash_before=295,658 after=124,904

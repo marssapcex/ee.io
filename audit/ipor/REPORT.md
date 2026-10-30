@@ -257,20 +257,76 @@ mechanism is profitable on every tenor and scales with time.
 | 500 k / 100 k | 0.000 % | 183 158 | 254 518 | **+71 359** | 593 158 → 364 344 |
 | 500 k / 50 k | 0.000 % | 133 158 | 134 282 | +1 124 | 550 658 → 424 045 |
 
-**Where it stops paying (stated honestly):** the profit needs the attacker's LP to be a significant share of the pool.
-`lab/robust2.log` — honest 1 000 000 pool with only a 100 000 attacker LP: net **−17 667** at the repo-default cap,
-**−69 430** with a 20 % cap and `demandSpreadFactor = 280`, **+1 124** at `demandSpreadFactor = 28`. In other words the
-demand-spread/cap parameters *do* have an effect — they can only push the fixed rate **up** (the rate is floored at 0 %),
-which is exactly why thin pools with a 0 % fixed rate are the profitable case, and why a deep pool with small notional is not.
-This is a real, but conditional, protection: it is a function of `notional / lpDepth` and it is bypassed whenever the attacker
-is willing to be ~20 % of the pool — which at a 200 k pool means 50 k USDC.
+**What actually limits it — the attacker's *share*, not the pool's size.** Everything above is a function of
+`notional / lpDepth`, i.e. of how much of the pool the attacker owns. A 1 000 000 pool with a 100 000 attacker LP is not
+profitable (`lab/robust2.log`: **−17 667** at the repo-default cap, **−69 430** at a 20 % cap with `demandSpreadFactor = 280`,
+**+1 124** at `demandSpreadFactor = 28`), which at first sight looks like a depth-based defence. It is not: the attacker simply
+scales with the pool (§8). The only real requirement is ≈20 %+ of the pool, and the take then grows linearly with the depth.
 
 Total realistic damage: **20 000–230 000 USD per pool per 90-day cycle**, repeatable across the USDC/USDT/DAI pools on
 Ethereum, Base and Arbitrum and across both sides of the book, against a product whose entire TVL is 484 063 USD. The
 theft is bounded by the cash in `AmmTreasury` at the time of redemption, i.e. by the pool depth, not by the notional.
 
 ---
-## 8. Fix
+## 8. Scaling law — pool size is not a defence, and neither is the per-swap collateral cap
+
+Three separate effects, all measured on the deployed stack.
+
+**8.1 Profit is linear in the pool's size at constant ROI.** Same attack, same 90 days, the attacker always taking ~50 % of
+the pool (`lab/scale3.log`, `lab/multi.log`):
+
+| pool (honest LP + attacker LP) | swaps | notional | attacker spend | attacker out | net | ROI / 90 d | pool cash after |
+|---|---|---|---|---|---|---|---|
+| 1.0 M (500 k + 500 k) | 1 | 74 M | 583 158 | 876 854 | **+293 695** | 50.4 % | 933 158 → 175 359 |
+| 2.0 M (1 M + 1 M) | 2 | 148 M | 1 083 158 | 1 721 136 | **+554 819** | 51.2 % | 1 866 317 → 378 404 |
+| 4.0 M (2 M + 2 M) | 4 | 296 M | 2 083 158 | 3 416 884 | **+1 084 251** | 52.0 % | 3 732 633 → 778 386 |
+
+The ROI is flat at ~50 % per cycle and the absolute theft scales with the pool. A bigger pool is a bigger prize, not a
+safer one; the honest LPs are left with 13–21 % of the cash in every row.
+
+**8.2 `maxSwapCollateralAmount` caps the collateral of *one* swap, not the notional of the position.** The guard is
+`require(collateral <= poolCfg.maxSwapCollateralAmount, AmmErrors.COLLATERAL_AMOUNT_TOO_HIGH)` —
+`contracts/amm/AmmOpenSwapService.sol:907`; the lab config sets it to 100 000
+(`poc.js:171`, mirroring the repo's own test config). `SOAP` is computed from `totalNotional` accumulated across
+*all* swaps of the leg, so opening N swaps of 74 000 collateral each multiplies the phantom mark by N while every
+individual call stays under the cap. That is exactly what the "2 swaps" and "4 swaps" rows above do, and it is the
+reason the 2 M and 4 M pools fall — there is no aggregate notional limit anywhere in the path.
+
+**8.3 Time: the take keeps growing after maturity, then saturates at the pool's cash.** The swap has a tenor, but nothing
+forces it closed — the buyer decides. The hypothetical SOAP is a function of `block.timestamp` only
+(`SoapIndicatorLogic.sol:68`), so leaving the swap open keeps inflating the redemption price
+(`lab/long.log`, 1 M pool, 500 k attacker, 74 k collateral, the swap opened with a 90-day tenor):
+
+| redeem at | attacker out | net | pool cash after |
+|---|---|---|---|
+| 90 d (on maturity) | 876 854 | **+293 695** | 175 359 |
+| 90 d + 90 d = 180 d open | 932 820 | **+349 662** | 119 601 |
+| 90 d + 275 d = 365 d open | 927 194 | +344 036 | 125 633 |
+| 90 d + 640 d = 730 d open | 912 846 | +329 688 | 140 562 |
+
+Holding past maturity is worth another ~19 % — but the ceiling is hard: **the take cannot exceed the cash in
+`AmmTreasury`**, and at 180 days it is already 99.96 % of it (932 820 of 933 158). Beyond that, more time adds nothing;
+the remaining 119 601 is what the guards physically cannot pay out. So "hold longer" is right up to "the pool is empty".
+
+**8.4 Every chain, every asset is a separate pool with its own cash — the loss adds up.**
+`AmmPoolsService._getPoolConfiguration` (`contracts/amm/AmmPoolsService.sol:335`) returns a distinct `ammStorage`,
+`ammTreasury` and `ipToken` per asset, and each chain is a separate deployment, so USDC/USDT/DAI on Ethereum, Base and
+Arbitrum are independent targets; nothing is shared except the attacker's capital, and the capital is not lost (it is returned at the inflated
+price). Current live depth (DefiLlama, `currentChainTvls`, 2026-10-30):
+
+| chain | derivatives TVL |
+|---|---|
+| Arbitrum | 247 554 |
+| Ethereum | 183 926 |
+| Base | 52 583 |
+| **total** | **484 063** |
+
+Token mix in the same snapshot: USDC 330 333, USDT 16 873, DAI 7 692, WSTETH 21.9, STETH 30.0, WEETH 0.5, USDM 228.
+So the realistic total exposure of this bug is **the whole 484 k**, taken chain by chain and pool by pool, not the
+20–230 k of a single pool — and it is repeatable as long as LPs keep refilling the pools.
+
+---
+## 9. Fix
 
 The mark used for pricing redemptions must never exceed what the pool can actually collect. In order of preference:
 
@@ -283,7 +339,7 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 
 ---
 
-## 9. Tried and failed (do not repeat)
+## 10. Tried and failed (do not repeat)
 
 | attempt | result |
 |---|---|
@@ -297,7 +353,7 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 
 ---
 
-## 10. Repo layout of this deliverable
+## 11. Repo layout of this deliverable
 
 ```
 audit/ipor/
@@ -320,5 +376,8 @@ audit/ipor/
     ├── robust.js/.log     <- the same attack under alternative risk-indicator caps / spread factors
     ├── robust2.js/.log    <- where it stops paying (deep pool, small attacker LP)
     ├── thin.js/.log       <- the attack at the depth that actually exists (100k-400k pools)
+    ├── long.js/.log       <- redemption at / past maturity: the take saturates at the pool's cash
+    ├── multi.js/.log      <- N swaps per attacker: maxSwapCollateralAmount is not a notional cap
+    ├── scale3.js/.log     <- 1M / 2M / 4M pools at constant 50% attacker share: flat ~50% ROI
     └── artifacts.json     <- generated by compile.js (not committed)
 ```

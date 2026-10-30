@@ -1,0 +1,6 @@
+This version of µWS is not compatible with your Node.js build:
+pool 2.0M, notional 74M  (collat  74k, lev 1000x)    notional=74,000,000,001,573,160,000 fixed= 1.659% atk_spend=1,083,158 atk_out=1,311,926 ATK_NET=+ 228,768 pool_cash_before=1,783,158 after=655,547
+pool 2.0M, notional 74M  (collat 148k, lev  500x)    FAILED: transaction execution reverted
+pool 2.0M, notional 148M (collat 148k, lev 1000x)    FAILED: transaction execution reverted
+pool 2.0M, notional 296M (collat 296k, lev 1000x)    FAILED: transaction execution reverted
+pool 4.0M, notional 296M (collat 296k, lev 1000x)    FAILED: transaction execution reverted
