@@ -1,0 +1,8 @@
+This version of µWS is not compatible with your Node.js build:
+honest 400k, atk 100k, 1000x, 90d                    notional=74,000,000,001,573,160,000 fixed= 0.000% atk_spend=  183,158 atk_out=  285,421 ATK_NET=+ 102,263 pool_cash_before=508,158 after=253,076
+honest 400k, atk 200k, 1000x, 90d                    notional=74,000,000,001,573,160,000 fixed= 0.000% atk_spend=  283,158 atk_out=  509,035 ATK_NET=+ 225,877 pool_cash_before=593,158 after=148,004
+honest 300k, atk 150k, 1000x, 90d                    notional=74,000,000,001,573,160,000 fixed= 0.000% atk_spend=  233,158 atk_out=  384,672 ATK_NET=+ 151,513 pool_cash_before=465,658 after=123,597
+honest 250k, atk 250k, 1000x, 90d                    notional=74,000,000,001,573,160,000 fixed= 0.000% atk_spend=  333,158 atk_out=  433,840 ATK_NET=+ 100,682 pool_cash_before=508,158 after=126,064
+honest 500k, atk 100k, 1000x, 90d                    notional=74,000,000,001,573,160,000 fixed= 0.000% atk_spend=  183,158 atk_out=  254,518 ATK_NET=+  71,359 pool_cash_before=593,158 after=364,344
+honest 500k, atk 50k,  1000x, 90d                    notional=74,000,000,001,573,160,000 fixed= 0.000% atk_spend=  133,158 atk_out=  134,282 ATK_NET=+   1,124 pool_cash_before=550,658 after=424,045
+honest 500k, atk 500k, 1000x, 90d (baseline)         notional=74,000,000,001,573,160,000 fixed= 0.949% atk_spend=  583,158 atk_out=  876,854 ATK_NET=+ 293,695 pool_cash_before=933,158 after=175,359

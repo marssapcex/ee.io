@@ -1,0 +1,20 @@
+This version of µWS is not compatible with your Node.js build:
+=== A. right after the swap is opened (same block) ===
+t+0      soap=0  rate=1.006082  <- the mark is exactly zero, there is nothing to redeem
+protocol redeem of 1 ipUSDC now pays 1.01 USDC -> on-chain rate 1.006082 (model 1.006082)
+=== B. the same swap, marked at later timestamps (no state change) ===
++1 hour   soap=     -292.32  rate=1.006277  marked_gain_of_a_500k_LP=0
++1 day    soap=   -7,016.21  rate=1.010760  marked_gain_of_a_500k_LP=0.01
++7 days   soap=  -49,139.88  rate=1.038842  marked_gain_of_a_500k_LP=0.02
++28 days  soap= -196,929.71  rate=1.137369  marked_gain_of_a_500k_LP=0.07
++90 days  soap= -636,515.61  rate=1.430426  marked_gain_of_a_500k_LP=0.22
+=== C. mirror: a pay-fixed swap marks the pool down instead (also starts at 0) ===
+pay-fixed opened: notional=74,000,000,001,573,160,000 fixed=6.151%
+t+0       soap=             0  rate=1.009123
++90 days  soap=   -212,889.88  rate=1.222013
+=== D. capital scenarios, 90d, collateral 74k, 1000x, 5% index ===
+atk_lp=        0  spent= 83,158.29  redeemed=         0  NET=-83,158.29  honest_lp_left=933,158.29
+atk_lp=   50,000  spent=133,158.29  redeemed= 85,057.85  NET=-48,100.43  honest_lp_left=890,885.37
+atk_lp=  100,000  spent=183,158.29  redeemed=165,491.73  NET=-17,666.56  honest_lp_left=865,016.58
+atk_lp=  250,000  spent=333,158.29  redeemed=386,195.75  NET=+53,037.46  honest_lp_left=804,918.16
+atk_lp=  500,000  spent=583,158.29  redeemed=715,214.62  NET=+132,056.33  honest_lp_left=737,752.12

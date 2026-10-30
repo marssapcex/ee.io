@@ -1,0 +1,4 @@
+This version of µWS is not compatible with your Node.js build:
+cap 2% (repo default), 1.0M 50/50, 1000x, 90d        notional=74,000,000,001,573,160,000 fixed= 0.949% atk_spend=  583,158 atk_out=  876,854 ATK_NET=+ 293,695 pool_cash_before=933,158 after=175,359
+cap 20%, demandFactor 280, 1.0M 50/50, 1000x, 90d    notional=74,000,000,001,573,160,000 fixed= 4.049% atk_spend=  583,158 atk_out=  592,281 ATK_NET=+   9,122 pool_cash_before=933,158 after=417,246
+cap 20%, demandFactor 28,  1.0M 50/50, 1000x, 90d    notional=74,000,000,001,573,160,000 fixed= 0.000% atk_spend=  583,158 atk_out=  481,777 ATK_NET=- 101,382 pool_cash_before=933,158 after=511,174

@@ -161,7 +161,7 @@ Reading of the table:
 
 An LP can mint ipUSDC, open one self-harming but pool-profitable leveraged swap, wait, and redeem at a price that is backed by nothing. The cash leaves `AmmTreasury` permanently:
 
-* attacker: **+293 692 USDC** for a 583 158 USDC budget in 90 days (50% ROI);
+* attacker: **+293 692 USDC** for a 583 158 USDC budget in 90 days (50% ROI) — measured against a 1 000 000 pool; the depth that actually exists gives +20 000…+230 000, see §7;
 * honest LP: **−324 641 USDC** of cash (500 000 in, 175 359 of pool cash left for him), of which only 43 842 could be redeemed on the spot;
 * the protocol keeps a 74 000 USDC receivable and a 744 584 USDC paper gain that can never be realised.
 
@@ -169,7 +169,99 @@ The loss is not a temporary mark-to-market: `liquidityPool` is unchanged after t
 
 ---
 
-## 6. Fix
+## 6. Why this is **not** a flash-loan attack
+
+A flash loan only helps if the profit can be taken inside the same transaction that creates it. It cannot, and this is provable from the code and reproduced on-chain locally (`lab/capital.log`, section A).
+
+**Mechanism.** `AmmOpenSwapService._beforeOpenSwap` stores the rebalancing/pay-fixed indicator with `dt = 0`, and
+`InterestRates.addContinuousCompoundInterestUsingRatePeriodMultiplication` computes `rate·dt`, so the indicator is
+`exp(0) = 1` at the opening block — no interest, no mark. The value that inflates the ipToken price, `hypotheticalInterestCumulative`
+inside `SoapIndicatorLogic`, is an explicit function of *elapsed time* and of the notional; it is created by the passage of
+blocks, not by the transaction.
+
+**Measured on the deployed stack** (one 74 000 USDC collateral, 74 000 000 001 573 160 000 notional, 90-day receive-fixed leg):
+
+```
+A) same block as the open
+   getIndex -> ibt 1.000000, lastTs == blockTs
+   redeemFromAmmPoolUsdc(atk, 1 ipUSDC)  ->  1.010 USD  (fair, no gain)
+   soap = 0                    exchangeRate = 1.006082
+B) identical state, only the clock moved (no other transaction)
+   +1h   soap =     -292.32    exchangeRate = 1.006277   (500k LP marked gain 0.00)
+   +1d   soap =   -7,016.21    exchangeRate = 1.010760   (                   0.01)
+   +7d   soap =  -49,139.88    exchangeRate = 1.038842   (                   0.02)
+   +28d  soap = -196,929.71    exchangeRate = 1.137369   (                   0.07)
+   +90d  soap = -636,515.61    exchangeRate = 1.430426   (                   0.22)
+```
+
+The redeem at `t+0` executes — it is not a revert, it simply pays the fair rate (`1.01 USDC` for `1 ipUSDC`) — so the attacker
+who borrows the capital, mints and redeems inside one block walks away with the fair value of his ipTokens, i.e. **nothing**
+minus the opening fee and the spread. Every unit of profit in this report is earned
+by *holding*: the collateral is locked for the tenor and the LP position must be held for the tenor as well. The capital is
+recoverable after 90 days, but it is not atomic, so a flash loan adds only fees and the borrow cost — it does not enable anything.
+
+**Consequence for severity, stated plainly:** this is a capital-locked, time-locked theft from the pool, not a same-block
+drain. The capital that has to be committed is the *LP principal*, not the collateral: `lab/capital.log` section D shows a
+500 000 LP next to a 1 000 000 pool nets **+132 056** over 90 days, while a 0 LP attacker nets **−83 158** (he only pays).
+The borrowable part (the 74 000 collateral) is the cheap part; the LP deposit is the expensive part.
+
+---
+
+## 7. Real exposure at current TVL
+
+Public data (checked 2026-10-30):
+
+| source | figure |
+|---|---|
+| DefiLlama `api.llama.fi/tvl/ipor-derivatives` | **484 063 USD** — this is the AMM/derivatives product only |
+| DefiLlama `protocol/ipor-protocol` (parent, includes Fusion) | ≈ 75.9 m USD — **not** the AMM, irrelevant to this bug |
+| DefiPrime (Apr 2026) | ≈ 2 m USD derivatives, down from a 44 m peak in early 2023 |
+
+So the "< 500 k TVL" figure is accurate for the product this bug lives in, and a *single* stablecoin pool (USDC, USDT, DAI, on
+Ethereum / Base / Arbitrum, 28 / 60 / 90-day sides all sharing the same LP cash) is a fraction of that — order of
+**100 k–300 k**. The headline PoC uses a 1 000 000 pool, i.e. it overstates absolute dollars by roughly 2×, not by orders of
+magnitude; `lab/thin.log` reruns the same attack at the depth that actually exists.
+
+`lab/thin.log` (1000× leverage, repo-default risk indicators, cap 2%, the attacker sweeps the treasury by redeeming in
+decreasing chunks until the guards stop him):
+
+```
+thin: honest 200k, atk  50k | 90d | cap 2%   atk_spend=133,158 atk_out=185,079 ATK_NET=+ 51,920  pool_cash 295,658 -> 122,825
+thin: honest 200k, atk 100k | 90d | cap 2%   atk_spend=183,158 atk_out=234,173 ATK_NET=+ 51,015  pool_cash 338,158 -> 122,189
+thin: honest 200k, atk  50k | 28d | cap 2%   atk_spend=126,873 atk_out=107,445 ATK_NET=- 19,428  pool_cash 289,373 -> 186,514
+thin: honest 200k, atk 100k | 28d | cap 2%   atk_spend=176,873 atk_out=195,742 ATK_NET=+ 18,869  pool_cash 331,873 -> 153,962
+thin: honest 400k, atk 100k | 28d | cap 2%   atk_spend=176,873 atk_out=157,445 ATK_NET=- 19,428  pool_cash 501,873 -> 356,514
+```
+
+**+52 000 USD out of a 200 000 USD pool in one 90-day trade, with 50 000 USD of LP and 74 000 USD of collateral**, i.e. the
+honest LPs lose ~26 % of the pool and 61 % of the pool's cash is gone. At 28 days the same trade earns +18 869, so the
+mechanism is profitable on every tenor and scales with time.
+
+`lab/realistic.log` (honest liquidity / attacker LP split, 90 d, 1000×):
+
+| honest / attacker LP | fixed rate obtained | attacker spend | attacker out | net | pool cash |
+|---|---|---|---|---|---|
+| 400 k / 100 k | 0.000 % | 183 158 | 285 421 | **+102 263** | 508 158 → 253 076 |
+| 400 k / 200 k | 0.000 % | 283 158 | 509 035 | **+225 877** | 593 158 → 148 004 |
+| 300 k / 150 k | 0.000 % | 233 158 | 384 672 | **+151 513** | 465 658 → 123 597 |
+| 250 k / 250 k | 0.000 % | 333 158 | 433 840 | **+100 682** | 508 158 → 126 064 |
+| 500 k / 100 k | 0.000 % | 183 158 | 254 518 | **+71 359** | 593 158 → 364 344 |
+| 500 k / 50 k | 0.000 % | 133 158 | 134 282 | +1 124 | 550 658 → 424 045 |
+
+**Where it stops paying (stated honestly):** the profit needs the attacker's LP to be a significant share of the pool.
+`lab/robust2.log` — honest 1 000 000 pool with only a 100 000 attacker LP: net **−17 667** at the repo-default cap,
+**−69 430** with a 20 % cap and `demandSpreadFactor = 280`, **+1 124** at `demandSpreadFactor = 28`. In other words the
+demand-spread/cap parameters *do* have an effect — they can only push the fixed rate **up** (the rate is floored at 0 %),
+which is exactly why thin pools with a 0 % fixed rate are the profitable case, and why a deep pool with small notional is not.
+This is a real, but conditional, protection: it is a function of `notional / lpDepth` and it is bypassed whenever the attacker
+is willing to be ~20 % of the pool — which at a 200 k pool means 50 k USDC.
+
+Total realistic damage: **20 000–230 000 USD per pool per 90-day cycle**, repeatable across the USDC/USDT/DAI pools on
+Ethereum, Base and Arbitrum and across both sides of the book, against a product whose entire TVL is 484 063 USD. The
+theft is bounded by the cash in `AmmTreasury` at the time of redemption, i.e. by the pool depth, not by the notional.
+
+---
+## 8. Fix
 
 The mark used for pricing redemptions must never exceed what the pool can actually collect. In order of preference:
 
@@ -182,7 +274,7 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 
 ---
 
-## 7. Tried and failed (do not repeat)
+## 9. Tried and failed (do not repeat)
 
 | attempt | result |
 |---|---|
@@ -196,7 +288,7 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 
 ---
 
-## 8. Repo layout of this deliverable
+## 10. Repo layout of this deliverable
 
 ```
 audit/ipor/
@@ -211,5 +303,13 @@ audit/ipor/
     ├── closecheck.js      <- proves the settlement is capped at the collateral (74 000 vs 744 584)
     ├── sweep.js           <- parameter sweep (tenor / collateral / leverage / pool split)
     ├── sweep.log
+    ├── soap.js            <- off-chain model of the pool mark (exp/ln, hypothetical interest, exchange rate)
+    ├── capital.js         <- flash-loan test (t+0 redeem) + mark-vs-time + capital scenarios
+    ├── capital.log
+    ├── realistic.js       <- honest-LP vs attacker-LP split at realistic depths
+    ├── realistic.log
+    ├── robust.js/.log     <- the same attack under alternative risk-indicator caps / spread factors
+    ├── robust2.js/.log    <- where it stops paying (deep pool, small attacker LP)
+    ├── thin.js/.log       <- the attack at the depth that actually exists (100k-400k pools)
     └── artifacts.json     <- generated by compile.js (not committed)
 ```
