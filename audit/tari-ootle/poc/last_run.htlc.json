@@ -1,0 +1,35 @@
+{
+  "artifact": "@tari-project/ootle-wasm@0.48.0",
+  "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+  "node": "v22.22.3",
+  "section": "htlc",
+  "pass": 5,
+  "fail": 0,
+  "results": [
+    {
+      "name": "htlc: committed script root equals the root a claimant recomputes",
+      "ok": true,
+      "detail": "root=8a8cbc446f1a512f…"
+    },
+    {
+      "name": "htlc: a script-path claim builds a statement the engine validator accepts",
+      "ok": true,
+      "detail": "validate_transfer OK (predicates themselves are the engine's job)"
+    },
+    {
+      "name": "htlc: a leaf that was never committed yields no witness",
+      "ok": true,
+      "detail": "Stealth crypto error: Invalid argument leaf: Revealed leaf is not a member of the committed con"
+    },
+    {
+      "name": "htlc: duplicate leaves are refused when building the root",
+      "ok": true,
+      "detail": "Stealth crypto error: Invalid argument conditions: condition tree contains duplicate leaves"
+    },
+    {
+      "name": "htlc: a hashlock leaf with the wrong preimage still produces a statement (predicate is engine-side)",
+      "ok": true,
+      "detail": "accepted by the crypto layer; rejection happens in evaluate_builtin (engine, Rust)"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "artifact": "@tari-project/ootle-wasm@0.48.0",
+  "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+  "node": "v22.22.3",
+  "section": "conservation",
+  "pass": 7,
+  "fail": 0,
+  "results": [
+    {
+      "name": "value conservation: honest key-path spend passes the engine's own validator",
+      "ok": true,
+      "detail": "validate_transfer OK"
+    },
+    {
+      "name": "value conservation: an output worth more than the input is rejected",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification"
+    },
+    {
+      "name": "binding: minimum_value_promise is covered by the range proof",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Interna"
+    },
+    {
+      "name": "binding: an output's SpendAuthorization is covered (cannot be re-targeted pre-seal)",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification"
+    },
+    {
+      "name": "binding: encrypted_data is covered",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification"
+    },
+    {
+      "name": "binding: a substituted input commitment is covered",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification"
+    },
+    {
+      "name": "binding: the range proof is bound to the output commitments",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof must be provided and p"
+    }
+  ]
+}

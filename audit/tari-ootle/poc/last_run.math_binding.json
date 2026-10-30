@@ -1,0 +1,48 @@
+{
+  "artifact": "@tari-project/ootle-wasm@0.48.0",
+  "section": "math_binding",
+  "pass": 8,
+  "fail": 0,
+  "results": [
+    {
+      "name": "binding: swapping two output commitments (same set, different slots) is rejected",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+    },
+    {
+      "name": "binding: swapping minimum_value_promise between two slots is rejected",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+    },
+    {
+      "name": "binding: swapping viewable-balance proofs between two slots is rejected",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid confidential proof: ViewableBalanceProof provided for a resource that is not"
+    },
+    {
+      "name": "binding: reordering the output list is rejected",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+    },
+    {
+      "name": "binding: an odd output count (3) still binds every slot",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+    },
+    {
+      "name": "binding: 5 outputs — permuting the last two, which pad into the same aggregation block",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+    },
+    {
+      "name": "binding: revealed_output cannot be retargeted to another amount after signing",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i"
+    },
+    {
+      "name": "binding: revealed_input cannot be raised after signing (P2: computed != moved)",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+outputs: 2 commitments equal: true
+input commitments: [ '6ebd8258ac86', '3ee78dcfbf95' ]
+output commitments: [ '36b8708f8235', '36b8708f8235' ]
+RESULT: validateStealthTransfer ACCEPTS the duplicate-output statement

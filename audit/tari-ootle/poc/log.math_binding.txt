@@ -1,0 +1,10 @@
+PASS  binding: swapping two output commitments (same set, different slots) is rejected :: Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A
+PASS  binding: swapping minimum_value_promise between two slots is rejected :: Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A
+PASS  binding: swapping viewable-balance proofs between two slots is rejected :: Stealth transfer validation failed: Invalid confidential proof: ViewableBalanceProof provided for a resource that is not
+PASS  binding: reordering the output list is rejected :: Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A
+PASS  binding: an odd output count (3) still binds every slot :: Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A
+PASS  binding: 5 outputs — permuting the last two, which pad into the same aggregation block :: Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A
+PASS  binding: revealed_output cannot be retargeted to another amount after signing :: Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i
+PASS  binding: revealed_input cannot be raised after signing (P2: computed != moved) :: Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i
+
+──────── math/binding: checks=8 pass=8 fail=0 ────────

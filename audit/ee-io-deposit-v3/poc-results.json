@@ -1,0 +1,77 @@
+[
+  {
+    "name": "T1 attacker cannot call execute",
+    "pass": true,
+    "detail": "missing revert data"
+  },
+  {
+    "name": "T1 attacker cannot re-initialize proxy (take over factory)",
+    "pass": true,
+    "detail": "missing revert data"
+  },
+  {
+    "name": "T1 attacker cannot forge onFunded (depositor slot)",
+    "pass": true,
+    "detail": "missing revert data"
+  },
+  {
+    "name": "T2 execute reverts when outDelta < minOut",
+    "pass": true,
+    "detail": "missing revert data"
+  },
+  {
+    "name": "T2 input untouched after the revert",
+    "pass": true,
+    "detail": "balance=10.0 A"
+  },
+  {
+    "name": "T2 executed flag still false (retry possible on-chain)",
+    "pass": true,
+    "detail": ""
+  },
+  {
+    "name": "T2 relayer retry does work (loss is purely the server abandoning the order)",
+    "pass": true,
+    "detail": "dest +5.0 B"
+  },
+  {
+    "name": "T3 second execute on an already-executed proxy reverts",
+    "pass": true,
+    "detail": "missing revert data"
+  },
+  {
+    "name": "T3 createProxy for that salt reverts (cannot redeploy)",
+    "pass": true,
+    "detail": "missing revert data"
+  },
+  {
+    "name": "T3 funds are unrecoverable by anyone",
+    "pass": true,
+    "detail": "stuck=3.0 A"
+  },
+  {
+    "name": "T4 attacker becomes depositor with 1 wei",
+    "pass": true,
+    "detail": "attacker got 2.0 A of the user's overpayment"
+  },
+  {
+    "name": "T5 fee-on-transfer deposit arrives short of `sendAmount`",
+    "pass": true,
+    "detail": "watcher expects 100, sees 90.0 -> never executes"
+  },
+  {
+    "name": "T6 execute reverts when calldata pays `destination` instead of the proxy",
+    "pass": true,
+    "detail": "missing revert data"
+  },
+  {
+    "name": "T6 user output was never received (swap undone by the revert)",
+    "pass": true,
+    "detail": ""
+  },
+  {
+    "name": "T6 deposit stranded in the proxy",
+    "pass": true,
+    "detail": "10.0 A stranded, executed=false"
+  }
+]

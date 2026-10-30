@@ -1,0 +1,9 @@
+PASS  value conservation: honest key-path spend passes the engine's own validator :: validate_transfer OK
+PASS  value conservation: an output worth more than the input is rejected :: Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification
+PASS  binding: minimum_value_promise is covered by the range proof :: Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Interna
+PASS  binding: an output's SpendAuthorization is covered (cannot be re-targeted pre-seal) :: Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification
+PASS  binding: encrypted_data is covered :: Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification
+PASS  binding: a substituted input commitment is covered :: Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification
+PASS  binding: the range proof is bound to the output commitments :: Stealth transfer validation failed: Invalid balance proof: Balance proof must be provided and p
+
+──────── conservation: checks=7 pass=7 fail=0 ────────

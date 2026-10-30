@@ -1,0 +1,7 @@
+PASS  htlc: committed script root equals the root a claimant recomputes :: root=8a8cbc446f1a512f…
+PASS  htlc: a script-path claim builds a statement the engine validator accepts :: validate_transfer OK (predicates themselves are the engine's job)
+PASS  htlc: a leaf that was never committed yields no witness :: Stealth crypto error: Invalid argument leaf: Revealed leaf is not a member of the committed con
+PASS  htlc: duplicate leaves are refused when building the root :: Stealth crypto error: Invalid argument conditions: condition tree contains duplicate leaves
+PASS  htlc: a hashlock leaf with the wrong preimage still produces a statement (predicate is engine-side) :: accepted by the crypto layer; rejection happens in evaluate_builtin (engine, Rust)
+
+──────── htlc: checks=5 pass=5 fail=0 ────────

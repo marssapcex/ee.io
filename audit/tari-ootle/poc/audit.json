@@ -1,0 +1,307 @@
+{
+  "target": "tari-project/tari-ootle @ 3460b2ff19640c5a3b758de9ec407eac8e372044",
+  "artefact": "@tari-project/ootle-wasm 0.48.0 (npm, 2026-10-29T12:11Z, commit 6a25dbc5)",
+  "generated": "2026-10-30T09:03:08.188526Z",
+  "totals": {
+    "pass": 42,
+    "fail": 0
+  },
+  "sections": {
+    "address": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+      "node": "v22.22.3",
+      "section": "address",
+      "pass": 4,
+      "fail": 0,
+      "results": [
+        {
+          "name": "address: bech32m round-trip preserves keys, network and destination tag",
+          "ok": true,
+          "detail": "otl_esm_1rf4tax32nn8y8cuex\u2026"
+        },
+        {
+          "name": "address: single-character corruption is rejected (bech32m checksum)",
+          "ok": true,
+          "detail": "no corruption accepted"
+        },
+        {
+          "name": "address [OBS-1]: codec accepts 64 arbitrary bytes as an address payload (no curve-point validation)",
+          "ok": true,
+          "detail": "parsed OK; owner_key=5a5a5a5a5a5a5a5a\u2026 is not a Ristretto point"
+        },
+        {
+          "name": "address: a non-canonical key is rejected once a payment is actually built",
+          "ok": true,
+          "detail": "Invalid public key: Could not create a ByteArray when converting from a different format: "
+        }
+      ]
+    },
+    "conservation": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+      "node": "v22.22.3",
+      "section": "conservation",
+      "pass": 7,
+      "fail": 0,
+      "results": [
+        {
+          "name": "value conservation: honest key-path spend passes the engine's own validator",
+          "ok": true,
+          "detail": "validate_transfer OK"
+        },
+        {
+          "name": "value conservation: an output worth more than the input is rejected",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification"
+        },
+        {
+          "name": "binding: minimum_value_promise is covered by the range proof",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Interna"
+        },
+        {
+          "name": "binding: an output's SpendAuthorization is covered (cannot be re-targeted pre-seal)",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification"
+        },
+        {
+          "name": "binding: encrypted_data is covered",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification"
+        },
+        {
+          "name": "binding: a substituted input commitment is covered",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification"
+        },
+        {
+          "name": "binding: the range proof is bound to the output commitments",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof must be provided and p"
+        }
+      ]
+    },
+    "htlc": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+      "node": "v22.22.3",
+      "section": "htlc",
+      "pass": 5,
+      "fail": 0,
+      "results": [
+        {
+          "name": "htlc: committed script root equals the root a claimant recomputes",
+          "ok": true,
+          "detail": "root=8a8cbc446f1a512f\u2026"
+        },
+        {
+          "name": "htlc: a script-path claim builds a statement the engine validator accepts",
+          "ok": true,
+          "detail": "validate_transfer OK (predicates themselves are the engine's job)"
+        },
+        {
+          "name": "htlc: a leaf that was never committed yields no witness",
+          "ok": true,
+          "detail": "Stealth crypto error: Invalid argument leaf: Revealed leaf is not a member of the committed con"
+        },
+        {
+          "name": "htlc: duplicate leaves are refused when building the root",
+          "ok": true,
+          "detail": "Stealth crypto error: Invalid argument conditions: condition tree contains duplicate leaves"
+        },
+        {
+          "name": "htlc: a hashlock leaf with the wrong preimage still produces a statement (predicate is engine-side)",
+          "ok": true,
+          "detail": "accepted by the crypto layer; rejection happens in evaluate_builtin (engine, Rust)"
+        }
+      ]
+    },
+    "lifecycle": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+      "node": "v22.22.3",
+      "section": "lifecycle",
+      "pass": 5,
+      "fail": 0,
+      "results": [
+        {
+          "name": "stealth: recipient unblinds value+mask from the on-chain commitment",
+          "ok": true,
+          "detail": "commitment=fcc0e9ea67edc41c\u2026 value=123456"
+        },
+        {
+          "name": "stealth: recipient derives the committed one-time spend key (output is spendable)",
+          "ok": true,
+          "detail": "P = H(vR).G + A reproduced from (a, v, R)"
+        },
+        {
+          "name": "stealth: unblind rejects a tampered ciphertext and a wrong key",
+          "ok": true,
+          "detail": "tamper=\"Stealth crypto error: AEAD error: \u2026\" wrongKey=\"Stealth crypto error: AEAD error: \u2026\""
+        },
+        {
+          "name": "stealth: memo round-trips and is dropped only when skip_memo is set",
+          "ok": true,
+          "detail": "memo intact, skip_memo honoured"
+        },
+        {
+          "name": "stealth: output for network LocalNet is not spendable under Esmeralda key derivation",
+          "ok": true,
+          "detail": "network byte is domain-separated"
+        }
+      ]
+    },
+    "limits": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+      "node": "v22.22.3",
+      "section": "limits",
+      "pass": 2,
+      "fail": 0,
+      "results": [
+        {
+          "name": "limits [OBS-2]: the pre-flight validator has no statement-size bound of its own",
+          "ok": true,
+          "detail": "256 duplicate inputs accepted by the builder; the engine bounds this with check_stealth_transfer_limits (STEALTH_LIMITS)"
+        },
+        {
+          "name": "limits: duplicate input commitments are rejected by validate_transfer",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid spend: Duplicate input commitment 10c59279649627a33"
+        }
+      ]
+    },
+    "math_binding": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "section": "math_binding",
+      "pass": 8,
+      "fail": 0,
+      "results": [
+        {
+          "name": "binding: swapping two output commitments (same set, different slots) is rejected",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: swapping minimum_value_promise between two slots is rejected",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: swapping viewable-balance proofs between two slots is rejected",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid confidential proof: ViewableBalanceProof provided for a resource that is not"
+        },
+        {
+          "name": "binding: reordering the output list is rejected",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: an odd output count (3) still binds every slot",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: 5 outputs \u2014 permuting the last two, which pad into the same aggregation block",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid range proof: Invalid range proof provided: `Internal range proof(s) error (A"
+        },
+        {
+          "name": "binding: revealed_output cannot be retargeted to another amount after signing",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i"
+        },
+        {
+          "name": "binding: revealed_input cannot be raised after signing (P2: computed != moved)",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i"
+        }
+      ]
+    },
+    "math_extremes": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "section": "math_extremes",
+      "pass": 7,
+      "fail": 0,
+      "results": [
+        {
+          "name": "extremes: value 0 output with mvp 0 is either refused or carries a sound proof",
+          "ok": true,
+          "detail": "accepted with a range proof over a zero value (sound: 0 is provable)"
+        },
+        {
+          "name": "extremes: mvp > amount is refused at build time",
+          "ok": true,
+          "detail": "Stealth crypto error: minimum_value_promise (11) must be <= amount (10)"
+        },
+        {
+          "name": "extremes: value = 2^64-1 is accepted and range-proved (top of the u64 domain)",
+          "ok": true,
+          "detail": "u64::MAX accepted, u64::MAX-1 + 1 revealed balances exactly"
+        },
+        {
+          "name": "extremes: value = 2^64 (outside the range-proof domain) cannot produce a valid statement",
+          "ok": true,
+          "detail": "refused at build: amount must be an integer in [0, 2^64 - 1]"
+        },
+        {
+          "name": "extremes: two outputs at 2^63 each, funded by one 2^64-1 input",
+          "ok": true,
+          "detail": "Stealth transfer validation failed: Invalid balance proof: Balance proof signature verification failed. This typically i"
+        },
+        {
+          "name": "extremes: the aggregation ceiling is reachable \u2014 16 outputs build, 17 are refused",
+          "ok": true,
+          "detail": "limit is enforced by the prover and by the verifier (range_proof.rs:47)"
+        },
+        {
+          "name": "extremes: negative revealed_amount is refused by the validator",
+          "ok": true,
+          "detail": "JSON deserialization failed: out of range integral type conversion attempted at line 1 column 154"
+        }
+      ]
+    },
+    "split": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+      "node": "v22.22.3",
+      "section": "split",
+      "pass": 2,
+      "fail": 0,
+      "results": [
+        {
+          "name": "flow parity: separate inputs/outputs/balance-proof calls produce a valid statement",
+          "ok": true,
+          "detail": "both verifiers agree"
+        },
+        {
+          "name": "flow parity: aggregateInputMasks rejects a non-multiple-of-32 mask blob",
+          "ok": true,
+          "detail": "Invalid byte length for masks_concat: expected 32, got 31"
+        }
+      ]
+    },
+    "viewable": {
+      "artifact": "@tari-project/ootle-wasm@0.48.0",
+      "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+      "node": "v22.22.3",
+      "section": "viewable",
+      "pass": 2,
+      "fail": 0,
+      "results": [
+        {
+          "name": "viewable balance: proof decrypts to the true value; a lying range yields nothing",
+          "ok": true,
+          "detail": "value=42, out-of-range=undefined"
+        },
+        {
+          "name": "viewable balance: proof is bound to its commitment",
+          "ok": true,
+          "detail": "Stealth crypto error: Invalid confidential proof: Invalid viewable balance proof (eC + C' != s_"
+        }
+      ]
+    }
+  }
+}

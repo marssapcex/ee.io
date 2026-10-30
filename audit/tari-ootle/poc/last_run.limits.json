@@ -1,0 +1,20 @@
+{
+  "artifact": "@tari-project/ootle-wasm@0.48.0",
+  "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+  "node": "v22.22.3",
+  "section": "limits",
+  "pass": 2,
+  "fail": 0,
+  "results": [
+    {
+      "name": "limits [OBS-2]: the pre-flight validator has no statement-size bound of its own",
+      "ok": true,
+      "detail": "256 duplicate inputs accepted by the builder; the engine bounds this with check_stealth_transfer_limits (STEALTH_LIMITS)"
+    },
+    {
+      "name": "limits: duplicate input commitments are rejected by validate_transfer",
+      "ok": true,
+      "detail": "Stealth transfer validation failed: Invalid spend: Duplicate input commitment 10c59279649627a33"
+    }
+  ]
+}

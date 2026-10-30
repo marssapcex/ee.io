@@ -1,0 +1,4 @@
+PASS  viewable balance: proof decrypts to the true value; a lying range yields nothing :: value=42, out-of-range=undefined
+PASS  viewable balance: proof is bound to its commitment :: Stealth crypto error: Invalid confidential proof: Invalid viewable balance proof (eC + C' != s_
+
+──────── viewable: checks=2 pass=2 fail=0 ────────

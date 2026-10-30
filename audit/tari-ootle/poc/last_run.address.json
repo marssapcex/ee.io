@@ -1,0 +1,30 @@
+{
+  "artifact": "@tari-project/ootle-wasm@0.48.0",
+  "repoCommit": "3460b2ff19640c5a3b758de9ec407eac8e372044 (tari-project/tari-ootle; v0.48.0 + #3188)",
+  "node": "v22.22.3",
+  "section": "address",
+  "pass": 4,
+  "fail": 0,
+  "results": [
+    {
+      "name": "address: bech32m round-trip preserves keys, network and destination tag",
+      "ok": true,
+      "detail": "otl_esm_1rf4tax32nn8y8cuex…"
+    },
+    {
+      "name": "address: single-character corruption is rejected (bech32m checksum)",
+      "ok": true,
+      "detail": "no corruption accepted"
+    },
+    {
+      "name": "address [OBS-1]: codec accepts 64 arbitrary bytes as an address payload (no curve-point validation)",
+      "ok": true,
+      "detail": "parsed OK; owner_key=5a5a5a5a5a5a5a5a… is not a Ristretto point"
+    },
+    {
+      "name": "address: a non-canonical key is rejected once a payment is actually built",
+      "ok": true,
+      "detail": "Invalid public key: Could not create a ByteArray when converting from a different format: "
+    }
+  ]
+}
