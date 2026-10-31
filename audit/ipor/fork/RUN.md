@@ -1,8 +1,84 @@
-# IPOR fork PoC — how to run it, what it needs, what changed in v3.3
+# IPOR fork PoC — how to run it, what it needs, what changed in v3.4
 
-File: `fork/IporFork.t.sol` (v3.3). Compile-clean against the real `forge-std` (solc 0.8.26, cancun, 0 errors / 0 warnings).
-**v3.2 was executed on your machine at block 26 310 577 — the log is in `REPORT.md` §9.5 and in §2c below.**
+File: `fork/IporFork.t.sol` (v3.4). Compile-clean against the real `forge-std` (solc 0.8.26, cancun, 0 errors / 0 warnings).
+**v3.3 was executed on your machine (Arb 26 310 668 / Eth 26 310 671 / Base 53 317 684) and v3.2 before it at 26 310 577 — the log is in `REPORT.md` §9.5 and in the section below.**
 The sandbox still has no RPC and no `forge`, so every number below comes from a run you did.
+
+---
+
+## v3.4 — what your v3.3 run proved, and the three defects it exposed
+
+Your run (all three forks: Arb block 26 310 668, Eth 26 310 671, Base 53 317 684) gave 4 PASS / 1 FAIL. Read together with
+the repo, it answers the open question and it also shows that two of the "open" cells in the v3.3 table were artefacts.
+
+### 1. `paused(selector) == 0` does not mean the selector exists
+
+The pause map is `StorageLibBaseV1.getRouterFunctionPaused().value[selector]`
+(`contracts/base/libraries/StorageLibBaseV1.sol:151`, written by `pause(bytes4[])` in `contracts/router/AccessControl.sol:81`).
+A selector that the router never registered has **no entry**, and an absent entry reads `0`. v3.3 reported
+"Arbitrum wstETH 5-arg OPEN 6/6" and "Ethereum 18/18 OPEN" from that read alone — both are ghosts:
+
+* Arbitrum wstETH is `AmmOpenSwapServiceWstEthBaseV1`, whose signature **has** `inputAsset`
+  (`contracts/interfaces/IAmmOpenSwapServiceWstEth.sol:101` → `0x1253b3ae / 0x70a7394c / 0x240e3328` receive-fixed,
+  `0x804e488a / 0xb814f9c0 / 0x01eb1f71` pay-fixed). Those six are **paused**, and the five-arg hashes your log shows being
+  called (`0x859c1a6a … 0xed157264`) are the *Ethereum-flavour* hashes — the router does not know them, which is exactly the
+  `IPOR_012` (= `METHOD_NOT_IMPLEMENTED`, the dispatch miss) that killed every attempt.
+* Ethereum is the mirror image: its stables are the legacy 5-arg service (`contracts/interfaces/IAmmOpenSwapService.sol:212`),
+  and the v3.3 run probed the 6-arg set there, so its "18/18 open" measured eighteen selectors that do not exist.
+
+The fix is not another table, it is a call: `_routed(selector)` executes the selector with no arguments and reads the revert
+code — `IPOR_015` = routed but paused, `IPOR_012` = not routed, anything else = routed. `test_2_probe` now uses it.
+
+Corollary for the report: **the only place that could still be live is Ethereum (USDC 92 259.6 + USDT 17 006.0 +
+DAI 7 813.7 ≈ 117 k USD of LP balance), and that one is still unmeasured.** Arbitrum (your brief's chain) is closed on the
+arity that exists, Base is closed.
+
+### 2. `_logReason()` could never print an IPOR code
+
+IPOR reverts with `revert("IPOR_012")`, i.e. `Error(string)`, so `bytes4(ret)` is `0x08c379a0`, not the code — the v3.3
+comparison against `keccak256("IPOR_012")` was structurally impossible, and the "revert reasons" in your log were the raw
+string bytes. v3.4 decodes `Error(string)` and prints the real code (`_code()`).
+
+### 3. `_attackOn()` reported success as failure, and used the wrong close selector
+
+* `return true` sat inside the `NET LOSS` branch. The profit branch therefore fell off the end of the function with the
+  named return value still `false` -> `test_1_attack` printed *"pool skipped: no open swap path"* **after** a successful
+  attack and moved on to the next pool.
+* the close attempt always used `closeSwapsUsdc`. The asset name is part of the selector, so USDT/DAI (and wstETH) closes
+  would have failed with a dispatch miss and been misreported as "the treasury cannot fund settlement". Now `_closeSel(p)`
+  builds `closeSwaps<T>(address,uint256[],uint256[],(RiskIndicatorsInputs,RiskIndicatorsInputs))` per pool and the value is
+  asserted in `test_2_probe` (`closeSwapsUsdc = 0xa5450264`, `closeSwapsWstEth = 0xb9d281f3`).
+* the arity order is now derived from the pool (`_preferInputAsset`): 6-arg first for Arbitrum wstETH / Arbitrum+Base USDC,
+  5-arg first for the Ethereum stables — a guaranteed-`IPOR_012` call no longer burns the first slot.
+
+One more correction to §2 of the old notes: the run shows the **router** delegatecalling `0x8cD6db83…719A7f` for
+`provideLiquidityWstEth`, so that *is* the live wstETH pools service; the address-book entry `0x2e53879f…` is the stale one.
+Treasury `0xBd013Ea2…` and storage `0x32680433…` are confirmed correct by the same trace (8.93448 wstETH received).
+
+### 4. The run command for v3.4 (Ethereum first — it is the only possibly-live surface)
+
+```bash
+cd /path/to/audit/ipor/repo          # or wherever you copied the foundry project
+export ETH_RPC=https://eth-mainnet.g.alchemy.com/v2/WqhCk5T_nDcejq-szWp1M
+export ARB_RPC=https://arb-mainnet.g.alchemy.com/v2/WqhCk5T_nDcejq-szWp1M
+export BASE_RPC=https://base-mainnet.g.alchemy.com/v2/WqhCk5T_nDcejq-szWp1M
+
+# 1) the decisive table: which selectors does each router actually route
+CHAIN=eth forge test --match-contract IporFork --match-test test_2_probe -vv
+CHAIN=arb forge test --match-contract IporFork --match-test test_2_probe -vv
+
+# 2) the attack, on the only chain that can still be open
+CHAIN=eth TARGET=USDC forge test --match-contract IporFork --match-test test_1_attack -vv
+
+# 3) the same on the brief's chain, for the record
+CHAIN=arb TARGET=wstETH forge test --match-contract IporFork --match-test test_1_attack -vv
+
+# 4) all three deployments in one run
+forge test --match-contract IporFork --match-test test_4_all_chains -vv
+```
+
+`FORK_BLOCK=` pins the block (use `26310668` on Arbitrum / `26310671` on Ethereum to reproduce the same state).
+
 
 ---
 

