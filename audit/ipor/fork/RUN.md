@@ -1,9 +1,59 @@
-# wstETH (Arbitrum) fork PoC — how to run it, and what it needs
+# IPOR fork PoC — how to run it, what it needs, what changed in v3
 
-## 1. The addresses in the brief are wrong (3 of 6)
+File: `fork/IporFork.t.sol` (v3). Compile-clean against the real `forge-std` (solc 0.8.26, cancun, 0 errors / 0 warnings).
+**Not executed anywhere yet** — the sandbox has no RPC and no `forge`. Your `-vv` output is the evidence.
 
-Checked against the official address book, `IPOR-Labs/ipor-abi` → `mainnet/mainnet-arbitrum/addresses.json`
-(clone of `main`, read 2026-10-31):
+---
+
+## 0. What v2 got wrong (and v3 fixes)
+
+| # | v2 behaviour | cause | v3 |
+|---|---|---|---|
+| 1 | `test_1_attack` died: `IPOR_012` on `provideLiquidityUsdc` | **wrong function name for Arbitrum.** `IPOR_012` = `ROUTER_INVALID_SIGNATURE` (`contracts/libraries/errors/IporErrors.sol:79`) is the router's *dispatch miss*, not a risk-signature failure. Arbitrum/Base USDC pools are the `AmmPoolsServiceUsdcBaseV1` flavour: the entry point is `provideLiquidityUsdcToAmmPoolUsdc(address,uint256)` (`contracts/chains/arbitrum/interfaces/IAmmPoolsServiceUsdc.sol:6`). Only the **Ethereum** stable pools use `provideLiquidityUsdc`. | per-pool selector table + direct-service fallback |
+| 2 | `_depth()` returned 229,309.96 for a pool holding 995.79 USDC idle | it used `AmmStorage.liquidityPool`, which is *LP equity*, not cash | `AmmTreasury.getLiquidityPoolBalance()` — the exact number the swap engine uses (`AmmOpenSwapServiceBaseV1.sol:142`) |
+| 3 | asset manager always 0 | `AmmTreasuryBaseV2` has **no** `getConfiguration()` (that is the legacy `AmmTreasury`); the call reverted and was swallowed | `ammAssetManagement()` + `IERC4626.maxWithdraw(treasury)` |
+| 4 | knobs unusable | `vm.envUint` reverts when unset | every knob optional (`_envOr`) |
+
+### Why #1 matters for the report
+
+The signature gate is on `_getRouterImplementation`, i.e. **any** unrecognised selector reverts `IPOR_012`. The risk-indicator
+signature is a *different* gate inside the swap service (`RiskIndicatorsValidatorLib.verify` → `IPOR_311`). v2 conflated the
+two and my earlier note that "the LP path is signature-gated" was wrong: `provideLiquidity*` is **unsigned**.
+
+---
+
+## 1. 1b corrected: the pools are bigger than the "995 USDC" figure in the v2 notes
+
+`AmmTreasuryBaseV2.getLiquidityPoolBalance()`
+(`contracts/base/amm/AmmTreasuryBaseV2.sol:85`) is:
+
+```
+LP = cash + vault.maxWithdraw(treasury) − collateralPayFixed − collateralReceiveFixed
+       − iporPublicationFee − treasuryFee − liquidationDeposits
+```
+
+so idle cash alone understates the pool. Measured on the fork (v2 run, Arbitrum ~519 889 400):
+
+| pool | treasury idle | asset manager | LP balance (= depth) | `AmmStorage.liquidityPool` | ipToken supply | rate |
+|---|---|---|---|---|---|---|
+| USDC `0xaf88…e5831` | 995.79 USDC | Fusion vault `0xD855…9228` | **229 310 (236 k USD)** | 229 309.96 | 200 664.11 | 1.1427552 |
+| wstETH `0x5979…0529` | 8.93448 wstETH | none (V1, no AM leg) | **6.50203 wstETH (≈25 k USD)** | 6.50203 | 6.14865 | 1.0574739 |
+
+Two consequences the earlier notes got wrong:
+
+* **USDC is the real target, not the wstETH dust pool.** `AmmPoolsServiceBaseV1._redeem` calls
+  `_rebalanceIfNeededBeforeRedeem` (`AmmPoolsServiceBaseV1.sol:220`), which pulls the shortfall out of the Fusion vault, so a
+  redemption can reach the **whole 229.31k** LP balance (idle is only the working float).
+* **wstETH redemption is capped by idle cash.** `AmmPoolsServiceWstEthBaseV1` is the V1 flavour with `assetManagement:
+  address(0)` (`contracts/base/amm-wstEth/services/AmmPoolsServiceWstEthBaseV1.sol:112`) and pays out with a plain
+  `safeTransferFrom(ammTreasury, …)` at line 100 — no AM withdrawal. Ceiling = 8.93 wstETH, of which only 6.50 is LP equity
+  (the rest is other traders' collateral sitting in the treasury — also stealable).
+
+---
+
+## 2. The addresses in the original brief were wrong (3 of 6)
+
+Checked against `IPOR-Labs/ipor-abi` → `mainnet/mainnet-arbitrum/addresses.json`:
 
 | contract | in the brief | official (Arbitrum) | verdict |
 |---|---|---|---|
@@ -14,114 +64,84 @@ Checked against the official address book, `IPOR-Labs/ipor-abi` → `mainnet/mai
 | AmmStorageWstEthProxy | `0x32680433…1c5C28` | same | correct |
 | IporProtocolRouterProxy | `0x760Fa0aB…F118db` | same | correct |
 
-Forensics on the three:
-
-* `0x8cD6db83…719A7f` **is** a real `AmmPoolsServiceWstEth`, but from the *old* book — it appears only in
-  `mainnet/mainnet-arbitrum-harvest/addresses.json` and the `testnet/pilot-*` books. Superseded.
-* `0x221A9A6A…dFF98d856` is a real, verified contract on Arbitrum named **`AmmOpenSwapServiceWstEth`**, deployed by
-  *IPOR: Deployer* **2 yr 273 days ago**, compiler **0.8.20 / paris** (`arbiscan.io/address/0x221A…`) — i.e. the 2023 v1
-  deployment, not the live `0x7138B130…6461` (v2, 0.8.26). It holds 0 ETH and has no recent activity.
-* `0x32365802…3f5eC` appears in **no** address book and has no IPOR deployer history — unverifiable.
-
-So the list mixes v1-era deployments with the live ones. Running a PoC against them would test dead contracts. The PoC therefore uses only the official entries, and reaches every pool function **through the router**
-(`0x760Fa0aB…`), which dispatches by `msg.sig`; that way no per-service address is needed.
-
-Official values used by `IporWstEthFork.t.sol`:
+`0x8cD6db83…719A7f` is a real `AmmPoolsServiceWstEth` from the *old* book (`mainnet-arbitrum-harvest`, `testnet/pilot-*`);
+`0x221A9A6A…d856` is the 2023 v1 deployment (0.8.20/paris); `0x32365802…3f5eC` appears in no address book. The PoC uses the
+official entries and reaches every pool function **through the router** first, falling back to the service address if the
+router path fails:
 
 ```
-ROUTER   0x760Fa0aB719c4067D3A8d4727Cf07E8f3Bf118db   IporProtocolRouterProxy
-WSTETH   0x5979D7b546E38E414F7E9822514be443A4800529
-IPWSTETH 0xbDa4b3e17a9B0ecb811E68c6f08907156CBa503C
-TREASURY 0xBd013Ea2E01C2Ab3462dd67e9C83aa3834882A5D
-STORAGE  0x326804339eC2a210e5f9246F4959aE50961c5C28
-ORACLE   0x70DdDE503edf4816B5991Ca5E2f9DE79e295F2D0
-LENS     0xd903D63Fb57a055a280D6DbAe91B261592B82dd3
+ROUTER      0x760Fa0aB719c4067D3A8d4727Cf07E8f3Bf118db
+USDC        0xaf88d065e77c8cC2239327C5EDb3A432268e5831   ipUSDC 0x485cAC13E6492CcF4d47764b0E4e07b5272B0167
+            treasury 0x9324d39B29c85440cadd2202E4703E6f5d1e98F9
+            pools service 0xc08610f885C606e622C910D902356257998D6217
+            openSwap service 0x5D9094baDc927b82a78BA095A5BC394F166aA27b
+WSTETH      0x5979D7b546E38E414F7E9822514be443A4800529   ipwstETH 0xbDa4b3e17a9B0ecb811E68c6f08907156CBa503C
+            treasury 0xBd013Ea2E01C2Ab3462dd67e9C83aa3834882A5D
+            pools service 0x2e53879feb7F9BC8E97d1bcc848356F781402b6c
+            openSwap service 0x7138B130F255fa4B65dFE6DEA9ade89dBF1E6461
 ```
 
-## 1b. Before you run anything: the wstETH pool on Arbitrum is dust
+(Base equivalents are wired too: pools `0x786AFBbb…02d0` / `0x0eb64F28…0887`, openSwap `0xdF884ccE…b54d` / `0xFbE094Bc…9472`.)
 
-Read directly from chain state (Blockscout API, 2026-10-31) — this is the number that decides whether the fork test is worth
-your time:
-
-| address | holding |
-|---|---|
-| `AmmTreasuryWstEthProxy` 0xBd01…2A5D | **8.9345 wstETH ≈ 25 006 USD** (wstETH @ 2 798.66) |
-| `PlasmaVaultWstETH` (its asset manager) | **0** — the wstETH pool has no asset-management leg |
-| `AmmTreasuryUsdcProxy` (Arbitrum) | 995.79 USDC + 22 642.24 `ipUSDCfusion` shares |
-| `AmmTreasuryUsdcProxy` (Ethereum) | 2 794.92 USDC + 8 038.83 `ipUSDCfusion` shares |
-| `AmmTreasuryUsdcProxy` (Base) | 29.29 USDC + vault shares |
-
-The wstETH pool can therefore pay **at most ~8.9 wstETH** no matter how big the phantom mark gets — a fork PoC there proves
-the mechanism and steals ~25 k. The stablecoin pools are in the same order of magnitude (low thousands of USDC idle, plus
-whatever the Fusion vault shares are worth). This is a correction to the earlier "100 k–300 k per pool" estimate in
-`REPORT.md` §7: the *TVL* is 484 k, but the *liquid cash inside each AMM pool* is one to two orders of magnitude smaller,
-because most LP funds live in the asset managers.
-
-A fork test is still worth running — for the exchange-rate number, not for the money.
-
-## 2. Why this cannot be run inside Arena's sandbox
-
-Both dependencies of a fork test are blocked there; measured, not assumed:
-
-* **RPC:** `arb1.arbitrum.io`, `rpc.ankr.com`, `mainnet.base.org`, `eth.llamarpc.com` all resolve in DNS but every TCP/TLS
-  connection is refused (`curl` → `http_code 000`). No fork is possible without an RPC endpoint.
-* **forge:** `github.com/foundry-rs/foundry/releases/...` answers `302` to `objects.githubusercontent.com`, which is also
-  refused (`size_download 0`). The binary cannot be installed.
-* `marssapcex/arc_hedgefun` contains `lib/forge-std`, `lib/openzeppelin-contracts`, `lib/v4-core` as **empty submodule
-  directories** and no `forge`/`cast`/`anvil` binary — Foundry itself is installed on your machine, not vendored in the repo.
-
-So the test below is the deliverable, and it is compiled here against the real `forge-std` (solc 0.8.26, `evm_version =
-cancun`, no errors) but **it has never been executed**, because nothing here can reach Arbitrum. Do not treat its output as
-known until you run it.
+---
 
 ## 3. Run it
 
 ```bash
-cd ~/arc_hedgefun                      # the repo you already have (has lib/forge-std)
-git submodule update --init --recursive # only if lib/ is still empty
-cp /path/to/ee.io/audit/ipor/fork/IporWstEthFork.t.sol test/
-ARB_RPC=https://arb1.arbitrum.io/rpc forge test --match-contract IporWstEthFork -vv
+cd ~/arc_hedgefun
+cp /path/to/ee.io/audit/ipor/fork/IporFork.t.sol test/
+ARB_RPC=https://arb1.arbitrum.io/rpc forge test --match-contract IporFork -vv
 ```
 
-If the public RPC rate-limits, use any other Arbitrum endpoint (Alchemy/Infura/QuickNode) — `ARB_RPC` is the only knob.
-
-Sizing overrides (18-decimal wei):
+Pin the fork if you want reproducible numbers:
 
 ```bash
-ARB_RPC=... ATK_LP=5000000000000000000 TOTAL=185000000000000000 DAYS=45 \
-  forge test --match-contract IporWstEthFork --match-test test_01_attack -vv
+FORK_BLOCK=519889666 ARB_RPC=... forge test --match-contract IporFork -vv
 ```
 
-`test_00_recon` is read-only and always safe — run it first. It prints the pool's real depth, exchange rate, ipToken supply
-and the router owner. **If `liquidityPool` comes back tiny (a few wstETH), the pool is not worth attacking and the whole
-exercise is academic** — that is the first thing to check.
+Run the recon first (read-only, always safe):
 
-## 4. What the test does, and the one thing it cheats
+```bash
+forge test --match-contract IporFork --match-test test_0_recon -vv
+```
 
-Real: fork state, the pool's accounting, the attacker's capital, the swap, the accrual, the redemption, the guards.
+Then the attack, default sizing = 10 % of LP balance as the attacker's own LP, 50 % of LP balance as swap total amount,
+1000× leverage, 90 days elapsed:
 
-Cheated: `openSwapReceiveFixed90daysWstEth` requires risk indicators signed by IPOR's off-chain signer. A fork cannot forge
-that key, so `test_01_attack` impersonates the router owner once and points the message signer at a key the test controls
-(`vm.prank(owner); router.setMessageSigner(signer)`). The signed payload then claims `maxLeveragePerLeg = 1000e18` — which is
-also the repo's own test default, but **is not necessarily what production signs**. A real attacker cannot set that number; he
-gets whatever IPOR's risk service gives him. Two consequences, both stated in the report (§10.2):
+```bash
+forge test --match-contract IporFork --match-test test_1_attack -vv
+```
 
-* if production signs ≤250×, the attack does not pay at current depth;
-* the exact production value is **not** readable from the chain (the six risk numbers travel inside the signature, they are
-  not stored), so it has to be observed from a real open-swap transaction or obtained from IPOR's API.
+Knobs (all 18-dec wad, all optional): `ATK_LP`, `TOTAL`, `LEV`, `DAYS`, `CHUNKS`, `TARGET` (`USDC`/`wstETH`), `FORK_BLOCK`,
+`ARB_RPC`. `TOTAL` is the *total amount* passed to `openSwapReceiveFixed90days*` — collateral ≈ that amount, notional =
+`leverage × collateral` (`SwapLogicBaseV1.calculateSwapAmount:44-48`).
 
-An honest fork PoC that does not cheat here would have to replay a captured signature from a real open-swap tx — same
-mechanism, just with someone else's leverage number.
+If a cap bites, the test does not die: it halves the size and retries (4 tries each for LP and swap), printing the decoded
+revert reason (`IPOR_3xx` / `LP_COLLATERAL_RATIO_*` / `LEVERAGE_TOO_HIGH` …), and the redeem loop halves the chunk whenever
+the treasury cannot pay.
+
+## 4. What is real, what is cheated
+
+Real: fork state, treasury/vault accounting, `getLiquidityPoolBalance()`, the swap, `vm.warp` accrual of the IPOR index
+(`IporLogic.accrueQuasiIbtPrice`, uncapped linear accrual), SOAP, the exchange rate, the redemption, every guard.
+
+Cheated, exactly one thing: `openSwapReceiveFixed90days*` needs risk indicators signed by IPOR's off-chain key
+(`RiskIndicatorsValidatorLib.verify`). A fork cannot forge it, so the test does `vm.prank(router.owner());
+setMessageSigner(keyWeHold)` — the only owner-gated step in the whole PoC, and it is **test scaffolding, not part of the
+attack**: in production any user fetches that signed payload from IPOR's public risk API (it only says "these are the current
+limits"), so it is not a privilege. What the payload *says* (`maxLeveragePerLeg = 1000e18`) is the repo's own test default
+(`test/TestCommons.sol:100`); the production value travels inside the signature and is not readable from chain state, so the
+fork run measures the mechanism at 1000×, and §10.2 of the report states what happens at 100×/250×.
 
 ## 5. What to send back
 
-Paste the full `-vv` output of both tests. The numbers that decide the finding:
+Full `-vv` output of both tests. The numbers that decide the finding:
 
-1. `treasury wstETH` and `liquidityPool` — real depth of the wstETH pool;
-2. `ipToken exchange rate` before/after the warp — the size of the phantom mark on a live pool;
-3. `NET PROFIT` / `NET LOSS` and `attacker received back`;
-4. any revert message (e.g. `IPOR_313` acceptable-rate, `IPOR_309` leverage, `IPOR_015` paused) — each one narrows what
-   production actually allows, which is exactly the unknown above.
+1. `LP balance`, `treasury idle`, `asset manager` per pool (recon) — the reachable ceiling;
+2. `rate0` → `rate after swap` → `rate1` — how much of the mark is phantom (LP balance must be unchanged while the rate moves);
+3. `NET PROFIT` / `NET LOSS` in wad and USD;
+4. `treasury idle after` — how much cash actually left, i.e. the loss to LPs;
+5. any revert text, which narrows what production allows.
 
-With that output the fork numbers go into `REPORT.md` next to the local-EVM ones, and the signer cheat gets replaced by a
+With that output the fork numbers replace the placeholders in `REPORT.md` §7.1/§8, and the signer stand-in gets replaced by a
 replayed production signature.

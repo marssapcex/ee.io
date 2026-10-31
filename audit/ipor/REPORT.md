@@ -233,10 +233,9 @@ Public data (checked 2026-10-30):
 
 So the "< 500 k TVL" figure is accurate for the product this bug lives in, and a *single* stablecoin pool (USDC, USDT, DAI, on
 Ethereum / Base / Arbitrum, 28 / 60 / 90-day sides all sharing the same LP cash) is a fraction of that — order of
-**100 k–300 k**. The headline PoC uses a 1 000 000 pool, i.e. it overstates absolute dollars by roughly 2×, not by orders of
-magnitude; `lab/thin.log` reruns the same attack at the depth that actually exists.
-
-`lab/thin.log` (1000× leverage, repo-default risk indicators, cap 2%, the attacker sweeps the treasury by redeeming in
+**100 k–240 k** (measured: **229 310 USD** on USDC/Arbitrum, §7.1). The headline PoC uses a 1 000 000 pool, i.e. it overstates
+absolute dollars by roughly 4×, not by orders of magnitude. `lab/thin.log` reruns the same attack at 200 000, the depth that
+actually exists (1000× leverage, repo-default risk indicators, cap 2 %, the attacker sweeps the treasury by redeeming in
 decreasing chunks until the guards stop him):
 
 ```
@@ -329,24 +328,38 @@ price). Current live depth (DefiLlama, `currentChainTvls`, 2026-10-30):
 
 Token mix in the same snapshot: USDC 330 333, USDT 16 873, DAI 7 692, WSTETH 21.9, STETH 30.0, WEETH 0.5, USDM 228.
 
-**7.1 Correction — what is actually *liquid* in a pool.** The TVL above is not cash sitting in `AmmTreasury`: most LP funds live
-in the asset managers (Fusion vaults), and each pool's treasury only holds the idle slice. Read per address on 2026-10-31
-(Blockscout):
+**7.1 Correction — what is actually *liquid* in a pool (fork-measured, supersedes the earlier estimate).**
 
-| pool | idle cash in `AmmTreasury` | asset-management leg |
-|---|---|---|
-| wstETH, Arbitrum | 8.9345 wstETH ≈ **25 006 USD** | `PlasmaVaultWstETH` = 0 |
-| USDC, Arbitrum | 995.79 USDC + 22 642.24 `ipUSDCfusion` shares | Fusion vault |
-| USDC, Ethereum | 2 794.92 USDC + 8 038.83 `ipUSDCfusion` shares | Fusion vault |
-| USDC, Base | 29.29 USDC + shares | Fusion vault |
+The TVL above is not all cash sitting in `AmmTreasury`: part of every pool lives in its asset manager (a Fusion/Plasma vault).
+The number that matters is `AmmTreasuryBaseV2.getLiquidityPoolBalance()`
+(`contracts/base/amm/AmmTreasuryBaseV2.sol:85`) — the same value the swap engine uses for its ratio checks
+(`AmmOpenSwapServiceBaseV1.sol:142`):
 
-`redeemFromAmmPoolUsdc` pulls from the asset manager when the treasury is short
-(`AmmTreasury.withdrawFromAssetManagementInternal`), so the vault shares count toward what the attacker can take — but the
-order of magnitude is **thousands to tens of thousands per pool, not hundreds of thousands**. The honest ceiling for this bug
-today is therefore "tens of thousands across all stablecoin pools, ~25 k on the wstETH pool", not "the whole 484 k". The
-mechanism and the PoC are unaffected; only the absolute dollars in §8 should be scaled down by this factor.
-So the realistic total exposure of this bug is **the whole 484 k**, taken chain by chain and pool by pool, not the
-20–230 k of a single pool — and it is repeatable as long as LPs keep refilling the pools.
+```
+LP = cash + vault.maxWithdraw(treasury) − collateralPayFixed − collateralReceiveFixed
+       − iporPublicationFee − treasuryFee − liquidationDeposits
+```
+
+Read on an Arbitrum fork (`fork/IporFork.t.sol::test_0_recon`, blocks 519 889 400–519 889 666):
+
+| pool | idle cash | asset manager | **LP balance (depth)** | ipToken supply | exchange rate | reachable by redemption |
+|---|---|---|---|---|---|---|
+| USDC, Arbitrum | 995.79 USDC | Fusion vault `0xD855…9228` | **229 309.96 (≈ 236 k USD)** | 200 664.11 | 1.1427552 | **the whole LP balance** — `AmmPoolsServiceBaseV1._redeem` → `_rebalanceIfNeededBeforeRedeem` (`AmmPoolsServiceBaseV1.sol:220`) pulls the shortfall out of the vault |
+| wstETH, Arbitrum | 8.93448 wstETH | **none** (V1, `assetManagement = address(0)`) | **6.50203 (≈ 25 k USD @ 3 850)** | 6.14865 | 1.0574739 | **8.93448 wstETH** — `AmmPoolsServiceWstEthBaseV1` pays with a plain `safeTransferFrom(ammTreasury, …)` (line 100), no vault leg, so idle cash is the ceiling; 2.43 wstETH of it is other traders' collateral, not LP equity |
+
+Two corrections this forces:
+
+* the earlier "the USDC pool only holds 995.79, so the ceiling is ~1 k USD" reading was **wrong** — `AmmStorage.liquidityPool`
+  (229 309.96) is the LP equity and the vault holds the difference; the USDC pool is a **229 k** target, not dust;
+* the wstETH pool is the *small* one (25 k), but it is the easiest to demonstrate because nothing sits between the rate
+  inflation and the transfer.
+
+Unmeasured (same method, needs a run): USDC Ethereum (idle 2 794.92 + vault), USDC Base (idle 29.29 + vault). The fork test
+prints all of them with `TARGET=USDC ARB_RPC=<eth-or-base-rpc>` once the `_pools()` table entry for that chain is used.
+
+Only the *treasury's liquid balance* bounds the theft — not the notional, not the 484 k TVL. Per-pool ceiling today:
+**≈ 236 k USD (USDC/Arbitrum) + 25 k USD (wstETH/Arbitrum)**, plus whatever the Ethereum and Base vault legs turn out to hold.
+Section 8's scaling law then says what the same attacker does to a bigger pool.
 
 ---
 ## 9. Can the protocol stop it? Kill switches, measured
@@ -483,7 +496,8 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 | `AmmTreasury.depositToAssetManagementInternal` as an entry point | `onlyRouter whenNotPaused`; the router does not expose it as a user call. |
 | `AmmGovernanceServiceBaseV1` setters (no in-body ACL) | reachable only through `IporProtocolRouter`'s owner path → privileged, out of scope per the rules. |
 | `SpreadStorageService.updateTimeWeightedNotional` (no modifier on the implementation) | `SpreadRouter.sol:120-122` routes that selector through `_onlyOwner()` — privileged, not usable. |
-| oracle staleness / `accrueQuasiIbtPrice` | the accrual is bounded by `block.timestamp` and `updateTimestamp < block.timestamp`; no free index move found. |
+| oracle staleness / `accrueQuasiIbtPrice` | nothing to steal directly: `IporLogic.accrueQuasiIbtPrice` is a plain linear accrual with no upper bound on elapsed time, which is exactly *why* the attack needs time — but the index move alone pays nobody. |
+| `router.provideLiquidityUsdc(...)` on Arbitrum | reverts **`IPOR_012`** = `ROUTER_INVALID_SIGNATURE` (`IporErrors.sol:79`). That is the router's *dispatch miss*, not the risk-signature gate: Arbitrum/Base USDC pools take `provideLiquidityUsdcToAmmPoolUsdc`. LP entry points are **unsigned**; only swaps need the risk-indicator payload. |
 
 ---
 
@@ -493,6 +507,10 @@ Any one of (1)/(2) kills this attack; (3) removes the class of it.
 audit/ipor/
 ├── REPORT.md              <- this file
 ├── repo/                  <- clone of IPOR-Labs/ipor-protocol @ 434327d
+├── fork/
+│   ├── IporFork.t.sol     <- v3 fork PoC (recon + attack, Arbitrum default, Ethereum/Base wired)
+│   ├── IporWstEthFork.t.sol <- v1 wstETH-only test, superseded
+│   └── RUN.md             <- how to run it, address forensics, why IPOR_012 happened, what is cheated
 └── lab/
     ├── compile.js         <- solc 0.8.26 build of the repo's sources (import resolution, library linking)
     ├── mocks/Mocks.sol    <- MockERC20 / 1:1 MockVault (ERC4626) / placeholder contract
