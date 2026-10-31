@@ -328,6 +328,23 @@ price). Current live depth (DefiLlama, `currentChainTvls`, 2026-10-30):
 | **total** | **484 063** |
 
 Token mix in the same snapshot: USDC 330 333, USDT 16 873, DAI 7 692, WSTETH 21.9, STETH 30.0, WEETH 0.5, USDM 228.
+
+**7.1 Correction — what is actually *liquid* in a pool.** The TVL above is not cash sitting in `AmmTreasury`: most LP funds live
+in the asset managers (Fusion vaults), and each pool's treasury only holds the idle slice. Read per address on 2026-10-31
+(Blockscout):
+
+| pool | idle cash in `AmmTreasury` | asset-management leg |
+|---|---|---|
+| wstETH, Arbitrum | 8.9345 wstETH ≈ **25 006 USD** | `PlasmaVaultWstETH` = 0 |
+| USDC, Arbitrum | 995.79 USDC + 22 642.24 `ipUSDCfusion` shares | Fusion vault |
+| USDC, Ethereum | 2 794.92 USDC + 8 038.83 `ipUSDCfusion` shares | Fusion vault |
+| USDC, Base | 29.29 USDC + shares | Fusion vault |
+
+`redeemFromAmmPoolUsdc` pulls from the asset manager when the treasury is short
+(`AmmTreasury.withdrawFromAssetManagementInternal`), so the vault shares count toward what the attacker can take — but the
+order of magnitude is **thousands to tens of thousands per pool, not hundreds of thousands**. The honest ceiling for this bug
+today is therefore "tens of thousands across all stablecoin pools, ~25 k on the wstETH pool", not "the whole 484 k". The
+mechanism and the PoC are unaffected; only the absolute dollars in §8 should be scaled down by this factor.
 So the realistic total exposure of this bug is **the whole 484 k**, taken chain by chain and pool by pool, not the
 20–230 k of a single pool — and it is repeatable as long as LPs keep refilling the pools.
 
