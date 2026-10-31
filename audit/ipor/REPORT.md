@@ -285,9 +285,11 @@ attack as §7 — real treasury, real Fusion vault, real ipToken supply, at bloc
 | USDT | 17 000.59 | 12 839.64 | 1.3240705 | 8 500.29 | 8 500.29 |
 | DAI | *to be read* | *to be read* | *to be read* | *to be read* | *to be read* |
 
-The drain figures (net USD, victim LP loss, redemption capacity) are filled from that run; they replace the "≈25–35 k USD"
-estimate of the earlier draft, which assumed the entry points were open and therefore described a situation that does not
-exist today.
+**Status: the drain run was not executed.** The audit was stopped at this point (2026-10-31), so the net, the victim loss and
+the redemption capacity for a real-balance drain stay unmeasured — quote §7 and §8 (the lab law, 20–26 % of pool depth per
+90-day cycle) rather than a live figure, and say plainly that no live balance was ever drained because the pause held.
+The earlier "≈25–35 k USD extractable today" estimate is withdrawn: it assumed the entry points were open, which §9.5 shows
+they are not.
 
 ## 8. Scaling law — pool size is not a defence, and neither is the per-swap collateral cap
 
