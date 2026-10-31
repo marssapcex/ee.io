@@ -272,6 +272,23 @@ Ethereum, Base and Arbitrum and across both sides of the book, against a product
 theft is bounded by the cash in `AmmTreasury` at the time of redemption, i.e. by the pool depth, not by the notional.
 
 ---
+**7.5 What one owner `unpause()` would unlock — the measurement that sizes the risk.**
+
+Because the swap leg is shut on every deployment (§9.5), the only honest way to quote a dollar figure for *today's* balances
+is to measure the drain with the pause cleared on one selector. `fork/IporFork.t.sol` does exactly that under `UNPAUSE=1`:
+it pranks the router owner **only** to clear the pause flag of the one selector it is about to call, then runs the same
+attack as §7 — real treasury, real Fusion vault, real ipToken supply, at block 26 310 806.
+
+| pool (Ethereum, 2026-10-31) | LP balance | ipToken supply | rate before | attacker LP | swap collateral |
+|---|---|---|---|---|---|
+| USDC | 92 261.77 | 70 230.63 | 1.3136971 | 46 130.88 | 46 130.88 |
+| USDT | 17 000.59 | 12 839.64 | 1.3240705 | 8 500.29 | 8 500.29 |
+| DAI | *to be read* | *to be read* | *to be read* | *to be read* | *to be read* |
+
+The drain figures (net USD, victim LP loss, redemption capacity) are filled from that run; they replace the "≈25–35 k USD"
+estimate of the earlier draft, which assumed the entry points were open and therefore described a situation that does not
+exist today.
+
 ## 8. Scaling law — pool size is not a defence, and neither is the per-swap collateral cap
 
 Three separate effects, all measured on the deployed stack.
@@ -436,7 +453,7 @@ Measured, both arities, by executing the selector and reading the revert code (`
 | Arbitrum | wstETH `0x5979…0529` (LP 6.50203, ≈25 k USD) | **paused** (6/6) | not routed — `0x859c1a6a / 0x83e7d402 / 0xb95ba8f3 / 0xdc660afa / 0xb3f2a286 / 0xed157264` answer `IPOR_012` | **closed** |
 | Arbitrum | USDT | — | flag 0 but pool holds **1.299963 USDT** | unusable |
 | Arbitrum | DAI | — | no ipDAI token exists on Arbitrum | absent |
-| Ethereum `0x16d10400…6fd` | USDC 92 259.6 · USDT 17 006.0 · DAI 7 813.7 (≈117 k USD total) | not routed (Ethereum is the 5-arg surface) | **to be measured by v3.4 `test_2_probe`** — the v3.3 run probed the 6-arg set here, so its "18/18 open" was 18 ghosts | **the only possible live surface** |
+| Ethereum `0x16d10400…6fd` | USDC 92 259.6 · USDT 17 006.0 · DAI 7 813.7 (LP balance, ≈117 k USD) | not routed (Ethereum is the 5-arg surface) | **PAUSED** — 9/9, measured at block 26 310 806 | **closed** |
 | Base `0x21d337eB…918` | USDC (9 631.1) · wstETH (15.418 ≈ 59 k USD) | **paused** (6/6) | not routed | **closed** |
 
 What this leaves:
@@ -444,10 +461,12 @@ What this leaves:
 1. **On Arbitrum the finding is not currently exploitable, and the earlier "wstETH 5-arg is open" line was wrong.** The
    5-arg selectors were never registered on that router; their `0` pause flag was an empty mapping slot, and the calls
    answer `IPOR_012`. The audit brief's own target (Arbitrum / wstETH) is paused on the arity that exists.
-2. **Ethereum is the only place that could still be live, and it is unmeasured.** The three stable pools share one legacy
-   service, ~117 k USD of LP balance combined, and the v3.3 run never touched their real selectors. `test_2_probe` (v3.4)
-   answers it with one call per selector before `test_1_attack` is believed — a `test_1_attack` "no open path" on Ethereum
-   is only meaningful together with that table.
+2. **Ethereum is closed too — measured, not assumed.** `test_2_probe` at block 26 310 806 executed the real 5-arg selectors
+   of all three stable pools: every one of the nine answers `IPOR_015` (routed, paused), and the 6-arg hashes answer
+   `IPOR_012` (not routed). So there is **no deployment of IPOR Swaps on which a swap can be opened today**, and the earlier
+   "117 k USD is live on Ethereum" line was as wrong as the "wstETH 5-arg is open" line. `provideLiquidity` and
+   `redeemFromAmmPool` are *not* paused (they answer a delegatecall error because the probe sends no arguments), so the LP
+   side of every pool is wide open while the swap side is shut — the pause is exactly one-sided.
 3. **The pause cannot be side-stepped by calling the service contracts directly.** The router resolves a service address and
    runs `implementation.functionDelegateCall(...)` (`contracts/router/IporProtocolRouterAbstract.sol:20,60`), so service code
    always executes in the router's storage context. A raw call to `AmmOpenSwapServiceUsdc` (`0x5D90…A27b`) makes
@@ -458,9 +477,24 @@ What this leaves:
    `contracts/router/AccessControl.sol:93`), not a fix. Nothing in the code clamps SOAP to collateral — only the realised
    PnL is clamped (`SwapLogicBaseV1.normalizePnlValue:228`).
 
-So the honest severity statement is: **the hole is real and permissionless wherever an open-swap selector is live; today
-that is not Arbitrum and not Base, and Ethereum is the open question this repo's next run settles.** What an attack nets per
-pool is §7.1 and §8; what the operator can do during the 24-day window is §9.1–9.4.
+So the honest severity statement is:
+
+> **The accounting hole is real and needs no privilege, but at block 26 310 806 every open-swap selector on all three
+> deployments is paused. Today nobody can open the swap that the attack needs. The pause is the only thing standing between
+> this bug and LP funds — it is per-selector, owner-cleared (`unpause(bytes4[])`, `contracts/router/AccessControl.sol:93`),
+> and nothing in the code bounds SOAP to collateral.**
+
+That is a *latent critical*: report it as a correctness bug with a proven drain, not as a live heist. Two things keep it
+worth reporting at that severity:
+
+* the mitigation is a governance flag, not a code fix. If IPOR ever unpauses one receive-fixed or pay-fixed selector — for
+  one tenor, on one pool — the whole §7 drain becomes available again on that pool at full size;
+* the flag is already asymmetric: the LP entry/exit side is unpaused on every pool, so the victims' money can always leave,
+  it is only the attack leg that is shut.
+
+§7.5 measures what an unpause would unlock on today's real balances (test-only owner `unpause()`, labelled as such), so the
+size of the risk is a number rather than an adjective. What an attack nets per pool is §7.1 and §8; what the operator can do
+during the 24-day window is §9.1–9.4.
 
 
 

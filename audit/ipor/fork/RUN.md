@@ -1,6 +1,6 @@
-# IPOR fork PoC — how to run it, what it needs, what changed in v3.4
+# IPOR fork PoC — how to run it, what it needs, what changed in v3.6
 
-File: `fork/IporFork.t.sol` (v3.5). Compiles clean against the real `forge-std` (solc 0.8.26, cancun) **including code generation** — checked with
+File: `fork/IporFork.t.sol` (v3.6). Compiles clean against the real `forge-std` (solc 0.8.26, cancun) **including code generation** — checked with
 `evm.bytecode.object` both with `via_ir = true` and `via_ir = false`, not just ABI parsing (v3.4 only parsed ABIs, which is
 how the stack-too-deep in v3.4 slipped through).
 **v3.3 was executed on your machine (Arb 26 310 668 / Eth 26 310 671 / Base 53 317 684) and v3.2 before it at 26 310 577 — the log is in `REPORT.md` §9.5 and in the section below.**
@@ -107,6 +107,49 @@ and the open-swap attempt into `struct OpenReq`. No `stopsol`/`--via-ir`/`--opti
 `via_ir = true` and `via_ir = false` build, and the contract is 44.8 KB, under the 49.1 KB initcode ceiling the EVM
 enforces for `forge create` (a size warning is expected for a test contract; `forge test` does not enforce EIP-170 — v3.3 was
 53.1 KB and ran fine).
+
+
+### v3.6 — Ethereum measured: closed too (block 26 310 806)
+
+```
+pool USDC / Ethereum   receiveFixed 28d 5arg  routed but PAUSED (IPOR_015)
+                       receiveFixed 60d 5arg  routed but PAUSED (IPOR_015)
+                       receiveFixed 90d 5arg  routed but PAUSED (IPOR_015)
+                       payFixed     28/60/90d  routed but PAUSED (IPOR_015)
+                       other arity 6arg        not routed (IPOR_012)
+pool USDT / Ethereum   same, 6/6 paused
+pool DAI  / Ethereum   same, 6/6 paused
+                       provideLiquidity / redeemFromPool -> routed (not paused)
+```
+
+So: **no IPOR Swaps deployment can open a swap today.** The pause is one-sided — LP entry and exit are open on every pool,
+the swap leg is shut. That is the whole story: the accounting hole is real, and the only thing holding it shut is a
+per-selector owner flag.
+
+The same run also exposed two test defects, both fixed in v3.6:
+
+* `_tryOne()` gated on `_isPaused(sel)`. On Ethereum the *fake* 6-arg selectors read `paused = 0` (empty mapping slot) and
+  the *real* 5-arg ones read `1`, so the loop tried 36 non-existent calls and never touched the real entry point. It now
+  gates on `_routed()` (execute and read the code).
+* `IERC20Like(usdt).approve(...)` reverts: USDT's `approve` returns nothing. Every approval now goes through `_approve()`,
+  which ignores the return data. (This is what aborted attempt 2.)
+
+Run these two, in this order:
+
+```bash
+export ETH_RPC=https://eth-mainnet.g.alchemy.com/v2/WqhCk5T_nDcejq-szWp1M
+export ARB_RPC=https://arb-mainnet.g.alchemy.com/v2/WqhCk5T_nDcejq-szWp1M
+export BASE_RPC=https://base-mainnet.g.alchemy.com/v2/WqhCk5T_nDcejq-szWp1M
+
+# 1) honest run: should PASS and print "no openable swap" (proves nothing is open)
+CHAIN=eth forge test --match-contract IporFork --match-test test_1_attack -vv
+
+# 2) measurement run: owner unpause() on ONE selector, then the full drain on real state
+CHAIN=eth TARGET=USDC UNPAUSE=1 forge test --match-contract IporFork --match-test test_1_attack -vv
+```
+
+Run 2 is what fills REPORT §7.5 ("what one unpause would unlock"). It is a scenario, not a live exploit, and the log says
+so.
 
 
 ---
