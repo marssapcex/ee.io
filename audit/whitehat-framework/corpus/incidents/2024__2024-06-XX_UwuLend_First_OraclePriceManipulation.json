@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-06-XX_UwuLend_First_OraclePriceManipulation",
+ "source_file": "2024/2024-06-XX_UwuLend_First_OraclePriceManipulation.md",
+ "title": "UwuLend (1st Incident) — sUSDE Oracle Price Manipulation + Liquidation Exploit Analysis",
+ "date": "2024-06-01",
+ "protocol": "UwuLend",
+ "chain": "Ethereum",
+ "loss_raw": "~$19,300,000",
+ "loss_usd": 19300000.0,
+ "root_cause": "The sUSDE price was referenced directly from the Curve pool spot price without a TWAP, enabling price manipulation via a large single-block swap, which was then exploited via the liquidation bonus mechanism and allowed borrowing against inflated collateral",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: sUSDE oracle references Curve spot price directly\ncontract UwuLendOracle {\n    ICurvePool public sUSDEPool;\n\n    function getAssetPrice(address asset) external view returns (uint256) {\n        if (asset == sUSDE) {\n            // Curve spot price — manipulable via large swaps\n            return sUSDEPool.get_dy(0, 1, 1e18);\n            // ↑ Returns manipulated price during the flash loan window\n        }\n        return chainlinkPrice(asset);\n    }\n}\n\n//",
+  "❌ Vulnerable liquidation logic: health factor calculated using manipulated price\ncontract UwuLendPool {\n    function liquidationCall(\n        address collateralAsset,\n        address debtAsset,\n        address user,\n        uint256 debtToCover,\n        bool receiveAToken\n    ) external {\n        // Health factor computed with the manipulated oracle price\n        uint256 healthFactor = getUserHealthFactor(user);\n        require(healthFactor < HEALTH_FACTOR_LIQUIDATION_THRESHOLD, \"not liquidatable\");\n        // Liquidation bonus paid based on manipulated collateral value\n        uint256 bonus = liquidationBonus * collateralAmount / LIQUIDATION_BONUS_BASE;\n        // ← When the price is artificially restored, bonus exceeds actual value\n    }\n}\n\n//",
+  "// File: LendingPool.sol\n  function swapBorrowRateMode(address asset, uint256 rateMode) external override whenNotPaused {  // ❌ Vulnerability\n    DataTypes.ReserveData storage reserve = _reserves[asset];\n\n    (uint256 stableDebt, uint256 variableDebt) = Helpers.getUserCurrentDebt(msg.sender, reserve);\n\n    DataTypes.InterestRateMode interestRateMode = DataTypes.InterestRateMode(rateMode);\n\n    ValidationLogic.validateSwapRateMode(\n      reserve,\n      _usersConfig[msg.sender],\n      stableDebt,\n      variableDebt,\n      interestRateMode\n    );\n\n    reserve.updateState();\n\n    if (interestRateMode == DataTypes.InterestRateMode.STABLE) {\n      IStableDebtToken(reserve.stableDebtTokenAddress).burn(msg.sender, stableDebt);\n      IVariableDebtToken(reserve.variableDebtTokenAddress).mint(\n        msg.sender,\n        msg.sender,\n        stableDebt,\n        reserve.variableBorrowIndex\n      );\n    } else {\n      IVariableDebtToken(reserve.variableDebtTokenAddress).burn(\n        msg.sender,\n        variableDebt,\n        reserve.variableBorrowIndex\n      );\n      IStableDebtToken(reserve.stableDebtTokenAddress).mint(\n        msg.sender,\n        msg.sender,\n        variableDebt,\n        reserve.currentStableBorrowRate\n      );\n    }\n\n    reserve.updateInterestRates(asset, reserve.aTokenAddress, 0, 0);\n\n    emit Swap(asset, msg.sender, rateMode);\n  }"
+ ],
+ "code_after": [
+  "✅ Safe code: use TWAP or Chainlink oracle\ncontract UwuLendOracle {\n    function getAssetPrice(address asset) external view returns (uint256) {\n        if (asset == sUSDE) {\n            // Use Curve TWAP or Chainlink price\n            return getCurveTWAP(sUSDEPool, TWAP_PERIOD);\n        }\n        return chainlinkPrice(asset);\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Cascading flash loans (total ~$500M+ equivalent)",
+  "→ [2] Large swap on Curve pool → sUSDE price drops",
+  "→ [3] Deposit WBTC/DAI as collateral + borrow sUSDE at max LTV",
+  "→ [4] Withdraw portion of collateral → cross liquidation threshold",
+  "→ [5] Reverse swap → sUSDE price recovers (artificially)",
+  "→ [6] Repeated liquidationCall()",
+  "→ [7] Use seized sUSDE collateral to borrow maximum from uwuLend",
+  "→ [8] Repay all flash loans",
+  "→ [9] ~$19.3M profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Cascading flash loans (total ~$500M+ equivalent)\n  │         ├─ Aave V3: WETH 159.05 + WBTC 1.48\n  │         ├─ Aave V2: WETH 40,000\n  │         ├─ Spark: WETH 91.07 + WBTC 0.498\n  │         ├─ Morpho Blue: sUSDE/USDE/DAI (hundreds of millions)\n  │         ├─ Uniswap V3: FRAX/USDC (hundreds of millions)\n  │         ├─ Balancer: GHO + WETH\n  │         └─ MakerDAO: DAI 50B\n  │\n  ├─→ [2] Large swap on Curve pool → sUSDE price drops\n  │         └─ oracle: sUSDE spot price plummets\n  │\n  ├─→ [3] Deposit WBTC/DAI as collateral + borrow sUSDE at max LTV\n  │         └─ Helper contract position — health factor < 1\n  │\n  ├─→ [4] Withdraw portion of collateral → cross liquidation threshold\n  │\n  ├─→ [5] Reverse swap → sUSDE price recovers (artificially)\n  │         └─ Collatera",
+  "interface ILendingPool {\n    function deposit(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;\n    function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf) external;\n    function withdraw(address asset, uint256 amount, address to) external returns (uint256);\n    function liquidationCall(address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken) external;\n    function getUserAccountData(address user) external view returns (uint256, uint256, uint256, uint256, uint256, uint256);\n}\n\ninterface ICurvePool {\n    function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256);\n    function get_dy(int128 i, int128 j, uint256 dx) external view"
+ ]
+}

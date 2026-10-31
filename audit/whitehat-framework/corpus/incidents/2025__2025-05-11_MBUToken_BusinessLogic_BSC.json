@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-05-11_MBUToken_BusinessLogic_BSC",
+ "source_file": "2025/2025-05-11_MBUToken_BusinessLogic_BSC.md",
+ "title": "MBU Token (Mobius) — Business Logic Vulnerability Analysis",
+ "date": "2025-05-11",
+ "protocol": "MBU Token",
+ "chain": "BSC",
+ "loss_raw": "~$2,157,126 BUSD",
+ "loss_usd": 2157126.0,
+ "root_cause": "Explosive token mint inflation caused by a duplicate `1e18` multiplication in price calculation within the `deposit()` function",
+ "attack_tx": "0x2a65...a150",
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Return value is already scaled to 1e18 units (e.g., 600 USDT/BNB → returns 600e18)\nfunction getBNBPriceInUSDT() internal view returns (uint256) {\n    // ... query price from PancakeSwap pool or oracle\n    uint256 price = _getPriceFromPool(); // internally applies 1e18 scaling\n    return price; // return value: 600_000_000_000_000_000_000 (600 * 1e18)\n}",
+  "// ❌ Vulnerable code — double application of 1e18 causes mint explosion\nfunction deposit(address token, uint256 amount) external returns (uint256) {\n    require(token == WBNB, \"Unsupported token\");\n    IERC20(token).transferFrom(msg.sender, address(this), amount);\n\n    uint256 bnbPrice = getBNBPriceInUSDT(); // ❌ already 1e18 scaled (e.g., 600e18)\n\n    // ❌ Problem: bnbPrice is already in 1e18 units, yet 1e18 is multiplied again\n    // Correct calculation:  mintAmount = amount * bnbPrice / mbuPrice / 1e18\n    // Actual calculation:   mintAmount = amount * bnbPrice * 1e18 / mbuPrice / 1e18\n    //                                  = amount * bnbPrice / mbuPrice  (1e18 units persist)\n    uint256 usdtValue = amount * bnbPrice * 1e18 / 1e18; // ❌ redundant 1e18 — appears harmless but\n    uint256 mintAmount = usdtValue / mbuPrice;             // ❌ mbuPrice also in 1e18 units → normalization error\n\n    IMBU(MBU).mint(msg.sender, mintAmount); // ❌ mints 1e18x too many tokens\n    emit Deposited(token, amount, mintAmount);\n    return mintAmount;\n}",
+  "// ❌ No caller validation on the mint function (should only be callable by the deposit contract)\nfunction mint(address to, uint256 amount) external {\n    // ❌ No onlyMinter or onlyDepositContract check\n    _mint(to, amount);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — consistent decimal normalization\nfunction deposit(address token, uint256 amount) external returns (uint256) {\n    require(token == WBNB, \"Unsupported token\");\n    IERC20(token).transferFrom(msg.sender, address(this), amount);\n\n    // ✅ If getBNBPriceInUSDT() returns 1e18 units, explicitly divide by 1e18 to get USD value\n    uint256 bnbPrice = getBNBPriceInUSDT(); // e.g., 600e18 (600 USDT/BNB)\n    \n    // ✅ amount(wei) * price(1e18 units) → divide by 1e18 to get USDT value (wei units)\n    uint256 usdtValue = amount * bnbPrice / 1e18;  // correct scale normalization\n\n    // ✅ mbuPrice also uses consistent units (1e18 scaled)\n    uint256 mintAmount = usdtValue * 1e18 / mbuPrice; // MBU mint amount (18 decimals)\n\n    // ✅ Added mint cap validation\n    require(mintAmount <= maxMintPerTx, \"Exceeds per-deposit mint cap\");\n    require(totalMinted + mintAmount <= maxTotalSupply, \"Exceeds total supply cap\");\n\n    IMBU(MBU).mint(msg.sender, mintAmount);\n    totalMinted += mintAmount;\n    emit Deposited(token, amount, mintAmount);\n    return mintAmount;\n}",
+  "// ✅ Fix: restrict minting permission to the deposit contract only\nmodifier onlyMinter() {\n    require(msg.sender == depositContract, \"Not authorized to mint\");\n    _;\n}\n\nfunction mint(address to, uint256 amount) external onlyMinter {\n    _mint(to, amount);\n}"
+ ],
+ "steps": [
+  "10 BNB (Tornado Cash withdrawal)",
+  "Deploy attack contract → call attack() (send 1 ETH)",
+  "0.001 WBNB approve",
+  "Call getBNBPriceInUSDT() → returns 600e18 (already 1e18)",
+  "[Step 3] Swap MBU → BUSD",
+  "Path: MBU → BUSD",
+  "Convert BUSD → BNB, launder via Tornado Cash"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.13;\n\n// [Step 1] Attack test setup — fork to block immediately before the attack\ncontract MBUToken_exp is Test {\n    function setUp() public {\n        vm.createSelectFork(\"bsc\", 49470430 - 1); // fork state at pre-attack block\n        vm.deal(attacker, 1 ether);               // fund attacker with initial capital\n    }\n\n    function testPoC() public {\n        vm.startPrank(attacker);\n\n        // [Step 2] Deploy attack contract\n        AttackerC attC = new AttackerC();\n\n        // [Step 3] Execute attack (send 1 ETH — for BlockRazor MEV protection fee)\n        attC.attack{value: 1 ether}();\n\n        // [Step 4] Verify profit\n        emit log_named_decimal_uint(\"Profit in BUSD\", IERC20(BUSD).balanceOf(attacker), 18);\n    }\n}\n\ncontra"
+ ]
+}

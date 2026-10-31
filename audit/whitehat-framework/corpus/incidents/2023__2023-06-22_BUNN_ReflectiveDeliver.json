@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-06-22_BUNN_ReflectiveDeliver",
+ "source_file": "2023/2023-06-22_BUNN_ReflectiveDeliver.md",
+ "title": "BUNN — Reflective Token `deliver()` LP Imbalance Attack Analysis",
+ "date": "2023-06-22",
+ "protocol": "BUNN Token",
+ "chain": "BSC",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "Calling the reflective token `deliver()` function reduces LP pair balance, enabling profit via swap",
+ "attack_tx": "0x24a68d2a...",
+ "vulnerable_contract": "BUNN Token Contract",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "// ❌ BUNN reflective deliver — LP pair balance manipulation\ninterface Bunn is IERC20 {\n    // ❌ Calling deliver reduces reflected balances of all holders (including LP pair)\n    function deliver(uint256 tAmount) external;\n}\n\n// deliver() call flow:\n// _rOwned[sender] -= rAmount\n// _rTotal -= rAmount\n// → LP pair's tokenFromReflection(rOwned) decreases\n// → pair.balance < pair.reserve → sync() required"
+ ],
+ "code_after": [
+  "// ✅ Add LP pair to excluded list\nfunction excludeFromReward(address account) external onlyOwner {\n    _isExcluded[account] = true;\n}\n// Register LP pair address as excluded immediately at deployment or after addLiquidity"
+ ],
+ "steps": [
+  "1. Borrow WBNB via flash loan",
+  "2. Buy large amount of BUNN",
+  "3. BUNN.deliver(amount)",
+  "→ LP pair reflected balance",
+  "→ reserve > balance imbalance",
+  "4. Realize profit via swap",
+  "5. Repay flash loan"
+ ],
+ "other_code": [
+  "// Root cause: Calling reflective token `deliver()` reduces LP pair balance, enabling profit via swap\n// Source code unverified — based on bytecode analysis",
+  "┌─────────────────────────────────────┐\n│  1. Borrow WBNB via flash loan      │\n└─────────────────┬───────────────────┘\n                  ▼\n┌─────────────────────────────────────┐\n│  2. Buy large amount of BUNN        │\n│     with WBNB                       │\n└─────────────────┬───────────────────┘\n                  ▼\n┌─────────────────────────────────────┐\n│  3. BUNN.deliver(amount)            │\n│     → LP pair reflected balance     │\n│       decreases                     │\n│     → reserve > balance imbalance   │\n└─────────────────┬───────────────────┘\n                  ▼\n┌─────────────────────────────────────┐\n│  4. Realize profit via swap         │\n│  5. Repay flash loan                │\n└─────────────────────────────────────┘"
+ ]
+}

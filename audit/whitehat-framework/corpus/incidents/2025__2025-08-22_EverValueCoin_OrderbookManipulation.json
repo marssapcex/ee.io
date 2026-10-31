@@ -1,0 +1,29 @@
+{
+ "id": "2025__2025-08-22_EverValueCoin_OrderbookManipulation",
+ "source_file": "2025/2025-08-22_EverValueCoin_OrderbookManipulation.md",
+ "title": "EverValueCoin — Order Book Price Manipulation Analysis",
+ "date": "2025-08-22",
+ "protocol": "EverValueCoin",
+ "chain": "Arbitrum",
+ "loss_raw": "~100,000 USD",
+ "loss_usd": null,
+ "root_cause": "Missing access control on `addNewOrder` function allows anyone to insert arbitrary orders into the order book",
+ "attack_tx": "0xb13b2ab2...",
+ "vulnerable_contract": "0x03339ecae41bc162dacae5c2a275c8f64d6c80a0",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: no access control on addNewOrder\ninterface Iorderbook {\n    function addNewOrder(\n        bytes32 _pairId,\n        uint256 _quantity,\n        uint256 _price,\n        bool _isBuy,\n        uint256 _timestamp\n    ) external;\n    // No onlyAuthorized or onlyRouter!\n}\n\n// Anyone can insert orders with arbitrary prices and quantities into the order book\n// → Manipulated prices are used when the order book references prices\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: restrict order insertion to authorized routers only\nfunction addNewOrder(...) external onlyRouter {\n    ...\n}"
+ ],
+ "steps": [
+  "No access control → arbitrary order insertion succeeds"
+ ],
+ "other_code": [
+  "// File: src/OrderBookFactory.sol\nfunction getPairIds() external view returns (bytes32[] memory) {\n        return pairIds;\n    }\n\n// ... (lines 156-192 omitted) ...\n\n    function setPairStatus(bytes32 _pairId, bool _enabled) external onlyOwner {\n        if (!pairExists(_pairId)) revert OBF__PairDoesNotExist();\n        pairs[_pairId].enabled = _enabled;\n\n        emit PairStatusChanged(_pairId, _enabled);\n    }\n\n// ... (lines 199-203 omitted) ...\n\n    function setPairFee(bytes32 _pairId, uint256 newFee) external onlyOwner {\n        if (!pairExists(_pairId)) revert OBF__PairDoesNotExist();\n        if (newFee > MAX_FEE) revert OBF__FeeExceedsMaximum(newFee, MAX_FEE);\n        pairs[_pairId].changePairFee(newFee);\n\n        emit PairFeeChanged(_pairId, newFee);\n    }\n\n// ... (lines 211-215 omitte",
+  "Attacker\n  │\n  ├─[1]─▶ Morpho Flash Loan (borrow large amount of tokens)\n  │\n  ├─[2]─▶ Swap tokens via UniswapV3\n  │         └─ Manipulate market price\n  │\n  ├─[3]─▶ orderbook.addNewOrder(pairId, qty, manipulatedPrice, ...)\n  │         └─ No access control → arbitrary order insertion succeeds\n  │\n  ├─[4]─▶ Liquidate favorable position using manipulated order book price\n  │         └─ Excess profit obtained\n  │\n  └─[5]─▶ Repay flash loan + retain ~100,000 USD profit"
+ ]
+}

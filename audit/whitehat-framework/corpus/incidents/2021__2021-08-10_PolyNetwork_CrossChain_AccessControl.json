@@ -1,0 +1,37 @@
+{
+ "id": "2021__2021-08-10_PolyNetwork_CrossChain_AccessControl",
+ "source_file": "2021/2021-08-10_PolyNetwork_CrossChain_AccessControl.md",
+ "title": "Poly Network — Cross-Chain Administrator Privilege Hijacking Vulnerability Analysis",
+ "date": "2021-08-10",
+ "protocol": "Poly Network",
+ "chain": "Ethereum",
+ "loss_raw": "~$611,000,000 (Largest DeFi hack at the time of the attack)",
+ "loss_usd": 611000000.0,
+ "root_cause": "`verifyHeaderAndExecuteTx()` does not block calls to the `EthCrossChainData` contract, allowing cross-chain messages to replace the keeper public key and transfer arbitrary funds",
+ "attack_tx": "0xb1f7...581 (ETH block 12,996,659)",
+ "vulnerable_contract": "EthCrossChainManager 0x838bf9E95CB12Dd76a54C9f9D2E3082EAF928270",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ EthCrossChainManager @ 0x838bf9E95CB12Dd76a54C9f9D2E3082EAF928270\nfunction verifyHeaderAndExecuteTx(\n    bytes memory proof,\n    bytes memory rawHeader,\n    bytes memory headerProof,\n    bytes memory curRawHeader,\n    bytes memory headerSig\n) external whenNotPaused returns (bool) {\n    // Header validation...\n    // Cross-chain data parsing...\n\n    // ❌ Does not block cases where target is EthCrossChainData\n    // Anyone can call EthCrossChainData functions via cross-chain message\n    address toContract = Utils.bytesToAddress(toContractBytes);\n\n    // _executeCrossChainTx calls arbitrary contracts\n    require(\n        _executeCrossChainTx(toContract, toMethodName, args, fromContract, fromChainId),\n        \"Failed to execute cross chain tx\"\n    );\n}\n\n// _executeCrossChainTx: calls arbitrary functions on the destination contract\nfunction _executeCrossChainTx(address _toContract, bytes memory _method, ...) internal returns (bool) {\n    // ❌ No check for _toContract == EthCrossChainData\n    (bool success, bytes memory returnData) = _toContract.call(\n        abi.encodePacked(bytes4(keccak256(abi.encodePacked(_method, \"(bytes,bytes,uint64)\"))), ...)\n    );\n    return success;\n}",
+  "// ❌ Root cause: verifyHeaderAndExecuteTx() does not block calls to EthCrossChainData contract, allowing cross-chain messages to replace the keeper public key and transfer arbitrary funds\n    function verifyHeaderAndExecuteTx(bytes arg0, bytes arg1, bytes arg2, bytes arg3, bytes arg4) external {}  // 0xd450e04c  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "// ✅ Does not allow EthCrossChainData as a destination\nfunction _executeCrossChainTx(address _toContract, ...) internal returns (bool) {\n    // Block calls to core admin contracts\n    require(\n        _toContract != address(EthCrossChainData),\n        \"CrossChainManager: cannot call EthCrossChainData\"\n    );\n    require(\n        _toContract != address(this),\n        \"CrossChainManager: cannot call self\"\n    );\n    // ...\n}",
+  "// ✅ Blacklist calls to core admin contracts\nmapping(address => bool) public blacklistedTargets;\n\nfunction initialize() external {\n    // EthCrossChainData and self can never be a destination\n    blacklistedTargets[address(EthCrossChainData)] = true;\n    blacklistedTargets[address(this)] = true;\n}\n\nfunction _executeCrossChainTx(address _toContract, ...) internal returns (bool) {\n    require(!blacklistedTargets[_toContract], \"CrossChainManager: blacklisted target\");\n    // Additionally verify that the destination is a contract, not an EOA\n    require(_toContract.code.length > 0, \"CrossChainManager: not a contract\");\n    // ...\n}"
+ ],
+ "steps": [
+  "Step 1: Craft malicious cross-chain message",
+  "Step 2: Call EthCrossChainManager.verifyHeaderAndExecuteTx()",
+  "→ EthCrossChainData.putCurEpochConPubKeyBytes(attackerKey)",
+  "→ Consensus public key replacement complete",
+  "Step 3: Transfer ETH via cross-chain message signed with new key",
+  "→ Transfer hundreds of millions in assets to attacker-controlled address",
+  "→ Executed simultaneously across ETH, BSC, and Polygon"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────┐\n│ Step 1: Craft malicious cross-chain message                   │\n│ target = EthCrossChainData (0xcF2afe10...)                   │\n│ method = putCurEpochConPubKeyBytes (f1121318093)             │\n│ args   = attacker-controlled public key                       │\n└─────────────────────┬────────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step 2: Call EthCrossChainManager.verifyHeaderAndExecuteTx() │\n│ @ 0x838bf9E95CB12Dd76a54C9f9D2E3082EAF928270                │\n│ → EthCrossChainData.putCurEpochConPubKeyBytes(attackerKey)   │\n│ → Consensus public key replacement complete                  │\n└─────────────────────┬─────────────────────────────────────",
+  "// testExploit() — Mainnet fork block 12,996,658\n// Composed of two transactions\n\n// Transaction 1: Change consensus key\n// EthCrossChainManager.verifyHeaderAndExecuteTx(\n//   proof, rawHeader, headerProof, curRawHeader, headerSig\n// )\n// → Internally calls EthCrossChainData.putCurEpochConPubKeyBytes(attackerKey)\n\n// Transaction 2: Transfer ETH using new key authority\n// EthCrossChainManager.verifyHeaderAndExecuteTx(\n//   proof2, rawHeader2, ...\n// )\n// → ETH transfer approved based on new key in EthCrossChainData\n\n// EthCrossChainManager @ 0x838bf9E95CB12Dd76a54C9f9D2E3082EAF928270\n// EthCrossChainData   @ 0xcF2afe102057bA5c16f899271045a0A37fCb10f2"
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-02-23_HegicOptions_BusinessLogic_ETH",
+ "source_file": "2025/2025-02-23_HegicOptions_BusinessLogic_ETH.md",
+ "title": "HegicOptions Security Incident Analysis",
+ "date": "2025-02-23",
+ "protocol": "HegicOptions",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// HegicPool._withdraw() — vulnerable version with state validation commented out\nfunction _withdraw(uint256 trancheID) internal returns (uint256 amount) {\n    Tranche storage t = tranches[trancheID];\n\n    // ❌ Core vulnerability: tranche state validation is commented out\n    // require(t.state == TrancheState.Open, \"Tranche is not open\");\n\n    uint256 hedgedBalance = (lockedAmount * t.share) / totalShares;\n    uint256 unhedgedBalance = ((totalBalance - lockedAmount) * t.share) / totalShares;\n    amount = hedgedBalance + unhedgedBalance;\n\n    // ❌ Code to set state to Closed after withdrawal is also missing or commented out\n    // t.state = TrancheState.Closed;\n\n    // ❌ t.share is not reset to 0, so the same amount is calculated on subsequent calls\n    totalBalance -= amount;\n    // lockedAmount is not decremented separately (appears harmless since it's 0,\n    //  but decreasing totalBalance affects subsequent calculations)\n\n    WBTC.safeTransfer(msg.sender, amount);\n}\n\n// withdrawWithoutHedge() — external entry point\nfunction withdrawWithoutHedge(uint256 trancheID) external returns (uint256 amount) {\n    // ❌ No caller validation: anyone can call, not just the tranche owner\n    return _withdraw(trancheID);\n}"
+ ],
+ "code_after": [
+  "// Fixed HegicPool._withdraw() — state validation and state transition code restored\nfunction _withdraw(uint256 trancheID) internal returns (uint256 amount) {\n    Tranche storage t = tranches[trancheID];\n\n    // ✅ Fix 1: Always verify that the tranche is in Open state\n    require(t.state == TrancheState.Open, \"Tranche: already withdrawn or invalid tranche\");\n\n    // ✅ Fix 2: Transition to Closed state immediately before withdrawal to prevent reentrancy and repeated withdrawal\n    t.state = TrancheState.Closed;\n\n    uint256 hedgedBalance = (lockedAmount * t.share) / totalShares;\n    uint256 unhedgedBalance = ((totalBalance - lockedAmount) * t.share) / totalShares;\n    amount = hedgedBalance + unhedgedBalance;\n\n    // ✅ Fix 3: Reset share to 0 to prevent state inconsistency\n    totalShares -= t.share;\n    t.share = 0;\n\n    totalBalance -= amount;\n\n    WBTC.safeTransfer(msg.sender, amount);\n}\n\n// ✅ Fixed withdrawWithoutHedge() — owner validation added\nfunction withdrawWithoutHedge(uint256 trancheID) external returns (uint256 amount) {\n    Tranche storage t = tranches[trancheID];\n    // ✅ Fix 4: Access control added so only the tranche owner can withdraw\n    require(t.owner == msg.sender, \"Tranche: only tranche owner can withdraw\");\n    return _withdraw(trancheID);\n}",
+  "function _withdraw(uint256 trancheID) internal returns (uint256 amount) {\n    Tranche storage t = tranches[trancheID];\n\n    // ✅ [Immediate Fix 1] Restore the commented-out state validation code\n    require(t.state == TrancheState.Open, \"HegicPool: tranche is not in Open state\");\n\n    // ✅ [Immediate Fix 2] Transition state to Closed before withdrawal (CEI pattern)\n    t.state = TrancheState.Closed;\n\n    uint256 hedgedBalance = (lockedAmount * t.share) / totalShares;\n    uint256 unhedgedBalance = ((totalBalance - lockedAmount) * t.share) / totalShares;\n    amount = hedgedBalance + unhedgedBalance;\n\n    // ✅ [Immediate Fix 3] Reset share\n    totalShares -= t.share;\n    t.share = 0;\n\n    totalBalance -= amount;\n    WBTC.safeTransfer(msg.sender, amount);\n}"
+ ],
+ "steps": [
+  "------------------------->",
+  "------------------------>",
+  "1. **[Preparation]** Attacker EOA (`0x4B536...`) deploys the attack contract (`0xF51E8...`). The contract implements a `get()` function that repeatedly calls `withdrawWithoutHedge(2)` on the Hegic pool.",
+  "2. **[Tranche Reconnaissance]** The attacker confirms in advance that tranche ID `2` in the Hegic WBTC ATM Puts Pool is in `Open` state and that the WBTC corresponding to `t.share` is `0.0025 WBTC`.",
+  "3. **[TX1 Execution]** The attack contract's `get()` is called at block `21912409`. Internally, `withdrawWithoutHedge(2)` is called **100 times** in a loop. Each call transfers `0.0025 WBTC` to the attack contract without any state validation. **Total: 0.25 WBTC** stolen.",
+  "4. **[TX2 Execution]** `withdrawWithoutHedge(2)` is called **331 times** at block `21912424`, continuing until the remaining pool balance is exhausted. **Total: 0.8275 WBTC** additionally stolen.",
+  "5. **[Result]** The pool's WBTC balance drops from `1.1025 WBTC` to `0.025 WBTC`. Attack contract secures `0.8275 WBTC`. Tranche state remains unchanged (both state and share retain their original values)."
+ ],
+ "other_code": [
+  "+------------------------------------------------------------------+\n|                        Attack Flow Diagram                        |\n+------------------------------------------------------------------+\n\n  Attacker EOA                Attack Contract              Vulnerable Pool Contract\n  (0x4B536...)                (0xF51E8...)                 (0x7094E...)\n       |                           |                         |\n       |  [Preparation]            |                         |\n       |  deploy(attack contract)  |                         |\n       |------------------------->|                         |\n       |                           |                         |\n       |  [TX1] call get()         |                         |\n       |  Block 21912409           |                      ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.15;\n\nimport \"forge-std/Test.sol\";\nimport \"../interface.sol\";\n\n/**\n * @title HegicOptions Exploit PoC\n * @dev Test contract provided by DeFiHackLabs\n *\n * @KeyInfo\n * Total Loss: ~104M (in satoshi units, ~1.0775 WBTC)\n * Attacker EOA: 0x4B53608fF0cE42cDF9Cf01D7d024C2c9ea1aA2e8\n * Attack Contract: 0xF51E888616a123875EAf7AFd4417fbc4111750f7\n * Vulnerable Contract: 0x7094E706E75E13D1E0ea237f71A7C4511e9d270B\n * TX1: 0x260d5eb9151c565efda80466de2e7eee9c6bd4973d54ff68c8e045a26f62ea73\n * TX2: 0x444854ee7e7570f146b64aa8a557ede82f326232e793873f0bbd04275fa7e54c\n */\ncontract HegicOptions is Test {\n    // Block immediately before TX1 (fork pre-attack state)\n    uint256 blocknumToForkFrom1 = 21912408;\n    // Block immediately before TX2\n    uin"
+ ]
+}

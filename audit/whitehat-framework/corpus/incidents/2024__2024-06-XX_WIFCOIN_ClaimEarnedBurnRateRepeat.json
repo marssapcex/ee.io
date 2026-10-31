@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-06-XX_WIFCOIN_ClaimEarnedBurnRateRepeat",
+ "source_file": "2024/2024-06-XX_WIFCOIN_ClaimEarnedBurnRateRepeat.md",
+ "title": "WIFCOIN — claimEarned() burnRate Repeated-Call Vulnerability Analysis",
+ "date": "2024-06-01",
+ "protocol": "WIFCOIN",
+ "chain": "Ethereum",
+ "loss_raw": "~3.4 ETH",
+ "loss_usd": null,
+ "root_cause": "`claimEarned(uint256 burnRate)` can be called repeatedly with the same burnRate=10 until the reward balance is exhausted; staking state is not invalidated after withdrawal, so residual rewards are continuously paid out on every call",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no restriction on repeated claimEarned calls\ncontract WIFStaking {\n    mapping(address => uint256) public stakedBalance;\n    mapping(address => uint256) public earnedRewards;\n    mapping(address => uint256) public lastClaimTime;\n\n    function stake(uint256 amount) external {\n        stakedBalance[msg.sender] += amount;\n        WIF.transferFrom(msg.sender, address(this), amount);\n    }\n\n    // burnRate: 0~100 (burn percentage %)\n    function claimEarned(uint256 burnRate) external {\n        uint256 earned = earnedRewards[msg.sender];\n        require(earned > 0, \"nothing to claim\");\n\n        uint256 burnAmount = earned * burnRate / 100;\n        uint256 claimAmount = earned - burnAmount;\n\n        //",
+  "❌ No call-interval restriction — repeated calls possible\n        //",
+  "❌ earnedRewards not reset to 0; can be recalculated on every call\n        earnedRewards[msg.sender] = recalculateEarned(msg.sender); // recalculation bug\n\n        if (burnAmount > 0) WIF.transfer(address(0), burnAmount);\n        WIF.transfer(msg.sender, claimAmount);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code\nfunction claimEarned(uint256 burnRate) external {\n    require(burnRate <= 100, \"invalid burn rate\");\n    uint256 earned = earnedRewards[msg.sender];\n    require(earned > 0, \"nothing to claim\");\n\n    // CEI: reset state first\n    earnedRewards[msg.sender] = 0;\n    lastClaimTime[msg.sender] = block.timestamp;\n\n    uint256 burnAmount = earned * burnRate / 100;\n    uint256 claimAmount = earned - burnAmount;\n\n    if (burnAmount > 0) WIF.transfer(address(0xdead), burnAmount);\n    WIF.transfer(msg.sender, claimAmount);\n}"
+ ],
+ "steps": [
+  "→ [1] 0.3 ETH → WIF swap (Uniswap V2)",
+  "→ [2] WIFStaking.stake(wifBalance) — staking ID: 3",
+  "→ [3] claimEarned(10) repeated calls (until revert)",
+  "burnRate=10 → 90% distributed, 10% burned",
+  "earnedRewards recalculation bug → rewards re-issued on every call",
+  "→ [4] Remaining WIF → ETH reverse swap (Uniswap V2)",
+  "→ [5] Net profit ~3.4 ETH (vs. initial 0.3 ETH investment)"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] 0.3 ETH → WIF swap (Uniswap V2)\n  │\n  ├─→ [2] WIFStaking.stake(wifBalance) — staking ID: 3\n  │         └─ stakedBalance[attacker] = wifBal\n  │         └─ earnedRewards begins accumulating\n  │\n  ├─→ [3] claimEarned(10) repeated calls (until revert)\n  │         └─ burnRate=10 → 90% distributed, 10% burned\n  │         └─ No call-interval restriction\n  │         └─ earnedRewards recalculation bug → rewards re-issued on every call\n  │         └─ Automatically stops when staking pool balance is exhausted\n  │\n  ├─→ [4] Remaining WIF → ETH reverse swap (Uniswap V2)\n  │\n  └─→ [5] Net profit ~3.4 ETH (vs. initial 0.3 ETH investment)",
+  "interface IWIFStaking {\n    function stake(uint256 amount) external;\n    function claimEarned(uint256 burnRate) external;\n}\n\ninterface IUniswapV2Router {\n    function swapExactETHForTokens(\n        uint256 amountOutMin,\n        address[] calldata path,\n        address to,\n        uint256 deadline\n    ) external payable returns (uint256[] memory);\n\n    function swapExactTokensForETH(\n        uint256 amountIn,\n        uint256 amountOutMin,\n        address[] calldata path,\n        address to,\n        uint256 deadline\n    ) external returns (uint256[] memory);\n}\n\ncontract AttackContract {\n    IWIFStaking constant staking = IWIFStaking(0xA1cE40702E15d0417a6c74D0bAB96772F36F4E99);\n    IERC20 constant WIF = IERC20(0xBFae33128ecF041856378b57adf0449181FFFDE7);\n    IUniswapV2Router constant router ="
+ ]
+}

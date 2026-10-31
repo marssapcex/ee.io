@@ -1,0 +1,49 @@
+{
+ "id": "2025__2025-02-07_ADACash_SlippageProtection_BSC",
+ "source_file": "2025/2025-02-07_ADACash_SlippageProtection_BSC.md",
+ "title": "ADACash — Lack of Slippage Protection Analysis",
+ "date": "2025-02-07",
+ "protocol": "ADACash",
+ "chain": "BSC",
+ "loss_raw": "~$107,000",
+ "loss_usd": 107000.0,
+ "root_cause": "Zero slippage protection due to hardcoded `amountOutMin = 0` in the token's internal swap functions (`swapTokensForEth`, `swapTokensForADA`, `addLiquidity`) — exposed to flash loan-based sandwich attacks",
+ "attack_tx": "0x8501a9d3...e01a *(tx hash unverified — not found on BSC mainnet)*",
+ "vulnerable_contract": "0x651a89fe...94c48 (ADAcash token contract, BSCScan verified)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// ADAcash.sol — 0x651a89fed302227d41425235f8e934502fb94c48\n// PancakeSwap V2 Router: 0x10ED43C718714eb63d5aA57B78B54704E256024E\n\nfunction swapTokensForEth(uint256 tokenAmount) private {\n    address[] memory path = new address[](2);\n    path[0] = address(this);          // ADACASH token\n    path[1] = uniswapV2Router.WETH(); // WBNB\n\n    _approve(address(this), address(uniswapV2Router), tokenAmount);\n\n    // ❌ Vulnerability: amountOutMin = 0 — \"accept any amount of ETH\"\n    // If this function executes while the attacker has manipulated the ADACASH/WBNB pool price,\n    // tokens are sold at an extremely unfavorable rate, draining protocol funds\n    uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(\n        tokenAmount,\n        0,                // ❌ amountOutMin = 0: no minimum output restriction\n        path,\n        address(this),\n        block.timestamp\n    );\n}",
+  "// ADAcash.sol — swapTokensForADA function\n\nfunction swapTokensForADA(uint256 tokenAmount) private {\n    // 3-step swap path: ADACASH → WBNB → ADA\n    address[] memory path = new address[](3);\n    path[0] = address(this);          // ADACASH\n    path[1] = uniswapV2Router.WETH(); // WBNB (intermediate token)\n    path[2] = ADA;                    // Cardano (ADA) BEP-20\n\n    _approve(address(this), address(uniswapV2Router), tokenAmount);\n\n    // ❌ Vulnerability: amountOutMin = 0 even for a 3-hop swap\n    // Slippage compounds across each hop (ADACASH→WBNB, WBNB→ADA),\n    // yet there is no minimum output protection — vulnerable to dual-pool price manipulation\n    uniswapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        tokenAmount,\n        0,             // ❌ amountOutMin = 0: unprotected even on multi-hop swap\n        path,\n        address(this),\n        block.timestamp\n    );\n}",
+  "// ADAcash.sol — addLiquidity function\n\nfunction addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {\n    _approve(address(this), address(uniswapV2Router), tokenAmount);\n\n    // ❌ Vulnerability: both token and ETH minimums set to 0 when adding liquidity\n    // Contract's own comment: \"slippage is unavoidable\"\n    // — This is a design decision that sacrifices slippage protection for convenience,\n    //   giving attackers an opportunity to manipulate prices at the time of liquidity addition\n    uniswapV2Router.addLiquidityETH{value: ethAmount}(\n        address(this),\n        tokenAmount,\n        0,             // ❌ amountTokenMin = 0: \"slippage is unavoidable\"\n        0,             // ❌ amountETHMin = 0: \"slippage is unavoidable\"\n        address(0),    // LP token burn address (dead address)\n        block.timestamp\n    );\n}"
+ ],
+ "code_after": [
+  "// Fixed swapTokensForEth() — slippage protection via TWAP oracle\n\nfunction swapTokensForEth(uint256 tokenAmount) private {\n    address[] memory path = new address[](2);\n    path[0] = address(this);\n    path[1] = uniswapV2Router.WETH();\n\n    _approve(address(this), address(uniswapV2Router), tokenAmount);\n\n    // ✅ Calculate expected output via TWAP oracle and set maximum slippage cap\n    // (or use Chainlink price feed)\n    uint256[] memory amountsOut = uniswapV2Router.getAmountsOut(tokenAmount, path);\n    uint256 expectedOut = amountsOut[amountsOut.length - 1];\n    uint256 minAmountOut = expectedOut * 95 / 100; // ✅ Allow max 5% slippage\n\n    uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(\n        tokenAmount,\n        minAmountOut, // ✅ Slippage protection applied\n        path,\n        address(this),\n        block.timestamp\n    );\n}",
+  "// ✅ Fixed swapTokensForADA() — multi-hop slippage protection\n\nfunction swapTokensForADA(uint256 tokenAmount) private {\n    address[] memory path = new address[](3);\n    path[0] = address(this);\n    path[1] = uniswapV2Router.WETH();\n    path[2] = ADA;\n\n    _approve(address(this), address(uniswapV2Router), tokenAmount);\n\n    // ✅ Calculate expected output for each hop and set minimum receive amount\n    uint256[] memory amountsOut = uniswapV2Router.getAmountsOut(tokenAmount, path);\n    uint256 expectedADA = amountsOut[2]; // Expected final ADA received\n    uint256 minADA = expectedADA * 95 / 100; // Allow max 5% slippage\n\n    uniswapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        tokenAmount,\n        minADA,        // ✅ Set minimum ADA receive amount\n        path,\n        address(this),\n        block.timestamp\n    );\n}"
+ ],
+ "steps": [
+  "1. The attacker monitors whether the ADACash contract is approaching the `swapAndLiquify` threshold.",
+  "2. The attacker identifies that the contract's ADACASH balance has accumulated above `numTokensSellToAddToLiquidity` (2B ADACASH), meaning the next transfer will trigger `swapAndLiquify()`.",
+  "3. The attacker prepares the attack using a flash loan or pre-held capital on PancakeSwap.",
+  "1. **Flash Loan Initiation**: Borrow a large WBNB flash loan from the PancakeSwap WBNB pair",
+  "2. **ADACASH Price Manipulation**: Use borrowed WBNB to buy ADACASH in bulk → distort the ADACASH/WBNB pool price",
+  "3. **Trigger swapAndLiquify**: Attacker executes a small ADACASH transfer transaction to push the balance over the threshold → `swapAndLiquify()` automatically called",
+  "4. **Vulnerable Swap Executes**: Contract executes ADACASH → BNB swap with `amountOutMin = 0` → receives minimal BNB at the manipulated price",
+  "5. **Price Restoration & Profit Taking**: Attacker sells pre-purchased ADACASH as the price recovers to realize profit",
+  "6. **Flash Loan Repayment**: Repay flash loan principal + fee from profits",
+  "7. **Profit Secured**: Net profit ~$107,000 transferred to attacker's wallet",
+  "Borrow WBNB in bulk → pancakeCall()",
+  "(or mass-sell ADACASH → crash ↓)",
+  "threshold → swapAndLiquify() auto-",
+  "ADACASH → BNB, amountOutMin = 0 ❌",
+  "→ Contract receives minimal BNB",
+  "→ Large-scale protocol fund loss",
+  "→ LP minted at unfavorable ratio",
+  "(arbitrage: manipulated→restored)",
+  "⑥ Convert profit WBNB → USDT/BUSD"
+ ],
+ "other_code": [
+  "1. FlashSwap or flash loan initiation event\n2. Transfer(WBNB → attacker, large amount) — flash loan received\n3. Transfer(attacker → ADACASH/WBNB pool, WBNB) — price manipulation buy\n4. Transfer(ADACASH/WBNB pool → attacker, ADACASH) — large ADACASH received\n5. Transfer(attacker → ADACASH contract or dead) — swapAndLiquify trigger\n   ↳ Internal Transfer(ADACASH contract → WBNB/BNB) — amountOutMin=0 swap\n   ↳ Sync event (pool state change)\n6. Transfer(attacker ADACASH → ADACASH/WBNB pool) — price restoration sell\n7. Transfer(WBNB → BUSD) — profit locked\n8. Transfer(WBNB → flash loan pool) — flash loan repaid"
+ ]
+}

@@ -1,0 +1,38 @@
+{
+ "id": "2021__2021-05-02_Spartan_Protocol_SpotBalanceLPCalc",
+ "source_file": "2021/2021-05-02_Spartan_Protocol_SpotBalanceLPCalc.md",
+ "title": "Spartan Protocol — Spot balanceOf() Based LP Withdrawal Calculation Vulnerability Analysis",
+ "date": "2021-05-02",
+ "protocol": "Spartan Protocol",
+ "chain": "BSC",
+ "loss_raw": "~$30,500,000",
+ "loss_usd": 30500000.0,
+ "root_cause": "`removeLiquidity()` calculates withdrawal amounts using the current `balanceOf()` instead of synchronized reserve variables, making it manipulable via direct token donations",
+ "attack_tx": "Address unidentified",
+ "vulnerable_contract": "Spartan Pool (WBNB/SPARTA)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// ❌ Spartan Pool — withdrawal amount calculated based on current balance\nfunction removeLiquidity(uint256 units) external returns (uint256 outputBase, uint256 outputToken) {\n    // Uses current balanceOf() instead of reserve variables\n    uint256 _baseAmount = BASE.balanceOf(address(this));   // manipulable\n    uint256 _tokenAmount = TOKEN.balanceOf(address(this)); // manipulable\n\n    uint256 _totalSupply = totalSupply();\n\n    // Withdraw each token proportional to units / totalSupply\n    outputBase  = (_baseAmount  * units) / _totalSupply;\n    outputToken = (_tokenAmount * units) / _totalSupply;\n\n    _burn(msg.sender, units);\n    BASE.transfer(msg.sender, outputBase);\n    TOKEN.transfer(msg.sender, outputToken);\n}",
+  "// ── State variables ─────────────────────────────────────────────────────────\nuint public baseAmount;   // internal accounting of BASE tokens in pool\nuint public tokenAmount;  // internal accounting of TOKEN tokens in pool\n\n// ── _getAddedBaseAmount ──────────────────────────────────────────────────────\n// Called by addLiquidityForMember to detect newly arrived BASE tokens.\n// ❌ Uses live balanceOf(pool) minus the stored baseAmount.\n//    A direct token donation inflates this delta without minting LP for the donor.\nfunction _getAddedBaseAmount() internal view returns (uint256 _actual) {\n    uint _baseBalance = iBEP20(BASE).balanceOf(address(this)); // ❌ spot balance\n    if (_baseBalance > baseAmount) {\n        _actual = _baseBalance.sub(baseAmount);\n    } else {\n        _actual = 0;\n    }\n    return _actual;\n}\n\n// ── addLiquidityForMember ───────────────────────────────────────────────────\n// ❌ Passes the spot delta (including donated tokens) to calcLiquidityUnits,\n//    so the next LP minter is credited for tokens the attacker donated.\nfunction addLiquidityForMember(address member) public returns (uint liquidityUnits) {\n    uint256 _actualInputBase  = _getAddedBaseAmount();  // ❌ inflated by donation\n    uint256 _actualInputToken = _getAddedTokenAmount(); // ❌ inflated by donation\n    liquidityUnits = _DAO().UTILS().calcLiquidityUnits(\n        _actualInputBase, baseAmount,\n        _actualInputToken, tokenAmount,\n        totalSupply\n    );\n    _incrementPoolBalances(_actualInputBase, _actualInputToken);\n    _mint(member, liquidityUnits);\n    emit AddLiquidity(member, _actualInputBase, _actualInputToken, liquidityUnits);\n    return liquidityUnits;\n}\n\n// ── removeLiquidityForMember ────────────────────────────────────────────────\n// ❌ calcLiquidityShare(units, token, pool, member) is implemented in the\n//    external UTILS contract using baseAmount/tokenAmount as pool reserves.\n//    Because those reserves were inflated by the donation→addLiquidity trick,\n//    the attacker's LP units entitle them to far more than they deposited.\nfunction removeLiquidityForMember(address member) public returns (uint outputBase, uint outputToken) {\n    uint units  = balanceOf(address(this));\n    outputBase  = _DAO().UTILS().calcLiquidityShare(units, BASE,  address(this), member); // ❌ excess share\n    outputToken = _DAO().UTILS().calcLiquidityShare(units, TOKEN, address(this), member); // ❌ excess share\n    _decrementPoolBalances(outputBase, outputToken);\n    _burn(address(this), units);\n    iBEP20(BASE).transfer(member, outputBase);\n    iBEP20(TOKEN).transfer(member, outputToken);\n    emit RemoveLiquidity(member, outputBase, outputToken, units);\n    return (outputBase, outputToken);\n}"
+ ],
+ "code_after": [
+  "// ✅ Uses synchronized reserve variables — cannot be manipulated via direct transfers\nuint256 private _reserveBase;\nuint256 private _reserveToken;\n\nfunction removeLiquidity(uint256 units) external returns (uint256 outputBase, uint256 outputToken) {\n    // Uses synchronized reserve variables instead of balanceOf()\n    uint256 _totalSupply = totalSupply();\n    outputBase  = (_reserveBase  * units) / _totalSupply;\n    outputToken = (_reserveToken * units) / _totalSupply;\n\n    _burn(msg.sender, units);\n    BASE.transfer(msg.sender, outputBase);\n    TOKEN.transfer(msg.sender, outputToken);\n\n    // Sync reserves after transfer\n    _reserveBase  = BASE.balanceOf(address(this));\n    _reserveToken = TOKEN.balanceOf(address(this));\n}",
+  "// ✅ Fix: maintain independent reserve variables — mirror Uniswap V2 pattern\nuint112 private reserve0;\nuint112 private reserve1;\n\nfunction _update(uint balance0, uint balance1) private {\n    reserve0 = uint112(balance0);\n    reserve1 = uint112(balance1);\n    emit Sync(reserve0, reserve1);\n}\n// addLiquidity computes deltas vs. reserve0/reserve1, not balanceOf().\n// removeLiquidity pays proportional to reserve0/reserve1.\n// Direct donations never touch reserves, so they cannot inflate LP shares."
+ ],
+ "steps": [
+  "Step 1: Flash loan 100,000 WBNB from PancakeSwap",
+  "Step 2: Swap WBNB → SPARTA",
+  "SpartanPool.swap(WBNB → SPARTA)",
+  "Step 3: addLiquidity() → Obtain LP tokens",
+  "Step 4: Direct transfer of WBNB to pool (no LP minted)",
+  "→ Artificially inflates pool's balanceOf(WBNB)",
+  "Step 5: removeLiquidity(LP_balance)",
+  "Step 6: Reverse swap SPARTA → WBNB + repay flash loan"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────┐\n│ Step 1: Flash loan 100,000 WBNB from PancakeSwap        │\n└─────────────────────┬───────────────────────────────────┘\n                      │ (repeated 8 times)\n┌─────────────────────▼───────────────────────────────────┐\n│ Step 2: Swap WBNB → SPARTA                              │\n│ SpartanPool.swap(WBNB → SPARTA)                         │\n└─────────────────────┬───────────────────────────────────┘\n                      │\n┌─────────────────────▼───────────────────────────────────┐\n│ Step 3: addLiquidity() → Obtain LP tokens               │\n│ SpartanPool.addLiquidity(WBNB, SPARTA)                  │\n└─────────────────────┬───────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────",
+  "// Core logic of the 8-cycle loop\nfor (uint i = 0; i < 8; i++) {\n    // Swap WBNB → SPARTA\n    spartanPool.swap(0, wbnbAmount, address(this));\n\n    // Add liquidity → obtain LP tokens\n    spartanPool.addLiquidity(wbnbAmount, spartaAmount);\n\n    // Direct WBNB donation to pool (inflate balanceOf)\n    // Only increases pool balance without minting LP\n    WBNB.transfer(address(spartanPool), donation_amount);\n\n    // removeLiquidity — calculated based on inflated balanceOf\n    // outputBase = (WBNB.balanceOf(pool) * LP) / totalSupply\n    spartanPool.removeLiquidity(lpBalance);\n\n    // Additional swaps to reconstruct position\n    spartanPool.addLiquidity(...);\n}\n// Reverse swap SPARTA → WBNB + repay flash loan"
+ ]
+}

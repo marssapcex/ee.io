@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-09_Shadowfi_BurnReserveManipulation",
+ "source_file": "2022/2022-09_Shadowfi_BurnReserveManipulation.md",
+ "title": "Shadowfi (SDF) — burn()-Based Reserve Manipulation Attack Analysis",
+ "date": "2022-09-01",
+ "protocol": "Shadowfi",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "Directly `burn()`ing SDF from the LP pair to reduce reserves, then calling `sync()` to inflate the price",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable SDF token — anyone can burn tokens from any arbitrary address\ncontract SDFToken is ERC20 {\n    //",
+  "❌ The from parameter has no validation — tokens can be burned from the pair address\n    function burn(address from, uint256 amount) external {\n        //",
+  "❌ Does not check whether msg.sender == from or has sufficient allowance\n        _burn(from, amount);\n    }\n}\n\n// Result: pair.balanceOf(SDF) < pair.reserve(SDF)\n// When pair.sync() is called, the reserve is updated to the reduced balance\n// → SDF unit price rises (WBNB reserve unchanged, SDF reserve decreased)\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct burn pattern\ncontract SafeSDFToken is ERC20 {\n    //",
+  "✅ Only the caller's own tokens can be burned\n    function burn(uint256 amount) external {\n        _burn(msg.sender, amount);\n    }\n\n    //"
+ ],
+ "steps": [
+  "[1] 0.01 WBNB → SDF swap (small purchase)",
+  "→ pair.SDF_balance reduced by 90%",
+  "→ SDF price increases ~10x",
+  "[4] Held SDF → WBNB reverse swap",
+  "→ WBNB obtained at the inflated SDF price"
+ ],
+ "other_code": []
+}

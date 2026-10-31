@@ -1,0 +1,31 @@
+{
+ "id": "2023__2023-03-14_Thena_FlashLoanGauge",
+ "source_file": "2023/2023-03-14_Thena_FlashLoanGauge.md",
+ "title": "Thena Finance — Gauge Reward Flash Loan Manipulation Analysis",
+ "date": "2023-03-14",
+ "protocol": "Thena Finance",
+ "chain": "BSC",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "Gauge voting or reward calculation depends on current LP balance",
+ "attack_tx": "BSC Transaction",
+ "vulnerable_contract": "Thena Gauge Contract",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Reward calculation based on spot LP balance\nfunction earned(address account) public view returns (uint256) {\n    uint256 balance = IERC20(stake).balanceOf(account);\n    //",
+  "❌ Based on current balance → can be momentarily inflated via flash loan\n    return balance * rewardPerToken() / 1e18;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Snapshot-based reward calculation\nfunction earned(address account) public view returns (uint256) {\n    uint256 snapshotBalance = balanceSnapshot[account];\n    //",
+  "✅ Uses snapshot from previous block\n    return snapshotBalance * rewardPerToken() / 1e18;\n}"
+ ],
+ "steps": [
+  "Flash loan → Acquire large amount of LP tokens → Deposit into gauge → Claim inflated rewards → Return LP tokens → Repay flash loan"
+ ],
+ "other_code": [
+  "// Root cause: gauge voting or reward calculation depends on current LP balance\n// Source code unverified — based on bytecode analysis",
+  "Flash loan → Acquire large amount of LP tokens → Deposit into gauge → Claim inflated rewards → Return LP tokens → Repay flash loan"
+ ]
+}

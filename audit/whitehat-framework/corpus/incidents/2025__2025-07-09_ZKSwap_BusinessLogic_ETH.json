@@ -1,0 +1,38 @@
+{
+ "id": "2025__2025-07-09_ZKSwap_BusinessLogic_ETH",
+ "source_file": "2025/2025-07-09_ZKSwap_BusinessLogic_ETH.md",
+ "title": "ZKSwap — Business Logic Vulnerability Analysis",
+ "date": "2025-07-09",
+ "protocol": "ZKSwap",
+ "chain": "Ethereum",
+ "loss_raw": "$5,000,000 (USDC, USDT, ETH, and multiple other tokens)",
+ "loss_usd": 5000000.0,
+ "root_cause": "`verifyExitProof()` unconditionally returns `true` without validating the actual ZK proof — a business logic flaw that allowed draining of L1 bridge funds",
+ "attack_tx": null,
+ "vulnerable_contract": "0x8ECa80...97ad",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Core vulnerability: verifyExitProof() always returns true\n    // _amount is a forged value arbitrarily specified by the attacker\n    require(\n        verifierExit.verifyExitProof(\n            blocks[totalBlocksVerified].stateRoot,\n            _accountId,\n            msg.sender,\n            _tokenId,\n            _amount,  //",
+  "❌ Arbitrary unverified amount\n            _proof    //",
+  "❌ Forged proof data\n        ),\n        \"fet13\"\n    );\n\n    bytes22 packedBalanceKey = packAddressAndTokenId(msg.sender, _tokenId);\n    uint128 balance = balancesToWithdraw[packedBalanceKey].balanceToWithdraw;\n    //"
+ ],
+ "code_after": [
+  "✅ Exodus mode check\n    require(!exited[_accountId][_tokenId], \"fet12\"); // ⚠️  Vulnerable: only checks accountId+tokenId combo — same token reusable with different accountId\n\n    //",
+  "// VerifierExit.sol (fixed version)\ncontract VerifierExit {\n    IPlonkVerifier public immutable plonkVerifier;  // ✅ External Plonk verifier\n\n    function verifyExitProof(\n        bytes32 _rootHash,\n        uint32 _accountId,\n        address _owner,\n        uint16 _tokenId,\n        uint128 _amount,\n        uint256[] calldata _proof\n    ) external view returns (bool) {\n        // ✅ Construct public inputs (L2 state root and withdrawal data hash)\n        uint256[] memory publicInputs = new uint256[](5);\n        publicInputs[0] = uint256(_rootHash);\n        publicInputs[1] = uint256(_accountId);\n        publicInputs[2] = uint256(uint160(_owner));\n        publicInputs[3] = uint256(_tokenId);\n        publicInputs[4] = uint256(_amount);\n\n        // ✅ Perform actual Plonk/Groth16 ZK proof verification\n        return plonkVerifier.verify(_proof, publicInputs);\n    }\n}"
+ ],
+ "steps": [
+  "- Stolen funds swapped via Uniswap V3 to ETH → moved to intermediate addresses such as `0x0497923c...`",
+  "2. triggerExodusIfNeeded()",
+  "exodusMode = false → true ✓",
+  "3. exit(accountId=N, tokenId=T, amount=X, proof=[fake])",
+  "4. withdraw(tokenId, hugeAmount)",
+  "Bridge → Exploit Contract",
+  "5. Uniswap V3 swap → ETH",
+  "498.5 ETH transfer confirmed"
+ ],
+ "other_code": [
+  "1. [14:12:35] triggerExodusIfNeeded() → exodusMode = true\n2. [14:12~14:25] exit(accountId_N, tokenId_T, amount_X, [fake_proof]) × repeated\n   └─ verifyExitProof() → true (no verification)\n   └─ balancesToWithdraw[attacker][T] += X\n3. [14:25:23~] withdraw(tokenId, amount) × repeated\n   └─ Transfer event: Bridge → Exploit Contract\n4. [15:51~15:55] Uniswap V3 exactInputSingle() → ETH swap\n5. [15:55:47] 498.5 ETH → 0x0497923c... transfer"
+ ]
+}

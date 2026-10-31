@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-11-24_WECO_TokenLogic",
+ "source_file": "2023/2023-11-24_WECO_TokenLogic.md",
+ "title": "WECO — Token Logic Vulnerability Analysis",
+ "date": "2023-11-24",
+ "protocol": "WECO",
+ "chain": "BSC",
+ "loss_raw": "~$18K",
+ "loss_usd": 18.0,
+ "root_cause": "Combined vulnerability from WECO token's rebase mechanism and fee logic",
+ "attack_tx": "0x2040a481c933b50e...",
+ "vulnerable_contract": "0xd672b766d66662f5...",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: rebase + fee discrepancy\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 rebased = amount * rebaseIndex / 1e18; // rebase calculation\n    uint256 fee = rebased * feeRate / 100;\n    //",
+  "❌ precision mismatch between rebased and fee causes balance error\n    super._transfer(from, feeCollector, fee);\n    super._transfer(from, to, amount - fee); //",
+  "❌ should use rebased, not amount\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: use consistent units"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: combined vulnerability from WECO token's rebase mechanism and fee logic\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Identify rebase + fee discrepancy\n  ├─② Repeatedly transfer a specific amount\n  ├─③ Generate tokens via discrepancy\n  └─④ Sell generated tokens + ~$18K"
+ ]
+}

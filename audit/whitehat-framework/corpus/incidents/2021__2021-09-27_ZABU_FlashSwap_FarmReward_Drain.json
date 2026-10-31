@@ -1,0 +1,37 @@
+{
+ "id": "2021__2021-09-27_ZABU_FlashSwap_FarmReward_Drain",
+ "source_file": "2021/2021-09-27_ZABU_FlashSwap_FarmReward_Drain.md",
+ "title": "ZABU Finance — Nested Flash Swap LP Value Manipulation Farm Reward Drain Analysis",
+ "date": "2021-09-27",
+ "protocol": "ZABU Finance",
+ "chain": "Avalanche",
+ "loss_raw": "~$3,200,000",
+ "loss_usd": 3200000.0,
+ "root_cause": "Farm's accZABUPerShare calculation references current LP balanceOf() (spot), causing reward-per-unit distortion when reserves are manipulated",
+ "attack_tx": "0x0d65...eb3 (block 4,178,715)",
+ "vulnerable_contract": "ZABU Farm (SPORE token pool 38)",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ ZABU Farm — Reward calculation based on current LP reserves\n// If Pangolin SPORE/WAVAX pair reserves are manipulated, rewards are also manipulated\nfunction pendingZABU(uint256 _pid, address _user) external view returns (uint256) {\n    PoolInfo storage pool = poolInfo[_pid];\n    UserInfo storage user = userInfo[_pid][_user];\n\n    uint256 accZABUPerShare = pool.accZABUPerShare;\n    uint256 lpSupply = pool.lpToken.balanceOf(address(this));\n\n    if (block.number > pool.lastRewardBlock && lpSupply != 0) {\n        uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);\n        uint256 zabuReward = multiplier.mul(zabuPerBlock).mul(pool.allocPoint).div(totalAllocPoint);\n        accZABUPerShare = accZABUPerShare.add(zabuReward.mul(1e12).div(lpSupply));\n    }\n    // If lpSupply is distorted by reserve manipulation, accZABUPerShare spikes\n    return user.amount.mul(accZABUPerShare).div(1e12).sub(user.rewardDebt);\n}",
+  "// Reconstructed from PoC (ZABU_exp.sol) and on-chain trace — NOT verified source\n\n// ❌ updatePool: lpSupply is fetched live from balanceOf(), not snapshotted\nfunction updatePool(uint256 _pid) public {\n    PoolInfo storage pool = poolInfo[_pid];\n    if (block.number <= pool.lastRewardBlock) {\n        return;\n    }\n    uint256 lpSupply = pool.lpToken.balanceOf(address(this)); // ❌ spot balance — manipulable via flash swap\n    if (lpSupply == 0) {\n        pool.lastRewardBlock = block.number;\n        return;\n    }\n    uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);\n    uint256 zabuReward = multiplier.mul(zabuPerBlock).mul(pool.allocPoint).div(totalAllocPoint);\n    zabu.mint(devaddr, zabuReward.div(10));\n    zabu.mint(address(zabuBar), zabuReward);\n    pool.accZABUPerShare = pool.accZABUPerShare.add(\n        zabuReward.mul(1e12).div(lpSupply) // ❌ if lpSupply is deflated by flash-draining reserves, accZABUPerShare spikes\n    );\n    pool.lastRewardBlock = block.number;\n}\n\n// ❌ deposit: harvests inflated rewards based on spiked accZABUPerShare\nfunction deposit(uint256 _pid, uint256 _amount) public {\n    PoolInfo storage pool = poolInfo[_pid];\n    UserInfo storage user = userInfo[_pid][msg.sender];\n    updatePool(_pid); // ❌ triggers reward distortion if reserves are already manipulated\n    if (user.amount > 0) {\n        uint256 pending = user.amount.mul(pool.accZABUPerShare).div(1e12).sub(user.rewardDebt);\n        safeZABUTransfer(msg.sender, pending); // ❌ sends inflated ZABU rewards\n    }\n    pool.lpToken.safeTransferFrom(address(msg.sender), address(this), _amount);\n    user.amount = user.amount.add(_amount);\n    user.rewardDebt = user.amount.mul(pool.accZABUPerShare).div(1e12);\n    emit Deposit(msg.sender, _pid, _amount);\n}"
+ ],
+ "code_after": [
+  "// ✅ Use TWAP or time-weighted reserves for LP price calculation\n// ✅ Prohibit same-block deposit-withdraw\n\nmapping(uint256 => mapping(address => uint256)) public lastDepositBlock;\n\nfunction deposit(uint256 _pid, uint256 _amount) external nonReentrant {\n    lastDepositBlock[_pid][msg.sender] = block.number;\n    // ...\n}\n\nfunction withdraw(uint256 _pid, uint256 _amount) external nonReentrant {\n    require(\n        block.number > lastDepositBlock[_pid][msg.sender],\n        \"ZABU: same block deposit-withdraw\"\n    );\n    // ...\n}",
+  "// ✅ Fix: snapshot lpSupply at block boundary, or require a minimum block delay between deposit and withdrawal:\nmapping(uint256 => mapping(address => uint256)) public lastDepositBlock;\n\nfunction deposit(uint256 _pid, uint256 _amount) public nonReentrant {\n    lastDepositBlock[_pid][msg.sender] = block.number;\n    // ...\n}\n\nfunction withdraw(uint256 _pid, uint256 _amount) public nonReentrant {\n    require(block.number > lastDepositBlock[_pid][msg.sender], \"same-block withdraw\");\n    // ...\n}\n// Alternatively: use cumulative TWAP reserves instead of spot balanceOf() for lpSupply"
+ ],
+ "steps": [
+  "Step 1: Pre-deposit SPORE (depositSPORE)",
+  "Swap WAVAX → SPORE, then deposit into ZABU Farm pool 38",
+  "Step 2: Initiate flash swap on Pangolin Pair1 (SPORE/WAVAX)",
+  "Step 3: Nested flash swap on Pair2",
+  "→ SPORE reserves drop sharply",
+  "Step 4: Drain SPORE reserves via repeated deposit/withdraw",
+  "Step 5: Repay flash swaps + sell ZABU for profit"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────┐\n│ Step 1: Pre-deposit SPORE (depositSPORE)                    │\n│ Swap WAVAX → SPORE, then deposit into ZABU Farm pool 38     │\n└─────────────────────┬───────────────────────────────────────┘\n                      │\n┌─────────────────────▼───────────────────────────────────────┐\n│ Step 2: Initiate flash swap on Pangolin Pair1 (SPORE/WAVAX) │\n│ pair1.swap(sporeAmount, 0, this, data)                      │\n└─────────────────────┬───────────────────────────────────────┘\n                      │ pangolinCall() callback\n┌─────────────────────▼───────────────────────────────────────┐\n│ Step 3: Nested flash swap on Pair2                          │\n│ pair2.swap(sporeAmount2, 0, this, data2)                    │\n│ → SPORE reserves drop ",
+  "// pangolinCall() — Pangolin flash swap callback\nfunction pangolinCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    if (/* first callback */) {\n        // Acquire additional SPORE via nested flash swap on Pair2\n        pair2.swap(sporeAmount2, 0, address(this), abi.encode(\"inner\"));\n    } else {\n        // Inner callback: manipulate Farm with SPORE\n        // withdrawSPORE() — withdraw existing deposit + collect ZABU rewards\n        // Drain reserves via repeated deposit/withdraw\n\n        // Repay flash swap pair2\n        SPORE.transfer(pair2, repayAmount2);\n    }\n    // Repay flash swap pair1\n    SPORE.transfer(pair1, repayAmount1);\n}"
+ ]
+}

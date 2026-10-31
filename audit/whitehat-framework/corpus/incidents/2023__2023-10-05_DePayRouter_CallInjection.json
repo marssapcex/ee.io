@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-10-05_DePayRouter_CallInjection",
+ "source_file": "2023/2023-10-05_DePayRouter_CallInjection.md",
+ "title": "DePay Router — Call Injection Vulnerability Analysis",
+ "date": "2023-10-05",
+ "protocol": "DePay",
+ "chain": "Ethereum",
+ "loss_raw": "~827 USDC",
+ "loss_usd": null,
+ "root_cause": "Router allows arbitrary external calls, enabling token approval hijacking after approval",
+ "attack_tx": "0x9a036058afb58169...",
+ "vulnerable_contract": "0xae60ac8e69414c2d...",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: arbitrary calldata execution\nfunction route(\n    address[] calldata path,\n    uint256[] calldata amounts,\n    address[] calldata addresses,\n    address[] calldata plugins,\n    string[] calldata data\n) external payable {\n    for (uint i = 0; i < plugins.length; i++) {\n        //",
+  "❌ Executes arbitrary calls to arbitrary plugins\n        IDePayRouterPlugin(plugins[i]).execute{value: msg.value}(...);\n    }\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: plugin whitelist\nfunction route(...) external payable {\n    for (uint i = 0; i < plugins.length; i++) {\n        require(approvedPlugins[plugins[i]], \"Not approved\"); //",
+  "✅\n        IDePayRouterPlugin(plugins[i]).execute(...);\n    }\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: Router allows arbitrary external calls, enabling token approval hijacking\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Deploy malicious plugin contract\n  ├─② Call route(..., [maliciousPlugin], ...)\n  │       └─ Router executes malicious plugin\n  │       └─ USDC.approve(attacker, MAX) is executed\n  ├─③ USDC.transferFrom(router, attacker, balance)\n  └─④ ~827 USDC drained"
+ ]
+}

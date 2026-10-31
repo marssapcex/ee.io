@@ -1,0 +1,31 @@
+{
+ "id": "2024__2024-04-XX_OpenLeverage2_MarginTradeArbitraryDEX",
+ "source_file": "2024/2024-04-XX_OpenLeverage2_MarginTradeArbitraryDEX.md",
+ "title": "OpenLeverage2 — marginTrade Arbitrary DEX Data Injection Analysis",
+ "date": "2024-04-01",
+ "protocol": "OpenLeverage",
+ "chain": "BSC",
+ "loss_raw": "~$234,000",
+ "loss_usd": 234000.0,
+ "root_cause": "The `marginTrade()` function executes DEX routing data (`dexData`) without validation, allowing the attacker to manipulate positions via crafted DEX data, then realize additional profit through a liquidation callback after price manipulation",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: marginTrade dexData without validation\ninterface ITradeController {\n    function marginTrade(\n        uint16 marketId,\n        bool longToken,\n        bool depositToken,\n        uint256 deposit,\n        uint256 borrow,\n        uint256 minBuyAmount,\n        bytes memory dexData  // ← arbitrary DEX routing data\n    ) external payable returns (uint256 depositReturn, uint256 tradeReturn);\n}\n\n// dexData contents:\n// - DEX type (Uniswap V2/V3, PancakeSwap, etc.)\n// - Swap path\n// - Slippage parameters\n// ← Attacker can specify any DEX/path favorable to themselves\n\n//",
+  "// File: OpenLeverage2_decompiled.sol\ncontract OpenLeverage2 {\ncontract OpenLeverage2 {\n    address public owner;\n\n\n    // Selector: 0x4dd18bf5\n    function setPendingAdmin(address p0) external {}  // ❌ Vulnerability\n\n    // Selector: 0x5c60da1b\n    function implementation() external {}\n\n    // Selector: 0xca4b208b\n    function developer() external {}\n\n    // Selector: 0xd784d426\n    // Alternative: superSafeFunction96508587(address)\n    function setImplementation(address p0) external {}\n\n    // Selector: 0xf851a440\n    function admin() external {}\n\n    // Selector: 0x0933c1ed\n    function delegateToImplementation(bytes memory p0) external {}\n\n    // Selector: 0x0e18b681\n    function acceptAdmin() external {}\n\n    // Selector: 0x26782247\n    function pendingAdmin() external view returns (uint256) {}\n\n    // Selector: 0x4487152f\n    function delegateToViewImplementation(bytes memory p0) external {}\n\n    // Selector: 0x4e487b71\n    function Panic(uint256 p0) external {}\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: DEX whitelist + data validation\nfunction marginTrade(..., bytes memory dexData) external {\n    (uint8 dexType, address[] memory path) = decodeDexData(dexData);\n    require(approvedDexTypes[dexType], \"dex not approved\");\n    require(isValidPath(path, holdToken, borrowToken), \"invalid path\");\n    // ...\n}"
+ ],
+ "steps": [
+  "liquidate() call → additional profit via callback",
+  "→ ~$234K drained"
+ ],
+ "other_code": [
+  "Attacker (Executor Contract)\n  │\n  ├─→ [TX 1]\n  │   ├─ Create LP tokens + Create xOLE governance lock\n  │   ├─ marginTrade(manipulated dexData) execution\n  │   │   └─ Open price-manipulated position\n  │   └─ liquidate() call → additional profit via callback\n  │\n  ├─→ [TX 2]\n  │   ├─ payoffTrade() execution\n  │   └─ Withdraw remaining profit\n  │\n  └─→ ~$234K drained",
+  "interface ITradeController {\n    function marginTrade(\n        uint16 marketId, bool longToken, bool depositToken,\n        uint256 deposit, uint256 borrow, uint256 minBuyAmount,\n        bytes memory dexData\n    ) external payable returns (uint256, uint256);\n\n    function payoffTrade(uint16 marketId, bool longToken) external returns (uint256);\n}\n\ninterface IOPBorrowingDelegator {\n    function borrow(uint16 marketId, bool collateralIndex, uint256 collateral, uint256 borrowing) external;\n    function liquidate(uint16 marketId, bool collateralIndex, address borrower) external;\n}\n\ninterface IxOLE {\n    function create_lock(uint256 value, uint256 unlockTime) external;\n}\n\ncontract Executor {\n    ITradeController     constant tc  = ITradeController(0x6A75aC4b8d8E76d15502E69Be4cb6325422833B4);\n    "
+ ]
+}

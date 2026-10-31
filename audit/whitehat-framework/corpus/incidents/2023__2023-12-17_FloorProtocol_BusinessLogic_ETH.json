@@ -1,0 +1,46 @@
+{
+ "id": "2023__2023-12-17_FloorProtocol_BusinessLogic_ETH",
+ "source_file": "2023/2023-12-17_FloorProtocol_BusinessLogic_ETH.md",
+ "title": "Floor Protocol — Business Logic Vulnerability Analysis",
+ "date": "2023-12-17",
+ "protocol": "Floor Protocol",
+ "chain": "Ethereum",
+ "loss_raw": "~$1,600,000 (Pudgy Penguins NFTs and other victim-owned NFTs stolen)",
+ "loss_usd": 1600000.0,
+ "root_cause": "The `extMulticall` function of ERC1967Proxy allows execution of arbitrary calldata against arbitrary contracts without any caller validation",
+ "attack_tx": "0xec8f...b40",
+ "vulnerable_contract": "0xc538...edd (ERC1967Proxy)",
+ "classes": [
+  "business-logic",
+  "nft"
+ ],
+ "code_before": [
+  "// Floor Protocol ERC1967Proxy — extMulticall function\n// ❌ Vulnerability: No onlyOwner or any authorization check\n// ❌ Vulnerability: msg.sender becomes the proxy itself, granting access to all tokens/NFTs victims approved on this contract\n\nstruct CallData {\n    address target;   // Contract address to call\n    bytes callData;   // Calldata to execute (function signature + arguments)\n}\n\n// Public function — callable by anyone, no access control modifier ❌\nfunction extMulticall(\n    CallData[] memory calls\n) external returns (bytes[] memory results) {\n    results = new bytes[](calls.length);\n    for (uint256 i = 0; i < calls.length; i++) {\n        // ❌ No whitelist validation on target or callData\n        // ❌ This contract (proxy) executes external calls as msg.sender\n        (bool success, bytes memory result) = calls[i].target.call(calls[i].callData);\n        require(success, \"Multicall failed\");\n        results[i] = result;\n    }\n}",
+  "// Transaction signed by victim during normal Floor Protocol usage (normal flow)\n// ❌ However, this approval was weaponized due to the extMulticall vulnerability\nPPG.setApprovalForAll(address(ERC1967Proxy), true);",
+  "Attacker EOA\n0x4d0d...b847\n    │\n    │ 1. Deploy attack contract\n    ▼\n┌─────────────────────────────────────┐\n│  Attack Contract                    │\n│  0x7e54...1428                      │\n│                                     │\n│  testExploit():                     │\n│  1) Query PPG.balanceOf(victim)     │\n│  2) Iterate tokenOfOwnerByIndex     │\n│  3) Build CallData[] array          │\n│     target = PPG contract           │\n│     data = safeTransferFrom(        │\n│              victim,                │\n│              this,                  │\n│              tokenId)               │\n└────────────────┬────────────────────┘\n                 │\n                 │ 4. Call extMulticall(calls)\n                 ▼\n┌─────────────────────────────────────┐\n│  Floor Protocol ERC1967Proxy        │\n│  0x49AD...EE  (vulnerable contract) │\n│                                     │\n│  extMulticall(CallData[] calls):    │\n│  ❌ No access control               │\n│  ❌ No callData validation          │\n│                                     │\n│  for each call:                     │\n│    call.target.call(call.callData)  │\n│    → msg.sender = proxy itself      │\n└────────────────┬────────────────────┘\n                 │\n                 │ 5. safeTransferFrom(victim, attacker, tokenId)\n                 │    msg.sender = ERC1967Proxy (the address victim approved!)\n                 ▼\n┌─────────────────────────────────────┐\n│  Pudgy Penguins NFT Contract        │\n│  0xBd35...cf8 (PPG)                 │\n│                                     │\n│  safeTransferFrom(                  │\n│    from=victim,                     │\n│    to=attacker,                     │\n│    tokenId=N):                      │\n│                                     │\n│  ✓ isApprovedForAll(victim,         │\n│      ERC1967Proxy) == true          │\n│  → Transfer approved!               │\n└────────────────┬────────────────────┘\n                 │\n                 │ 6. onERC721Received callback\n                 ▼\n┌─────────────────────────────────────┐\n│  Attack Contract (NFT Receiver)     │\n│  All victim PPG NFTs stolen         │\n└─────────────────────────────────────┘\n\nResult:\n  Victim PPG balance: N → 0\n  Attacker PPG balance: 0 → N\n  Loss: ~$1,600,000"
+ ],
+ "code_after": [
+  "// ✅ Fix 1: Add access control — only owner or authorized address may call\nmodifier onlyOwnerOrAuthorized() {\n    require(\n        msg.sender == owner() || authorized[msg.sender],\n        \"FloorProtocol: unauthorized caller\"\n    );\n    _;\n}\n\n// ✅ Fix 2: Apply whitelist for allowed target contracts\nmapping(address => bool) public allowedTargets;\n\nfunction extMulticall(\n    CallData[] memory calls\n) external onlyOwnerOrAuthorized returns (bytes[] memory results) {\n    results = new bytes[](calls.length);\n    for (uint256 i = 0; i < calls.length; i++) {\n        // ✅ Only allow calls to whitelisted contracts\n        require(allowedTargets[calls[i].target], \"FloorProtocol: target not allowed\");\n        // ✅ Block token transfer function calls such as transferFrom/safeTransferFrom\n        bytes4 selector = bytes4(calls[i].callData);\n        require(!_isTokenTransferSelector(selector), \"FloorProtocol: token transfer functions prohibited\");\n        (bool success, bytes memory result) = calls[i].target.call(calls[i].callData);\n        require(success, \"Multicall failed\");\n        results[i] = result;\n    }\n}",
+  "// ✅ Restrict to owner only\nfunction extMulticall(\n    CallData[] memory calls\n) external onlyOwner returns (bytes[] memory results) {\n    // ...\n}"
+ ],
+ "steps": [
+  "1. **Step 1 — Query victim's NFT holdings**: The attacker queries `balanceOf(victim)` and `tokenOfOwnerByIndex(victim, i)` on the PPG contract to collect all tokenIds held by the victim.",
+  "2. **Step 2 — Construct CallData array**: For each tokenId, generate `safeTransferFrom(victim, attacker, tokenId)` calldata, specifying the victim as `from` and the attacker as `to`.",
+  "3. **Step 3 — Execute extMulticall**: Call `extMulticall` on the Floor Protocol ERC1967Proxy with the constructed CallData array. The proxy becomes `msg.sender` and executes `safeTransferFrom` on the PPG contract — the transfer succeeds thanks to the victim's prior approval.",
+  "4. **Step 4 — Receive NFTs**: The attacker contract implements the `onERC721Received` callback to successfully receive the NFTs.",
+  "1. Deploy attack contract",
+  "1) Query PPG.balanceOf(victim)",
+  "2) Iterate tokenOfOwnerByIndex",
+  "3) Build CallData[] array",
+  "4. Call extMulticall(calls)",
+  "→ msg.sender = proxy itself",
+  "5. safeTransferFrom(victim, attacker, tokenId)",
+  "→ Transfer approved!",
+  "6. onERC721Received callback",
+  "Victim PPG balance: N → 0",
+  "Attacker PPG balance: 0 → N"
+ ],
+ "other_code": [
+  "1. ContractTest.testExploit() called\n2. PPG.balanceOf(victim) queried → returns N\n3. Repeat N times:\n   - PPG.tokenOfOwnerByIndex(victim, i) queried → returns tokenId\n4. ERC1967Proxy.extMulticall(calls) called\n5. Repeat N times:\n   - PPG.safeTransferFrom(victim, attacker, tokenId) executed\n   - Transfer(victim → attacker, tokenId) event emitted\n   - attacker.onERC721Received() callback"
+ ]
+}

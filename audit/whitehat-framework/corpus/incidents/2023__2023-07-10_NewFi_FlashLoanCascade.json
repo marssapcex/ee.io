@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-07-10_NewFi_FlashLoanCascade",
+ "source_file": "2023/2023-07-10_NewFi_FlashLoanCascade.md",
+ "title": "NewFi Flash Loan Chain Attack Incident Analysis",
+ "date": "2023-07-10",
+ "protocol": "NewFi",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Calls Pair1.flash() — first flash loan",
+  "2 ▶ Conditional callback execution — chained flash loans",
+  "3 ▶ Manipulates StakedV3 value calculation",
+  "4 ▶ Executes withdrawal based on inflated value",
+  "5 ▶ BUSD.transfer() — repays flash loan + realizes profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: price calculation based on real-time pool balances\ncontract StakedV3 {\n    IERC20 public BUSD;\n    IERC20 public USDT;\n\n    // Vulnerable: staking value calculated from current balance ratio\n    function getStakedValue(address user) public view returns (uint256) {\n        uint256 busdBalance = BUSD.balanceOf(address(this));\n        uint256 usdtBalance = USDT.balanceOf(address(this));\n        // Uses manipulable spot ratio\n        uint256 ratio = busdBalance * 1e18 / usdtBalance;\n        return userShares[user] * ratio / 1e18;\n    }\n\n    // Vulnerable: withdrawal calculation based on manipulated ratio\n    function withdraw(uint256 shares) external {\n        uint256 value = getStakedValue(msg.sender);\n        userShares[msg.sender] -= shares;\n        BUSD.transfer(msg.",
+  "// Root cause: Flash Loan + Staking Price Manipulation\n// Source code unverified — based on bytecode analysis"
+ ]
+}

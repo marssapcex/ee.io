@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-11-20_MainnetSettler_ArbitraryExecution",
+ "source_file": "2024/2024-11-20_MainnetSettler_ArbitraryExecution.md",
+ "title": "MainnetSettler — Arbitrary Execution Vulnerability Analysis",
+ "date": "2024-11-20",
+ "protocol": "MainnetSettler",
+ "chain": "Ethereum",
+ "loss_raw": "~66,000 USD",
+ "loss_usd": null,
+ "root_cause": "The Settler contract's action execution logic executes arbitrary calldata (including transferFrom) without validation",
+ "attack_tx": "0xfab5912f",
+ "vulnerable_contract": "MainnetSettler (0x70bf6634)",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ MainnetSettler: no validation of calldata in the actions array\ncontract MainnetSettler {\n    function settle(\n        bytes[] calldata actions,\n        Slippage[] calldata slippages,\n        bytes32 notedata\n    ) external {\n        for (uint i = 0; i < actions.length; i++) {\n            //",
+  "❌ Executes calldata from actions[i] without validation\n            //",
+  "❌ Allows arbitrary ERC20 function calls such as transferFrom\n            (address target, bytes memory calldata_) = abi.decode(actions[i], (address, bytes));\n            target.call(calldata_);\n        }\n    }\n}\n\n// Attacker's malicious actions:\n// call1: Invoke Settler internal function (set permissions)\n// call2: ERC20.transferFrom(addr3, attacker, largeAmount)\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix:\n// Whitelist validation on target addresses in actions\n// Verify that transferFrom's `from` is msg.sender\n// Apply selector-based allowlist"
+ ],
+ "steps": [
+  "[1] ▶ Deploy AttackerC → attack executed immediately in constructor",
+  "❌ Execute call1 → set state",
+  "❌ Execute call2 → drain large amount of tokens via transferFrom"
+ ],
+ "other_code": []
+}

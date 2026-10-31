@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-05-28_CorkProtocol_AccessControl_ETH",
+ "source_file": "2025/2025-05-28_CorkProtocol_AccessControl_ETH.md",
+ "title": "Cork Protocol — Access Control Vulnerability Analysis",
+ "date": "2025-05-28",
+ "protocol": "Cork Protocol",
+ "chain": "Ethereum",
+ "loss_raw": "$11,979,183 (3,761.878 wstETH converted to 4,527 ETH)",
+ "loss_usd": 11979183.0,
+ "root_cause": "Insufficient access control in CorkHook.beforeSwap() + unauthorized market creation enabling unauthorized fund withdrawal",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: no onlyPoolManager modifier — anyone can call directly\nfunction beforeSwap(\n    address sender,\n    PoolKey calldata key,\n    IPoolManager.SwapParams calldata params,\n    bytes calldata hookData  // ❌ no validation of hookData contents\n) external override returns (bytes4, BeforeSwapDelta delta, uint24) {\n    // Parses hookData to execute DS token transfer and minting logic\n    // ❌ does not verify that msg.sender is the PoolManager\n    _processHookData(hookData);\n    return (BaseHook.beforeSwap.selector, delta, 0);\n}",
+  "// CorkConfig contract\n// ❌ Vulnerable: no token type validation on RA (Redemption Asset)\nfunction createMarket(\n    address ra,        // ❌ derivative tokens (DS, CT) are accepted as RA\n    address pa,\n    address exchangeRateProvider,\n    // ... other parameters\n) external returns (Id marketId) {\n    // does not check whether ra address is an existing DS/CT token\n    Id id = _createMarket(ra, pa, exchangeRateProvider, ...);\n    return id;\n}",
+  "// PSM (Peg Stability Module)\n// ❌ Vulnerable: tokens already present in RouterState contract are treated as user deposits\nfunction depositPsm(Id id, uint256 amount) external returns (uint256 dsAmount, uint256 ctAmount) {\n    // ❌ uses RouterState's current balance as deposit amount without verifying actual user transfer\n    uint256 raBalance = IERC20(markets[id].ra).balanceOf(address(routerState));\n    _mint(id, raBalance, msg.sender);  // ❌ treats entire routerState balance as a deposit\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: restricted to PoolManager calls only\nmodifier onlyPoolManager() {\n    require(msg.sender == address(poolManager), \"CorkHook: only pool manager allowed\");\n    _;\n}\n\nfunction beforeSwap(\n    address sender,\n    PoolKey calldata key,\n    IPoolManager.SwapParams calldata params,\n    bytes calldata hookData\n) external override onlyPoolManager returns (bytes4, BeforeSwapDelta delta, uint24) {\n    // ✅ executes only within a legitimate swap flow via PoolManager\n    _processHookData(hookData);\n    return (BaseHook.beforeSwap.selector, delta, 0);\n}",
+  "// ✅ Fixed: validates that RA is not a derivative token\nmapping(address => bool) private _isDerivativeToken;\n\nfunction createMarket(\n    address ra,\n    address pa,\n    address exchangeRateProvider,\n    // ...\n) external returns (Id marketId) {\n    // ✅ RA must be a base asset and must not be a derivative token\n    require(!_isDerivativeToken[ra], \"CorkConfig: RA cannot be a derivative token\");\n    require(!_isDerivativeToken[pa], \"CorkConfig: PA cannot be a derivative token\");\n    Id id = _createMarket(ra, pa, exchangeRateProvider, ...);\n    // ✅ register newly issued DS/CT tokens in the derivative registry\n    _isDerivativeToken[marketDsToken[id]] = true;\n    _isDerivativeToken[marketCtToken[id]] = true;\n    return id;\n}"
+ ],
+ "steps": [
+  "1) Request fake market creation",
+  "2) Fake wstETH5 market created",
+  "3) unlockCallback executed → attacker contract takes control",
+  "4) beforeSwap instructs ModuleCore to",
+  "→ wstETH5DS-3, wstETH5CT-3 delivered to attacker",
+  "5) Combine stolen derivative tokens + pre-acquired CT",
+  "6) Call returnRaWithCtDs()",
+  "7) Convert wstETH → ETH"
+ ],
+ "other_code": []
+}

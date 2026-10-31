@@ -1,0 +1,31 @@
+{
+ "id": "2025__2025-03-15_wKeyDAO_NFTReentrancy",
+ "source_file": "2025/2025-03-15_wKeyDAO_NFTReentrancy.md",
+ "title": "wKeyDAO — Token Theft via NFT Reentrancy Attack Analysis",
+ "date": "2025-03-15",
+ "protocol": "wKeyDAO",
+ "chain": "BSC",
+ "loss_raw": "~767 USD",
+ "loss_usd": null,
+ "root_cause": "Reentrancy attack possible via `onERC721Received` callback during NFT transfer in the `buy()` function",
+ "attack_tx": "0xc9bccafd...",
+ "vulnerable_contract": "0xd511096a73292a7419a94354d4c1c73e8a3cd851",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable buy() function: callback allowed without state update after NFT transfer\nfunction buy() external {\n    // 1. Receive BUSD\n    IERC20(BUSD).transferFrom(msg.sender, address(this), price);\n\n    // 2. NFT safeTransfer → triggers onERC721Received callback\n    //",
+  "❌ Internal state (reentrancy guard) is not updated at this point\n    IERC721(nft).safeTransferFrom(address(this), msg.sender, tokenId);\n\n    // 3. wKeyDAO token distribution (should execute after callback, but reentrancy is possible)\n    IERC20(wKeyDAO).transfer(msg.sender, reward);\n}\n\n//",
+  "// File: wKeyDAO_decompiled.sol\ncontract wKeyDAO {\ncontract wKeyDAO {\n\n    // Selector: 0x5c60da1b\n    function implementation() external {  // ❌ Vulnerability\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x4e487b71\n    function Panic(uint256 a) external {\n        // TODO: decompile logic not implemented\n    }\n\n}"
+ ],
+ "code_after": [
+  "✅ Correct code: applying the Check-Effects-Interactions pattern\nfunction buy() external nonReentrant { //",
+  "✅ nonReentrant added\n    IERC20(BUSD).transferFrom(msg.sender, address(this), price);\n    IERC20(wKeyDAO).transfer(msg.sender, reward); //"
+ ],
+ "steps": [
+  "► NFT safeTransfer → onERC721Received callback triggered"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► DODO Flash Loan (borrow BUSD)\n  │\n  ├─[2]─► Call wKeyDaoSell.buy()\n  │         ├─► Pay BUSD\n  │         └─► NFT safeTransfer → onERC721Received callback triggered\n  │                                      │\n  ├─[3]◄────────────────────────────────┘\n  │         └─► Re-enter buy() from within the callback\n  │               ├─► Drain additional wKeyDAO tokens\n  │               └─► Repeat...\n  │\n  ├─[4]─► Swap drained wKeyDAO tokens for BUSD on PancakeSwap\n  │\n  ├─[5]─► Repay DODO flash loan\n  │\n  └─[6]─► Net profit: ~767 USD"
+ ]
+}

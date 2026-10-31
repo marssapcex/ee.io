@@ -1,0 +1,24 @@
+{
+ "id": "2023__2023-05-19_LocalTrader2_AccessControl",
+ "source_file": "2023/2023-05-19_LocalTrader2_AccessControl.md",
+ "title": "LocalTrader2 — Repeated Access Control Vulnerability Attack Analysis",
+ "date": "2023-05-19",
+ "protocol": "LocalTrader",
+ "chain": "BSC",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "Same missing access control as the 1st attack",
+ "attack_tx": "4 additional transactions",
+ "vulnerable_contract": "LocalTrader Contract",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ buyTokens — price fed from an external interface with no bounds check\nfunction buyTokens() public payable returns (uint, uint) {\n    require(msg.value > 0, \"Send ETH to buy some tokens\");\n    uint256 tokenAmount2 = msg.value / getLivePriceFromInheritance(); // ❌ if price == 1 (wei), tokenAmount2 == msg.value\n    uint256 tokenAmount = tokenAmount2 * 1000000000000000000;\n    require(\n        token.balanceOf(address(this)) >= tokenAmount,\n        \"Vendor contract has not enough tokens in its balance\"\n    );\n    bool sent = token.transfer(msg.sender, tokenAmount);\n    require(sent, \"Failed to transfer token to user\");\n    emit TokensPurchased(\n        msg.sender,\n        address(token),\n        tokenAmount,\n        getLivePriceFromInheritance()\n    );\n    return (getLivePriceFromInheritance(), msg.value);\n}\n\n// ❌ getLivePriceFromInheritance — fully controlled by whoever holds lctLivePriceInterfaceAddr\nfunction getLivePriceFromInheritance() public view returns (uint) {\n    return LCTLivePriceInterface(lctLivePriceInterfaceAddr).getTokenPrice(); // ❌ no validation of returned price\n}\n\n// ❌ handleSetInterfaceAddress — only guarded by onlyOwner, but owner was overwritten via unprotected selector\nfunction handleSetInterfaceAddress(\n    address _interfaceAddr\n) public onlyOwner {\n    lctLivePriceInterfaceAddr = _interfaceAddr; // ❌ attacker sets this to a malicious contract returning price=1\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: add price bounds validation and multi-sig/timelock on oracle changes\nfunction getLivePriceFromInheritance() public view returns (uint) {\n    uint price = LCTLivePriceInterface(lctLivePriceInterfaceAddr).getTokenPrice();\n    require(price >= MIN_PRICE && price <= MAX_PRICE, \"Price out of bounds\");\n    return price;\n}\n// Also: remove unprotected storage-writing selectors from the proxy implementation"
+ ],
+ "steps": [],
+ "other_code": []
+}

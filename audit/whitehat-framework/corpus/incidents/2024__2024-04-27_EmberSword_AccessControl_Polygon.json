@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-04-27_EmberSword_AccessControl_Polygon",
+ "source_file": "2024/2024-04-27_EmberSword_AccessControl_Polygon.md",
+ "title": "Ember Sword NFT Auction Contract — Access Control Vulnerability Analysis",
+ "date": "2024-04-27",
+ "protocol": "Ember Sword",
+ "chain": "Polygon",
+ "loss_raw": "~$196,000 (60 WETH) — 159 victims",
+ "loss_usd": 196000.0,
+ "root_cause": "Access Control vulnerability — missing authorization validation logic to prevent unauthorized `transferFrom` calls in the NFT auction contract; attacker drained token allowances approved by victims in 2021 in bulk in 2024",
+ "attack_tx": "0x11a6...af76",
+ "vulnerable_contract": "Ember Sword NFT Auction Contract (Polygon, deployed 2021, unverified)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// EmberSword NFT Auction Contract (reconstructed, source unverified)\n// Deployed: Polygon Mainnet, 2021\n// Vulnerability: Missing access control in finalize() or settleAuction() function\n\ncontract EmberSwordAuction {\n    IERC20 public weth;       // WETH token contract\n    address public treasury;  // Recipient address (operations team)\n\n    // Auction settlement record\n    struct AuctionRecord {\n        address bidder;    // Final winning bidder address\n        uint256 amount;    // Winning bid amount (WETH)\n        bool settled;      // Whether settlement is complete\n    }\n\n    mapping(uint256 => AuctionRecord) public auctions;\n\n    // ══════════════════════════════════════════════════════════════════════\n    // [❌ VULNERABILITY] Missing onlyOwner or onlyAdmin modifier!\n    // This function should only be callable by the owner but is exposed as\n    // external, allowing anyone to call it.\n    // Attacker can call it with arbitrary bidder, amount, and auctionId.\n    // ══════════════════════════════════════════════════════════════════════\n    function settleAuction(uint256 auctionId) external {\n        AuctionRecord storage record = auctions[auctionId];\n\n        // [❌ VULNERABILITY] No validation that msg.sender is the actual winner or an admin\n        require(!record.settled, \"Already settled\");\n        record.settled = true;\n\n        // [❌ VULNERABILITY] If record.bidder is a victim address manipulated by the attacker,\n        // the victim's WETH is transferred to treasury (an attacker-controlled address).\n        // Since the victim approved this contract in 2021,\n        // transferFrom succeeds.\n        weth.transferFrom(\n            record.bidder,  // ← Victim address (set by attacker)\n            treasury,       // ← Attacker-controlled address or attacker receives funds\n            record.amount   // ← Amount to steal\n        );\n    }\n\n    // [❌ ADDITIONAL VULNERABILITY] treasury address change function also likely lacks access control\n    function setTreasury(address _treasury) external {\n        // No onlyOwner — attacker can replace treasury with their own address\n        treasury = _treasury;\n    }\n}"
+ ],
+ "code_after": [
+  "// Fixed EmberSword Auction Contract\n// Changes: Ownable pattern applied, access control strengthened, approve expiry mechanism added\n\nimport \"@openzeppelin/contracts/access/Ownable.sol\";\n\ncontract EmberSwordAuctionSecure is Ownable {\n    IERC20 public weth;\n    address public treasury;\n\n    struct AuctionRecord {\n        address bidder;\n        uint256 amount;\n        bool settled;\n        uint256 deadline; // [✅ ADDED] Settlement validity period\n    }\n\n    mapping(uint256 => AuctionRecord) public auctions;\n\n    // [✅ FIXED] onlyOwner modifier applied — only operations team can settle\n    function settleAuction(uint256 auctionId) external onlyOwner {\n        AuctionRecord storage record = auctions[auctionId];\n\n        // [✅ ADDED] Settlement deadline validation\n        require(block.timestamp <= record.deadline, \"Auction expired\");\n        require(!record.settled, \"Already settled\");\n\n        // [✅ ADDED] Bidder address validity check\n        require(record.bidder != address(0), \"Invalid bidder\");\n        require(record.amount > 0, \"Invalid amount\");\n\n        record.settled = true;\n\n        // [✅ FIXED] Transfer only from the actual winning bidder; treasury set as immutable constant\n        bool success = weth.transferFrom(record.bidder, treasury, record.amount);\n        require(success, \"Transfer failed\");\n\n        emit AuctionSettled(auctionId, record.bidder, record.amount);\n    }\n\n    // [✅ FIXED] treasury change also enforces onlyOwner, emits event\n    function setTreasury(address _treasury) external onlyOwner {\n        require(_treasury != address(0), \"Zero address\"); // Prevent zero address\n        address old = treasury;\n        treasury = _treasury;\n        emit TreasuryUpdated(old, _treasury);\n    }\n\n    // [✅ ADDED] Function to guide approve revocation when service ends\n    function emergencyRevoke() external {\n        // Victims can call this directly to reset this contract's allowance to 0\n        weth.approve(address(this), 0);\n    }\n}",
+  "import \"@openzeppelin/contracts/access/AccessControl.sol\";\n\ncontract SecureAuction is AccessControl {\n    bytes32 public constant SETTLER_ROLE = keccak256(\"SETTLER_ROLE\");\n    bytes32 public constant ADMIN_ROLE   = keccak256(\"ADMIN_ROLE\");\n\n    constructor(address admin) {\n        // [✅] Initialize role-based access control\n        _grantRole(DEFAULT_ADMIN_ROLE, admin);\n        _grantRole(ADMIN_ROLE, admin);\n    }\n\n    // [✅] Only SETTLER_ROLE holders can settle\n    function settleAuction(uint256 auctionId)\n        external\n        onlyRole(SETTLER_ROLE)\n    {\n        // Settlement logic\n    }\n\n    // [✅] Only ADMIN_ROLE can change treasury\n    function setTreasury(address _treasury)\n        external\n        onlyRole(ADMIN_ROLE)\n    {\n        require(_treasury != address(0), \"Zero address\");\n        treasury = _treasury;\n    }\n}"
+ ],
+ "steps": [
+  "- **December 2023**: Ember Sword discontinues Polygon support → migrates to ImmutableX (insufficient notice to revoke approvals)",
+  "Attacker analyzes unverified contract bytecode →",
+  "Identifies vulnerable settleAuction() / transferFrom() functions →",
+  "Step 1: Set Attacker Address",
+  "→ treasury changed to attacker's wallet (no access control)",
+  "Step 2: Repeated Attack Per Victim",
+  "→ Victim's WETH successfully drained",
+  "Step 3: Collect Funds",
+  "60 WETH (~$196,000) accumulated in attacker's wallet",
+  "→ Transfer approved"
+ ],
+ "other_code": [
+  "// approve performed by victims when participating in the 2021 auction (normal behavior)\nweth.approve(\n    address(EmberSwordAuction), // ← Vulnerable contract address\n    type(uint256).max           // ← Unlimited approval or amount exceeding winning bid\n);\n\n// In 2024, the attacker's attack flow exploiting this approval:\n// 1. Directly call settleAuction() on the vulnerable contract (no access control)\n// 2. Set bidder = victim address, amount = value within allowance limit\n// 3. weth.transferFrom(victim, attacker) executes → succeeds",
+  "┌─────────────────────────────────────────────────────────────────────┐\n│                        Attack Preparation Phase                      │\n│  Attacker analyzes unverified contract bytecode →                    │\n│  Identifies vulnerable settleAuction() / transferFrom() functions →  │\n│  Collects list of 159 victims with 2021 approve history             │\n└───────────────────────────────┬─────────────────────────────────────┘\n                                │\n                                ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│                     Step 1: Set Attacker Address                     │\n│  (Optional) Call setTreasury(attacker_address)                      │\n│  → treasury changed to attacker's wallet (no access control)        │\n└───────"
+ ]
+}

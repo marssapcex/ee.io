@@ -1,0 +1,29 @@
+{
+ "id": "2022__2022-07-21_Quixotic_SignatureBypass",
+ "source_file": "2022/2022-07-21_Quixotic_SignatureBypass.md",
+ "title": "Quixotic — Missing Buyer Signature Verification Attack Analysis",
+ "date": "2022-07-21",
+ "protocol": "Quixotic",
+ "chain": "Optimism",
+ "loss_raw": "~$80,000 (OP tokens)",
+ "loss_usd": 80000.0,
+ "root_cause": "`fillSellOrder()` only validates the seller's signature and omits buyer authentication",
+ "attack_tx": "0x5dc5...3e6 (block 13,591,384)",
+ "vulnerable_contract": null,
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "❌ Vulnerable fillSellOrder() - missing buyer verification\nfunction fillSellOrder(\n    address seller,\n    address contractAddress,\n    uint256 tokenId,\n    uint256 startTime,\n    uint256 endTime,\n    uint256 price,\n    address paymentToken,\n    uint256 quantity,\n    bytes memory signature  // contains only the seller's signature\n) external payable {\n    //",
+  "❌ No buyer (msg.sender) verification\n    // Anyone can reuse a valid seller signature to fill the order\n\n    _executeTrade(seller, msg.sender, contractAddress, tokenId, price, paymentToken);\n}\n\n//",
+  "// ❌ Root cause: `fillSellOrder()` only validates the seller's signature and omits buyer authentication\n    function fillSellOrder(  // ❌ vulnerable\n        address payable seller,\n        address contractAddress,\n        uint256 tokenId,\n        uint256 startTime,\n        uint256 expiration,\n        uint256 price,\n        uint256 quantity,\n        uint256 createdAtBlockNumber,\n        address paymentERC20,\n        bytes memory signature,\n        address payable buyer\n    ) external payable whenNotPaused nonReentrant {\n        // If the payment ERC20 is the zero address, we check that enough native ETH has been sent\n        // with the transaction. Otherwise, we use the supplied ERC20 payment token.\n        if (paymentERC20 == address(0)) {\n            require(msg.value >= price, \"Transaction doesn't have the required ETH amount.\");\n        } else {\n            _checkValidERC20Payment(buyer, price, paymentERC20);\n        }\n\n        SellOrder memory sellOrder = SellOrder(\n            seller,\n            contractAddress,\n            tokenId,\n            startTime,\n            expiration,\n            price,\n            quantity,\n            createdAtBlockNumber,\n            paymentERC20\n        );\n\n        /* Make sure the order is not cancelled */\n        require(\n            cancellationRegistry.getSellOrderCancellationBlockNumber(seller, contractAddress, tokenId) < createdAtBlockNumber,\n            \"This order has been cancelled.\"\n        );\n\n        /* Check signature */\n        require(_validateSellerSignature(sellOrder, signature), \"Signature is not valid for SellOrder.\");\n\n        // Check has started\n        require((block.timestamp > startTime), \"SellOrder start time is in the future.\");\n\n        // Check not expired\n        require((block.timestamp < expiration), \"This sell order has expired.\");\n\n        _fillSellOrder(sellOrder, buyer);\n    }"
+ ],
+ "code_after": [
+  "✅ Seller signature validation - this is all that exists\n    bytes32 orderHash = _hashOrder(seller, contractAddress, tokenId, ...);\n    address recoveredSeller = ECDSA.recover(orderHash, signature);\n    require(recoveredSeller == seller, \"Invalid seller signature\");\n\n    //",
+  "✅ Correct pattern - buyer also verified via signature or whitelist\nfunction fillSellOrder(\n    address seller,\n    address allowedBuyer,   //"
+ ],
+ "steps": [
+  "Buyer verification: ❌ absent → attacker recognized as buyer"
+ ],
+ "other_code": []
+}

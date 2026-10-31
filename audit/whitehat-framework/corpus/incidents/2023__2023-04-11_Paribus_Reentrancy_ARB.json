@@ -1,0 +1,50 @@
+{
+ "id": "2023__2023-04-11_Paribus_Reentrancy_ARB",
+ "source_file": "2023/2023-04-11_Paribus_Reentrancy_ARB.md",
+ "title": "Paribus Security Incident Analysis",
+ "date": "2023-04-11",
+ "protocol": "Paribus",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code: CEther.redeem() — Legacy CompoundV2 fork\n// Core issue: Internal state (accountTokens) is updated AFTER ETH transfer\nfunction redeemInternal(uint256 redeemTokens) internal nonReentrant returns (uint256) {\n    // 1. Calculate the ETH amount to redeem\n    uint256 redeemAmount = redeemTokens * exchangeRateCurrent() / 1e18;\n\n    // 2. ❌ Transfer ETH first (external call — reentrancy entry point)\n    //    At this point, accountTokens[redeemer] has NOT yet been updated\n    (bool success, ) = redeemer.call{value: redeemAmount}(\"\");\n    require(success, \"ETH transfer failed\");\n\n    // 3. ❌ State update happens AFTER ETH transfer (CEI pattern violation)\n    totalSupply -= redeemTokens;\n    accountTokens[redeemer] -= redeemTokens;  // Too late\n\n    // 4. Notify comptroller (unitroller) of post-redeem processing\n    comptroller.redeemVerify(address(this), redeemer, redeemAmount, redeemTokens);\n\n    emit Redeem(redeemer, redeemAmount, redeemTokens);\n    return NO_ERROR;\n}\n\n// ❌ Furthermore, even with a nonReentrant guard, calling a different\n//    function (borrow) from the ETH receive callback is NOT blocked.\n//    nonReentrant only prevents re-entry into the same function.",
+  "// ❌ Unitroller.getAccountLiquidity() — Issue at the point of reentrancy\nfunction getAccountLiquidity(address account) \n    public view \n    returns (uint, uint, uint) \n{\n    // pETH.accountTokens[account] has not yet been updated\n    // → Collateral is calculated as still present\n    // → Borrow limit is inflated\n    return getHypotheticalAccountLiquidityInternal(\n        account, CToken(0), 0, 0\n    );\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code: Checks-Effects-Interactions pattern applied\nfunction redeemInternal(uint256 redeemTokens) internal nonReentrant returns (uint256) {\n    uint256 redeemAmount = redeemTokens * exchangeRateCurrent() / 1e18;\n\n    // 1. ✅ Update state first (Effects)\n    totalSupply -= redeemTokens;\n    accountTokens[redeemer] -= redeemTokens;  // Deducted BEFORE ETH transfer\n\n    // 2. ✅ Perform external transfer afterwards (Interactions)\n    //    At this point accountTokens is already 0, so any borrow()\n    //    attempted from the callback will be treated as having no collateral\n    (bool success, ) = redeemer.call{value: redeemAmount}(\"\");\n    require(success, \"ETH transfer failed\");\n\n    comptroller.redeemVerify(address(this), redeemer, redeemAmount, redeemTokens);\n    emit Redeem(redeemer, redeemAmount, redeemTokens);\n    return NO_ERROR;\n}",
+  "// ✅ Fix 1: CEI pattern — update state before external calls\n\nfunction redeemFresh(\n    address payable redeemer,\n    uint256 redeemTokensIn,\n    uint256 redeemAmountIn\n) internal returns (uint256) {\n    // [Checks] Validation\n    require(redeemTokensIn != 0, \"invalid redeem tokens\");\n\n    // [Effects] ← Complete all state changes BEFORE external calls\n    totalSupply          = totalSupply - redeemTokens;\n    accountTokens[redeemer] = accountTokens[redeemer] - redeemTokens;\n\n    // [Interactions] ← External call AFTER state changes\n    (bool success, ) = redeemer.call{value: redeemAmount}(\"\");\n    require(success, \"ETH transfer failed\");\n\n    emit Redeem(redeemer, redeemAmount, redeemTokens);\n    return NO_ERROR;\n}"
+ ],
+ "steps": [
+  "Exploiter.mint() → Deposit 100 WETH into pETH (create collateral)",
+  "- Remaining WETH → Unwrap to ETH",
+  "- pETH.mint() → Deposit ETH (create collateral)",
+  "- pUSDT.mint() → Deposit USDT (create collateral)",
+  "(Collateral state not yet updated → over-borrow allowed)",
+  "[4e] Exploiter.redeem() → Recover pETH collateral + return WETH",
+  "[4f] Acquired USDT/WBTC → Swap to WETH via Curve Pool",
+  "→ Repay Aave flash loan",
+  "→ Net profit secured",
+  "nonce++ // nonce 0→1→2",
+  "1. **Flash Loan Acquisition**: The attacker borrows 200 WETH + 30,000 USDT via flash loan from Aave V3",
+  "2. **Exploiter Contract Deployment**: A separate Exploiter contract is deployed and 100 WETH is deposited into pETH (acquiring pETH tokens)",
+  "3. **Main Contract Collateral Deposit**: Remaining WETH is converted to ETH and deposited into pETH; USDT is deposited into pUSDT",
+  "4. **Market Entry Registration**: Both collateral positions are activated via `unitroller.enterMarkets([pETH, pUSDT])`",
+  "5. **Normal Borrow Execution**: 13.07 ETH is borrowed against collateral (within normal limits)",
+  "6. **Reentrancy Trigger**: `pETH.redeem()` is called to begin redeeming the full pETH balance",
+  "7. **ETH Callback Entry**: The attacker contract's `receive()` function is called upon ETH transfer (counting nonce = 0, 1, 2)",
+  "8. **Over-Borrow Execution**: When `nonce == 2`, `pUSDT.borrow()` and `pWBTC.borrow()` are called, draining all USDT and WBTC from the protocol",
+  "9. **Exploiter Collateral Recovery**: The Exploiter contract also redeems pETH and recovers ETH",
+  "10. **Asset Swap and Settlement**: Stolen USDT and WBTC are swapped to WETH via Curve Pool; Aave flash loan is repaid and net profit is secured"
+ ],
+ "other_code": [
+  "+===========================================================================+\n|                        Paribus Reentrancy Attack Flow                     |\n+===========================================================================+\n\n[1] Attacker EOA\n     │\n     ▼\n[2] Attack Contract (0xcd31E2...)\n     │  Calls start()\n     ▼\n[3] Aave V3 Flash Loan Request\n     │  flashLoan(200 WETH + 30,000 USDT)\n     ▼\n[4] executeOperation() callback entered\n     │\n     ├──[4a] Deploy Exploiter contract + transfer 100 WETH\n     │        └─ Exploiter.mint() → Deposit 100 WETH into pETH (create collateral)\n     │\n     ├──[4b] Main attacker contract:\n     │        - Remaining WETH → Unwrap to ETH\n     │        - pETH.mint() → Deposit ETH (create collateral)\n     │        - pUSDT.mint() → Deposit USDT (crea",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// Source: DeFiHackLabs — https://github.com/SunWeb3Sec/DeFiHackLabs\n// Original analysis:\n//   https://twitter.com/Phalcon_xyz/status/1645742620897955842\n//   https://twitter.com/BlockSecTeam/status/1645744655357575170\n//   https://twitter.com/peckshield/status/1645742296904929280\n// Attack TX:\n//   https://arbiscan.io/tx/0x0e29dcf4e9b211a811caf00fc8294024867bffe4ab2819cc1625d2e9d62390af\n// Summary: Known reentrancy vulnerability in a legacy CompoundV2 fork\n\ncontract ContractTest is Test {\n    // Arbitrum mainnet contract addresses\n    IERC20 WBTC  = IERC20(0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f);\n    IWFTM WETH   = IWFTM(payable(0x82aF49447D8a07e3bd95BD0d56f35241523fBab1));\n    IERC20 USDT  = IERC20(0xFd086bC7CD5C481DCC"
+ ]
+}

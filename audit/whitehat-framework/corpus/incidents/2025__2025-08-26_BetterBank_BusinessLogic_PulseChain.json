@@ -1,0 +1,25 @@
+{
+ "id": "2025__2025-08-26_BetterBank_BusinessLogic_PulseChain",
+ "source_file": "2025/2025-08-26_BetterBank_BusinessLogic_PulseChain.md",
+ "title": "BetterBank — Rogue LP Pool Exploits Unchecked Bonus Minting on PulseChain (~$5M)",
+ "date": "2025-08-26",
+ "protocol": "BetterBank",
+ "chain": "PulseChain",
+ "loss_raw": "~$5,000,000",
+ "loss_usd": 5000000.0,
+ "root_cause": "Business Logic Flaw — the FAVOR token's bonus minting system (FavorRouterWrapper) did not validate the legitimacy of the AMM pool used for trading, allowing an attacker-created rogue LP pair to trigger unlimited ESTEEM bonus minting with zero sell tax",
+ "attack_tx": "`0x74534b1f86a63c6c722d5845f2b4c08867c2e66b922a6c95cd6b4290664c19bd`",
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "ESTEEM accumulated → redeemed for real assets:"
+ ],
+ "other_code": [
+  "// FavorRouterWrapper — VULNERABLE\n// Records trades from any AMM pair that holds FAVOR, minting ESTEEM to buyers.\nfunction swapAndRecord(\n    address pair,           // LP pair address — caller-supplied\n    uint256 favorAmount,\n    address buyer\n) external {\n    // BUG: 'pair' is caller-controlled.\n    // No check that 'pair' is the official FAVOR/WPLS or FAVOR/USDC pool.\n    // Any PulseXPair containing FAVOR qualifies — including attacker-created pairs.\n\n    // Perform swap via PulseXRouter using the supplied pair\n    IPulseXRouter(ROUTER).swapExactTokensForTokens(\n        favorAmount, 0, [FAVOR, junkToken], address(this), block.timestamp\n    );\n\n    // Mint ESTEEM bonus to buyer proportional to trade size\n    // Since junkToken pair has no sell tax, attacker nets full FAVOR back via a\n",
+  "// Fixed: maintain a whitelist of authorized LP pairs\nmapping(address => bool) public authorizedPairs;\n\nfunction addAuthorizedPair(address pair) external onlyOwner {\n    authorizedPairs[pair] = true;\n}\n\nfunction swapAndRecord(\n    address pair,\n    uint256 favorAmount,\n    address buyer\n) external {\n    // Reject swaps through unauthorized LP pairs\n    require(authorizedPairs[pair], \"pair not authorized\");\n\n    // Now safe to proceed: only official pools can trigger bonus minting\n    ...\n}\n\n// Apply sell tax to ALL pairs, not just the official one\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    if (to != address(this) && authorizedPairs[to]) {\n        uint256 tax = amount * 50 / 100;\n        super._transfer(from, TREASURY, tax);\n        super._transfer("
+ ]
+}

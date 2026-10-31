@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-03-07_BIGFI_FlashLoanPriceManipulation",
+ "source_file": "2023/2023-03-07_BIGFI_FlashLoanPriceManipulation.md",
+ "title": "BIGFI — Flash Loan Price Manipulation Analysis",
+ "date": "2023-03-07",
+ "protocol": "BIGFI",
+ "chain": "BSC",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "Reward calculation uses AMM spot reserves directly without TWAP, enabling reserve manipulation within a single block to claim excess rewards",
+ "attack_tx": "BSC Transaction",
+ "vulnerable_contract": "BIGFI Token/Pool Contract",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Reward calculation based on spot price\nfunction calculateReward(address user) public view returns (uint256) {\n    (uint112 reserve0, uint112 reserve1,) = pair.getReserves();\n    //",
+  "❌ Reward calculated from current reserve ratio → susceptible to flash loan manipulation\n    uint256 price = reserve1 * 1e18 / reserve0;\n    return stakedAmount[user] * price / BASE_PRICE;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Use TWAP\nfunction calculateReward(address user) public view returns (uint256) {\n    uint256 twapPrice = getTWAP(30 minutes);\n    return stakedAmount[user] * twapPrice / BASE_PRICE;\n}"
+ ],
+ "steps": [
+  "1 ▶ Flash Loan (borrow large amount of WBNB/tokens)",
+  "2 ▶ Manipulate BIGFI pool price",
+  "3 ▶ Claim rewards or execute favorable swap at manipulated price",
+  "4 ▶ Reverse pool manipulation (restore state)",
+  "5 ▶ Repay flash loan → net profit"
+ ],
+ "other_code": [
+  "// Root cause: reward calculation uses AMM spot reserves directly without TWAP, enabling reserve manipulation within a single block to claim excess rewards\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ Flash Loan (borrow large amount of WBNB/tokens)\n  ├─2─▶ Manipulate BIGFI pool price\n  ├─3─▶ Claim rewards or execute favorable swap at manipulated price\n  ├─4─▶ Reverse pool manipulation (restore state)\n  └─5─▶ Repay flash loan → net profit"
+ ]
+}

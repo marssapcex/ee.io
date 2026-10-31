@@ -1,0 +1,36 @@
+{
+ "id": "2023__2023-02-02_Orion_ReentrancyFakeToken",
+ "source_file": "2023/2023-02-02_Orion_ReentrancyFakeToken.md",
+ "title": "Orion Protocol — Reentrancy Attack via Fake Token Analysis",
+ "date": "2023-02-02",
+ "protocol": "Orion Protocol",
+ "chain": "Ethereum",
+ "loss_raw": "~3M USD",
+ "loss_usd": null,
+ "root_cause": "Deployed a fake ERC-20 token to trigger a reentrancy vulnerability in OrionPool",
+ "attack_tx": null,
+ "vulnerable_contract": "Orion Pool V2",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable OrionPool: balance update occurs after external token transfer\ninterface OrionPoolV2Factory {\n    function createPair(address tokenA, address tokenB) external;\n}\n\n// Estimated vulnerable implementation\nfunction swapTokens(address tokenIn, uint256 amountIn, address tokenOut) external {\n    // 1. Request tokenIn from the user\n    IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);\n    //",
+  "❌ If tokenIn is malicious, reentrancy occurs during transfer\n\n    // 2. Calculate and send tokenOut (executed twice on reentry)\n    uint256 amountOut = calculateOutput(amountIn);\n    IERC20(tokenOut).transfer(msg.sender, amountOut);\n    //",
+  "❌ External call can repeat without state update\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: CEI + ReentrancyGuard\nfunction swapTokens(address tokenIn, uint256 amountIn, address tokenOut)\n    external\n    nonReentrant  //",
+  "✅ Blocks reentrancy\n{\n    //"
+ ],
+ "steps": [
+  "1 ▶ Deploy malicious ERC-20 token (ATK)",
+  "2 ▶ OrionPoolV2Factory.createPair(ATK, USDT)",
+  "3 ▶ Add liquidity to OrionPool using ATK token",
+  "4 ▶ OrionPool calls ATK.transfer()",
+  "5 ▶ Drain stolen USDT → realize profit"
+ ],
+ "other_code": [
+  "// Root cause: Deployed a fake ERC-20 token to trigger a reentrancy vulnerability in OrionPool\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ Deploy malicious ERC-20 token (ATK)\n  │       Embed reentrancy code inside transfer()\n  │\n  ├─2─▶ OrionPoolV2Factory.createPair(ATK, USDT)\n  │       Create ATK-USDT pair\n  │\n  ├─3─▶ Add liquidity to OrionPool using ATK token\n  │       or initiate a swap using ATK\n  │\n  ├─4─▶ OrionPool calls ATK.transfer()\n  │       │\n  │       └─▶ Reentrancy triggered inside ATK.transfer():\n  │               Re-calls the same OrionPool function\n  │               Receives duplicate USDT with balance not yet updated\n  │\n  └─5─▶ Drain stolen USDT → realize profit"
+ ]
+}

@@ -1,0 +1,45 @@
+{
+ "id": "2023__2023-07-01_CarsonToken_PriceDependency_BSC",
+ "source_file": "2023/2023-07-01_CarsonToken_PriceDependency_BSC.md",
+ "title": "Carson Token — Flawed Price Dependency Analysis",
+ "date": "2023-07-01",
+ "protocol": "Carson Token",
+ "chain": "BSC",
+ "loss_raw": "~$150,000 USD (on-chain measured: 100,677 BUSDT)",
+ "loss_usd": 150000.0,
+ "root_cause": "Custom AMM pair contract relies on the current block's spot price, making it vulnerable to flash loan-based price manipulation",
+ "attack_tx": "0x37d9...3ac",
+ "vulnerable_contract": "Carson Token (custom pair)",
+ "classes": [
+  "flash-loan",
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: calculates price by directly referencing current block's real-time pool reserves\nfunction swap(\n    uint256 amountIn,\n    address tokenIn,\n    address to\n) external returns (uint256 amountOut) {\n    // ❌ Uses current reserves as-is — can be manipulated at any time via flash loan\n    (uint256 reserve0, uint256 reserve1) = getReserves();\n    \n    // ❌ amountOut calculated based on spot price — produces excessive output when price is skewed\n    // After a large buy, reserve0 decreases and reserve1 increases, causing abnormally high output\n    amountOut = (amountIn * reserve1) / (reserve0 + amountIn);\n    \n    // ❌ No slippage protection, no price deviation detection\n    IERC20(tokenOut).transfer(to, amountOut);\n    _update();\n}",
+  "// ❌ Vulnerable: allows amountOutMin = 0, neutralizing slippage protection\nfunction swapExactTokensForTokensSupportingFeeOnTransferTokens(\n    uint256 amountIn,\n    uint256 amountOutMin,  // ❌ Can be set to 0 — accepts any unfavorable price\n    address[] calldata path,\n    address to,\n    uint256 deadline\n) external {\n    TransferHelper.safeTransferFrom(path[0], msg.sender, pairFor(path[0], path[1]), amountIn);\n    _swapSupportingFeeOnTransferTokens(path, to);\n    // ❌ No validation of final output amount\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: uses TWAP oracle with multiple defensive layers\nfunction swap(\n    uint256 amountIn,\n    address tokenIn,\n    address to,\n    uint256 minAmountOut  // ✅ Added minimum output parameter (slippage protection)\n) external returns (uint256 amountOut) {\n    // ✅ TWAP-based price reference (30-minute to 1-hour moving average)\n    // Flash loan manipulation within a single block cannot alter the TWAP\n    uint256 twapPrice = getTWAPPrice(tokenIn, 1800); // 30-minute TWAP\n    \n    amountOut = (amountIn * twapPrice) / PRECISION;\n    \n    // ✅ Slippage protection: revert if output falls below minimum\n    require(amountOut >= minAmountOut, \"Slippage: insufficient output\");\n    \n    // ✅ Spot vs TWAP deviation check: revert if deviation exceeds 5%\n    (uint256 reserve0, uint256 reserve1) = getReserves();\n    uint256 spotPrice = (reserve1 * PRECISION) / reserve0;\n    require(\n        spotPrice <= twapPrice * 105 / 100 &&\n        spotPrice >= twapPrice * 95 / 100,\n        \"Price: excessive deviation from TWAP\"\n    );\n    \n    IERC20(tokenOut).transfer(to, amountOut);\n    _update();\n}",
+  "// ✅ Fixed: enforce amountOutMin > 0 and verify actual amount received\nfunction swapExactTokensForTokensSupportingFeeOnTransferTokens(\n    uint256 amountIn,\n    uint256 amountOutMin,\n    address[] calldata path,\n    address to,\n    uint256 deadline\n) external {\n    // ✅ Prevent slippage protection bypass\n    require(amountOutMin > 0, \"Router: amountOutMin must be > 0\");\n    \n    uint256 balanceBefore = IERC20(path[path.length - 1]).balanceOf(to);\n    TransferHelper.safeTransferFrom(path[0], msg.sender, pairFor(path[0], path[1]), amountIn);\n    _swapSupportingFeeOnTransferTokens(path, to);\n    \n    // ✅ Verify actual amount received (based on real received amount for fee-on-transfer tokens)\n    require(\n        IERC20(path[path.length - 1]).balanceOf(to) - balanceBefore >= amountOutMin,\n        'Router: INSUFFICIENT_OUTPUT_AMOUNT'\n    );\n}"
+ ],
+ "steps": [
+  "1 | `DPPOracle1.flashLoan()` | BUSDT flash loan (chain start) | 641,735 BUSDT",
+  "2 | `DPPOracle2.flashLoan()` | Additional BUSDT loan (within callback) | 190,522 BUSDT",
+  "3 | `DPPOracle3.flashLoan()` | Additional BUSDT loan | 676,888 BUSDT",
+  "4 | `DPP.flashLoan()` | Additional BUSDT loan | 81,511 BUSDT",
+  "5 | `DPPAdvanced.flashLoan()` | Additional BUSDT loan (chain complete) | 149,185 BUSDT",
+  "6 | `BUSDTToCarson()` | 1,500,000 BUSDT → large Carson buy (price skew) | 1,500,000 BUSDT → ~355,794 Carson",
+  "7 | `CarsonToBUSDT()` × 50 | Repeated sell of 5,000 Carson × 50 times | Distorted price applied per sell",
+  "8 | `CarsonToBUSDT()` | Sell remaining Carson balance in full | Entire remaining balance",
+  "9 | Flash loan repayment (reverse order) | DPPAdvanced → DPP → DPPOracle3 → DPPOracle2 → DPPOracle1 | Full principal repaid",
+  "DODO DPP Pool #1 → transfers 641,735 BUSDT to attack contract",
+  "[2] DPPOracle2.flashLoan(0, 190,522 BUSDT, ...) → chaining",
+  "[3] DPPOracle3.flashLoan(0, 676,888 BUSDT, ...) → chaining",
+  "[4] DPP.flashLoan(0, 81,511 BUSDT, ...) → chaining",
+  "[5] DPPAdvanced.flashLoan(0, 149,185 BUSDT, ...) → chain complete"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────────┐\n│                  Attacker EOA (0x25Bc...2BD3)                           │\n│                  Balance: 0 BUSDT                                       │\n└─────────────────────────────┬───────────────────────────────────────────┘\n                              │ calls attack contract\n                              ▼\n┌─────────────────────────────────────────────────────────────────────────┐\n│  [1] DPPOracle1.flashLoan(0, 641,735 BUSDT, ...)                        │\n│      DODO DPP Pool #1 → transfers 641,735 BUSDT to attack contract      │\n└─────────────────────────────┬───────────────────────────────────────────┘\n                              │ DPPFlashLoanCall() callback\n                              ▼\n┌─────────────",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n// Source: https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2023-07/Carson_exp.sol\n\ncontract CarsonTest is Test {\n    // Relevant contract address declarations\n    IERC20 BUSDT = IERC20(0x55d398326f99059fF775485246999027B3197955);   // BSC USDT\n    IERC20 Carson = IERC20(0x0aCD5019EdC8ff765517e2e691C5EeF6f9c08830);  // Carson token\n    \n    // 5 DODO DPP pools — flash loan sources\n    IDPPOracle DPPOracle1 = IDPPOracle(0x26d0c625e5F5D6de034495fbDe1F6e9377185618);\n    IDPPOracle DPPOracle2 = IDPPOracle(0xFeAFe253802b77456B4627F8c2306a9CeBb5d681);\n    IDPPOracle DPPOracle3 = IDPPOracle(0x9ad32e3054268B849b84a8dBcC7c8f7c52E4e69A);\n    IDPPOracle DPP        = IDPPOracle(0x6098A5638d8D7e9Ed2f952d35B2b67c34EC6B476);\n   "
+ ]
+}

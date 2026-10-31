@@ -1,0 +1,34 @@
+{
+ "id": "2026__2026-03-26_UnknownStake_BusinessLogic_BSC",
+ "source_file": "2026/2026-03-26_UnknownStake_BusinessLogic_BSC.md",
+ "title": "Unknown Stake — Spot Price-Dependent Reward Calculation Vulnerability Analysis",
+ "date": "2026-03-26",
+ "protocol": "Unknown Stake",
+ "chain": "BSC",
+ "loss_raw": "~$133,500 (TUR tokens)",
+ "loss_usd": 133500.0,
+ "root_cause": "Reward calculation directly uses the spot price from the TUR-NOBEL AMM pool without TWAP; amplified withdrawal possible via referral claim",
+ "attack_tx": "Not published in any public source — CryptoTimes article does not include a TX hash",
+ "vulnerable_contract": "Unknown Stake Contract (BSC) — specific address not publicly disclosed",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — directly uses AMM spot price in reward calculation\nfunction getTURPrice() internal view returns (uint256) {\n    // ❌ Issue 1: getReserves() returns the immediate price of the current block\n    //    Can be manipulated at this moment via flash loan or large swap\n    (uint112 reserveTUR, uint112 reserveNOBEL,) = turNobelPair.getReserves();\n    \n    // ❌ Issue 2: Simple ratio calculation — no time-weighting (TWAP)\n    //    Price can be immediately distorted with a single large swap\n    return (uint256(reserveNOBEL) * 1e18) / uint256(reserveTUR);\n}\n\nfunction calculateReward(address user) public view returns (uint256) {\n    uint256 stakedAmount = stakedBalance[user];\n    \n    // ❌ Issue 3: Uses manipulated spot price as reward multiplier\n    //    If price goes up 10x, reward also increases 10x\n    uint256 turPrice = getTURPrice();\n    uint256 reward = (stakedAmount * turPrice * rewardRate) / PRECISION;\n    \n    return reward;\n}",
+  "// ❌ Vulnerable code — no validation on referral reward claim\nfunction claimReferralReward(address referralAccount) external {\n    // ❌ Issue: entire accrued reward can be claimed immediately\n    //    no claim limit relative to pool balance\n    uint256 pendingReward = pendingReferralRewards[referralAccount];\n    \n    // ❌ Issue: inflated rewards calculated from manipulated price are withdrawn as-is\n    require(pendingReward > 0, \"No pending rewards\");\n    \n    pendingReferralRewards[referralAccount] = 0;\n    \n    // ❌ Entire pool balance can be withdrawn at once\n    ITUR(TUR).transfer(msg.sender, pendingReward);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — uses TWAP or external oracle\nfunction getTURPrice() internal view returns (uint256) {\n    // ✅ Method 1: Uniswap V3-style TWAP (30-minute average)\n    uint32[] memory secondsAgos = new uint32[](2);\n    secondsAgos[0] = 1800; // 30 minutes ago\n    secondsAgos[1] = 0;    // current\n    \n    (int56[] memory tickCumulatives,) = turNobelPool.observe(secondsAgos);\n    int56 tickDiff = tickCumulatives[1] - tickCumulatives[0];\n    int24 avgTick = int24(tickDiff / int56(int32(secondsAgos[0])));\n    \n    // ✅ 30-minute TWAP — single-block manipulation not possible\n    return OracleLibrary.getQuoteAtTick(avgTick, 1e18, TUR, NOBEL);\n}\n\nfunction calculateReward(address user) public view returns (uint256) {\n    uint256 stakedAmount = stakedBalance[user];\n    \n    // ✅ Uses TWAP price — manipulation resistance ensured\n    uint256 turPrice = getTURPrice();\n    \n    // ✅ Added: reward cap\n    uint256 rawReward = (stakedAmount * turPrice * rewardRate) / PRECISION;\n    uint256 maxReward = totalRewardPool / MAX_CLAIM_RATIO; // limit to a fixed ratio of total pool\n    return rawReward > maxReward ? maxReward : rawReward;\n}",
+  "// ✅ Fixed code — claim cap and cooldown applied\nmapping(address => uint256) public lastClaimTime;\nuint256 public constant CLAIM_COOLDOWN = 1 days;\nuint256 public constant MAX_SINGLE_CLAIM = 10_000 * 1e18; // maximum claim limit\n\nfunction claimReferralReward(address referralAccount) external {\n    // ✅ Claim cooldown applied\n    require(\n        block.timestamp >= lastClaimTime[referralAccount] + CLAIM_COOLDOWN,\n        \"Claim cooldown active\"\n    );\n    \n    uint256 pendingReward = pendingReferralRewards[referralAccount];\n    require(pendingReward > 0, \"No pending rewards\");\n    \n    // ✅ Single claim cap applied\n    uint256 claimAmount = pendingReward > MAX_SINGLE_CLAIM\n        ? MAX_SINGLE_CLAIM\n        : pendingReward;\n    \n    pendingReferralRewards[referralAccount] -= claimAmount;\n    lastClaimTime[referralAccount] = block.timestamp;\n    \n    ITUR(TUR).transfer(msg.sender, claimAmount);\n}"
+ ],
+ "steps": [
+  "(swap in NOBEL → TUR direction reduces TUR reserve)",
+  "[Step 4] Swap TUR → USDT to realize profit",
+  "- **Attacker profit**: ~$133,500 (after converting TUR → USDT)",
+  "- **Mechanism summary**: TUR-NOBEL AMM spot price manipulation → inflated reward accrued on stake → full pool withdrawal via referral claim"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────┐\n│                  Attacker EOA (0xC9...F692)                  │\n└──────────────────────────────┬──────────────────────────────┘\n                               │\n                               ▼\n┌─────────────────────────────────────────────────────────────┐\n│  [Step 1] Artificially inflate TUR price in TUR-NOBEL pool  │\n│                                                             │\n│  USDT/BNB ──▶ PancakeSwap/DEX ──▶ large TUR sell-off      │\n│  (swap in NOBEL → TUR direction reduces TUR reserve)       │\n│                                                             │\n│  TUR spot price: $X ──▶ $X × N times (reserve ratio skew)  │\n└──────────────────────────────┬──────────────────────────────┘\n                               │\n",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.10;\n\n// Reconstructed PoC: Unknown Stake spot price manipulation attack\n// Source: Based on CryptoTimes report and on-chain data\n\nimport \"forge-std/Test.sol\";\n\ninterface IUnknownStake {\n    function stake(uint256 amount) external;\n    function claimReferralReward(address referral) external;\n    function setReferrer(address referrer) external;\n    function pendingReferralRewards(address) external view returns (uint256);\n}\n\ninterface IPancakePair {\n    function getReserves() external view returns (uint112, uint112, uint32);\n    function swap(uint256, uint256, address, bytes calldata) external;\n}\n\ncontract UnknownStakeAttack is Test {\n    // ── Key contract addresses (BSC) ──────────────────────────\n    address constant TUR = address(0); //"
+ ]
+}

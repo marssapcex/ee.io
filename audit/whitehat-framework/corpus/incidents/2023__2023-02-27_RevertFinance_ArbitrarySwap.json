@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-02-27_RevertFinance_ArbitrarySwap",
+ "source_file": "2023/2023-02-27_RevertFinance_ArbitrarySwap.md",
+ "title": "Revert Finance — V3Utils Arbitrary Swap Path Exploitation Analysis",
+ "date": "2023-02-27",
+ "protocol": "Revert Finance",
+ "chain": "Ethereum",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "`swapData` in V3Utils SwapParams is executed without validation, allowing theft of tokens approved by users",
+ "attack_tx": "0xdaccbc43...",
+ "vulnerable_contract": "Revert Finance V3Utils",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable V3Utils SwapParams\ninterface V3Utils {\n    struct SwapParams {\n        address tokenIn;\n        address tokenOut;\n        uint256 amountIn;\n        uint256 minAmountOut;\n        address recipient;\n        bytes swapData;   //",
+  "❌ Arbitrary callData — no validation\n        bool unwrap;\n    }\n}\n\n// Estimated vulnerable implementation\nfunction swap(SwapParams calldata params) external returns (uint256 amountOut) {\n    // Pull tokenIn from user\n    IERC20(params.tokenIn).transferFrom(msg.sender, address(this), params.amountIn);\n\n    //",
+  "❌ Execute params.swapData against an arbitrary address (no router validation)\n    IERC20(params.tokenIn).approve(swapRouter, params.amountIn);\n    (bool success,) = swapRouter.call(params.swapData);\n    // Attacker sets swapRouter = token contract, swapData = transferFrom(victim...)\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix\nfunction swap(SwapParams calldata params) external returns (uint256 amountOut) {\n    require(approvedRouters[swapRouter], \"Router not approved\");  //",
+  "✅ Whitelist\n    // Block dangerous function selectors in swapData\n}"
+ ],
+ "steps": [
+  "1 ▶ Identify victim who has approved tokens to V3Utils",
+  "2 ▶ Call V3Utils.swap({",
+  "3 ▶ V3Utils executes transferFrom on victim's token",
+  "4 ▶ Theft complete"
+ ],
+ "other_code": [
+  "// Root cause: `swapData` in V3Utils SwapParams is executed without validation, allowing theft of tokens approved by users\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ Identify victim who has approved tokens to V3Utils\n  │\n  ├─2─▶ Call V3Utils.swap({\n  │         tokenIn: victim_token,\n  │         swapData: transferFrom(victim, attacker, amount),\n  │         ...\n  │     })\n  │\n  ├─3─▶ V3Utils executes transferFrom on victim's token\n  │       Processed under victim's approval to V3Utils\n  │\n  └─4─▶ Theft complete"
+ ]
+}

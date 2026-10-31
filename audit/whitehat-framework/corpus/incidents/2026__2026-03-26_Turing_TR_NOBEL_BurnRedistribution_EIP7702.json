@@ -1,0 +1,50 @@
+{
+ "id": "2026__2026-03-26_Turing_TR_NOBEL_BurnRedistribution_EIP7702",
+ "source_file": "2026/2026-03-26_Turing_TR_NOBEL_BurnRedistribution_EIP7702.md",
+ "title": "Turing (TR) + NOBEL — Burn-Redistribution Drain & EIP-7702 Attack Analysis",
+ "date": "2026-03-26",
+ "protocol": "Turing",
+ "chain": "BNB Chain",
+ "loss_raw": "~$133,490 USDT (Turing Distributor fully drained + Pool USDT extracted)",
+ "loss_usd": 133490.0,
+ "root_cause": "2.45x multiplier vulnerability in TR burn-redistribution mechanism + `tx.origin` validation bypass via EIP-7702",
+ "attack_tx": "0x96c9ce3c...1e348",
+ "vulnerable_contract": "TR Distributor 0x03d8096...15abe",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable distribution logic in Distributor contract (inferred)\nfunction onBurn(uint256 burnAmount) external {\n    // Distribute held TR to registered recipients proportional to burn amount\n    // Issue: total redistributed > burned amount (no multiplier validation)\n    uint256 distributeAmount = getDistributeAmount(burnAmount);  // returns 2.45x+!\n    for (address recipient : registeredRecipients) {\n        uint256 share = distributeAmount * shares[recipient] / totalShares;\n        TR.transfer(recipient, share);  // ❌ distributes without pre-burn validation\n    }\n}",
+  "// EOA validation pattern used by many DeFi protocols\nmodifier onlyEOA() {\n    require(msg.sender == tx.origin, \"Only EOA allowed\");\n    _;\n}\n\n// Traditional defense: contracts are blocked because tx.origin != msg.sender\n// ❌ EIP-7702 bypass: EOA temporarily sets its own code, then calls itself\n//    → msg.sender = 0xC93A5Ab3 (EOA)\n//    → tx.origin = 0xC93A5Ab3 (same EOA)\n//    → condition passes!"
+ ],
+ "code_after": [
+  "// ✅ Fix: cap total redistribution to not exceed the burn amount\nfunction onBurn(uint256 burnAmount) external {\n    uint256 distributeAmount = getDistributeAmount(burnAmount);\n    // Redistribution cap: maximum 1x the burn amount (1:1 ratio)\n    require(distributeAmount <= burnAmount, \"Redistribute: exceeds burn amount\");\n    // Or cap at a fixed percentage of circulating supply\n    require(distributeAmount <= totalDistributable / 100, \"Redistribute: exceeds cap\");\n    for (address recipient : registeredRecipients) {\n        uint256 share = distributeAmount * shares[recipient] / totalShares;\n        TR.transfer(recipient, share);\n    }\n}",
+  "// ✅ Fix: add code size check (valid even in EIP-7702 environments)\nmodifier onlyEOA() {\n    require(msg.sender == tx.origin, \"Only EOA allowed\");\n    require(msg.sender.code.length == 0, \"No contract code allowed\");  // blocks EIP-7702\n    _;\n}"
+ ],
+ "steps": [
+  "EOA code → temporarily replaced with 0x7b3928c1...'s bytecode",
+  "Lista DAO Moolah → Attacker EOA: 1,900,000 USDT flash loan",
+  "[Step 2] USDT → NOBEL Buy (Pool_B Price Manipulation)",
+  "Input: 1,900,000 USDT → PCS Pool_B (NOBEL/USDT)",
+  "BEFORE: 1,002 NOBEL + 779,111 USDT → price 777 USDT/NOBEL",
+  "AFTER: 292 NOBEL + 2,679,111 USDT → price 9,175 USDT/NOBEL",
+  "[Step 3] NOBEL → TR Buy (Pool_A)",
+  "Input: 682.223 NOBEL → PCS Pool_A (NOBEL/TR)",
+  "[Step 4] TR Burn → Distributor Drain (Core Vulnerability)",
+  "Attacker → 0x0000dead: 7,770,707.051 TR burned (99.4%)",
+  "Distributor(0x03d809) → 0x39789923: 471,307 TR",
+  "Distributor(0x03d809) → 0xce2aceab: 15,238,941 TR ←",
+  "0xce2aceab → Attacker EOA: 15,238,941 TR ←━━━━━━━━━ attacker receives",
+  "Distributor(0x03d809) → 0x39789923: 117,832 TR",
+  "Distributor(0x03d809) → 0xe2be550b: 3,809,924 TR ←",
+  "0xe2be550b → Attacker EOA: 3,809,924 TR ←━━━━━━━━━ attacker receives",
+  "Attacker → Distributor: 840,992 TR (partial return)",
+  "Distributor TR: 18,797,013 → 1 wei (fully drained!)",
+  "Burned 7.77M TR → received 18.2M TR in redistribution (2.45x+!)",
+  "[Step 5] TR → NOBEL → USDT Sell"
+ ],
+ "other_code": [
+  "Transaction Type: 4 (EIP-7702 SetCode)\nfrom: 0xC93A5Ab3737081F00788B61DA42281955d3dF692  (attacker EOA)\nto:   0xC93A5Ab3737081F00788B61DA42281955d3dF692  (itself!)\n\nauthorizationList:\n  - chainId: 0x38 (BSC)\n  - address: 0x7b3928c1cef617810484589f400e8056dd2d772c  ← attack code address\n  - nonce: 0x29 (41)   ← matches the EOA's current nonce\n\ncalldata: 0x1a2998c8(...) calls itself\n          → executes with EOA's bytecode replaced by 0x7b3928c1...'s code",
+  "[Step 1] EIP-7702 SetCode + Flash Loan\n┌──────────────────────────────────────────────────────────────┐\n│ EOA code → temporarily replaced with 0x7b3928c1...'s bytecode │\n│ Lista DAO Moolah → Attacker EOA: 1,900,000 USDT flash loan  │\n└──────────────────────────────────────────────────────────────┘\n                           │\n                           ▼\n[Step 2] USDT → NOBEL Buy (Pool_B Price Manipulation)\n┌──────────────────────────────────────────────────────────────┐\n│ Input: 1,900,000 USDT → PCS Pool_B (NOBEL/USDT)             │\n│ Output: 696.122 NOBEL                                         │\n│                                                               │\n│ Pool_B state change:                                          │\n│   BEFORE: 1,002 NOBEL + 779,111 USDT → price 777 USDT/NOBEL "
+ ]
+}

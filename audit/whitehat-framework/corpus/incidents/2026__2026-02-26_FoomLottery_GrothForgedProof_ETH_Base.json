@@ -1,0 +1,43 @@
+{
+ "id": "2026__2026-02-26_FoomLottery_GrothForgedProof_ETH_Base",
+ "source_file": "2026/2026-02-26_FoomLottery_GrothForgedProof_ETH_Base.md",
+ "title": "FOOM Lottery — Groth16 Zero-Knowledge Proof Forgery Attack Analysis (ETH + Base)",
+ "date": "2026-02-26",
+ "protocol": "FOOM Lottery",
+ "chain": "Ethereum Mainnet + Base",
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": "Groth16 zkSNARK proof forgery — Phase 2 trusted setup was skipped, leaving `gamma2 == delta2` (the default G2 generator); this algebraic degeneracy lets an attacker freely construct valid proofs for arbitrary public inputs without knowing any secret",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic",
+  "weak-randomness"
+ ],
+ "code_before": [
+  "function collect(\n    uint[2] calldata _pA,\n    uint[2][2] calldata _pB,\n    uint[2] calldata _pC,\n    uint _root,\n    uint _nullifierHash,\n    address _recipient,\n    address _relayer,\n    uint _fee,\n    uint _refund,\n    uint _rewardbits,\n    uint _invest\n) payable external nonReentrant {\n    // [1] Nullifier duplicate check — prevents reuse\n    require(nullifier[_nullifierHash] == 0, \"Incorrect nullifier\");\n    nullifier[_nullifierHash] = 1;\n\n    // ...\n\n    // [2] Merkle root validity check — verifies root is registered\n    require(roots[_root] > 0, \"Cannot find your merkle root\");\n\n    // ...\n\n    // ❌ [3] zkSNARK proof verification — the sole critical line of defense\n    // If the trusted setup is compromised, this verification is nullified\n    require(withdraw.verifyProof(\n        _pA, _pB, _pC,\n        [_root, _nullifierHash, _rewardbits,\n         uint(uint160(_recipient)), uint(uint160(_relayer)),\n         _fee, _refund]\n    ), \"Invalid withdraw proof\");  // ❌ Forged proof passes this check\n\n    // ... Reward calculation and FOOM transfer\n    emit LogWin(uint(_nullifierHash), reward, _recipient);\n}",
+  "┌──────────────────────────────────────────────────────────────────────┐\n│                    Exploit contract deployment (constructor)          │\n│                    Single CREATE transaction = atomic execution       │\n└──────────────────────┬───────────────────────────────────────────────┘\n                       │\n                       ▼\n            ┌─────────────────────┐\n            │   constructor(      │\n            │     lottery,        │\n            │     token,          │\n            │     count           │\n            │   )                 │\n            └──────────┬──────────┘\n                       │\n                       ▼\n            ┌─────────────────────┐\n            │  for i = 0..count   │◀──────────────────────┐\n            │  {                  │                        │\n            │    ┌────────────────┴───────────────┐       │\n            │    │ Compute forged proof (pA, pB,   │       │\n            │    │ pC) via BN254 field arithmetic  │       │\n            │    │ (using τ toxic waste)           │       │\n            │    └────────────────┬───────────────┘       │\n            │                    │                        │\n            │                    ▼                        │\n            │    ┌────────────────────────────────┐       │\n            │    │ lottery.collect(               │       │\n            │    │   pA, pB, pC,                 │       │\n            │    │   lastRoot,                   │       │\n            │    │   sequential_nullifier,       │       │\n            │    │   attacker_addr,              │       │\n            │    │   0, 0, 7, 0                  │       │\n            │    │ )                             │       │\n            │    └────────────────┬───────────────┘       │\n            │                    │                        │\n            │                    ▼                        │\n            │    ┌────────────────────────────────┐       │\n            │    │ verifyProof() → true ❌         │       │\n            │    │ (Forged proof passes check)    │       │\n            │    │                                │       │\n            │    │ FOOM reward → exploit contract │       │\n            │    └────────────────┬───────────────┘       │\n            │                    │                        │\n            │  }                 └────────────────────────┘\n            └─────────────────────┘\n                       │\n                       ▼\n            ┌─────────────────────┐\n            │  Full remaining     │\n            │  FOOM balance →     │\n            │  attacker EOA       │\n            └─────────────────────┘"
+ ],
+ "code_after": [
+  "function collect(\n    uint[2] calldata _pA,\n    uint[2][2] calldata _pB,\n    uint[2] calldata _pC,\n    uint _root,\n    uint _nullifierHash,\n    address _recipient,\n    address _relayer,\n    uint _fee,\n    uint _refund,\n    uint _rewardbits,\n    uint _invest\n) payable external nonReentrant {\n    require(nullifier[_nullifierHash] == 0, \"Incorrect nullifier\");\n    nullifier[_nullifierHash] = 1;\n\n    // ✅ [Fix 1] Merkle root freshness check — blocks use of stale roots\n    require(roots[_root] > 0, \"Cannot find your merkle root\");\n    require(\n        block.number - roots[_root] <= ROOT_EXPIRY_BLOCKS,\n        \"Merkle root expired\"\n    );\n\n    // ✅ [Fix 2] Use verifier regenerated from transparent MPC-based trusted setup\n    // Recommend proof systems that require no trusted setup (e.g., PLONK/FFlonk) instead of Groth16\n    require(withdraw.verifyProof(\n        _pA, _pB, _pC,\n        [_root, _nullifierHash, _rewardbits,\n         uint(uint160(_recipient)), uint(uint160(_relayer)),\n         _fee, _refund]\n    ), \"Invalid withdraw proof\");\n\n    // ✅ [Fix 3] Single claim cap and per-epoch withdrawal limit\n    uint reward = _calculateReward(_rewardbits);\n    require(reward <= MAX_SINGLE_CLAIM, \"Claim exceeds single limit\");\n    epochWithdrawn[currentEpoch()] += reward;\n    require(\n        epochWithdrawn[currentEpoch()] <= EPOCH_WITHDRAW_LIMIT,\n        \"Epoch withdraw limit exceeded\"\n    );\n\n    // ✅ [Fix 4] Emergency pause\n    require(!paused, \"Contract paused\");\n\n    // ... Transfer reward\n}"
+ ],
+ "steps": [
+  "1 | `0xdead0000` | ~4.05T | Near maximum reward",
+  "2 | `0xdead0001` | ~271B | Pool balance decreasing",
+  "3 | `0xdead0002` | ~135B",
+  "4 | `0xdead0003` | ~68B",
+  "5 | `0xdead0004` | ~34B",
+  "6 | `0xdead0005` | ~17B",
+  "7 | `0xdead0006` | ~8.5B",
+  "8 | `0xdead0007` | ~4.25B",
+  "9 | `0xdead0008` | ~2.1B",
+  "10 | `0xdead0009` | ~1.06B | Remaining balance exhausted",
+  "verifyProof() → true ❌",
+  "FOOM reward → exploit contract",
+  "FOOM balance →"
+ ],
+ "other_code": [
+  "┌─────────────┐     ┌──────────────┐     ┌─────────────────┐\n│  play()     │────▶│  reveal()    │────▶│  collect()      │\n│  Submit     │     │  Batch       │     │  Proof verify + │\n│  secret     │     │  process     │     │  Claim reward   │\n│  commit     │     │  Merkle tree │     └─────────────────┘\n└─────────────┘     │  root gen    │\n                    └──────────────┘",
+  "// betMin = 1,000,000 FOOM\n// betPower1 = 10, betPower2 = 16, betPower3 = 22\nuint reward = betMin * (\n    (_rewardbits & 0x1 > 0 ? 1 : 0) * 2**betPower1 +  // 2^10 = 1,024x\n    (_rewardbits & 0x2 > 0 ? 1 : 0) * 2**betPower2 +  // 2^16 = 65,536x\n    (_rewardbits & 0x4 > 0 ? 1 : 0) * 2**betPower3    // 2^22 = 4,194,304x\n);\n// With rewardbits = 7 (all bits set):\n// 1,000,000 * (1,024 + 65,536 + 4,194,304) = 4,260,864,000,000 FOOM ≈ 4.26 trillion/claim"
+ ]
+}

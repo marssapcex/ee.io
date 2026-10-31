@@ -1,0 +1,40 @@
+{
+ "id": "2021__2021-10-27_Cream_Finance2_OracleManipulation_RecursiveBorrow",
+ "source_file": "2021/2021-10-27_Cream_Finance2_OracleManipulation_RecursiveBorrow.md",
+ "title": "Cream Finance (2nd Hack) — yUSD Oracle Manipulation Recursive Borrowing Analysis",
+ "date": "2021-10-27",
+ "protocol": "Cream Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$130,000,000",
+ "loss_usd": 130000000.0,
+ "root_cause": "Collateral value calculated using yUSD vault's `pricePerShare()` as a spot value — manipulable within a single block via recursive mint/borrow",
+ "attack_tx": "0x0fe2...c92 (block 13,499,798)",
+ "vulnerable_contract": "Cream crYUSD / crETH Markets",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Cream Finance yUSD Price Oracle\n// Uses the yUSD vault's current pricePerShare() directly as the price\n// pricePerShare is the ratio of assets within the vault — manipulable via flash loan\n\nfunction getUnderlyingPrice(CToken cToken) external view returns (uint) {\n    address underlying = CErc20(address(cToken)).underlying();\n\n    if (isYVault(underlying)) {\n        // ❌ References current pricePerShare — manipulable within a single block\n        uint256 pricePerShare = IYVault(underlying).pricePerShare();\n        uint256 basePrice = getBasePrice(underlying);\n        return pricePerShare.mul(basePrice).div(1e18);\n    }\n    // ...\n}",
+  "// CErc20Delegator.sol — verified proxy dispatch pattern\nfunction mint(uint mintAmount) external returns (uint) {\n    mintAmount; // Shh\n    delegateAndReturn(); // ❌ all logic lives in implementation contract\n}\n\nfunction borrow(uint borrowAmount) external returns (uint) {\n    borrowAmount; // Shh\n    delegateAndReturn(); // ❌ collateral check is in Comptroller.getHypotheticalAccountLiquidity\n}\n\n// Internal delegatecall forwarder\nfunction delegateAndReturn() private returns (bytes memory) {\n    (bool success, ) = implementation.delegatecall(msg.data);\n    assembly {\n        let free_mem_ptr := mload(0x40)\n        returndatacopy(free_mem_ptr, 0, returndatasize)\n        switch success\n        case 0 { revert(free_mem_ptr, returndatasize) }\n        default { return(free_mem_ptr, returndatasize) }\n    }\n}",
+  "// Cream Finance Oracle (Ethereum, not separately Sourcify-verified for this addr)\n// Reconstructed from Cream Finance open-source oracle + on-chain traces\nfunction getUnderlyingPrice(CToken cToken) external view returns (uint) {\n    address underlying = CErc20(address(cToken)).underlying(); // yUSD vault address\n\n    if (isYVault(underlying)) {\n        // ❌ pricePerShare() returns totalAssets/totalSupply of the yUSD vault\n        // This ratio is manipulable within a single block: depositing a large\n        // amount temporarily inflates totalAssets, raising pricePerShare.\n        uint256 pricePerShare = IYVault(underlying).pricePerShare(); // ❌ spot value\n        uint256 basePrice = getBasePrice(underlying);                // USD per underlying asset\n        return pricePerShare.mul(basePrice).div(1e18);               // ❌ returns inflated price\n    }\n    // ...\n}"
+ ],
+ "code_after": [
+  "// ✅ Use TWAP or Chainlink oracle for yVault price\n// ✅ Set a cap on single-block pricePerShare fluctuation\n\nuint256 public constant MAX_PRICE_CHANGE_PER_BLOCK = 100; // 1%\n\nfunction getUnderlyingPrice(CToken cToken) external view returns (uint) {\n    address underlying = CErc20(address(cToken)).underlying();\n\n    if (isYVault(underlying)) {\n        uint256 currentPPS = IYVault(underlying).pricePerShare();\n        uint256 lastPPS = lastPricePerShare[underlying];\n\n        // If change exceeds 1% from previous block, use the prior price\n        if (lastPPS > 0) {\n            uint256 change = currentPPS > lastPPS\n                ? (currentPPS - lastPPS) * 10000 / lastPPS\n                : (lastPPS - currentPPS) * 10000 / lastPPS;\n            if (change > MAX_PRICE_CHANGE_PER_BLOCK) {\n                return lastPPS.mul(getBasePrice(underlying)).div(1e18);\n            }\n        }\n        return currentPPS.mul(getBasePrice(underlying)).div(1e18);\n    }\n}",
+  "// ✅ Fix: use a TWAP or a single-block change cap on pricePerShare\nuint256 public constant MAX_PPS_CHANGE_BPS = 100; // 1% max change per block\n\nmapping(address => uint256) public lastPricePerShare;\nmapping(address => uint256) public lastPriceBlock;\n\nfunction getUnderlyingPrice(CToken cToken) external view returns (uint) {\n    address underlying = CErc20(address(cToken)).underlying();\n    if (isYVault(underlying)) {\n        uint256 currentPPS = IYVault(underlying).pricePerShare();\n        uint256 lastPPS    = lastPricePerShare[underlying];\n        if (lastPPS > 0 && lastPriceBlock[underlying] == block.number) {\n            // ✅ Within the same block: reject if pricePerShare jumped > 1%\n            uint256 delta = currentPPS > lastPPS\n                ? (currentPPS - lastPPS) * 10000 / lastPPS\n                : (lastPPS - currentPPS) * 10000 / lastPPS;\n            if (delta > MAX_PPS_CHANGE_BPS) revert(\"PriceManipulation\");\n        }\n        lastPricePerShare[underlying] = currentPPS;\n        lastPriceBlock[underlying]    = block.number;\n        return currentPPS.mul(getBasePrice(underlying)).div(1e18);\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: MakerDAO Flash Loan 500M DAI",
+  "Step 2: DAI → yDAI → 4curve → yUSD → crYUSD conversion chain",
+  "Step 3: Second contract — Aave flash loan 524,102 WETH",
+  "WETH → crETH conversion (~$2B collateral)",
+  "Step 4: Recursive crYUSD mint/borrow using crETH as collateral",
+  "→ Artificially inflate yUSD vault pricePerShare",
+  "→ crYUSD collateral value skyrockets",
+  "Step 5: Drain all liquidity from 14 Cream markets",
+  "Step 6: Repay flash loans + realize profit"
+ ],
+ "other_code": [
+  "┌───────────────────────────────────────────────────────────────┐\n│ Step 1: MakerDAO Flash Loan 500M DAI                          │\n└─────────────────────┬─────────────────────────────────────────┘\n                      │\n┌─────────────────────▼─────────────────────────────────────────┐\n│ Step 2: DAI → yDAI → 4curve → yUSD → crYUSD conversion chain │\n│ Deposit large amount into Cream crYUSD market                 │\n└─────────────────────┬─────────────────────────────────────────┘\n                      │\n┌─────────────────────▼─────────────────────────────────────────┐\n│ Step 3: Second contract — Aave flash loan 524,102 WETH        │\n│ WETH → crETH conversion (~$2B collateral)                     │\n└─────────────────────┬─────────────────────────────────────────┘\n                      │\n┌──",
+  "// Core attack — yUSD pricePerShare manipulation\nfunction exploit() internal {\n    // 1. MakerDAO 500M DAI flash loan\n    // 2. DAI → yUSD chain conversion → mass-mint crYUSD\n    // 3. Second contract: 524,102 WETH → crETH\n    // 4. Recursive crYUSD borrow/mint using crETH as collateral\n    //    → pricePerShare spikes (crYUSD value explodes)\n    // 5. Drain all 14 markets\n    //    crYUSD collateral value >> actual value\n    // 6. Repay flash loans\n}"
+ ]
+}

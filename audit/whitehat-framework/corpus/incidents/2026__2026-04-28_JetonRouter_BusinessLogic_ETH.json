@@ -1,0 +1,28 @@
+{
+ "id": "2026__2026-04-28_JetonRouter_BusinessLogic_ETH",
+ "source_file": "2026/2026-04-28_JetonRouter_BusinessLogic_ETH.md",
+ "title": "JetonRouter — Arbitrary Call Router Token Drain",
+ "date": "2026-04-28",
+ "protocol": "JetonRouter",
+ "chain": "Ethereum",
+ "loss_raw": "~$229K",
+ "loss_usd": 229.0,
+ "root_cause": "Arbitrary External Call — DEX router executes arbitrary external calls with user-controlled calldata, allowing attacker to drain tokens approved by users to the router",
+ "attack_tx": "`0x57709a498f27c7219b634ae20e7d2cbf9ab8dd6aca7b3845fabf93b57760b576`",
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1. Attacker identifies users who have approved JetonRouter for a token (e.g., USDC) with a large allowance, by scanning Approval events on Etherscan.",
+  "2. Attacker calls `swap(USDC_address, transferFrom_calldata, USDC, 0)` where `transferFrom_calldata` encodes `transferFrom(victim, attacker, victimBalance)`.",
+  "3. The router executes `USDC.call(transferFrom(victim, attacker, victimBalance))` — succeeds because the router is the `msg.sender` and USDC approvals to the router were granted by the victim.",
+  "4. Victim's USDC balance is transferred to the attacker with the router as the intermediary.",
+  "5. Attacker repeats for each victim address with outstanding approvals until ~$229K is drained."
+ ],
+ "other_code": [
+  "// VULNERABLE — arbitrary call with user-controlled target and calldata\nfunction swap(\n    address target,\n    bytes calldata data,\n    address tokenIn,\n    uint256 amountIn\n) external {\n    IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);\n    // BUG: executes arbitrary call — attacker supplies target = tokenAddress\n    // and data = transferFrom(victim, attacker, victimBalance) to steal\n    // tokens that any user has approved to this router contract\n    (bool success,) = target.call(data);\n    require(success);\n}\n\n// FIXED — whitelist targets and validate output\nfunction swap(\n    address target,\n    bytes calldata data,\n    address tokenIn,\n    uint256 amountIn,\n    address tokenOut,\n    uint256 minAmountOut\n) external {\n    require(approvedTargets[target], \"target not"
+ ]
+}

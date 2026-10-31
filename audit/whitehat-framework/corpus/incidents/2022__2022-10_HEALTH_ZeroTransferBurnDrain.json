@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-10_HEALTH_ZeroTransferBurnDrain",
+ "source_file": "2022/2022-10_HEALTH_ZeroTransferBurnDrain.md",
+ "title": "HEALTH — Attack Analysis: Burn Mechanism Exploitation via Repeated Zero-Amount Transfers",
+ "date": "2022-10-01",
+ "protocol": "HEALTH Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~16.64 BNB",
+ "loss_usd": null,
+ "root_cause": "When `transfer(address, 0)` is called 1,000 times repeatedly, the burn logic inside `_transfer()` burns tokens from the LP pair on every call, reducing the reserve",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable HEALTH token — burn executes even on zero-amount transfers\ncontract HEALTHToken is ERC20 {\n    uint256 public burnRate = 50; // 0.5%\n\n    function _transfer(address from, address to, uint256 amount) internal override {\n        //",
+  "❌ Burn logic executes even when amount = 0\n        uint256 burnAmount = amount * burnRate / 10000;\n\n        if (burnAmount > 0) {\n            //",
+  "❌ Burns burnAmount from the `from` address\n            // If from = pair → pair's HEALTH balance decreases\n            // Even without pair.sync(), balanceOf(pair) < reserve(pair)\n            _burn(from, burnAmount);\n        }\n\n        super._transfer(from, to, amount - burnAmount);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern — handle zero-amount transfers as a special case\ncontract SafeHEALTHToken is ERC20 {\n    function _transfer(address from, address to, uint256 amount) internal override {\n        //",
+  "✅ Zero-amount transfers are processed without burning\n        if (amount == 0) {\n            super._transfer(from, to, 0);\n            return;\n        }\n\n        uint256 burnAmount = amount * burnRate / 10000;\n        if (burnAmount > 0) {\n            _burn(from, burnAmount);\n        }\n        super._transfer(from, to, amount - burnAmount);\n    }\n}"
+ ],
+ "steps": [
+  "[2] Swap WBNB → HEALTH (worth 40 WBNB)",
+  "amount = 0 → burnAmount = 0 (by calculation)",
+  "→ pair.balanceOf(HEALTH) drops significantly after 1,000 burns",
+  "→ HEALTH price rises",
+  "[4] Sell held HEALTH → WBNB at inflated price",
+  "Reduced pair HEALTH reserve → price appreciation effect"
+ ],
+ "other_code": []
+}

@@ -1,0 +1,46 @@
+{
+ "id": "2024__2024-02-21_DeezNutz404_AccountingError_ETH",
+ "source_file": "2024/2024-02-21_DeezNutz404_AccountingError_ETH.md",
+ "title": "DeezNutz_404 — ERC-404 Self-Transfer Accounting Bug Analysis",
+ "date": "2024-02-21",
+ "protocol": "DeezNutz_404",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$170,000 (~58.65 ETH)",
+ "loss_usd": 170000.0,
+ "root_cause": "Double-counting of balance due to memory caching during self-transfer (from == to) in the ERC-404 `transfer` function",
+ "attack_tx": "0xbeef...2d61",
+ "vulnerable_contract": "0xb57E...0b8a",
+ "classes": [
+  "business-logic",
+  "flash-loan"
+ ],
+ "code_before": [
+  "function _transfer(address from, address to, uint256 amount) internal {\n    // ❌ Load balances into memory first\n    uint256 fromBalance = balanceOf[from];\n    uint256 toBalance = balanceOf[to];\n\n    // ❌ No validation when from == to\n    // When from and to are the same address:\n    //   fromBalance = X (balance at the time it was recorded in memory)\n    //   toBalance   = X (same value since it's the same address)\n\n    require(fromBalance >= amount, \"insufficient balance\");\n\n    // ❌ Deduct sender balance: balanceOf[from] = X - amount\n    balanceOf[from] = fromBalance - amount;\n\n    // ❌ Add receiver balance: balanceOf[to] = X + amount\n    //    However, since from == to, the already-deducted storage value\n    //    is ignored and amount is added to the old memory value X\n    //    Result: balanceOf[address] = X + amount (no deduction effect)\n    balanceOf[to] = toBalance + amount;\n\n    // ERC-404 NFT auto mint/burn logic\n    // ... (NFT processing based on incorrect balance)\n}",
+  "// ❌ ERC-404 standard transfer function: only zero-address validation exists\nfunction transfer(address to, uint256 amount) public returns (bool) {\n    require(to != address(0), \"transfer to zero address\"); // only blocks zero address\n    // ❌ No require(to != msg.sender) validation — self-transfer allowed\n    _transfer(msg.sender, to, amount);\n    return true;\n}",
+  "┌─────────────────────────────────────────────────────────────┐\n│  Attacker (bigbrainchad.eth)                                 │\n│  0xd215...0dfd                                              │\n└──────────────────────┬──────────────────────────────────────┘\n                       │ 1. flashLoan(2,000 WETH)\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Balancer Vault                                              │\n│  0xBA12...2C8                                               │\n│  [Provides interest-free flash loan]                         │\n└──────────────────────┬──────────────────────────────────────┘\n                       │ 2. receiveFlashLoan callback\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Attack Contract                                             │\n│  0xd129...ecd                                               │\n└──┬───────────────────┬──────────────────────────────────────┘\n   │                   │\n   │ 3. swap           │\n   │ WETH→DN           │\n   ▼                   │\n┌──────────────────┐   │\n│ UniswapV2 Router │   │\n│ 0x7a25...88D     │   │\n│                  │   │\n│ 2,000 WETH       │   │\n│    ──▶           │   │\n│ ~59,171,134 DN   │   │\n└──────────────────┘   │\n   │ Receive 59M DN     │\n   ▼                   │\n┌──────────────────────────────────────────────────────────────┐\n│  Self-Transfer Loop (5 iterations)                           │\n│                                                              │\n│  Round 0: transfer(self, 59,171,134 DN)  → Balance: 118,342,268 DN│\n│  Round 1: transfer(self, 118,342,268 DN) → Balance: 236,684,536 DN│\n│  Round 2: transfer(self, 236,684,536 DN) → Balance: 473,369,072 DN│\n│  Round 3: transfer(self, 473,369,072 DN) → Balance: 946,738,144 DN│\n│  Round 4: transfer(self, 946,738,144 DN) → Balance: 1,893,476,288 DN│\n│                                                              │\n│  ❌ Balance doubles each round due to memory bug             │\n└──────────────────────┬───────────────────────────────────────┘\n                       │ Holds ~1.89B DN\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Uniswap V2: DN/WETH Pool                                    │\n│  0x1fB4...51E2                                              │\n│  [Reserve manipulated via direct 1/20 DN transfer]          │\n└──────────────────────┬──────────────────────────────────────┘\n                       │ 5. Large-scale DN dump\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│  UniswapV2 Router                                            │\n│  ~1.89B DN → ~2,058.65 WETH                                 │\n└──────────────────────┬──────────────────────────────────────┘\n                       │ 6. Repay: 2,001 WETH → Balancer\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Net Profit: ~58.65 ETH ≈ $170,000                   "
+ ],
+ "code_after": [
+  "function _transfer(address from, address to, uint256 amount) internal {\n    // ✅ Explicitly block self-transfer\n    require(from != to, \"ERC404: self-transfer not allowed\");\n\n    uint256 fromBalance = balanceOf[from];\n    require(fromBalance >= amount, \"ERC404: insufficient balance\");\n\n    // ✅ Update with guarantee that from and to are different addresses\n    unchecked {\n        balanceOf[from] = fromBalance - amount;\n    }\n    // ✅ Read directly from storage to update with latest value\n    balanceOf[to] += amount;\n\n    emit Transfer(from, to, amount);\n}",
+  "// ✅ Fixed version\nfunction transfer(address to, uint256 amount) public returns (bool) {\n    require(to != address(0), \"transfer to zero address\");\n    require(to != msg.sender, \"ERC404: self-transfer prohibited\"); // ✅ Block self-transfer\n    _transfer(msg.sender, to, amount);\n    return true;\n}"
+ ],
+ "steps": [
+  "1. **Flash Loan**: Borrowed 2,000 WETH interest-free from Balancer Vault",
+  "2. **Buy DN Tokens**: Swapped WETH → DN via UniswapV2 Router (2,000 WETH → ~59,171,134 DN)",
+  "3. **Self-Transfer Loop (5 iterations)**: `DeezNutz.transfer(address(this), balanceOf)` — balance doubles each iteration",
+  "4. **Pre-inject Liquidity Pool**: Directly transferred 1/20 of DN balance to Uniswap V2 pair address (pool reserve manipulation)",
+  "5. **Sell DN Tokens**: Swapped amplified DN → WETH via UniswapV2 Router",
+  "6. **Repay Flash Loan**: Returned 2,001 WETH to Balancer (including 1 WETH fee)",
+  "7. **Profit Realized**: ~58.65 ETH (~$170,000) net profit",
+  "1. flashLoan(2,000 WETH)",
+  "2. receiveFlashLoan callback",
+  "Round 0: transfer(self, 59,171,134 DN) → Balance: 118,342,268 DN",
+  "Round 1: transfer(self, 118,342,268 DN) → Balance: 236,684,536 DN",
+  "Round 2: transfer(self, 236,684,536 DN) → Balance: 473,369,072 DN",
+  "Round 3: transfer(self, 473,369,072 DN) → Balance: 946,738,144 DN",
+  "Round 4: transfer(self, 946,738,144 DN) → Balance: 1,893,476,288 DN",
+  "5. Large-scale DN dump",
+  "~1.89B DN → ~2,058.65 WETH",
+  "6. Repay: 2,001 WETH → Balancer"
+ ],
+ "other_code": []
+}

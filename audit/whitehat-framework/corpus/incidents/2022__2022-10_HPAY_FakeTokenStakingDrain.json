@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-10_HPAY_FakeTokenStakingDrain",
+ "source_file": "2022/2022-10_HPAY_FakeTokenStakingDrain.md",
+ "title": "HPAY — Fake Token Staking to Drain HPAY Rewards Attack Analysis",
+ "date": "2022-10-01",
+ "protocol": "HPAY Bonus Staking",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~115 BNB",
+ "loss_usd": null,
+ "root_cause": "`setToken()` lacks access control, allowing arbitrary replacement of the staking token; attacker staked large amounts of a fake token then withdrew HPAY rewards",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable Bonus Contract - setToken() has no access control\ncontract HPAYBonus {\n    address public stakingToken; // staking token address\n\n    //",
+  "❌ Anyone can change the staking token\n    function setToken(address newToken) external {\n        stakingToken = newToken;\n    }\n\n    function stake(uint256 amount) external {\n        IERC20(stakingToken).transferFrom(msg.sender, address(this), amount);\n        stakedBalance[msg.sender] += amount;\n        lastStakeBlock[msg.sender] = block.number;\n    }\n\n    function withdraw() external {\n        uint256 elapsed = block.number - lastStakeBlock[msg.sender];\n        //",
+  "❌ Rewards paid in HPAY regardless of which token was staked\n        uint256 reward = stakedBalance[msg.sender] * rewardPerBlock * elapsed;\n        IERC20(HPAY).transfer(msg.sender, reward);\n        stakedBalance[msg.sender] = 0;\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - staking token is fixed\ncontract SafeHPAYBonus {\n    address public immutable STAKING_TOKEN; //",
+  "✅ immutable address\n\n    constructor(address _stakingToken) {\n        STAKING_TOKEN = _stakingToken;\n    }\n\n    // No setToken() function - token cannot be changed\n}"
+ ],
+ "steps": [
+  "❌ No access control → stakingToken = SHITCOIN",
+  "❌ No access control → stakingToken = HPAY",
+  "→ 30,000,000 HPAY successfully withdrawn",
+  "[7] Swap HPAY → WBNB → ~115 BNB net profit"
+ ],
+ "other_code": []
+}

@@ -1,0 +1,39 @@
+{
+ "id": "2021__2021-12-02_BadgerDAO_FrontEndInject_ETH",
+ "source_file": "2021/2021-12-02_BadgerDAO_FrontEndInject_ETH.md",
+ "title": "BadgerDAO — Frontend Script Injection Approval Drain Analysis",
+ "date": "2021-12-02",
+ "protocol": "BadgerDAO",
+ "chain": "Ethereum",
+ "loss_raw": "~$120,000,000 (~2,100 BTC equivalent in ibBTC, WBTC, renBTC, cvxCRV, and other Curve BTC pool tokens)",
+ "loss_usd": 120000000.0,
+ "root_cause": "Attacker obtained a Cloudflare API key giving write access to BadgerDAO's frontend CDN. Malicious JavaScript was injected that intercepted user Web3 transactions and prepended unauthorized `approve()` calls granting the attacker unlimited token allowances. Subsequent `transferFrom()` calls drained approved token balances from affected users.",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "→ Gains write access to BadgerDAO's Cloudflare CDN zone",
+  "Step 1: Malicious JS injection (Nov 27 – Dec 2, 2021)",
+  "→ app.badger.finance begins serving malicious script to users",
+  "Step 2: User visits app.badger.finance",
+  "→ Script hooks Web3 provider (MetaMask / WalletConnect)",
+  "Step 3: Transaction interception",
+  "→ Malicious script intercepts the transaction request",
+  "→ Prepends an ERC-20 approve() call:",
+  "→ User sees TWO transaction prompts (or one modified prompt)",
+  "→ Users who approve are unknowingly granting unlimited allowance",
+  "Step 4: Allowance harvesting (Dec 2, 2021)",
+  "→ ~2,100 BTC equivalent (~$120M) transferred to attacker",
+  "Step 5: Discovery and contract pause (Dec 2, 2021)",
+  "→ All Badger smart contracts paused via guardian role",
+  "→ Malicious script removed from Cloudflare CDN",
+  "→ US DOJ / FBI investigation opened; funds never recovered"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│ Pre-Attack: Attacker obtains Cloudflare API key                      │\n│ (via phishing, credential stuffing, or leaked secret)               │\n│ → Gains write access to BadgerDAO's Cloudflare CDN zone             │\n└────────────────────────┬────────────────────────────────────────────┘\n                         │\n┌────────────────────────▼────────────────────────────────────────────┐\n│ Step 1: Malicious JS injection (Nov 27 – Dec 2, 2021)               │\n│ Attacker uploads tampered JavaScript to Cloudflare CDN              │\n│ → app.badger.finance begins serving malicious script to users       │\n└────────────────────────┬────────────────────────────────────────────┘\n                         │\n┌────────────────────────"
+ ]
+}

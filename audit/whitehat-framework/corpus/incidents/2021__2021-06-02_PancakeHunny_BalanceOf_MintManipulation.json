@@ -1,0 +1,37 @@
+{
+ "id": "2021__2021-06-02_PancakeHunny_BalanceOf_MintManipulation",
+ "source_file": "2021/2021-06-02_PancakeHunny_BalanceOf_MintManipulation.md",
+ "title": "PancakeHunny — balanceOf-Based mintFor() Manipulation Vulnerability Analysis",
+ "date": "2021-06-02",
+ "protocol": "PancakeHunny",
+ "chain": "BSC",
+ "loss_raw": "~$7,000,000",
+ "loss_usd": 7000000.0,
+ "root_cause": "mintFor() calculates mint amount using the contract's current balanceOf() instead of the received token amount, making it manipulable via direct transfer",
+ "attack_tx": "0x765d...be8e (block 7,962,339)",
+ "vulnerable_contract": "HUNNY Minter (mintFor function)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ HUNNY Minter — incorrect balanceOf usage\nfunction mintFor(address flip, uint256 _withdrawalFee, uint256 _performanceFee, address to, uint256 timestamp)\n    external override onlyMinter\n{\n    uint256 feeSum = _performanceFee.add(_withdrawalFee);\n    IBEP20(flip).safeTransferFrom(msg.sender, address(this), feeSum);\n\n    // ❌ Uses the entire current contract balance instead of the passed feeSum\n    // Directly transferring CAKE inflates hunnyBNBValue\n    uint256 hunnyBNBValue = tokenToHunnyBNB(\n        CAKE.balanceOf(address(this)),  // manipulable\n        CAKE\n    );\n    uint256 mintHunny = safeHunnyMintAmount(hunnyBNBValue);\n    if (mintHunny > 0) {\n        _mint(mintHunny, to);\n    }\n}",
+  "// HunnyMinter — 0x109Ea28dbDea5E6ec126FbC8c33845DFe812a300 (BSC)\n// Etherscan-verified (V2 API, chainid 56); mintFor() verbatim from PoC comment (matches verified source)\n\nfunction mintFor(\n    address flip,\n    uint _withdrawalFee,\n    uint _performanceFee,\n    address to,\n    uint          // unused timestamp parameter\n) override external onlyMinter {\n    uint feeSum = _performanceFee.add(_withdrawalFee);\n    IBEP20(flip).safeTransferFrom(msg.sender, address(this), feeSum);\n\n    uint hunnyBNBAmount = tokenToHunnyBNB(\n        flip,\n        IBEP20(flip).balanceOf(address(this))  // ❌ reads ENTIRE contract balance, not just feeSum received\n    );\n    // hunnyBNBAmount is inflated when attacker pre-transfers tokens directly to this contract\n    // No cap or sanity check on hunnyBNBAmount before minting\n    _mint(hunnyBNBAmount, to);  // ❌ mints HUNNY proportional to inflated balance\n}"
+ ],
+ "code_after": [
+  "// ✅ Use only the feeSum passed as parameter\nfunction mintFor(address flip, uint256 _withdrawalFee, uint256 _performanceFee, address to, uint256 timestamp)\n    external override onlyMinter\n{\n    uint256 feeSum = _performanceFee.add(_withdrawalFee);\n    IBEP20(flip).safeTransferFrom(msg.sender, address(this), feeSum);\n\n    // ✅ Calculate based on the received feeSum (no external balance reference)\n    uint256 hunnyBNBValue = tokenToHunnyBNB(feeSum, IBEP20(flip));\n    uint256 mintHunny = safeHunnyMintAmount(hunnyBNBValue);\n    if (mintHunny > 0) {\n        _mint(mintHunny, to);\n    }\n}",
+  "// ✅ Fix: use feeSum (the actual received amount) instead of balanceOf()\nfunction mintFor(\n    address flip,\n    uint _withdrawalFee,\n    uint _performanceFee,\n    address to,\n    uint\n) override external onlyMinter {\n    uint feeSum = _performanceFee.add(_withdrawalFee);\n    uint before = IBEP20(flip).balanceOf(address(this));\n    IBEP20(flip).safeTransferFrom(msg.sender, address(this), feeSum);\n    uint received = IBEP20(flip).balanceOf(address(this)).sub(before); // ✅ actual received amount\n    uint hunnyBNBAmount = tokenToHunnyBNB(flip, received);             // ✅ based only on received tokens\n    _mint(hunnyBNBAmount, to);\n}"
+ ],
+ "steps": [
+  "Step 1: Swap 5.752 BNB for CAKE (PancakeSwap)",
+  "Step 2: Directly transfer CAKE to HUNNY Minter",
+  "→ Inflate Minter's CAKE.balanceOf()",
+  "Step 3: Call stake() then getReward()",
+  "→ mintFor() internally reads CAKE.balanceOf(minter)",
+  "→ Excessive HUNNY minted based on inflated balance",
+  "Step 4: Sell excess minted HUNNY → WBNB for profit"
+ ],
+ "other_code": [
+  "┌────────────────────────────────────────────────────────┐\n│ Step 1: Swap 5.752 BNB for CAKE (PancakeSwap)         │\n│ ~59.88 CAKE acquired                                   │\n└─────────────────────┬──────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────┐\n│ Step 2: Directly transfer CAKE to HUNNY Minter         │\n│ CAKE.transfer(hunnyMinter, 59.88e18)                   │\n│ → Inflate Minter's CAKE.balanceOf()                    │\n└─────────────────────┬──────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────┐\n│ Step 3: Call stake() then getReward()                  │\n│ → mintFor() internally reads CAKE.balanceOf(minter)    │\n│ → Excessive HUNNY minted based on inflated ",
+  "function testExploit() public {\n    // 1. Swap BNB → CAKE\n    // router.swapExactETHForTokens{value: 5.752 ether}(0, [WBNB, CAKE], ...)\n\n    // 2. Directly transfer CAKE to HUNNY Minter (inflate balance)\n    // CAKE.transfer(address(hunnyMinter), CAKE.balanceOf(address(this)));\n\n    // 3. Call stake() then getReward()\n    // → mintFor() reads CAKE.balanceOf(minter) and mints excess HUNNY\n    // hunnyMinter.mintFor(CAKE, 0, performanceFee, address(this), block.timestamp);\n\n    // 4. Sell HUNNY → WBNB\n    // router.swapExactTokensForETH(hunnyBalance, 0, [HUNNY, WBNB], ...)\n}"
+ ]
+}

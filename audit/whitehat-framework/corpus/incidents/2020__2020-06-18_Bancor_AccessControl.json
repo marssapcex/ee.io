@@ -1,0 +1,29 @@
+{
+ "id": "2020__2020-06-18_Bancor_AccessControl",
+ "source_file": "2020/2020-06-18_Bancor_AccessControl.md",
+ "title": "Bancor — Public `safeTransferFrom` Access Control Vulnerability Analysis",
+ "date": "2020-06-18",
+ "protocol": "Bancor Protocol",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$131,889–$135,229 stolen by front-runner bots; ~$455,349 secured by Bancor white-hat self-extraction",
+ "loss_usd": 131889.0,
+ "root_cause": "The `safeTransferFrom` function in a newly deployed Bancor contract was exposed as `public`, allowing arbitrary users to transfer tokens on behalf of others",
+ "attack_tx": "0x4643b63d...",
+ "vulnerable_contract": "0x5f58058C0eC971492166763c8C22632B583F667f",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable Bancor contract\ncontract BancorConverter {\n\n    //",
+  "❌ Function that should be internal is incorrectly declared as public\n    // Anyone can call this to transfer arbitrary users' tokens\n    function safeTransferFrom(\n        IERC20 _token,\n        address _from,   //",
+  "❌ Arbitrary address can be specified\n        address _to,     //"
+ ],
+ "code_after": [
+  "✅ Correct access control\ncontract BancorConverter {\n\n    //",
+  "✅ Restricted to internal, preventing direct external calls\n    function safeTransferFrom(\n        IERC20 _token,\n        address _from,\n        address _to,\n        uint256 _value\n    ) internal {\n        uint256 prevBalance = _token.balanceOf(_to);\n        _token.transferFrom(_from, _to, _value);\n        require(_token.balanceOf(_to) - prevBalance == _value, \"transfer failed\");\n    }\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Identify victims who have approved the Bancor contract\n    │       (Scan Approval events on-chain)\n    │\n    ├─[2] Check victim's allowance to the Bancor contract\n    │       XBPToken.allowance(victim, bancorAddress) > 0\n    │\n    ├─[3] Call the public safeTransferFrom directly\n    │       bancorContract.safeTransferFrom(\n    │           XBPToken,\n    │           victim,           ← victim address\n    │           attacker,         ← attacker address\n    │           victim_balance    ← victim's full balance\n    │       )\n    │\n    └─[4] Full XBP token balance drained from victim\n            (Completed in a single transaction with no flash loan required)"
+ ]
+}

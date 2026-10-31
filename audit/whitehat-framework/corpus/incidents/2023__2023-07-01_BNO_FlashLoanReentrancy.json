@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-07-01_BNO_FlashLoanReentrancy",
+ "source_file": "2023/2023-07-01_BNO_FlashLoanReentrancy.md",
+ "title": "BNO Flash Loan Reentrancy Incident Analysis",
+ "date": "2023-07-01",
+ "protocol": "BNO",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ PancakePair.swap() [0x4B9c234779A3332b74DBaFf57559EC5b4cB078BD] flash loan",
+  "2 ▶ Loop execution (repeated):",
+  "▶ Pool.emergencyWithdraw() → claim rewards",
+  "3 ▶ BNO token [0xa4dBc813F7E1bf5827859e278594B1E0Ec1F710F] drained in bulk",
+  "4 ▶ Repay PancakePair flash loan + realize profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: emergencyWithdraw does not require NFT unstaking\nfunction emergencyWithdraw() external {\n    UserInfo storage user = userInfo[msg.sender];\n    uint256 amount = user.amount;\n\n    // Vulnerable: withdrawal without checking NFT stake status\n    // No validation of user.nftStaked\n    user.amount = 0;\n    user.rewardDebt = 0;\n\n    // Token transfer (reentrancy possible)\n    IERC20(rewardToken).transfer(msg.sender, amount);\n}\n\nfunction pledge(uint256 amount) external {\n    // Callable even without an NFT staked\n    UserInfo storage user = userInfo[msg.sender];\n    user.amount += amount;\n    // reward update\n}",
+  "// Root cause: Flash Loan + Reentrancy\n// Source code unverified — based on bytecode analysis"
+ ]
+}

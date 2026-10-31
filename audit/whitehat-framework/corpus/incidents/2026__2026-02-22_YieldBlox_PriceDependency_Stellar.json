@@ -1,0 +1,40 @@
+{
+ "id": "2026__2026-02-22_YieldBlox_PriceDependency_Stellar",
+ "source_file": "2026/2026-02-22_YieldBlox_PriceDependency_Stellar.md",
+ "title": "YieldBlox — Reflector VWAP Oracle Manipulation via Illiquid Market on Stellar",
+ "date": "2026-02-22",
+ "protocol": "YieldBlox DAO",
+ "chain": "Stellar",
+ "loss_raw": "~$10,000,000",
+ "loss_usd": 10000000.0,
+ "root_cause": "Pool configuration vulnerability — USTRY collateral priced via Reflector VWAP oracle with no minimum liquidity or volume threshold; attacker placed a single sell at 501 USDC/USTRY in an illiquid market with no prior trades in the 15-minute VWAP window, inflating price 100×",
+ "attack_tx": "`3e81a3f7b6e17cc22d0a1f33e9dcf90e5664b125b9e61f108b8d2f082f2d4657`",
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "// YieldBlox pool configuration — ANALYZED/RECONSTRUCTED\n// ⚠️ Not verbatim source — reconstructed from post-mortem descriptions\n// Language: Rust (Soroban SDK), Stellar blockchain\n//\n// When YieldBlox created their Blend V2 pool, they configured:\n//   collateral_asset   = USTRY  (Stellar-native bond token, ~$1.05 fair value)\n//   price_oracle       = Reflector oracle (VWAP from SDEX USTRY/USDC market)\n//   min_volume_check   = NONE   // ❌ no minimum 15-min volume threshold\n//   min_liquidity_check = NONE  // ❌ no minimum order book depth check\n//   price_deviation_guard = NONE // ❌ no circuit breaker for abnormal prices\n//\n// Blend V2 pool initialization (simplified):\nfn initialize_pool(\n    e: &Env,\n    admin: Address,\n    oracle: Address,   // ← Reflector oracle address\n    assets: Vec<ReserveConfig>,\n) {\n    // Registers the oracle for all assets in the pool.\n    // No validation that the oracle's price source has adequate liquidity.\n    // BUG: the oracle address is trusted unconditionally.\n    // If the oracle's VWAP can be manipulated (e.g., single trade in empty window),\n    // all collateral valuations in this pool are attackable.\n    storage::set_oracle(e, &oracle);\n    for asset in assets {\n        storage::set_reserve(e, &asset);\n    }\n}",
+  "// Reflector Oracle VWAP mechanism — ANALYZED/RECONSTRUCTED\n// ⚠️ Not verbatim Reflector source — illustrative of the documented behavior\n//\n// Reflector computes VWAP over a 15-minute (approx. 18-ledger) window on SDEX:\n//   VWAP = Σ(price_i × volume_i) / Σ(volume_i)\n//        for all trades in the window\n//\n// ATTACK: If the window contains exactly ONE trade:\n//   VWAP = price_attack × volume_attack / volume_attack = price_attack\n//   → The oracle price IS the attacker's trade price, regardless of fair value.\n//\n// Attacker's trade:\n//   sell 0.05 USTRY at 501 USDC/USTRY\n//   → executed at ~106.70 USDC/USTRY (clearing price against existing bids)\n//   → Reflector VWAP for the window = ~106.70 USDC/USTRY (100× fair value)\n\nfn get_oracle_price(e: &Env, asset: &Address) -> i128 {\n    // Fetch VWAP from Reflector oracle\n    let oracle_client = ReflectorClient::new(e, &REFLECTOR_ORACLE);\n    let price_data = oracle_client.lastprice(asset);\n    // ❌ No check: is this price within N% of a secondary source?\n    // ❌ No check: was there a minimum volume in the VWAP window?\n    // ❌ No check: is the deviation from the previous price reasonable?\n    price_data.price   // returns 106_700_000 (scaled) — 100× inflated\n}"
+ ],
+ "code_after": [
+  "// YieldBlox pool (fixed) — ANALYZED/RECONSTRUCTED\n// Shows the configuration guards that should have been present\n\nfn initialize_pool_safe(\n    e: &Env,\n    admin: Address,\n    oracle: Address,\n    assets: Vec<ReserveConfig>,\n    oracle_config: OracleConfig,  // ✅ added\n) {\n    storage::set_oracle(e, &oracle);\n    // ✅ Require minimum 15-minute trading volume before accepting price\n    storage::set_oracle_min_volume(e, &oracle_config.min_volume_usdc);   // e.g., $10,000\n    // ✅ Circuit breaker: reject price if it deviates >10% from prior oracle reading\n    storage::set_oracle_max_deviation_bps(e, &oracle_config.max_deviation_bps); // e.g., 1000\n    // ✅ Require minimum open order book depth at time of price read\n    storage::set_oracle_min_liquidity(e, &oracle_config.min_liquidity_usdc); // e.g., $50,000\n    for asset in assets {\n        storage::set_reserve(e, &asset);\n    }\n}\n\nfn get_oracle_price_safe(e: &Env, asset: &Address) -> i128 {\n    let oracle_client = ReflectorClient::new(e, &REFLECTOR_ORACLE);\n    let price_data = oracle_client.lastprice(asset);\n    let volume_15m = oracle_client.volume_15m(asset);\n\n    // ✅ Reject if insufficient volume dominated the VWAP window\n    require(volume_15m >= MIN_VOLUME_USDC, Error::InsufficientOracleVolume);\n\n    // ✅ Reject if price moved more than MAX_DEVIATION from previous reading\n    let prev_price = storage::get_last_price(e, asset);\n    let deviation = (price_data.price - prev_price).abs() * 10000 / prev_price;\n    require(deviation <= MAX_DEVIATION_BPS, Error::PriceDeviationExceeded);\n\n    storage::set_last_price(e, asset, price_data.price);\n    price_data.price\n}"
+ ],
+ "steps": [
+  "STEP 1 — Oracle Poisoning (Tx: 3e81a3f7b6e17cc22d0a1f33e9dcf90e5664b125...)",
+  "→ This single trade is the ONLY trade in the Reflector VWAP window",
+  "→ Reflector VWAP = 106.70 USDC/USTRY (real value: ~1.05 USDC/USTRY)",
+  "→ Price inflation: ~100×",
+  "STEP 2 — Oracle Update (Tx: ae721cacee382bdecac8d2c47286ecd42cb4711f...)",
+  "→ USTRY price in YieldBlox pool = ~106.70 USDC (from legitimate VWAP calc on bad data)",
+  "STEP 3 — Borrow #1 (USDC)",
+  "→ borrows 1,000,196 USDC (entire USDC reserve of the pool)",
+  "STEP 4 — Borrow #2 (XLM)",
+  "→ borrows 61,250,000,000 stroops XLM (61.25 million XLM, entire XLM reserve)",
+  "STEP 5 — Bridge Out"
+ ],
+ "other_code": [
+  "// Blend V2 collateral valuation — ANALYZED/RECONSTRUCTED\n// Shows how the oracle price flows into borrow capacity\n\nfn get_collateral_value(\n    e: &Env,\n    user: &Address,\n    collateral_asset: &Address,\n    collateral_amount: i128,\n) -> i128 {\n    let price = get_oracle_price(e, collateral_asset);\n    // price = 106_700_000 (100× inflated by attacker's single trade)\n\n    let collateral_value = collateral_amount\n        .checked_mul(price).unwrap()\n        / PRECISION;\n    // 13_003 USTRY × 106.70 USDC = ~1,387,211 USDC equivalent (real value: ~13,653 USDC)\n\n    let borrow_capacity = collateral_value * LTV_NUMERATOR / LTV_DENOMINATOR;\n    borrow_capacity   // ← returns ~1M USDC borrowable — entire pool reserves\n}",
+  "PRE-CONDITIONS\n  — USTRY/USDC SDEX market: sole market maker withdraws all liquidity\n  — Reflector oracle VWAP window (15 min) contains ZERO prior trades\n  — YieldBlox Blend V2 pool: no minimum volume/liquidity guard on oracle\n\nSTEP 1 — Oracle Poisoning (Tx: 3e81a3f7b6e17cc22d0a1f33e9dcf90e5664b125...)\n  Attacker places a sell offer: 501 USDC per USTRY on SDEX\n  Executes a counter-buy: purchases 0.05 USTRY at ~106.70 USDC\n  → This single trade is the ONLY trade in the Reflector VWAP window\n  → Reflector VWAP = 106.70 USDC/USTRY  (real value: ~1.05 USDC/USTRY)\n  → Price inflation: ~100×\n\nSTEP 2 — Oracle Update (Tx: ae721cacee382bdecac8d2c47286ecd42cb4711f...)\n  Reflector oracle updates its on-chain price feed with the VWAP result\n  → USTRY price in YieldBlox pool = ~106.70 USDC  (from legit"
+ ]
+}

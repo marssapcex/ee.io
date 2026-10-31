@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-09-04_Unverified16d0_MultiCallTransferFrom",
+ "source_file": "2024/2024-09-04_Unverified16d0_MultiCallTransferFrom.md",
+ "title": "Unverified 0x16d0 — multiCallWithRevert Unauthorized transferFrom Vulnerability Analysis",
+ "date": "2024-09-04",
+ "protocol": "Unverified Contract 0x16d0",
+ "chain": "Ethereum",
+ "loss_raw": "~329 USD",
+ "loss_usd": null,
+ "root_cause": "multiCallWithRevert() executes arbitrary calldata without validation — exploits addr2's USDT approval to execute transferFrom",
+ "attack_tx": "0xf5f251fd",
+ "vulnerable_contract": "0x16d0dc96",
+ "classes": [
+  "approval-abuse"
+ ],
+ "code_before": [
+  "❌ 0x16d0dc96: multiCallWithRevert arbitrary calldata execution\ncontract Vulnerable0x16d0 {\n    //",
+  "❌ No caller validation\n    //",
+  "❌ No calldata content validation\n    function multiCallWithRevert(address token, bytes[] calldata data) external {\n        for (uint i = 0; i < data.length; i++) {\n            //"
+ ],
+ "code_after": [
+  "✅ Fix:\n// Only execute whitelisted function selectors\n// require(msg.sender == owner, \"unauthorized\");\n// Verify that transferFrom's `from` is an allowed address"
+ ],
+ "steps": [
+  "[2] ▶ Check addr2→addr1 allowance",
+  "→ Confirm allw > bal (unlimited approval exists)",
+  "addr2's USDT → transferred to attacker"
+ ],
+ "other_code": []
+}

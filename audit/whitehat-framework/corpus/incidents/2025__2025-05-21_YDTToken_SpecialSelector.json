@@ -1,0 +1,31 @@
+{
+ "id": "2025__2025-05-21_YDTToken_SpecialSelector",
+ "source_file": "2025/2025-05-21_YDTToken_SpecialSelector.md",
+ "title": "YDT Token — Token Theft via Special Function Selector Analysis",
+ "date": "2025-05-21",
+ "protocol": "YDT Token",
+ "chain": "BSC",
+ "loss_raw": "Unknown (USDT profit)",
+ "loss_usd": null,
+ "root_cause": "Hidden function accessible only via a special function selector (0xec22f4c7) that directly moves tokens from the LP pool",
+ "attack_tx": "bscscan block 50273545",
+ "vulnerable_contract": "YDT: 0x3612e4Cb34617bCac849Add27366D8D85C102eFd",
+ "classes": [
+  "private-key-compromise"
+ ],
+ "code_before": [
+  "❌ Hidden function: accessible only via a special selector not in the ABI\n// Selector: 0xec22f4c7\n// Actual signature: specialTransfer(address from, address to, uint256 amount, address caller)\n\nfunction specialTransfer(\n    address from,    // LP pair address\n    address to,      // recipient address\n    uint256 amount,  // transfer amount\n    address caller   // must be the taxmodule address\n) external {\n    //",
+  "❌ Not registered in ABI — easy to miss in standard audits\n    require(caller == taxmodule, \"Not authorized\");\n    // Directly move tokens from the LP pair\n    _transfer(from, to, amount);\n    //",
+  "❌ Causes reserve mismatch without a subsequent pair.sync()\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct design: register and document all functions in the ABI\n// Functions accessible only via special selectors may go undetected in audits",
+  "// ✅ Fix: remove all hidden selectors; register every function in the ABI and verified source.\n// If privileged token movement is needed, use msg.sender-based access control:\nfunction authorizedTransferFromLP(address to, uint256 amount) external {\n    require(msg.sender == owner, \"Not owner\"); // ✅ check msg.sender, not a caller argument\n    _transfer(liquidityPair, to, amount);\n    IUniswapV2Pair(liquidityPair).sync();\n}"
+ ],
+ "steps": [
+  "► Update reserves → YDT price collapses"
+ ],
+ "other_code": [
+  "Deployer (Insider)\n  │\n  ├─[1]─► Deploy YDT token (with hidden function)\n  │         └─► 0xec22f4c7 selector = specialTransfer backdoor\n  │\n  ├─[2]─► Regular investors buy YDT (liquidity accumulates in LP pool)\n  │\n  ├─[3]─► Call specialTransfer(Pair, attacker, balance-1000e6, taxmodule)\n  │         └─► Selector: 0xec22f4c7\n  │         └─► Move nearly all YDT from LP pool to attacker\n  │\n  ├─[4]─► Call Pair.sync() (or skim())\n  │         └─► Update reserves → YDT price collapses\n  │\n  ├─[5]─► Swap stolen YDT for USDT on PancakeSwap\n  │         └─► swapExactTokensForTokensSupportingFeeOnTransferTokens\n  │\n  └─[6]─► Collect USDT profit"
+ ]
+}

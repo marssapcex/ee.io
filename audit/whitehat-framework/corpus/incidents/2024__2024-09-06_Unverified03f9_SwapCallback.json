@@ -1,0 +1,29 @@
+{
+ "id": "2024__2024-09-06_Unverified03f9_SwapCallback",
+ "source_file": "2024/2024-09-06_Unverified03f9_SwapCallback.md",
+ "title": "Unverified 0x03f9 — uniswapV3SwapCallback Unverified Callback Vulnerability Analysis",
+ "date": "2024-09-06",
+ "protocol": "Unverified Contract 0x03f9",
+ "chain": "Ethereum",
+ "loss_raw": "~1,700 USD",
+ "loss_usd": null,
+ "root_cause": "No msg.sender validation in uniswapV3SwapCallback — WETH drained via direct call",
+ "attack_tx": "0x1a3e9eb5",
+ "vulnerable_contract": "0x03f911ae",
+ "classes": [
+  "unprotected-callback"
+ ],
+ "code_before": [
+  "❌ uniswapV3SwapCallback: no msg.sender validation\ncontract Vulnerable0x03f9 {\n    function uniswapV3SwapCallback(\n        int256 amount0Delta,\n        int256 amount1Delta,\n        bytes calldata data\n    ) external {\n        //",
+  "❌ No check that msg.sender is an actual UniswapV3 pool\n        //",
+  "❌ No validation of token, recipient within data\n        (address token, address recipient, uint256 fee) = abi.decode(data, (address, address, uint256));\n        IERC20(token).transfer(recipient, uint256(amount0Delta));\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix:\n// address pool = IUniswapV3Factory(factory).getPool(token0, token1, fee);\n// require(msg.sender == pool, \"not authorized pool\");"
+ ],
+ "steps": [
+  "❌ No msg.sender validation → WETH transferred to AttackerC",
+  "[5] ▶ Transfer ETH to attacker → ~1,700 USD drained"
+ ],
+ "other_code": []
+}

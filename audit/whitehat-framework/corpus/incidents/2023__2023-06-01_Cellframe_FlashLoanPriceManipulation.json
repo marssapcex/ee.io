@@ -1,0 +1,33 @@
+{
+ "id": "2023__2023-06-01_Cellframe_FlashLoanPriceManipulation",
+ "source_file": "2023/2023-06-01_Cellframe_FlashLoanPriceManipulation.md",
+ "title": "Cellframe — Flash Loan PancakeV3 Price Manipulation Analysis",
+ "date": "2023-06-01",
+ "protocol": "Cellframe Network",
+ "chain": "BSC",
+ "loss_raw": "~76K USD",
+ "loss_usd": null,
+ "root_cause": "Using PancakeSwap V3 slot0 spot price as oracle",
+ "attack_tx": "0x943c2a5f...",
+ "vulnerable_contract": "Cellframe contract integrated with PancakeV3",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ Using PancakeV3 slot0 spot price\nfunction getCurrentPrice() internal view returns (uint256) {\n    (uint160 sqrtPriceX96,,,,,,) = pancakeV3Pool.slot0();\n    // ❌ slot0 reflects the latest swap price → manipulable via flash loan / large swap\n    uint256 price = uint256(sqrtPriceX96) ** 2 / (2 ** 192);\n    return price;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: Use V3 TWAP (time-weighted)\nfunction getTWAPPrice(uint32 twapInterval) internal view returns (uint256) {\n    uint32[] memory secondsAgos = new uint32[](2);\n    secondsAgos[0] = twapInterval;\n    secondsAgos[1] = 0;\n    (int56[] memory tickCumulatives,) = pancakeV3Pool.observe(secondsAgos);\n    int56 tickDiff = tickCumulatives[1] - tickCumulatives[0];\n    int24 avgTick = int24(tickDiff / int32(twapInterval));\n    return TickMath.getSqrtRatioAtTick(avgTick);\n}",
+  "// ✅ V3 TWAP observation (minimum 30 minutes)\nuint32 twapInterval = 1800; // 30 minutes"
+ ],
+ "steps": [
+  "1. Borrow large amount of tokens via",
+  "2. Large swap on PancakeV3 → manipulate",
+  "3. Call Cellframe contract",
+  "4. Reverse swap + repay flash loan +"
+ ],
+ "other_code": [
+  "// Root cause: Using PancakeSwap V3 slot0 spot price as oracle\n// Source code unverified — based on bytecode analysis",
+  "┌─────────────────────────────────────────────┐\n│  Pre-Attack Tx: Pre-manipulate PancakeV3    │\n│  pool price                                 │\n└─────────────────────┬───────────────────────┘\n                      ▼\n┌─────────────────────────────────────────────┐\n│  1. Borrow large amount of tokens via       │\n│     flash loan                              │\n└─────────────────────┬───────────────────────┘\n                      ▼\n┌─────────────────────────────────────────────┐\n│  2. Large swap on PancakeV3 → manipulate    │\n│     slot0 price                             │\n└─────────────────────┬───────────────────────┘\n                      ▼\n┌─────────────────────────────────────────────┐\n│  3. Call Cellframe contract                 │\n│     Execute favorable exchange using        │\n│     ma"
+ ]
+}

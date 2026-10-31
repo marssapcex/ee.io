@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-11-09_TrustPad_FlashLoan",
+ "source_file": "2023/2023-11-09_TrustPad_FlashLoan.md",
+ "title": "TrustPad — Flash Loan Attack Analysis",
+ "date": "2023-11-09",
+ "protocol": "TrustPad",
+ "chain": "BSC",
+ "loss_raw": "~$155K",
+ "loss_usd": 155.0,
+ "root_cause": "TPAD staking reward calculation relies on AMM spot reserve-based pricing, allowing over-reward collection via reserve manipulation within a single block",
+ "attack_tx": "0x191a34e6c0780c3d...",
+ "vulnerable_contract": "0xe613c058701c768e...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: reward calculated using spot price\nfunction claimReward() external {\n    uint256 tpadPrice = getTpadSpotPrice(); //",
+  "❌ manipulable\n    uint256 reward = stakedAmount * tpadPrice * rewardRate;\n    tpad.transfer(msg.sender, reward);\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: use TWAP"
+ ],
+ "steps": [
+  "② Call claimReward() → excess rewards"
+ ],
+ "other_code": [
+  "// Root cause: TPAD staking reward calculation relies on AMM spot reserve-based pricing, allowing over-reward collection via reserve manipulation within a single block\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Buy TPAD (manipulate price upward)\n  ├─② Call claimReward() → excess rewards\n  ③ Sell TPAD\n  └─④ ~$155K profit"
+ ]
+}

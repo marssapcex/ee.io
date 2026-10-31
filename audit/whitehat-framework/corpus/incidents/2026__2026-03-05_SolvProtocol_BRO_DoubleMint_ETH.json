@@ -1,0 +1,44 @@
+{
+ "id": "2026__2026-03-05_SolvProtocol_BRO_DoubleMint_ETH",
+ "source_file": "2026/2026-03-05_SolvProtocol_BRO_DoubleMint_ETH.md",
+ "title": "Security Incident Analysis: Solv Protocol BRO Double Minting",
+ "date": "2026-03-05",
+ "protocol": "Solv Protocol -- BitcoinReserveOffering",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "[a] Transfer BRO → Conversion(0x6aa7) X BRO deposit",
+  "[b] Burn BRO (Transfer → 0x0) X BRO burn",
+  "SolvBTC: BRO(0x014e)→0x6aa7, 0",
+  "SolvBTC: 0x6aa7→BRO(0x014e), 0",
+  "[e] _mint #1: 0x0 → 0x6aa7, X BRO mint",
+  "[f] _mint #2: 0x0 → 0x6aa7, X BRO mint",
+  "[g] Transfer: 0x6aa7 → 0x0, 2X BRO burn",
+  "[3] Withdraw all BRO: 0x6aa7 → AttackContract 567,758,816.72 BRO",
+  "[4a] Sell BRO: 165,592,064.42 BRO → DEX Pool(0xfb2d)",
+  "→ Receive 38.047 SolvBTC ERC20",
+  "[4b] SolvBTC → GOEFS(0x5738) → ~38 WBTC swap",
+  "[4c] WBTC → UniV3(0x4585) → 1,211.054 WETH swap",
+  "[4d] WETH → ETH withdrawal (unwrap)",
+  "[5] Return remaining BRO: 402,166,752.30 BRO → Attacker EOA",
+  "1 | 135.36 | 270.73",
+  "2 | 270.73 | 541.46",
+  "3 | 541.46 | 1,082.91",
+  "4 | 1,082.91 | 2,165.83",
+  "5 | 2,165.83 | 4,331.66",
+  "10 | 138,612.99 | 277,225.98"
+ ],
+ "other_code": [
+  "UpgradeableBeacon (0x031c97)\n  │\n  ├── Implementation: BitcoinReserveOffering (0x15F7c1)\n  │\n  ├── Instance A: BRO ERC20 Token (0x014e6f)   ← BRO-SOLV-20MAY2026\n  │     - wrappedSftAddress = SolvBTC ERC3525\n  │     - exchangeRate-based minting/burning\n  │\n  └── Instance B: Conversion Contract (0x6aa78a)   ← Another BRO instance\n        - Same implementation, same beacon\n        - Handles BRO burn ↔ SolvBTC exchange",
+  "Attacker EOA (0xA407fE27)\n  │\n  ├─[1] Deploy attack contract (0xb32D3899)\n  │      Constructor args: loops=22, amount=135.364 BRO\n  │\n  └─[2] Execute double minting loop (22 cycles)\n         │\n         │  ┌──────────────────────── 1 Cycle ────────────────────────┐\n         │  │                                                          │\n         │  │  AttackContract                                          │\n         │  │       │                                                  │\n         │  │       ├─[a] Transfer BRO → Conversion(0x6aa7)  X BRO deposit │\n         │  │       │                                                  │\n         │  │  Conversion(0x6aa7)                                      │\n         │  │       │                                                  │\n         │  │       "
+ ]
+}

@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-07-16_USDTStaking_Approval",
+ "source_file": "2023/2023-07-16_USDTStaking_Approval.md",
+ "title": "USDTStakingContract28 — Unlimited Approval Vulnerability Analysis",
+ "date": "2023-07-16",
+ "protocol": "USDTStakingContract28",
+ "chain": "Ethereum",
+ "loss_raw": "~$21K",
+ "loss_usd": 21.0,
+ "root_cause": "`tokenAllowAll()` function externally callable, allowing arbitrary token approvals",
+ "attack_tx": "0xfc872bf5ca8f04b18b...",
+ "vulnerable_contract": "0xb754ebdba9b009113b...",
+ "classes": [
+  "approval-abuse"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: approval function callable by anyone\ninterface USDTStakingContract28 {\n    function tokenAllowAll(address asset, address allowee) external;\n    //",
+  "❌ No access control — anyone can approve unlimited tokens to an arbitrary address\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fixed code\nfunction tokenAllowAll(address asset, address allowee) external onlyOwner {\n    IERC20(asset).approve(allowee, type(uint256).max);\n}"
+ ],
+ "steps": [
+  "No access control → succeeds"
+ ],
+ "other_code": [
+  "// Root cause: tokenAllowAll() function externally callable, allowing arbitrary token approvals\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Directly calls tokenAllowAll(USDT, attacker)\n  │       └─ No access control → succeeds\n  ├─② Executes USDT.transferFrom(contract, attacker, balance)\n  └─③ Drains entire contract USDT balance (~$21K)"
+ ]
+}

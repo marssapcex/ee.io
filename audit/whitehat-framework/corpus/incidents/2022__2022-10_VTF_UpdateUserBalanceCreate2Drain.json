@@ -1,0 +1,31 @@
+{
+ "id": "2022__2022-10_VTF_UpdateUserBalanceCreate2Drain",
+ "source_file": "2022/2022-10_VTF_UpdateUserBalanceCreate2Drain.md",
+ "title": "VTF — updateUserBalance() + CREATE2 400-Contract Balance Manipulation Attack Analysis",
+ "date": "2022-10-01",
+ "protocol": "VTF Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "`updateUserBalance()` function allows manipulation of user balances without access control; repeated claims executed via 400 contracts deployed with CREATE2",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "create2-exploit"
+ ],
+ "code_before": [
+  "❌ Vulnerable updateUserBalance() - no access control\ncontract VTFToken {\n    mapping(address => uint256) public userBalance;\n\n    //",
+  "❌ Anyone can call to manipulate the balance of any arbitrary address\n    function updateUserBalance(address user, uint256 amount) external {\n        userBalance[user] += amount;\n    }\n\n    function claim() external {\n        uint256 balance = userBalance[msg.sender];\n        require(balance > 0, \"No balance\");\n        userBalance[msg.sender] = 0;\n        _transfer(address(this), msg.sender, balance);\n    }\n}\n\n//",
+  "// ❌ Root cause: `updateUserBalance()` function allows manipulation of user balances without access control, with repeated claims via 400 contracts deployed using CREATE2\n    function updateUserBalance(address arg0) external view returns (uint256) {}  // 0x993ae7e9  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Correct pattern - internal function or access control applied\ncontract SafeVTFToken {\n    mapping(address => uint256) internal userBalance;\n\n    //",
+  "✅ Balance updates only through internal function\n    function _updateUserBalance(address user, uint256 amount) internal {\n        userBalance[user] += amount;\n    }\n\n    //"
+ ],
+ "steps": [
+  "[2] Swap USDT → VTF (Router)",
+  "[5] Chain execution (contract[0] → [1] → ... → [399])",
+  "[7] Swap VTF → USDT (reverse swap)"
+ ],
+ "other_code": []
+}

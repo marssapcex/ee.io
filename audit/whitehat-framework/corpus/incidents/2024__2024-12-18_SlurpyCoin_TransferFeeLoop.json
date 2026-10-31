@@ -1,0 +1,32 @@
+{
+ "id": "2024__2024-12-18_SlurpyCoin_TransferFeeLoop",
+ "source_file": "2024/2024-12-18_SlurpyCoin_TransferFeeLoop.md",
+ "title": "SlurpyCoin — Transfer Fee Loop Manipulation Vulnerability Analysis",
+ "date": "2024-12-18",
+ "protocol": "SlurpyCoin",
+ "chain": "BSC",
+ "loss_raw": "~3,000 USD",
+ "loss_usd": null,
+ "root_cause": "SlurpyCoin's `_transfer()` triggers BuyOrSell logic on direct transfers to the WBNB/SLURPY LP — repeated calls enable price manipulation",
+ "attack_tx": "0x6c729ee7",
+ "vulnerable_contract": "0x72c114A1",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ SlurpyCoin: BuyOrSell triggered on LP transfer inside _transfer\ncontract SlurpyCoin {\n    function _transfer(address from, address to, uint256 amount) internal override {\n        if (to == pair || from == pair) {\n            //",
+  "❌ BuyOrSell logic executed on every LP pool transfer\n            _handleBuyOrSell(from, to, amount);\n        }\n        super._transfer(from, to, amount);\n    }\n\n    function _handleBuyOrSell(address from, address to, uint256 amount) internal {\n        //",
+  "❌ Fee accumulation or price distortion via repeated calls\n        //"
+ ],
+ "code_after": [
+  "✅ Fix:\n// Limit the number of BuyOrSell calls within a single transaction\n// Use a bool inSwap guard variable to prevent recursion"
+ ],
+ "steps": [
+  "path: WBNB → SLURPY",
+  "Direct LP transfer → BuyOrSell triggered repeatedly",
+  "[3] ▶ Sell SLURPY → WBNB (profit at distorted price)"
+ ],
+ "other_code": [
+  "Attacker (0x132d9bbd)\n  │\n  ├─[1]─▶ DODO.flashLoan(40 WBNB, 0, this, 0x00)\n  │\n  ├─[2]─▶ DPPFlashLoanCall callback:\n  │         WBNB.approve(PANCAKE_ROUTER, max)\n  │\n  │         Outer loop ×16:\n  │             path: WBNB → SLURPY\n  │             router.swapTokensForExactTokens(1,300,000 SLURPY, ...)\n  │             └─ BuyOrSell triggered on purchase\n  │\n  │             Inner loop ×15:\n  │                 SLURPY.transfer(pair, 100,000 SLURPY)\n  │                 └─ Direct LP transfer → BuyOrSell triggered repeatedly\n  │                 LP reserve progressively distorted\n  │\n  ├─[3]─▶ Sell SLURPY → WBNB (profit at distorted price)\n  │\n  ├─[4]─▶ Repay DODO 40 WBNB\n  │\n  └─[5]─▶ ~3,000 USD net profit"
+ ]
+}

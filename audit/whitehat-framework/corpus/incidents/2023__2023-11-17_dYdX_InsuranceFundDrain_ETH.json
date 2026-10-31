@@ -1,0 +1,23 @@
+{
+ "id": "2023__2023-11-17_dYdX_InsuranceFundDrain_ETH",
+ "source_file": "2023/2023-11-17_dYdX_InsuranceFundDrain_ETH.md",
+ "title": "dYdX v3 — Insurance Fund Drain via YFI Market Manipulation Analysis",
+ "date": "2023-11-17",
+ "protocol": "dYdX v3",
+ "chain": "Ethereum",
+ "loss_raw": "~$9,000,000 (dYdX v3 insurance fund drained; no direct user losses — fund absorbed the shortfall)",
+ "loss_usd": 9000000.0,
+ "root_cause": "The attacker accumulated a large leveraged long position in the thin YFI-USD perpetuals market on dYdX, then coordinated a sharp crash of the YFI spot price on external markets (CEXs), triggering mass liquidations on dYdX whose insurance fund could not fully cover the resulting bad debt",
+ "attack_tx": null,
+ "vulnerable_contract": "dYdX v3 perpetuals market (YFI-USD market)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Accumulate large leveraged long YFI-USD position on dYdX v3\n    │       Position size: disproportionately large relative to YFI market liquidity\n    │       Collateral posted: significant (attacker willing to lose collateral)\n    │\n    ├─[2] Aggressively sell YFI on Binance, OKX, and other CEXs\n    │       YFI spot price drops ~30% rapidly\n    │       → dYdX's oracle (Chainlink / market-weighted) reflects crash\n    │\n    ├─[3] dYdX liquidation engine triggers:\n    │       Forced liquidation of attacker's long position at crashed price\n    │       Liquidation proceeds < position losses (thin liquidity, slippage)\n    │       → Bad debt created (shortfall not covered by collateral)\n    │\n    ├─[4] dYdX insurance fund absorbs bad debt shortfall\n    │       Insurance fu",
+  "// File: contracts/protocol/v1/traders/P1Liquidation.sol\n// Source: https://github.com/dydxprotocol/perpetual/blob/master/contracts/protocol/v1/traders/P1Liquidation.sol\n// License: Apache 2.0\n\npragma solidity 0.5.16;\n\ncontract P1Liquidation is P1TraderConstants {\n    using SafeMath for uint256;\n    using Math for uint256;\n    using P1BalanceMath for P1Types.Balance;\n\n    /**\n     * @notice Allows an account below the minimum collateralization to be liquidated.\n     * @dev Called by P1Trade.trade() when a global operator submits a liquidation.\n     */\n    function trade(\n        address sender,\n        address maker,      // ← the account being liquidated (attacker's long position)\n        address taker,      // ← the liquidator (dYdX engine or backstop provider)\n        uint256 price,    "
+ ]
+}

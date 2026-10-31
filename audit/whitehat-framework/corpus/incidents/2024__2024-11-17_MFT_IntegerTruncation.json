@@ -1,0 +1,31 @@
+{
+ "id": "2024__2024-11-17_MFT_IntegerTruncation",
+ "source_file": "2024/2024-11-17_MFT_IntegerTruncation.md",
+ "title": "MFT — Integer Truncation Staking Vulnerability Analysis",
+ "date": "2024-11-17",
+ "protocol": "MFT Token",
+ "chain": "BSC",
+ "loss_raw": "~33,700 USD",
+ "loss_usd": null,
+ "root_cause": "Integer truncation bug in `stake()` — values ≥ 2^128 are truncated to 0, but the contract records them as a large stake",
+ "attack_tx": "0xe24ee2af",
+ "vulnerable_contract": "0x29Ee4526",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "❌ MFT Staking: Integer truncation vulnerability\ncontract MFTStaking {\n    struct StakeInfo {\n        uint128 amount;  //",
+  "❌ stored as uint128\n        // ...\n    }\n\n    function stake(uint256 amount) external {\n        //",
+  "❌ truncation to uint128: values ≥ 2^128 become 0\n        uint128 truncated = uint128(amount);  // 2^128 input → 0\n        stakeInfo[msg.sender].amount += truncated;  // adds 0\n\n        //"
+ ],
+ "code_after": [
+  "✅ Fix:\n// require(amount <= type(uint128).max, \"amount too large\");\n// or store as uint256 with overflow check"
+ ],
+ "steps": [
+  "❌ uint128 truncation → actual transfer: 0 MFT",
+  "→ forms referral network",
+  "large stake record + 25 referrals → claim rewards",
+  "[5] ▶ acquire large amount of MFT tokens → steal ~33,700 USD"
+ ],
+ "other_code": []
+}

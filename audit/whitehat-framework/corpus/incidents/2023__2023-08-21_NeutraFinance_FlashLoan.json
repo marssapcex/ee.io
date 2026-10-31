@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-08-21_NeutraFinance_FlashLoan",
+ "source_file": "2023/2023-08-21_NeutraFinance_FlashLoan.md",
+ "title": "NeutraFinance — Flash Loan Attack Analysis",
+ "date": "2023-08-21",
+ "protocol": "NeutraFinance",
+ "chain": "Arbitrum",
+ "loss_raw": "Unclear",
+ "loss_usd": null,
+ "root_cause": "Price oracle directly consumed Balancer AMM spot price without TWAP, making it manipulable via large swaps within a single block",
+ "attack_tx": "0x6301d4c9f7ac1c96a6...",
+ "vulnerable_contract": "0x3747dbbcb5c07786a4...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: price calculated from Balancer pool balances\nfunction getTokenValue() public view returns (uint256) {\n    (, uint256[] memory balances,) = IVault(balancerVault).getPoolTokens(poolId);\n    return balances[0] * 1e18 / balances[1]; //",
+  "❌ manipulable via flash loan\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: use Chainlink oracle"
+ ],
+ "steps": [
+  "② Manipulate pool balances → price distortion"
+ ],
+ "other_code": [
+  "// Root cause: price oracle directly consumed Balancer AMM spot price without TWAP, making it manipulable via large swaps within a single block\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Borrow large amount of tokens via Balancer flash loan\n  ├─② Manipulate pool balances → price distortion\n  ├─③ Open NeutraFinance position at manipulated price\n  ├─④ Restore price, then close position for profit\n  └─⑤ Repay flash loan"
+ ]
+}

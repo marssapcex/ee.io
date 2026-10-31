@@ -1,0 +1,26 @@
+{
+ "id": "2025__2025-02-24_Infini_RetainedAdminAccess_ETH",
+ "source_file": "2025/2025-02-24_Infini_RetainedAdminAccess_ETH.md",
+ "title": "Infini — Retained Developer Admin Access Drain Analysis",
+ "date": "2025-02-24",
+ "protocol": "Infini",
+ "chain": "Ethereum",
+ "loss_raw": "~$49,500,000 (USDC drained from Infini's yield vault contracts)",
+ "loss_usd": 49500000.0,
+ "root_cause": "A developer who contributed to the Infini protocol secretly retained admin-level private key access to the protocol's contracts after completing their engagement. On February 24, 2025, this developer used the retained admin access to drain ~$49.5M in USDC from Infini's vault contracts.",
+ "attack_tx": null,
+ "vulnerable_contract": "Infini InfiniCard yield vault (admin privilege access control)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "→ Flash loan used to amplify the withdrawal in a single transaction",
+  "[Laundering] Convert USDC → DAI (to avoid Circle's USDC blacklisting authority)",
+  "Convert DAI → ~17,700 ETH"
+ ],
+ "other_code": [
+  "Former Infini developer (attacker)\n    │\n    ├─[During development] Attacker secretly retains admin private key\n    │       Never disclosed to Infini team or security reviewers\n    │       Key not included in any access revocation after engagement ends\n    │\n    ├─[2025-02-24] Use retained admin key:\n    │       Call admin function to grant attacker address unlimited withdrawal rights\n    │       Drain ~$49.5M USDC from Infini vault contracts\n    │       → Flash loan used to amplify the withdrawal in a single transaction\n    │\n    ├─[Laundering] Convert USDC → DAI (to avoid Circle's USDC blacklisting authority)\n    │       Convert DAI → ~17,700 ETH\n    │       Route ~15,470 ETH through Tornado Cash mixer\n    │       Additional on-chain hops to obscure trail\n    │       Note: Two-stage drai"
+ ]
+}

@@ -1,0 +1,50 @@
+{
+ "id": "2024__2024-02-15_ParticleTrade_UnverifiedInput_ETH",
+ "source_file": "2024/2024-02-15_ParticleTrade_UnverifiedInput_ETH.md",
+ "title": "Particle Trade — Unverified User Input (onERC721Received Spoofing) Vulnerability Analysis",
+ "date": "2024-02-15",
+ "protocol": "Particle Trade",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~50 ETH (~$139,000)",
+ "loss_usd": 139000.0,
+ "root_cause": "No validation of NFT ownership or collection address in the `onERC721Received` callback",
+ "attack_tx": "0xd9b3...5ff6",
+ "vulnerable_contract": "0xe476...36e4",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code (inferred — Particle Exchange implementation)\nfunction onERC721Received(\n    address operator,\n    address from,\n    uint256 tokenId,\n    bytes calldata data\n) external returns (bytes4) {\n    // ❌ Does not verify that msg.sender is the actual NFT contract\n    // ❌ Anyone can call this function directly and pass arbitrary data\n    \n    // Decode lien information from data\n    (\n        Lien memory lien,\n        uint256 lienId,\n        uint256 amount,\n        address marketplace,\n        address taker,\n        bytes memory tradeData\n    ) = abi.decode(data, (Lien, uint256, uint256, address, address, bytes));\n    \n    // ❌ Does not verify that lien.collection matches msg.sender (the actual NFT contract)\n    // ❌ Does not verify that from actually owns the NFT\n    \n    // Calls ownerOf() on the attacker-supplied lien.collection address\n    address owner = IERC721(lien.collection).ownerOf(tokenId);\n    // ❌ owner points to the attacker's contract — attacker can return any value from ownerOf()\n    \n    // Opens a position and increases account balance\n    _openPosition(lien, lienId, tokenId, owner, ...);\n}",
+  "// ❌ Attacker contract — spoofs ownerOf\ncontract AttackContract {\n    address ownerofaddr;\n    \n    constructor() {\n        ownerofaddr = address(particleExchangeProxy); // initial value: protocol address\n    }\n    \n    // ❌ ownerOf() initially returns the protocol address, then zero address\n    function ownerOf(uint256 tokenId) external returns (address owner) {\n        return ownerofaddr; // returns attacker-manipulated value\n    }\n    \n    // ❌ State change on safeTransferFrom call (no actual NFT transfer)\n    function safeTransferFrom(\n        address from, address to, uint256 tokenId, bytes calldata _data\n    ) external {\n        ownerofaddr = address(0); // reset owner after transfer\n    }\n}",
+  "// ❌ Vulnerable code — no tokenId validity check\nfunction onERC721Received(..., uint256 tokenId, ...) external returns (bytes4) {\n    // ❌ Abnormal values such as tokenId = 50_126_827_091_960_426_151 are also accepted\n    // ❌ Does not verify whether the tokenId actually exists\n    ...\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — NFT transfer context validation added\nfunction onERC721Received(\n    address operator,\n    address from,\n    uint256 tokenId,\n    bytes calldata data\n) external returns (bytes4) {\n    // ✅ msg.sender must match the collection address registered in the lien\n    (Lien memory lien, uint256 lienId, ...) = abi.decode(\n        data, (Lien, uint256, uint256, address, address, bytes)\n    );\n    \n    // ✅ Verify actual NFT transfer context\n    require(\n        msg.sender == lien.collection,\n        \"ParticleExchange: caller is not the NFT collection\"\n    );\n    \n    // ✅ On-chain verification that tokenId owner is actually from\n    require(\n        IERC721(lien.collection).ownerOf(tokenId) == from,\n        \"ParticleExchange: invalid NFT owner\"\n    );\n    \n    // ✅ Verify that from is an authorized transferor\n    require(\n        from == operator || IERC721(lien.collection).isApprovedForAll(from, operator),\n        \"ParticleExchange: unauthorized operator\"\n    );\n    \n    _openPosition(lien, lienId, tokenId, from, ...);\n}",
+  "// ✅ Fixed validation — verify that collection is an actual ERC-721 contract\nfunction _validateCollection(address collection) internal view {\n    // ✅ Verify that collection supports the ERC-721 interface\n    require(\n        IERC165(collection).supportsInterface(type(IERC721).interfaceId),\n        \"ParticleExchange: collection is not ERC-721\"\n    );\n    \n    // ✅ Only allow whitelisted collections (optional hardening)\n    require(\n        approvedCollections[collection],\n        \"ParticleExchange: collection not approved\"\n    );\n}"
+ ],
+ "steps": [
+  "Step 1: Call offerBid() — create a bid with no collateral",
+  "Step 2: Call onERC721Received() directly (1st) — abnormal tokenId",
+  "Step 3: Call onERC721Received() directly (2nd) — block number tokenId",
+  "Step 4: withdrawAccountBalance() — drain protocol balance",
+  "1. offerBid(collection=attack contract, 0, 0, 0)",
+  "→ lienId created (no collateral)",
+  "2. onERC721Received(zero, zero, tokenId=50126..., data) direct call",
+  "❌ No msg.sender check → processing proceeds",
+  "→ calls lien.collection.ownerOf(tokenId)",
+  "→ Spoofs \"proxy owns the NFT\"",
+  "→ Opens position: proxy is owner, so internal balance increases",
+  "→ safeTransferFrom(proxy, attack contract, tokenId, ...)",
+  "3. onERC721Received(zero, zero, tokenId2=19231446, data2) direct call",
+  "→ calls lien2.collection.ownerOf(tokenId2)",
+  "→ ownerOf() returns address(0) (after safeTransferFrom)",
+  "→ additional position processed / balance increased further",
+  "4. accountBalance(address(this)) — query balance",
+  "5. withdrawAccountBalance() — drain ~50 ETH!",
+  "Attacker ETH balance: 0 ETH → ~50 ETH (profit)"
+ ],
+ "other_code": [
+  "Step 1: Call offerBid() — create a bid with no collateral\nStep 2: Call onERC721Received() directly (1st) — abnormal tokenId\nStep 3: Call onERC721Received() directly (2nd) — block number tokenId\nStep 4: withdrawAccountBalance() — drain protocol balance",
+  "1. offerBid()                          → LienOpened event\n2. onERC721Received() 1st call         → internal state change\n3. safeTransferFrom() within onERC721Received() → attack contract ownerofaddr changed\n4. onERC721Received() 2nd call         → account balance increased\n5. withdrawAccountBalance()            → ETH Transfer event (~50 ETH)"
+ ]
+}

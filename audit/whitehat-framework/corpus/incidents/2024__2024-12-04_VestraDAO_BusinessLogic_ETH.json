@@ -1,0 +1,42 @@
+{
+ "id": "2024__2024-12-04_VestraDAO_BusinessLogic_ETH",
+ "source_file": "2024/2024-12-04_VestraDAO_BusinessLogic_ETH.md",
+ "title": "VestraDAO — Staking Business Logic Vulnerability Analysis (Missing isActive Validation)",
+ "date": "2024-12-04",
+ "protocol": "VestraDAO",
+ "chain": "Ethereum",
+ "loss_raw": "~73,720,000 VSTR (approx. $378,400 ~ $500,000) — swapped for 125 ETH and mixed via Tornado Cash",
+ "loss_usd": 378400.0,
+ "root_cause": "Missing `isActive` state validation in `unStake()` — repeated calls on an already-unstaked position extracted 20,000 VSTR profit each time",
+ "attack_tx": null,
+ "vulnerable_contract": "0x8a30...8e3 (LockedStaking)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — LockedStaking.sol (0x8a30d684b1d3f8f36b36887a3deca0ef2a36a8e3)\n// Compiler: Solidity v0.8.20\n\nstruct StakeInfo {\n    uint256 amount;         // Staking principal\n    uint256 maturityTime;   // Maturity timestamp\n    uint256 yield;          // Accrued yield\n    bool isActive;          // ❌ Position active flag — not used for validation\n}\n\nmapping(address => StakeInfo[]) public stakes;\n\nfunction unStake(uint256 stakeIndex) external {\n    StakeInfo storage info = stakes[msg.sender][stakeIndex];\n\n    // ❌ isActive validation completely absent\n    // require(info.isActive, \"Position already unstaked\");  ← this line is missing\n\n    // ❌ Only checks maturity (passes even after initial unstake)\n    require(block.timestamp >= info.maturityTime, \"Stake not matured\");\n\n    uint256 reward = info.yield;  // Yield paid out on every call\n\n    // ❌ State not updated before transfer — violates CEI pattern\n    // In practice, isActive is never set to false, or\n    // if it is, the external call precedes the update with no reentrancy protection\n\n    // Deduct from totalStaked (attacker continuously restakes to prevent underflow)\n    totalStaked -= info.amount;\n\n    // Transfer principal + yield\n    VSTR.transfer(msg.sender, info.amount + reward);\n\n    // ❌ isActive = false is either absent or ineffective without validation\n    // info.isActive = false;  ← missing or ineffective\n}",
+  "❌ Vulnerable code — totalStaked underflow risk\n// If the attacker only repeatedly unstakes, totalStaked goes negative and reverts\n// → Attacker works around this by restaking 500,000 VSTR via sub-accounts each cycle\n\n// Result: attack can loop indefinitely as long as the contract's actual VSTR balance > 0\ntotalStaked -= info.amount;  // Solidity 0.8+ underflow check causes revert\n\n//",
+  "[Attacker EOA: 0x9543...]\n         │\n         │ Deploy + initial 500K VSTR stake (~1 month prior)\n         ▼\n  ┌─────────────────────────┐\n  │   AttackContract        │\n  │   0x81AD...75c4         │\n  └─────────┬───────────────┘\n            │\n            │ ① Each cycle: transfer 500K VSTR\n            ▼\n  ┌─────────────────────────┐\n  │   SubAccount N          │◄── New account created each cycle\n  │   (60 sub-accounts)     │\n  └─────────┬───────────────┘\n            │\n            │ ② stake(500K VSTR)\n            │    → maintain totalStaked (prevent underflow)\n            ▼\n  ┌─────────────────────────────────────────────┐\n  │         LockedStaking Contract              │\n  │         0x8a30d684...                       │\n  │                                             │\n  │  stake():                                   │\n  │    totalStaked += 500,000 VSTR              │\n  │                                             │\n  │  unStake(originalPosition):                 │\n  │  ❌ require(isActive) missing               │\n  │    totalStaked -= 500,000 VSTR              │\n  │    transfer(attacker, 500K + 20K VSTR)      │\n  └───────────────────┬─────────────────────────┘\n                      │\n                      │ ③ Return 520,000 VSTR\n                      │   (500K principal + 20K yield)\n                      ▼\n  ┌─────────────────────────┐\n  │   AttackContract        │\n  │   Net profit: +20,000   │\n  │   VSTR (60 cycles)      │\n  └─────────────────────────┘\n            │\n            │ ④ Acquired VSTR → swap to ETH\n            ▼\n  ┌─────────────────────────┐\n  │   DEX (Uniswap etc.)    │\n  │   VSTR → ETH swap       │\n  └─────────┬───────────────┘\n            │\n            │ ⑤ 125 ETH → Tornado Cash\n            ▼\n  ┌─────────────────────────┐\n  │   Tornado Cash          │\n  │   (funds laundering)    │\n  └─────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — isActive validation + CEI pattern applied\n\nfunction unStake(uint256 stakeIndex) external {\n    StakeInfo storage info = stakes[msg.sender][stakeIndex];\n\n    // ✅ 1. isActive state validation (core fix)\n    require(info.isActive, \"Position already unstaked\");\n\n    // ✅ 2. Maturity check\n    require(block.timestamp >= info.maturityTime, \"Stake not matured\");\n\n    uint256 amount = info.amount;\n    uint256 reward = info.yield;\n\n    // ✅ 3. CEI pattern: complete all state changes before external calls\n    info.isActive = false;       // Block reentrancy / repeated calls\n    info.amount = 0;             // Clear principal\n    info.yield = 0;              // Clear yield\n    totalStaked -= amount;       // Update total staked\n\n    // ✅ 4. Transfer only after state is fully updated\n    VSTR.transfer(msg.sender, amount + reward);\n\n    emit UnStaked(msg.sender, stakeIndex, amount, reward);\n}",
+  "✅ Fix — blocking the totalStaked deduction itself via isActive validation resolves this"
+ ],
+ "steps": [
+  "1. Attack contract calls `unStake(positionId=100)` → receives 500,000 principal + 20,000 yield",
+  "2. Confirms immediate re-call is possible due to missing `isActive` validation",
+  "1. Attack contract → Sub-account N: transfer 500,000 VSTR",
+  "2. Sub-account N → LockedStaking: stake(500,000 VSTR) (maintain totalStaked)",
+  "3. Attack contract → LockedStaking: re-call unStake(original position)",
+  "4. LockedStaking → Attack contract: return 520,000 VSTR (500,000 + 20,000 yield)",
+  "→ maintain totalStaked (prevent underflow)",
+  "④ Acquired VSTR → swap to ETH",
+  "VSTR → ETH swap",
+  "⑤ 125 ETH → Tornado Cash",
+  "VSTR token price impact | $0.013 → $0.005 (approx. 61% crash)"
+ ],
+ "other_code": [
+  "Execution sequence per cycle:\n1. Attack contract → Sub-account N: transfer 500,000 VSTR\n2. Sub-account N → LockedStaking: stake(500,000 VSTR) (maintain totalStaked)\n3. Attack contract → LockedStaking: re-call unStake(original position)\n4. LockedStaking → Attack contract: return 520,000 VSTR (500,000 + 20,000 yield)\n   ↑ Net profit: 20,000 VSTR per cycle",
+  "Log #1:  Transfer  AttackContract(0x81ad) → SubAccount(0xf92a)  500,000 VSTR\nLog #3:  Transfer  SubAccount(0xf92a)     → Staking(0x8a30)     500,000 VSTR  [stake()]\nLog #5:  Transfer  Staking(0x8a30)        → AttackContract(0x81ad) 520,000 VSTR [unStake()]\n         ↑ Net profit: +20,000 VSTR\nLog #8:  Transfer  AttackContract(0x81ad) → SubAccount(0x1162)  500,000 VSTR  [next cycle]\n..."
+ ]
+}

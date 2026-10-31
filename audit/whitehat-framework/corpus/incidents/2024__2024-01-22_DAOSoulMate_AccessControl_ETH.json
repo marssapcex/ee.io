@@ -1,0 +1,33 @@
+{
+ "id": "2024__2024-01-22_DAOSoulMate_AccessControl_ETH",
+ "source_file": "2024/2024-01-22_DAOSoulMate_AccessControl_ETH.md",
+ "title": "DAO SoulMate — Missing Access Control (Unrestricted `redeem` Call) Analysis",
+ "date": "2024-01-22",
+ "protocol": "DAO SoulMate",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$319,000 (entire asset holdings of BUI index token drained)",
+ "loss_usd": 319000.0,
+ "root_cause": "No access control (e.g., `ownerOnly` or whitelist) on the `redeem()` function — any arbitrary address can burn the Vault's entire BUI balance and receive the underlying component assets",
+ "attack_tx": "0x1ea0...b3c4",
+ "vulnerable_contract": "0x82C0...4b68 (DAO SoulMate Vault)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — DAO SoulMate Vault (source unverified, behavior inferred)\ninterface ISoulMateContract {\n    // Anyone can call this function — no access control\n    function redeem(\n        uint256 _shares,    // Amount of BUI to burn\n        address _receiver   // Recipient of component assets (can be set arbitrarily!)\n    ) external;\n}\n\n// Estimated internal Vault implementation:\ncontract DAOSoulMateVault {\n    ISetToken public buiToken;             // BUI SetToken address\n    IDebtIssuanceModuleV2 public module;   // SetProtocol redemption module\n\n    // ❌ Vulnerability: no modifier such as onlyOwner, onlyAuthorized, etc.\n    // ❌ Vulnerability: does not verify that msg.sender actually holds _shares\n    // ❌ Vulnerability: anyone can request redemption of the Vault's own BUI balance\n    function redeem(uint256 _shares, address _receiver) external {\n        uint256 vaultBUIBalance = buiToken.balanceOf(address(this));\n\n        // Burns the Vault's BUI and transfers component assets to _receiver\n        // → caller does not need to hold any BUI\n        // → _receiver can be set to the attacker's contract\n        module.redeem(buiToken, _shares, _receiver);\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — access control added\n\ncontract DAOSoulMateVault {\n    address public owner;\n    mapping(address => bool) public authorized; // Whitelist of allowed addresses\n\n    modifier onlyOwner() {\n        // Only the contract owner can call\n        require(msg.sender == owner, \"DAO SoulMate: caller is not the owner\");\n        _;\n    }\n\n    modifier onlyAuthorized() {\n        // Only whitelisted addresses can call (e.g., DAO governance)\n        require(authorized[msg.sender], \"DAO SoulMate: caller is not authorized\");\n        _;\n    }\n\n    // ✅ Fix 1: restrict caller with onlyOwner or onlyAuthorized modifier\n    // ✅ Fix 2: pin the recipient (_receiver) to msg.sender to prevent arbitrary address specification\n    function redeem(uint256 _shares) external onlyOwner {\n        // _receiver fixed to msg.sender — arbitrary address specification not possible\n        module.redeem(buiToken, _shares, msg.sender);\n    }\n\n    // Or proportional redemption based on BUI holdings (decentralized approach)\n    function redeem(uint256 _shares, address _receiver) external {\n        // ✅ Fix 3: verify that the caller actually holds sufficient BUI\n        require(\n            buiToken.balanceOf(msg.sender) >= _shares,\n            \"DAO SoulMate: insufficient BUI balance\"\n        );\n        // ✅ Fix 4: deduct BUI from the caller first\n        buiToken.transferFrom(msg.sender, address(this), _shares);\n        module.redeem(buiToken, _shares, _receiver);\n    }\n}",
+  "// ✅ Method 1: restrict to owner-only function\ncontract DAOSoulMateVault {\n    address public owner;\n\n    modifier onlyOwner() {\n        require(msg.sender == owner, \"DAO SoulMate: not owner\");\n        _;\n    }\n\n    // ✅ Restrict so that only an admin can redeem Vault assets\n    function adminRedeem(uint256 _shares, address _receiver)\n        external\n        onlyOwner\n    {\n        module.redeem(buiToken, _shares, _receiver);\n    }\n}"
+ ],
+ "steps": [
+  "→ delegates to SetProtocol DebtIssuanceModuleV2.redeem()",
+  "BUI burned → 0x000 Component assets → attack contract",
+  "14.2 WETH, 1,762 UNI, etc. received",
+  "18 tokens → WETH"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────┐\n│  Attacker EOA: 0xd215...0dfd (bigbrainchad.eth)                 │\n│  Block: 19,063,677  /  2024-01-22                               │\n└────────────────────────┬────────────────────────────────────────┘\n                         │ (1) Call attack contract\n                         ▼\n┌─────────────────────────────────────────────────────────────────┐\n│  Attack Contract: 0xd129...4ecd                                  │\n│  Role: execute redeem + DEX swap                                 │\n└────────────────────────┬────────────────────────────────────────┘\n                         │ (2) redeem(2,782,861,328,125,000,000,000, attackContract)\n                         │     ← entire BUI balance (~2,782 BUI) as argument\n             ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\nimport \"../interface.sol\";\n\n// PoC key point: no access control on redeem() allows burning the Vault's entire BUI holding\n// Source: https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2024-01/DAO_SoulMate_exp.sol\n\ninterface ISoulMateContract {\n    // Vulnerable function: callable by anyone without access control\n    function redeem(uint256 _shares, address _receiver) external;\n}\n\ncontract ContractTest is Test {\n    // Vulnerable Vault address\n    ISoulMateContract private constant SoulMateContract =\n        ISoulMateContract(0x82C063AFEFB226859aBd427Ae40167cB77174b68);\n\n    // BUI (Bullran Index) SetToken\n    IERC20 private constant BUI =\n        IERC20(0xb7470Fd67e997b73f55F85A6AF0DeB2"
+ ]
+}

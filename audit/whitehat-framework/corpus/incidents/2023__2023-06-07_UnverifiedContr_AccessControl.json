@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-06-07_UnverifiedContr_AccessControl",
+ "source_file": "2023/2023-06-07_UnverifiedContr_AccessControl.md",
+ "title": "UnverifiedContr_9ad32 — Unverified Contract Access Control Vulnerability Analysis",
+ "date": "2023-06-07",
+ "protocol": "Unverified Contract",
+ "chain": "BSC",
+ "loss_raw": "~5,955 USD",
+ "loss_usd": null,
+ "root_cause": "Access control vulnerability in an unverified source contract allowed BUSD to be drained",
+ "attack_tx": "0xe1bf84b7...",
+ "vulnerable_contract": "0xAC899Ef6...",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Unverified contract — source code not public\n// Inferred from bytecode analysis:\n\n// Estimated vulnerable function (no access control)\ncontract UnverifiedContract_0x9ad32 {\n    // ❌ Function that should only be callable by owner or privileged address is public\n    function withdrawAll(address token) external {\n        // ❌ No caller validation\n        IERC20(token).transfer(msg.sender, IERC20(token).balanceOf(address(this)));\n    }\n\n    // Or: internal logic susceptible to price manipulation\n    function swap(uint256 amount) external {\n        // ❌ Arbitrary amount processed without validation\n    }\n}"
+ ],
+ "code_after": [],
+ "steps": [
+  "1. Borrow BUSD via DODO flash loan",
+  "2. Call function with no access control",
+  "→ Drain BUSD held by the contract",
+  "3. Repay flash loan + 5,955 USD profit"
+ ],
+ "other_code": [
+  "// Root cause: Access control vulnerability in unverified source contract allowed BUSD to be drained\n// Source code unverified — based on bytecode analysis",
+  "┌──────────────────────────────────────────────┐\n│  1. Borrow BUSD via DODO flash loan          │\n└──────────────────────────┬───────────────────┘\n                           ▼\n┌──────────────────────────────────────────────┐\n│  2. Call function with no access control     │\n│     on vulnerable contract                  │\n│     → Drain BUSD held by the contract       │\n└──────────────────────────┬───────────────────┘\n                           ▼\n┌──────────────────────────────────────────────┐\n│  3. Repay flash loan + 5,955 USD profit      │\n└──────────────────────────────────────────────┘"
+ ]
+}

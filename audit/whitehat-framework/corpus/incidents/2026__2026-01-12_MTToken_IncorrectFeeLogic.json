@@ -1,0 +1,32 @@
+{
+ "id": "2026__2026-01-12_MTToken_IncorrectFeeLogic",
+ "source_file": "2026/2026-01-12_MTToken_IncorrectFeeLogic.md",
+ "title": "MTToken — Unbounded Fee Distribution Logic Vulnerability Analysis",
+ "date": "2026-01-12",
+ "protocol": "MTToken",
+ "chain": "BSC",
+ "loss_raw": "~$37,000",
+ "loss_usd": 37000.0,
+ "root_cause": "`transactionFee()` distributes fees without validating that the sum of shares ≤ 100, causing the sender to lose far more tokens than the transfer amount, and making the AMM pair an unintended fee recipient",
+ "attack_tx": "Unverified — hash `0xe1e6aa5332deaf0fa0a3584113c17bedc906148730cbbc73efae16306121687b` is the FutureSwap Arbitrum TX (2026-01-10); the actual MTToken BSC TX hash was not independently confirmed",
+ "vulnerable_contract": "0x2f3f25046ea518d1e524b8fb6147c656d6722ced (MT Token)",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: fee distribution without validating sum of shares\nstruct FeeRecipient {\n    address recipient;\n    uint256 share; // fee ratio (%)\n}\n\nFeeRecipient[] public feeRecipients; // sum may exceed 100\n\nfunction transactionFee(address from, uint256 amount) internal returns (uint256 remaining) {\n    remaining = amount;\n    for (uint256 i = 0; i < feeRecipients.length; i++) {\n        // ❌ share% of amount is deducted per recipient\n        // if total shares = 150, then 150% of amount is deducted\n        uint256 fee = amount * feeRecipients[i].share / 100;\n        _balances[from] -= fee;              // deduct from sender\n        _balances[feeRecipients[i].recipient] += fee; // credit recipient\n        remaining -= fee;\n    }\n    // ❌ remaining may underflow to negative (in unchecked context)\n}\n\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 net = transactionFee(from, amount); // ❌ over-deduction independent of actual transfer amount\n    _balances[from] -= net;  // additional deduction\n    _balances[to] += net;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: validate sum of shares + cap on total fee\nuint256 public constant MAX_TOTAL_FEE = 1000; // max 10% (basis points)\n\nfunction setFeeRecipients(FeeRecipient[] calldata newRecipients) external onlyOwner {\n    uint256 totalShares = 0;\n    for (uint256 i = 0; i < newRecipients.length; i++) {\n        totalShares += newRecipients[i].share;\n    }\n    // ✅ enforce cap on total fee sum\n    require(totalShares <= MAX_TOTAL_FEE, \"Total fee exceeds maximum\");\n    feeRecipients = newRecipients;\n}\n\nfunction transactionFee(address from, uint256 amount) internal returns (uint256 totalFee) {\n    totalFee = 0;\n    for (uint256 i = 0; i < feeRecipients.length; i++) {\n        uint256 fee = amount * feeRecipients[i].share / 10000; // basis points\n        totalFee += fee;\n        // ✅ ensure total fee never exceeds amount\n        require(totalFee <= amount, \"Fee exceeds amount\");\n        _balances[feeRecipients[i].recipient] += fee;\n    }\n    _balances[from] -= totalFee; // ✅ deducted only once\n}"
+ ],
+ "steps": [
+  "BUSD → MT (DEX swap)",
+  "sum of shares > 100 → excessive fees generated",
+  "MT reserve spikes → price distortion",
+  "[6] Swap MT → BUSD"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1] Flash loan from Moolah (BNB/BUSD)\n  │\n  ├─[2] Buy MT tokens\n  │       BUSD → MT (DEX swap)\n  │       Acquire large MT position\n  │\n  ├─[3] Directly transfer MT to MT/BUSD pair\n  │       transactionFee() executes:\n  │       ┌─ pair address is in feeRecipients\n  │       ├─ sum of shares > 100 → excessive fees generated\n  │       └─ pair.balance += (amount * totalShares / 100)\n  │            pair receives more MT than the transfer amount\n  │\n  ├─[4] pair.skim(attacker address)\n  │       Transfers pair.balanceOf - pair.reserve to attacker\n  │       (attacker claims the excess MT received by the pair)\n  │\n  ├─[5] pair.sync()\n  │       Updates reserves to match current balances\n  │       MT reserve spikes → price distortion\n  │\n  ├─[6] Swap MT → BUSD\n  │       Extract large ",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\ninterface IMoolah {\n    function flashLoan(address token, uint256 amount, bytes calldata data) external;\n}\n\ninterface IERC20 {\n    function transfer(address to, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n    function approve(address spender, uint256 amount) external returns (bool);\n}\n\ninterface IUniswapV2Pair {\n    function skim(address to) external;\n    function sync() external;\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract MTTokenAttack {\n    address constant MT = 0x...;    // MTToken address\n    address constant BUSD = 0xe9e7"
+ ]
+}

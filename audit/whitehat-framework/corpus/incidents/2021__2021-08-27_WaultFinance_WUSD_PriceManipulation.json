@@ -1,0 +1,37 @@
+{
+ "id": "2021__2021-08-27_WaultFinance_WUSD_PriceManipulation",
+ "source_file": "2021/2021-08-27_WaultFinance_WUSD_PriceManipulation.md",
+ "title": "Wault Finance — WUSDMASTER Price Manipulation Flash Loan Analysis",
+ "date": "2021-08-27",
+ "protocol": "Wault Finance",
+ "chain": "BSC",
+ "loss_raw": "~$803,000",
+ "loss_usd": 803000.0,
+ "root_cause": "`stake()` was called 68 times in a single transaction without slippage protection (`minOut = 0`) and without per-block rate limiting, each call executing a USDT→WEX AMM swap; repeated calls cumulatively distorted WEX/USDT reserves, allowing the attacker to profit from WEX price manipulation",
+ "attack_tx": "Address unidentified",
+ "vulnerable_contract": "WUSDMASTER (WUSD → BUSD redemption and WEX staking)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ WUSDMASTER — WEX staking on redemption; repeated calls allow price manipulation\nfunction redeem(uint256 wusdAmount) external {\n    // WUSD → BUSD redemption\n    uint256 busdOut = wusdAmount; // assumes 1:1 peg\n    WUSD.burn(msg.sender, wusdAmount);\n\n    // WEX staking (internally modifies WaultSwap pair state)\n    // ❌ Repeated calls continuously shift WEX/USDT pair reserves\n    _stakeWEX(busdOut);\n\n    BUSD.transfer(msg.sender, busdOut);\n}\n\nfunction _stakeWEX(uint256 amount) internal {\n    // BUSD → WEX swap (changes pair reserves)\n    // WEX staking → additional pair state changes\n    // 68 repetitions cumulatively distort WEX price\n}",
+  "// ❌ Vulnerable: WUSDMASTER.stake() — called 68 times by attacker\n// Source: BSCScan verified — 0xa79Fe386B88FBee6e492EEb76Ec48517d1eC759a (BSC)\nfunction stake(uint256 amount) external nonReentrant {\n    require(amount <= maxStakeAmount, 'amount too high');\n    usdt.safeTransferFrom(msg.sender, address(this), amount);\n    if (feePermille > 0) {\n        uint256 feeAmount = amount * feePermille / 1000;\n        usdt.safeTransfer(treasury, feeAmount);\n        amount = amount - feeAmount;\n    }\n    uint256 wexAmount = amount * wexPermille / 1000;\n    usdt.approve(address(wswapRouter), wexAmount);\n    wswapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens( // ❌ AMM swap with 0 minOut\n        wexAmount,\n        0,              // ❌ minOut = 0: no slippage protection\n        swapPath,       // USDT → WEX\n        address(this),\n        block.timestamp\n    );\n    wusd.mint(msg.sender, amount);\n    emit Stake(msg.sender, amount);\n}\n\n// Also shown for completeness — redeem() is called once, then stake() 68x\nfunction redeem(uint256 amount) external nonReentrant {\n    uint256 usdtTransferAmount = amount * (1000 - wexPermille - treasuryPermille) / 1000;\n    uint256 usdtTreasuryAmount = amount * treasuryPermille / 1000;\n    uint256 wexTransferAmount = wex.balanceOf(address(this)) * amount / wusd.totalSupply(); // ❌ WEX distributed proportionally\n    wusd.burn(msg.sender, amount);\n    usdt.safeTransfer(treasury, usdtTreasuryAmount);\n    usdt.safeTransfer(msg.sender, usdtTransferAmount);\n    wex.safeTransfer(msg.sender, wexTransferAmount);\n    emit Redeem(msg.sender, amount);\n}"
+ ],
+ "code_after": [
+  "// ✅ Limit staking count per redeem() call + slippage protection\nuint256 public constant MAX_STAKE_PER_REDEEM = 1;\n\nfunction redeem(uint256 wusdAmount) external nonReentrant {\n    require(wusdAmount >= minRedeemAmount, \"WUSDMASTER: amount too small\");\n\n    WUSD.burn(msg.sender, wusdAmount);\n\n    // Single staking only + slippage limit\n    uint256 wexBefore = WEX.balanceOf(address(this));\n    _stakeWEXOnce(wusdAmount);\n    uint256 wexReceived = WEX.balanceOf(address(this)) - wexBefore;\n    require(wexReceived >= minWexOut, \"WUSDMASTER: slippage too high\");\n\n    BUSD.transfer(msg.sender, wusdAmount);\n}",
+  "// ✅ Fix: add per-block staking rate limit and slippage protection\nfunction stake(uint256 amount) external nonReentrant {\n    require(amount <= maxStakeAmount, 'amount too high');\n    // ✅ Rate limit: track USDT staked this block\n    require(block.number > lastStakeBlock, 'one stake per block');\n    lastStakeBlock = block.number;\n\n    usdt.safeTransferFrom(msg.sender, address(this), amount);\n    uint256 wexAmount = amount * wexPermille / 1000;\n    uint256 minWexOut = getMinWexOut(wexAmount); // ✅ slippage check from TWAP\n    usdt.approve(address(wswapRouter), wexAmount);\n    wswapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        wexAmount,\n        minWexOut,  // ✅ enforce minimum output\n        swapPath,\n        address(this),\n        block.timestamp\n    );\n    wusd.mint(msg.sender, amount);\n}"
+ ],
+ "steps": [
+  "Step 1: WaultSwap Flash Loan — borrow nearly all WUSD",
+  "Step 2: WUSDMASTER.redeem(wusd)",
+  "Internal _stakeWEX() called 68 times → cumulative",
+  "Step 3: Arbitrage using distorted WEX price",
+  "USDT → WEX (low price) → USDT (high price)",
+  "Step 4: Additional profit settlement in PancakeSwap",
+  "Step 5: All assets → BUSD conversion + flash loan repay"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────┐\n│ Step 1: WaultSwap Flash Loan — borrow nearly all WUSD    │\n│ waultSwapPair.swap(wusdAmount, 0, this, data)           │\n└─────────────────────┬────────────────────────────────────┘\n                      │ waultSwapCall() callback\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 2: WUSDMASTER.redeem(wusd)                          │\n│ Internal _stakeWEX() called 68 times → cumulative        │\n│ WEX/USDT price distortion                                │\n└─────────────────────┬────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 3: Arbitrage using distorted WEX price              │\n│ USDT → WEX (low price) → USDT (high price)             ",
+  "// waultSwapCall() — flash loan callback\nfunction waultSwapCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    // Manipulate WEX/USDT price via WUSDMASTER.redeem()\n    // Internally repeats _stakeWEX 68 times\n    WUSDMASTER.redeem(WUSD.balanceOf(address(this)));\n\n    // Swap USDT→WEX at distorted price (buy low)\n    // waultSwapRouter.swapExactTokensForTokens(usdt, 0, [USDT, WEX], ...)\n\n    // Swap WEX→USDT (sell high) — triggers PancakeSwap callback\n    // pancakePair.swap(0, wexAmount, this, data)\n}\n\n// pancakeCall() — additional arbitrage\nfunction pancakeCall(...) external {\n    // Realize profit via WEX→USDT reverse swap\n    // Convert all → BUSD\n    // Repay flash loan\n}"
+ ]
+}

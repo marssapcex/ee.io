@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-04-25_Axioma_PresalePriceArbitrage",
+ "source_file": "2023/2023-04-25_Axioma_PresalePriceArbitrage.md",
+ "title": "Axioma Presale Exploit — Presale Price vs DEX Price Arbitrage",
+ "date": "2023-04-25",
+ "protocol": "Axioma",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// File: AxiomaPresale.sol\nabstract contract Context {  // ❌\n    function _msgSender() internal view virtual returns (address) {\n        return msg.sender;\n    }\n\n    function _msgData() internal view virtual returns (bytes calldata) {\n        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691\n        return msg.data;\n    }\n}\n\n// ...\n\n    function transferFrom(\n\n// ...\n\n    function endPreSale() public onlyOwner() {  // ❌\n        uint256 contractTokenBalance = token.balanceOf(address(this));  // ❌\n        token.transfer(msg.sender, contractTokenBalance);  // ❌\n    }\n\n// ...\n\nfunction ChangePresaleOwner(address walletAddress) public onlyOwner {  // ❌\n        PresaleOwner = walletAddress;  // ❌\n    }\n\n// ...\n\n    function buyToken() public payable {\n\n        uint256 bnbAmountToBuy = msg.value;\n\n        uint256 tokenAmount = bnbAmountToBuy.mul(rate).div(10**9);\n\n        require(token.balanceOf(address(this)) >= tokenAmount, \"INSUFFICIENT_BALANCE_IN_CONTRACT\");  // ❌\n\n        payable(PresaleOwner).transfer(bnbAmountToBuy);  // ❌\n\n        uint256 taxAmount = tokenAmount.mul(buyTax).div(100);\n        token.transfer(PresaleOwner, taxAmount);  // ❌\n\n        (bool sent) = token.transfer(msg.sender, tokenAmount.sub(taxAmount));\n        require(sent, \"FAILED_TO_TRANSFER_TOKENS_TO_BUYER\");\n\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → receive AXT at presale price",
+  "// c. bscSwap(AXT → WBNB) via PancakeSwap V2",
+  "// → sell at higher DEX price"
+ ],
+ "other_code": [
+  "// 1. DODO.flashLoan(32.5 BNB)\n// 2. DPPFlashLoanCall():\n//    a. WBNB.withdraw(32.5 BNB)\n//    b. IAxiomaPresale(axiomaPresale).buyToken{value: 32.5 BNB}()\n//       → receive AXT at presale price\n//    c. bscSwap(AXT → WBNB) via PancakeSwap V2\n//       → sell at higher DEX price\n//    d. WBNB.transfer(dodo, 32.5 BNB) // repay flash\n// Net profit: DEX price - presale price difference",
+  "interface IAxiomaPresale {\n    function buyToken() external payable;\n}"
+ ]
+}

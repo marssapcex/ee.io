@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-06-17_BabyDogeCoin02_FeeLPManipulation",
+ "source_file": "2023/2023-06-17_BabyDogeCoin02_FeeLPManipulation.md",
+ "title": "BabyDogeCoin #2 — Fee LP Manipulation Attack Analysis",
+ "date": "2023-06-17",
+ "protocol": "Baby Doge Coin",
+ "chain": "BSC",
+ "loss_raw": "~100K USD",
+ "loss_usd": null,
+ "root_cause": "Fee mechanism not synchronized with LP reserves, allowing imbalance extraction via FeeFreeRouter",
+ "attack_tx": "0xbaf3e484...",
+ "vulnerable_contract": "0xc748673057...",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "// ❌ No LP sync() call after fee collection\nfunction _transfer(address from, address to, uint256 amount) internal {\n    uint256 fee = amount * transferFee / 100;\n    // ❌ fee remains in LP pair but reserves are not updated\n    _balances[to] += (amount - fee);\n    _balances[address(lpPair)] += fee;  // ❌ reserve imbalance\n    // IUniswapV2Pair(lpPair).sync() missing\n}\n\n// FeeFreeRouter: allows addLiquidity without fees\ninterface IFeeFreeRouter {\n    function addLiquidity(address tokenA, address tokenB, ...) external;\n    // ❌ Fee-free LP token minting → exploits excess balance\n}"
+ ],
+ "code_after": [
+  "// ✅ Call sync() after transfer\nfunction _transfer(...) internal {\n    // ... fee processing\n    IUniswapV2Pair(lpPair).sync();  // ✅ synchronize reserves\n}"
+ ],
+ "steps": [
+  "1. Borrow WBNB via flash loan",
+  "2. Buy large amount of BabyDoge",
+  "→ Fee accumulation deepens LP",
+  "3. FeeFreeRouter.addLiquidity()",
+  "4. removeLiquidity to reclaim",
+  "5. Sell BabyDoge back to WBNB",
+  "6. Repay flash loan + ~100K USD"
+ ],
+ "other_code": [
+  "// Root cause: fee mechanism not synchronized with LP reserves, allowing imbalance extraction via FeeFreeRouter\n// Source code unverified — based on bytecode analysis",
+  "┌──────────────────────────────────────┐\n│  1. Borrow WBNB via flash loan       │\n└──────────────────┬───────────────────┘\n                   ▼\n┌──────────────────────────────────────┐\n│  2. Buy large amount of BabyDoge     │\n│     → Fee accumulation deepens LP    │\n│       imbalance                      │\n└──────────────────┬───────────────────┘\n                   ▼\n┌──────────────────────────────────────┐\n│  3. FeeFreeRouter.addLiquidity()     │\n│     Obtain LP tokens without fees    │\n└──────────────────┬───────────────────┘\n                   ▼\n┌──────────────────────────────────────┐\n│  4. removeLiquidity to reclaim       │\n│     excess tokens                    │\n│  5. Sell BabyDoge back to WBNB      │\n│  6. Repay flash loan + ~100K USD    │\n│     profit                           │\n└"
+ ]
+}

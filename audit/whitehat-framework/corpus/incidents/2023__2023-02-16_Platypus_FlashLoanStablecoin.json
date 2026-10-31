@@ -1,0 +1,37 @@
+{
+ "id": "2023__2023-02-16_Platypus_FlashLoanStablecoin",
+ "source_file": "2023/2023-02-16_Platypus_FlashLoanStablecoin.md",
+ "title": "Platypus Finance — Flash Loan USP Stablecoin Exploit Analysis",
+ "date": "2023-02-16",
+ "protocol": "Platypus Finance",
+ "chain": "Avalanche",
+ "loss_raw": "~8.5M USD",
+ "loss_usd": null,
+ "root_cause": "`emergencyWithdraw()` does not check the caller's outstanding USP debt, allowing full collateral withdrawal without repayment — flash loan deposit inflates apparent collateral, then emergency withdrawal exits without burning USP",
+ "attack_tx": "0x1266a937...",
+ "vulnerable_contract": "Platypus USP Stablecoin Contract",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable emergencyWithdraw or USP minting logic\ninterface PlatypusPool {\n    function deposit(address token, uint256 amount, address to, uint256 deadline) external;\n    function withdraw(address token, uint256 liquidity, uint256 minimumAmount, address to, uint256 deadline) external;\n}\n\n// Presumed vulnerability: missing collateral check\nfunction borrowUSP(uint256 amount) external {\n    //",
+  "❌ Callable while collateral value is inflated via flash loan\n    uint256 collateralValue = getCollateralValue(msg.sender);\n    require(collateralValue >= amount * COLLATERAL_RATIO / 100, \"Undercollateralized\");\n    // Flash loan temporarily increases collateralValue → requirement satisfied\n    _mint(msg.sender, amount);  //",
+  "❌ Collateral disappears after flash loan repayment\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: prohibit deposit/withdrawal within the same block\nfunction borrowUSP(uint256 amount) external {\n    require(lastDepositBlock[msg.sender] < block.number, \"Same block deposit\");\n    // ...\n}"
+ ],
+ "steps": [
+  "1 ▶ Aave Flash Loan (borrow large amount of USDC)",
+  "2 ▶ Deposit USDC into Platypus pool",
+  "→ Receive LP tokens (collateral established)",
+  "3 ▶ Mint large amount of USP using LP tokens as collateral",
+  "4 ▶ Instantly withdraw USDC via emergencyWithdraw()",
+  "5 ▶ Swap USP → USDC/USDT (other stablecoins)",
+  "6 ▶ Repay Aave flash loan → Net profit ~8.5M USD"
+ ],
+ "other_code": [
+  "// Root cause: USP minting did not cross-validate pool balance against actual collateral value,\n// allowing over-issuance via a temporary large deposit\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ Aave Flash Loan (borrow large amount of USDC)\n  │\n  ├─2─▶ Deposit USDC into Platypus pool\n  │       → Receive LP tokens (collateral established)\n  │\n  ├─3─▶ Mint large amount of USP using LP tokens as collateral\n  │       (over-mint USP against temporary collateral)\n  │\n  ├─4─▶ Instantly withdraw USDC via emergencyWithdraw()\n  │       Collateral (LP tokens) burned, but USP remains\n  │\n  ├─5─▶ Swap USP → USDC/USDT (other stablecoins)\n  │\n  └─6─▶ Repay Aave flash loan → Net profit ~8.5M USD"
+ ]
+}

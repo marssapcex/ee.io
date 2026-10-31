@@ -1,0 +1,47 @@
+{
+ "id": "2023__2023-12-16_NFTTrader_Reentrancy_ETH",
+ "source_file": "2023/2023-12-16_NFTTrader_Reentrancy_ETH.md",
+ "title": "NFT Trader — Reentrancy Attack Analysis",
+ "date": "2023-12-16",
+ "protocol": "NFT Trader",
+ "chain": "Ethereum",
+ "loss_raw": "~$3,000,000 (5 CloneX NFTs + other assets)",
+ "loss_usd": 3000000.0,
+ "root_cause": "During NFT transfer callback (`onERC721Received`), reentrancy into `editCounterPart` replaces the counterparty address, enabling theft of the victim's NFTs",
+ "attack_tx": "0xec752366...393d",
+ "vulnerable_contract": "0xC310e760...Ece0",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ safeTransferFrom invokes the recipient's (Owner2 = attacker) onERC721Received\n            //",
+  "❌ At this point addressTwo is still read from storage, so it can be changed on reentry\n            ERC721Interface(...).safeTransferFrom(\n                address(this),\n                swapList[_swapCreator][swapMatch[_swapId]].addressTwo, // ← Modified during callback!\n                nftsOne[_swapId][i].tokenId[0],\n                nftsOne[_swapId][i].data\n            );\n        }\n    }\n\n    // ④ Owner2 → Owner1 direction: transfer nftsTwo\n    for(i=0; i<nftsTwo[_swapId].length; i++) {\n        if(nftsTwo[_swapId][i].typeStd == ERC721) {\n            //",
+  "❌ addressTwo has been replaced with victim during the callback\n            //"
+ ],
+ "code_after": [
+  "✅ State closed first\n\n    // ③ Owner1 → Owner2 direction: transfer nftsOne\n    for(i=0; i<nftsOne[_swapId].length; i++) {\n        if(nftsOne[_swapId][i].typeStd == ERC721) {\n            //",
+  "// [FIXED] Add ReentrancyGuard and state validation to editCounterPart\n\n// Inherit OpenZeppelin ReentrancyGuard\ncontract BatchSwap is Ownable, Pausable, ReentrancyGuard, IERC721Receiver, IERC1155Receiver {\n\n    // ✅ Add nonReentrant to closeSwapIntent\n    function closeSwapIntent(address _swapCreator, uint256 _swapId)\n        payable public whenNotPaused nonReentrant  // ← nonReentrant added\n    {\n        // ... existing logic ...\n        \n        // ✅ Alternative: cache values from storage into memory so they cannot be changed on reentry\n        address payable cachedAddressTwo = swapList[_swapCreator][swapMatch[_swapId]].addressTwo;\n        address payable cachedAddressOne = swapList[_swapCreator][swapMatch[_swapId]].addressOne;\n        \n        // ✅ Transfer using cached addresses (no re-read from storage)\n        ERC721Interface(...).safeTransferFrom(address(this), cachedAddressTwo, ...);\n        ERC721Interface(...).safeTransferFrom(cachedAddressTwo, cachedAddressOne, ...);\n    }\n\n    // ✅ Add state validation to editCounterPart\n    function editCounterPart(uint256 _swapId, address payable _counterPart) public {\n        require(\n            msg.sender == swapList[msg.sender][swapMatch[_swapId]].addressOne,\n            \"Message sender must be the swap creator\"\n        );\n        // ✅ Only allow counterPart change when swap is in Opened state\n        require(\n            swapList[msg.sender][swapMatch[_swapId]].status == swapStatus.Opened,\n            \"Swap is not in opened state\"\n        );\n        swapList[msg.sender][swapMatch[_swapId]].addressTwo = _counterPart;\n    }\n}"
+ ],
+ "steps": [
+  "1. **Confirm victim's prior approval**: The victim (0x2393...) must have granted `setApprovalForAll` approval to the NFTTrader contract for all CloneX NFTs. On-chain verification confirmed `isApprovedForAll(victim, NFTTrader) = true` in the block immediately before the attack.",
+  "2. **Prepare bait NFT**: The attacker mints a Uniswap V3 LP NFT (positionId=625712) for 0.001 ETH to use as the bait asset in the trade.",
+  "3. **Approve NFTTrader from attacker contract**: Call `UniV3PosNFT.setApprovalForAll(NFTTrader, true)`.",
+  "Step 1: Call createSwapIntent",
+  "→ Result: swapId recorded",
+  "Step 2: Call closeSwapIntent (attacker = addressTwo)",
+  "- Loop: nftsTwo[0] = UniV3PosNFT.safeTransferFrom(attacker→attacker, positionId)",
+  "→ Attacker contract's onERC721Received callback fires ← [REENTRANCY OCCURS]",
+  "Step 3: [REENTRY] Inside onERC721Received callback",
+  "Step 4: closeSwapIntent resumes (continues from Step 2)",
+  "Step 5: Repeat the above for tokenIds 6650, 4843, 5432, 9870 (5 times total)",
+  "[2] addressTwo → attacker (initial value)",
+  "→ onERC721Received callback fires",
+  "→ Victim's CloneX NFT stolen!",
+  "CloneX: 5 → 0 CloneX #6670, #6650, #4843, #5432, #9870",
+  "5 NFTs stolen in total"
+ ],
+ "other_code": [
+  "Step 1: Call createSwapIntent\n        - addressOne = attacker contract (0x871f...)\n        - addressTwo = attacker contract (self)\n        - nftsTwo = [UniV3PosNFT(positionId=625712), CloneX(tokenId=6670)]\n        - Pay 0.005 ether fee\n        → Result: swapId recorded\n\nStep 2: Call closeSwapIntent (attacker = addressTwo)\n        - closeSwapIntent(attackerContract, swapId)\n        - status = Closed\n        - Loop: transfer nftsOne (empty, skipped)\n        - Loop: nftsTwo[0] = UniV3PosNFT.safeTransferFrom(attacker→attacker, positionId)\n          → Attacker contract's onERC721Received callback fires ← [REENTRANCY OCCURS]\n\nStep 3: [REENTRY] Inside onERC721Received callback\n        - Call NFTTrader.editCounterPart(swapId, victim)\n        - swapList[attacker][swapMatch[swapId]].addressTwo = vic",
+  "Attacker EOA (0xb1ed...)\n        │\n        │ deploy\n        ▼\n┌─────────────────────┐\n│  Attacker Contract  │\n│  (0x871f...)        │\n│                     │\n│  onERC721Received() │◄──────────────────────────────────────┐\n│  {                  │                                        │\n│    editCounterPart  │──────────────────────────────────────┐ │\n│    (swapId, victim) │                                      │ │\n│  }                  │                                      │ │\n└─────────────────────┘                                      │ │\n        │                                                    │ │\n        │ createSwapIntent(nftsTwo=[UniV3NFT, CloneX#6670])  │ │\n        ▼                                                    │ │\n┌─────────────────────────────────────────────────────────"
+ ]
+}

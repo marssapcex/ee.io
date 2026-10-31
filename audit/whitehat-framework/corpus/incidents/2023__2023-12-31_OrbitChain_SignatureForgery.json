@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-12-31_OrbitChain_SignatureForgery",
+ "source_file": "2023/2023-12-31_OrbitChain_SignatureForgery.md",
+ "title": "Orbit Chain — Cross-Chain Bridge Hijacking via Signature Forgery Analysis",
+ "date": "2023-12-31",
+ "protocol": "Orbit Chain",
+ "chain": "Ethereum",
+ "loss_raw": "~$81,500,000",
+ "loss_usd": 81500000.0,
+ "root_cause": "The multi-signature verification logic in `withdraw()` accepted forged signatures as valid, allowing unauthorized withdrawals",
+ "attack_tx": null,
+ "vulnerable_contract": "OrbitEthVault 0x1bf68a9d",
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: signature verification logic flaw\nfunction withdraw(\n    address token,\n    uint256 amount,\n    uint8 decimals,\n    bytes32 orbitTxHash,\n    uint8[] memory v,\n    bytes32[] memory r,\n    bytes32[] memory s\n) external {\n    // Validator check after signature recovery — forgeable implementation\n    for (uint i = 0; i < v.length; i++) {\n        address signer = ecrecover(\n            keccak256(abi.encodePacked(token, amount, decimals, orbitTxHash)),\n            v[i], r[i], s[i]\n        );\n        require(isValidator[signer], \"invalid signer\");\n    }\n    // Withdrawal executed without verifying sufficient signature count\n    _withdraw(token, amount);\n}\n\n//",
+  "// File: EthVault.impl.sol\ncontract EthVaultImpl {\n    function withdraw(  // ❌ Vulnerability\n        address hubContract,\n        string memory fromChain,\n        bytes memory fromAddr,\n        bytes memory toAddr,\n        bytes memory token,\n        bytes32[] memory bytes32s,\n        uint[] memory uints,\n        uint8[] memory v,\n        bytes32[] memory r,\n        bytes32[] memory s\n    ) public onlyActivated {\n        require(bytes32s.length >= 1);\n        require(bytes32s[0] == sha256(abi.encodePacked(hubContract, chain, address(this))));\n        require(uints.length >= 2);\n        require(isValidChain[getChainId(fromChain)]);\n\n        bytes32 whash = sha256(abi.encodePacked(hubContract, fromChain, chain, fromAddr, toAddr, token, bytes32s, uints));\n\n        require(!isUsedWithdrawal[whash]);\n        isUsedWithdrawal[whash] = true;\n\n        uint validatorCount = _validate(whash, v, r, s);\n        require(validatorCount >= required);\n\n        address payable _toAddr = bytesToAddress(toAddr);\n        address tokenAddress = bytesToAddress(token);\n        if(tokenAddress == address(0)){\n            if(!_toAddr.send(uints[0])) revert();\n        }else{\n            if(tokenAddress == tetherAddress){\n                TIERC20(tokenAddress).transfer(_toAddr, uints[0]);\n            }\n            else{\n                if(!IERC20(tokenAddress).transfer(_toAddr, uints[0])) revert();\n            }\n        }\n\n        emit Withdraw(hubContract, fromChain, chain, fromAddr, toAddr, token, bytes32s, uints);\n    }",
+  "// File: EthVault.sol\ncontract EthVault is MultiSigWallet{\n    string public constant chain = \"ETH\";\n\n    bool public isActivated = true;\n\n    address payable public implementation;\n    address public tetherAddress;\n\n    uint public depositCount = 0;\n\n    mapping(bytes32 => bool) public isUsedWithdrawal;  // ❌ Vulnerability\n\n    mapping(bytes32 => address) public tokenAddr;\n    mapping(address => bytes32) public tokenSummaries;\n\n    mapping(bytes32 => bool) public isValidChain;\n\n    constructor(address[] memory _owners, uint _required, address payable _implementation, address _tetherAddress) MultiSigWallet(_owners, _required) public {\n        implementation = _implementation;\n        tetherAddress = _tetherAddress;\n\n        // klaytn valid chain default setting\n        isValidChain[sha256(abi.encodePacked(address(this), \"KLAYTN\"))] = true;\n    }\n\n    function _setImplementation(address payable _newImp) public onlyWallet {\n        require(implementation != _newImp);\n        implementation = _newImp;\n\n    }\n\n    function () payable external {\n        address impl = implementation;\n        require(impl != address(0));\n        assembly {\n            let ptr := mload(0x40)\n            calldatacopy(ptr, 0, calldatasize)\n            let result := delegatecall(gas, impl, ptr, calldatasize, 0, 0)\n            let size := returndatasize\n            returndatacopy(ptr, 0, size)\n\n            switch result\n            case 0 { revert(ptr, size) }\n            default { return(ptr, size) }\n        }\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: signature threshold + duplicate signature prevention + EIP-712\nfunction withdraw(...) external {\n    require(v.length >= threshold, \"insufficient signatures\");\n    address[] memory signers = new address[](v.length);\n    bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(\n        WITHDRAW_TYPEHASH, token, amount, decimals, orbitTxHash\n    )));\n    for (uint i = 0; i < v.length; i++) {\n        address signer = ECDSA.recover(digest, v[i], r[i], s[i]);\n        require(isValidator[signer], \"invalid signer\");\n        for (uint j = 0; j < i; j++) require(signers[j] != signer, \"duplicate signer\");\n        signers[i] = signer;\n    }\n    _withdraw(token, amount);\n}"
+ ],
+ "steps": [
+  "→ [1] Construct forged withdrawal parameters:",
+  "→ [2] Generate 7 forged signature arrays (v/r/s)",
+  "→ [3] Call OrbitEthVault.withdraw()",
+  "→ [4] Successfully withdraw WBTC and multiple other assets",
+  "→ [5] ~$81M drained (WBTC, ETH, USDC, etc.)"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Construct forged withdrawal parameters:\n  │         └─ orbitTxHash, token=WBTC, amount=large value\n  │\n  ├─→ [2] Generate 7 forged signature arrays (v/r/s)\n  │         └─ Exploit signature verification flaw or leaked validator keys\n  │\n  ├─→ [3] Call OrbitEthVault.withdraw()\n  │         └─ Signature verification bypassed\n  │\n  ├─→ [4] Successfully withdraw WBTC and multiple other assets\n  │\n  └─→ [5] ~$81M drained (WBTC, ETH, USDC, etc.)",
+  "interface IOrbitEthVault {\n    function withdraw(\n        address token,\n        uint256 amount,\n        uint8 decimals,\n        bytes32 orbitTxHash,\n        uint8[] calldata v,\n        bytes32[] calldata r,\n        bytes32[] calldata s\n    ) external;\n    function chain() external view returns (uint256);\n}\n\ncontract AttackPoC {\n    IOrbitEthVault constant vault = IOrbitEthVault(0x1bf68a9d1eaee7826b3593c20a0ca93293cb489a);\n    IERC20 constant WBTC = IERC20(0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599);\n\n    function testExploit() external {\n        // [1] Construct forged signature arrays (for 7 validators)\n        uint8[] memory vArr = new uint8[](7);\n        bytes32[] memory rArr = new bytes32[](7);\n        bytes32[] memory sArr = new bytes32[](7);\n\n        // Set forged v/r/s values\n     "
+ ]
+}

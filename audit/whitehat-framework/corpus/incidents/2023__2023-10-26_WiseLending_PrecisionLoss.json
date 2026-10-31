@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-10-26_WiseLending_PrecisionLoss",
+ "source_file": "2023/2023-10-26_WiseLending_PrecisionLoss.md",
+ "title": "WiseLending Precision Loss Incident Analysis",
+ "date": "2023-10-26",
+ "protocol": "WiseLending",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Balancer.flashLoan(WBTC, 50 tokens)",
+  "2 ▶ recover.init() - initialize recover position",
+  "3 ▶ PositionNFTs.mintPositionForUser(borrower)",
+  "4 ▶ WiseLending.depositExactAmount(recover_id, WBTC, amount1)",
+  "5 ▶ WBTC.transfer(WiseLending, amount2) - inflate share price via direct transfer",
+  "6 ▶ WiseLending.depositExactAmount(borrower_id, WBTC, amount3)",
+  "7 ▶ borrowAll() - borrow multiple tokens",
+  "8 ▶ recover.recover() - over-withdrawal via precision loss",
+  "9 ▶ WETH_WBTC_Pair.swap() - convert WETH → WBTC",
+  "10 ▶ Repay Balancer flash loan + recover ~$260,000"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: share price inflation via direct WBTC transfer\ncontract WiseLending {\n    IPositionNFTs public positionNFTs;\n\n    // Vulnerable: totalAssets calculated as WBTC.balanceOf(address(this))\n    function getShareValue(uint256 shares, address token) public view returns (uint256) {\n        uint256 totalShares = totalSupply[token];\n        uint256 totalAssets = IERC20(token).balanceOf(address(this)); // manipulable via direct transfer\n        return shares * totalAssets / totalShares;\n    }\n\n    // Vulnerable: precision loss causes mismatch between shares and assets ratio\n    function depositExactAmount(\n        uint256 nftId,\n        address token,\n        uint256 amount\n    ) external returns (uint256 shares) {\n        uint256 totalShares = totalSupply[token];\n        uint2",
+  "// File: PoolManager.sol\n    function setPoolParameters(\n\n// ...\n\n    function _createPool(\n\n// ...\n\n    function _getMaxPole(\n\n// ...\n\n    function _getMinPole("
+ ]
+}

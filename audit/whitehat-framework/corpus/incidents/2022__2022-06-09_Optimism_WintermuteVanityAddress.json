@@ -1,0 +1,37 @@
+{
+ "id": "2022__2022-06-09_Optimism_WintermuteVanityAddress",
+ "source_file": "2022/2022-06-09_Optimism_WintermuteVanityAddress.md",
+ "title": "Optimism — Wintermute Vanity Address Proxy Deployment Failure Analysis",
+ "date": "2022-06-09",
+ "protocol": "Optimism",
+ "chain": "Optimism",
+ "loss_raw": "20,000,000 OP tokens temporarily taken — an unknown actor deployed to the vanity address and claimed the tokens, but returned all 20M OP to Wintermute after negotiations (~1 week). Net permanent loss: $0.",
+ "loss_usd": 0.0,
+ "root_cause": "Wintermute sent OP tokens to a vanity address (CREATE opcode-based) that was deployed on Ethereum but had never been deployed on Optimism. The PoC demonstrates that the address can be generated on Optimism by looping through ProxyFactory `createProxy()` calls",
+ "attack_tx": null,
+ "vulnerable_contract": "ProxyFactory 0x76E2cFc1F5Fa8F6a5b3fC4c8F4788F0116861F9B",
+ "classes": [
+  "private-key-compromise"
+ ],
+ "code_before": [
+  "❌ Callable by anyone — target address reachable by consuming nonces\n        proxy = new GnosisSafeProxy(masterCopy);\n        if (data.length > 0) {\n            // solhint-disable-next-line no-inline-assembly\n            assembly {\n                if eq(call(gas(), proxy, 0, add(data, 0x20), mload(data), 0, 0), 0) {\n                    revert(0, 0)\n                }\n            }\n        }\n        emit ProxyCreation(proxy, masterCopy);\n    }\n}\n\n//",
+  "❌ Vulnerable cross-chain assumption (conceptual error)\n// On Ethereum: factory.nonce = 5 → proxy address = 0x4f3a...\n// On Optimism: factory.nonce = 0 → proxy address ≠ 0x4f3a...\n//              factory.nonce = N(?) → proxy address = 0x4f3a...\n//              → reachable by calling createProxy() N times\n\n//",
+  "// ❌ Root cause: Wintermute sent OP tokens to a vanity address (CREATE opcode-based) used on Ethereum that had never been deployed on Optimism. ProxyF\n    function createProxy(address masterCopy, bytes memory data)  // ❌ Vulnerability\n        public\n        returns (Proxy proxy)\n    {\n        proxy = new Proxy(masterCopy);\n        if (data.length > 0)\n            // solium-disable-next-line security/no-inline-assembly\n            assembly {\n                if eq(call(gas, proxy, 0, add(data, 0x20), mload(data), 0, 0), 0) { revert(0, 0) }\n            }\n        emit ProxyCreation(proxy);\n    }"
+ ],
+ "code_after": [
+  "✅ Correct cross-chain address management\n// Use CREATE2: keccak256(0xff, factory, salt, bytecodeHash)\n// → Setting the same salt guarantees the same address on every chain\ncontract SafeProxyFactoryFixed {\n    function createProxyWithNonce(\n        address masterCopy,\n        bytes calldata initializer,\n        uint256 saltNonce  //",
+  "✅ Deterministic salt\n    ) external returns (address payable proxy) {\n        bytes32 salt = keccak256(abi.encodePacked(keccak256(initializer), saltNonce));\n        //"
+ ],
+ "steps": [
+  "[Mistake] Optimism Foundation → sends OP to Wintermute vanity address",
+  "20,000,000 OP → 0x4f3a120E72C76c22ae802D129F599BFDbc31cb81",
+  "→ Tokens locked at an address nobody controls yet",
+  "→ NO: keep looping",
+  "→ YES: target Proxy successfully deployed",
+  "→ 20,000,000 OP becomes withdrawable"
+ ],
+ "other_code": [
+  "Incident Timeline\n    │\n    ├─[Background] Wintermute: uses Ethereum vanity address\n    │               0x4f3a120E72C76c22ae802D129F599BFDbc31cb81\n    │               (Gnosis Safe Proxy created via CREATE opcode)\n    │\n    ├─[Mistake] Optimism Foundation → sends OP to Wintermute vanity address\n    │             20,000,000 OP → 0x4f3a120E72C76c22ae802D129F599BFDbc31cb81\n    │             ⚡ Address not yet deployed on Optimism\n    │             → Tokens locked at an address nobody controls yet\n    │\n    PoC Demonstration (DeFiHackLabs)\n    │\n    ├─[P1] ProxyFactory(0x76E2cFc1F5Fa8F6a5b3fC4c8F4788F0116861F9B)\n    │       .createProxy(masterCopy, \"\") called repeatedly\n    │\n    ├─[P2] Check each deployed proxy address\n    │       target == 0x4f3a120E72C76c22ae802D129F599BFDbc31cb81 ?\n    │    ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IProxyFactory {\n    // For consuming nonces — repeated calls eventually reach the target address\n    function createProxy(\n        address masterCopy,\n        bytes calldata data\n    ) external returns (address payable proxy);\n}\n\ncontract ContractTest is Test {\n    IProxyFactory proxyFactory =\n        IProxyFactory(0x76E2cFc1F5Fa8F6a5b3fC4c8F4788F0116861F9B);\n\n    address masterCopy = 0xE7145dd6287AE53326347f3A6694fCf2954bcD8A;\n    // Wintermute vanity address (not deployed on Optimism)\n    address target     = 0x4f3a120E72C76c22ae802D129F599BFDbc31cb81;\n\n    function setUp() public {\n        // Fork Optimism\n        vm.createSelectFork(\"optimism\", 10_607_735);\n    }\n\n    function testEx"
+ ]
+}

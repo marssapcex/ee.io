@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-06-XX_DysonMoney_MintHarvestRedeemLogicFlaw",
+ "source_file": "2024/2024-06-XX_DysonMoney_MintHarvestRedeemLogicFlaw.md",
+ "title": "Dyson Money — mint()+harvest()+redeem() Logic Flaw Analysis",
+ "date": "2024-06-01",
+ "protocol": "Dyson Money",
+ "chain": "BSC",
+ "loss_raw": "~52 BNB",
+ "loss_usd": null,
+ "root_cause": "Combination of DysonVault's `mint()`+`harvest()`+`redeem()` and StableV1AMM LP manipulation to skew the shares ratio, allowing withdrawal of more than the deposited amount",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: shares ratio calculated based on external LP balance\ncontract DysonVault {\n    IERC20 public lpToken;\n    uint256 public totalShares;\n\n    function mint(uint256 lpAmount) external returns (uint256 shares) {\n        uint256 totalLP = lpToken.balanceOf(address(this)); // references external balance\n        if (totalShares == 0) {\n            shares = lpAmount;\n        } else {\n            // shares = lpAmount * totalShares / totalLP\n            // if totalLP is manipulated, shares are over/under-issued\n            shares = lpAmount * totalShares / totalLP;\n        }\n        totalShares += shares;\n        lpToken.transferFrom(msg.sender, address(this), lpAmount);\n    }\n\n    function redeem(uint256 shares) external returns (uint256 lpAmount) {\n        uint256 totalLP = lpToken.balanceOf(address(this)); // references external balance\n        // lpAmount = shares * totalLP / totalShares\n        // totalLP manipulation → excess lpAmount paid out\n        lpAmount = shares * totalLP / totalShares;\n        totalShares -= shares;\n        lpToken.transfer(msg.sender, lpAmount);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: uses internal accounting variable\ncontract DysonVault {\n    uint256 public totalLPDeposited; // internal accounting\n\n    function mint(uint256 lpAmount) external returns (uint256 shares) {\n        shares = totalLPDeposited == 0 ? lpAmount : lpAmount * totalShares / totalLPDeposited;\n        totalLPDeposited += lpAmount;\n        totalShares += shares;\n        lpToken.transferFrom(msg.sender, address(this), lpAmount);\n    }\n\n    function redeem(uint256 shares) external returns (uint256 lpAmount) {\n        lpAmount = shares * totalLPDeposited / totalShares;\n        totalLPDeposited -= lpAmount;\n        totalShares -= shares;\n        lpToken.transfer(msg.sender, lpAmount);\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Borrow LP tokens from StableV1AMM (flash swap)",
+  "→ [2] DysonVault(b708).mint(small LP amount)",
+  "When totalLP is low → more shares issued",
+  "→ [3] DysonVault(b821).harvest()",
+  "Collect rewards → modify internal state",
+  "→ [4] Donate large LP amount directly to StableV1AMM",
+  "→ [5] DysonVault(b29b).redeem(shares)",
+  "→ [6] Repay flash swap",
+  "→ [7] ~52 BNB profit"
+ ],
+ "other_code": [
+  "// File: DysonMoney_decompiled.sol\ncontract DysonMoney {\ncontract DysonMoney {\n    address public owner;\n\n}",
+  "Attacker\n  │\n  ├─→ [1] Borrow LP tokens from StableV1AMM (flash swap)\n  │\n  ├─→ [2] DysonVault(b708).mint(small LP amount)\n  │         └─ When totalLP is low → more shares issued\n  │\n  ├─→ [3] DysonVault(b821).harvest()\n  │         └─ Collect rewards → modify internal state\n  │\n  ├─→ [4] Donate large LP amount directly to StableV1AMM\n  │         └─ totalLP seen by DysonVault spikes sharply\n  │\n  ├─→ [5] DysonVault(b29b).redeem(shares)\n  │         └─ lpAmount = shares * manipulated_totalLP / totalShares\n  │         └─ Withdraw far more LP than deposited\n  │\n  ├─→ [6] Repay flash swap\n  │\n  └─→ [7] ~52 BNB profit"
+ ]
+}

@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-10-27_TeamFinance_MigrateSqrtPrice",
+ "source_file": "2022/2022-10-27_TeamFinance_MigrateSqrtPrice.md",
+ "title": "TeamFinance — migrate() sqrtPriceX96 Parameter Manipulation Attack Analysis",
+ "date": "2022-10-27",
+ "protocol": "Team Finance",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$15.8M (multiple tokens: USDC, DAI, CAW, TSUKA, etc.)",
+ "loss_usd": 15.8,
+ "root_cause": "The `migrate()` function does not validate the `sqrtPriceX96` parameter, allowing an arbitrary price range to be set when creating a Uniswap V3 position",
+ "attack_tx": null,
+ "vulnerable_contract": "0x48d118c9185e4dbafe7f3813f8f29ec8a6248359 (LockToken)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "❌ Vulnerable migrate() - sqrtPriceX96 parameter not validated\ncontract LockToken {\n    struct MigrateParams {\n        uint256 lockId;\n        uint256 sqrtPriceX96;   //",
+  "❌ User can set arbitrary value\n        int24 tickLower;\n        int24 tickUpper;\n        uint256 amount0Min;\n        uint256 amount1Min;\n        uint256 deadline;\n    }\n\n    function migrate(MigrateParams calldata params) external nonReentrant {\n        LockInfo storage lock = lockInfo[params.lockId];\n        require(msg.sender == lock.owner, \"Not owner\");\n\n        // Remove V2 LP\n        IUniswapV2Pair(lock.lpToken).burn(address(this));\n\n        //",
+  "❌ sqrtPriceX96 used as V3 initial price without validation\n        // Normal range: sqrt(actual price) * 2^96\n        // Attacker can extract large amounts of one token using an extreme value\n        IUniswapV3Factory(v3Factory).createPool(token0, token1, fee);\n        IUniswapV3Pool(pool).initialize(uint160(params.sqrtPriceX96));\n\n        // Add V3 position - imbalanced liquidity due to distorted initial price\n        INonfungiblePositionManager(nfpm).mint(\n            INonfungiblePositionManager.MintParams({\n                token0: token0,\n                token1: token1,\n                fee: fee,\n                tickLower: params.tickLower,\n                tickUpper: params.tickUpper,\n                amount0Desired: amount0,\n                amount1Desired: amount1,\n                amount0Min: params.amount0Min,\n                amount1Min: params.amount1Min,\n                recipient: lock.owner,\n                deadline: params.deadline\n            })\n        );\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - compute sqrtPriceX96 from current V2 price\ncontract SafeLockToken {\n    function migrate(MigrateParams calldata params) external nonReentrant {\n        LockInfo storage lock = lockInfo[params.lockId];\n        require(msg.sender == lock.owner, \"Not owner\");\n\n        // Remove V2 LP and verify actual reserve ratio\n        (uint256 amount0, uint256 amount1) = IUniswapV2Pair(lock.lpToken).burn(address(this));\n\n        //",
+  "✅ Compute sqrtPriceX96 from current V2 reserve ratio (ignore user input)\n        uint160 computedSqrtPriceX96 = _computeSqrtPriceX96(amount0, amount1);\n\n        //"
+ ],
+ "steps": [
+  "Burn V2 LP → receive token0, token1",
+  "Mint V3 position → deposit large amount of one token only",
+  "→ remaining token returned to attacker as \"residual\"",
+  "[5] USDC → DAI (Curve 3pool swap)"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ILockToken {\n    struct MigrateParams {\n        uint256 lockId;\n        uint256 sqrtPriceX96;\n        int24 tickLower;\n        int24 tickUpper;\n        uint256 amount0Min;\n        uint256 amount1Min;\n        uint256 deadline;\n    }\n\n    function lockToken(\n        address lpToken,\n        address owner,\n        uint256 amount,\n        uint256 unlockDate,\n        bool countryCheck,\n        string calldata feeName\n    ) external payable returns (uint256);\n\n    function extendLockDuration(uint256 id, uint256 newUnlockDate) external;\n    function migrate(MigrateParams calldata params) external;\n}\n\ncontract TeamFinanceExploit is Test {\n    ILockToken lockToken = ILockToken(0x48d118c9185e4dba"
+ ]
+}

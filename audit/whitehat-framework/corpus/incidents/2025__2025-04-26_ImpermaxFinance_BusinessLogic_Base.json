@@ -1,0 +1,51 @@
+{
+ "id": "2025__2025-04-26_ImpermaxFinance_BusinessLogic_Base",
+ "source_file": "2025/2025-04-26_ImpermaxFinance_BusinessLogic_Base.md",
+ "title": "Impermax Finance V3 — Business Logic Flaw (Fee Overvaluation + Reinvestment Manipulation) Analysis",
+ "date": "2025-04-26",
+ "protocol": "Impermax Finance V3",
+ "chain": "Base",
+ "loss_raw": "~$300,000 (~170 ETH)",
+ "loss_usd": 300000.0,
+ "root_cause": "Collateral valuation mismatch between uncollected fees and auto-compounded fees + invalid price range reinvestment + bad debt restructuring logic flaw",
+ "attack_tx": null,
+ "vulnerable_contract": "0x5d93f2...436281eE (ImpermaxV3Borrowable)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — TokenizedUniswapV3Position.getPositionData()\nfunction getPositionData(\n    uint256 _tokenId,\n    uint256 _safetyMarginSqrt\n) external returns (\n    uint256 priceSqrtX96,\n    RealXYs memory realXYs\n) {\n    // Vulnerability ❌: Evaluates uncollected fees based on oracle price\n    // Full value is credited even when pool's current price (slot0) and oracle price diverge significantly\n    // Fees accumulated in a manipulated tick range are evaluated the same way\n    uint256 fees0 = position.tokensOwed0;\n    uint256 fees1 = position.tokensOwed1;\n\n    // Vulnerability ❌: Does not check whether the position is out-of-range of the current tick\n    // Even if outside the tick range, fees cannot practically be realized but are still included in collateral value\n    realXYs.currentPrice.realX += fees0;\n    realXYs.currentPrice.realY += fees1;\n}",
+  "// ❌ Vulnerable code — No validation of current price range during reinvestment\nfunction reinvest(uint256 tokenId, address bountyTo) external returns (\n    uint256 bounty0,\n    uint256 bounty1\n) {\n    // Vulnerability ❌: Reinvests accumulated fees directly into the existing position tick range (-196216 ~ -102028)\n    // Forced reinvestment executes even if the current market price is outside that range\n    // → Reinvested liquidity immediately becomes out-of-range and collapses in value\n    (amount0, amount1) = _addLiquidity(\n        tokenId,\n        position.tickLower,  // ❌ Uses the manipulated tick range as-is\n        position.tickUpper,\n        fees0,\n        fees1\n    );\n}",
+  "// ❌ Vulnerable code — Socializes loss instead of liquidating on undercollateralization\nfunction restructureBadDebt(uint256 tokenId) external {\n    // Vulnerability ❌: Only checks whether the position is underwater\n    // Deletes the loan record without invoking the actual liquidation procedure\n    require(isUnderwater(tokenId), \"Position is not underwater\");\n\n    // Vulnerability ❌: Only handles transferring protocol loss to lenders\n    // Attacker retains the borrowed assets while the loan record is cleared\n    borrowable0.restructureDebt(tokenId);  // Only deletes the loan record\n    borrowable1.restructureDebt(tokenId);\n\n    emit RestructureBadDebt(tokenId);\n    // Terminates without liquidation → attacker retains assets\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — Added position tick range and price deviation checks\nfunction getPositionData(\n    uint256 _tokenId,\n    uint256 _safetyMarginSqrt\n) external returns (\n    uint256 priceSqrtX96,\n    RealXYs memory realXYs\n) {\n    (uint160 sqrtPriceX96,,,,,,) = pool.slot0();\n\n    // ✅ Check deviation between oracle price and pool price\n    uint256 pricesRatio = uint256(sqrtPriceX96) * 1e18 / oracleSqrtPriceX96;\n    require(\n        pricesRatio <= _safetyMarginSqrt && pricesRatio >= 1e36 / _safetyMarginSqrt,\n        \"Price deviation exceeded: oracle-pool price difference exceeds safety margin\"\n    );\n\n    // ✅ Only credit fee value when the position is within the current tick range\n    (, int24 currentTick,,,,,) = pool.slot0();\n    if (currentTick >= tickLower && currentTick < tickUpper) {\n        realXYs.currentPrice.realX += fees0;\n        realXYs.currentPrice.realY += fees1;\n    }\n    // If outside the tick range, exclude fees from collateral value\n}",
+  "// ✅ Fixed code — Validate tick range before reinvestment\nfunction reinvest(uint256 tokenId, address bountyTo) external returns (\n    uint256 bounty0,\n    uint256 bounty1\n) {\n    (, int24 currentTick,,,,,) = pool.slot0();\n\n    // ✅ Reinvestment only allowed when current tick is within the position range\n    require(\n        currentTick >= position.tickLower && currentTick < position.tickUpper,\n        \"Reinvestment not allowed: position is outside current price range\"\n    );\n\n    (amount0, amount1) = _addLiquidity(\n        tokenId,\n        position.tickLower,\n        position.tickUpper,\n        fees0,\n        fees1\n    );\n}"
+ ],
+ "steps": [
+  "Step 1: Morpho Flash Loan",
+  "Attacker → Morpho.flashLoan(WETH, 10544 ETH)",
+  "→ Morpho.flashLoan(USDC, 22539727 USDC) [nested]",
+  "Step 2: Price Manipulation (falseSqrtPriceLimit = Max Tick)",
+  "→ Pushes pool price to the extreme upper bound (tick max)",
+  "Step 3: LP Position Creation (tick: -196216 ~ -102028)",
+  "→ Obtains tokenized LP NFT in manipulated tick range",
+  "Step 4: Collateral Registration",
+  "TokenizedUniswapV3Position.transferFrom → Collateral",
+  "Step 5: Wash Swap × 100 — Artificial Fee Generation",
+  "→ Accumulates large uncollected fees on the position",
+  "Step 6: Borrow Against Inflated Collateral",
+  "→ Borrows maximum WETH based on overvalued fee collateral",
+  "Step 7: Trigger Reinvestment — Induce Collateral Collapse",
+  "→ Reinvests fees as liquidity in extreme tick range",
+  "→ After price normalization, liquidity becomes out-of-",
+  "range → value = 0",
+  "Step 8: Bad Debt Restructuring — Liquidation Bypass",
+  "→ Loan record deleted, loss socialized to lenders",
+  "→ Attacker retains borrowed WETH"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────┐\n│  Step 1: Morpho Flash Loan                                   │\n│  Attacker → Morpho.flashLoan(WETH, 10544 ETH)               │\n│           → Morpho.flashLoan(USDC, 22539727 USDC) [nested]  │\n└────────────────────────┬────────────────────────────────────┘\n                         │ WETH + USDC secured\n                         ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Step 2: Price Manipulation (falseSqrtPriceLimit = Max Tick) │\n│  UniV3pool_200.swap(false, 1000USDC, maxSqrtPrice)          │\n│  → Pushes pool price to the extreme upper bound (tick max)  │\n└────────────────────────┬────────────────────────────────────┘\n                         │ Manipulated price tick\n                         ▼\n┌──────",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.13;\n\n// @KeyInfo - Total Loss: ~300k USD\n// 2025-04-26 10:43 UTC\n// Attacker: https://basescan.org/address/0xe3223f7...c7c3\n// Attack Contract: https://basescan.org/address/0x98e938...e1b\n// Vulnerable Contract: https://basescan.org/address/0x5d93f2...81ee\n// Attack Tx: https://basescan.org/tx/0xde903046...983\n// Block: 29437439\n\ncontract ImpermaxV3_exp is Test {\n    // [Step 1] Set flash loan sizes\n    uint256 public borrowUSDC_amount = 22539727986604;        // ~22.5M USDC\n    uint256 public borrowWETH_amount = 10544813644832897955984; // ~10,544 WETH\n\n    function setUp() public {\n        // Fork Base chain at the block just before the attack\n        vm.createSelectFork(\"base\", 29437439 - 1);\n        IFS(WETH_address).approve(M"
+ ]
+}

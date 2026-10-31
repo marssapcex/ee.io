@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-03-15_HundredFinance_ERC677ReentrancyLending",
+ "source_file": "2022/2022-03-15_HundredFinance_ERC677ReentrancyLending.md",
+ "title": "Hundred Finance — ERC677 Reentrancy Borrow Exploit Analysis",
+ "date": "2022-03-15",
+ "protocol": "Hundred Finance",
+ "chain": "Gnosis Chain",
+ "loss_raw": "~$6,200,000 (USDC, wxDAI, etc.)",
+ "loss_usd": 6200000.0,
+ "root_cause": "Reentrancy via Gnosis Chain ERC677 token `onTokenTransfer` hook, enabling additional borrows before collateral state update (same date and same vulnerability as Agave)",
+ "attack_tx": null,
+ "vulnerable_contract": "hUSDC 0x243E33aa7f6787154a8E59d3C27a66db3F8818ee",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable Compound fork borrow() (pseudocode)\ncontract CToken {\n\n    function borrow(uint256 borrowAmount) external returns (uint256) {\n        // Health factor validation\n        uint256 allowed = comptroller.borrowAllowed(address(this), msg.sender, borrowAmount);\n        require(allowed == 0, \"borrow not allowed\");\n\n        //",
+  "❌ ERC677 token transfer — triggers onTokenTransfer callback\n        // At this point, borrowBalances has not yet been updated\n        doTransferOut(msg.sender, borrowAmount);\n\n        //",
+  "❌ Borrow balance update occurs after the callback\n        borrowBalances[msg.sender] = borrowAmount;\n\n        emit Borrow(msg.sender, borrowAmount, ...);\n        return NO_ERROR;\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Improved pattern from Compound V3 onward\nfunction borrow(uint256 borrowAmount) external nonReentrant returns (uint256) {\n    //",
+  "✅ Update borrow balance first (Effects)\n    borrowBalances[msg.sender] += borrowAmount;\n    accrueInterest();\n\n    //"
+ ],
+ "steps": [
+  "→ Additional USDC borrow succeeds",
+  "[5] Borrowed xDAI → USDC (Curve swap)"
+ ],
+ "other_code": [
+  "Attacker Contract (implements ERC677 onTokenTransfer)\n    │\n    ├─[1] Sushi flash loan: borrow large amount of USDC\n    │\n    ├─[2] Deposit USDC into hUSDC (mint)\n    │       Receive hUSDC tokens as collateral\n    │\n    ├─[3] Comptroller.enterMarkets([hUSDC])\n    │       Register hUSDC as collateral\n    │\n    ├─[4] Call hxDAI.borrow(60% of flashloan)\n    │       ↓ ERC677 onTokenTransfer callback triggered\n    │           │\n    │           └─ [Reentrancy] hUSDC.borrow(90% of flashloan)\n    │                   Possible because borrow balance not yet updated\n    │                   → Additional USDC borrow succeeds\n    │\n    ├─[5] Borrowed xDAI → USDC (Curve swap)\n    │\n    ├─[6] Repay flash loan + drain surplus USDC\n    │\n    └─[7] Loss: ~$6,200,000",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ICompoundToken {\n    function mint(uint256 mintAmount) external returns (uint256);\n    function borrow(uint256 borrowAmount) external returns (uint256);\n    function balanceOf(address owner) external view returns (uint256);\n    function getCash() external view returns (uint256);\n}\n\ninterface IComptroller {\n    function enterMarkets(address[] calldata cTokens) external returns (uint256[] memory);\n}\n\ninterface ICurve {\n    function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256);\n}\n\ncontract ContractTest is Test {\n    IERC20 USDC  = IERC20(0xDDAfbb505ad214D7b80b1f830fcCc89B60fb7A83);\n    IERC20 wxDAI = IERC20(0xe91D153E0b41518A2Ce8Dd3D7944Fa863463a97d);\n"
+ ]
+}

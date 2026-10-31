@@ -1,0 +1,47 @@
+{
+ "id": "2025__2025-12-12_RibbonFinance_AccessControl_ETH",
+ "source_file": "2025/2025-12-12_RibbonFinance_AccessControl_ETH.md",
+ "title": "Ribbon Finance — Access Control Vulnerability Analysis",
+ "date": "2025-12-12",
+ "protocol": "Ribbon Finance",
+ "chain": "Ethereum",
+ "loss_raw": "$2,700,000 (~846 WETH + 178,000 USDC)",
+ "loss_usd": 2700000.0,
+ "root_cause": "Insufficient access control on oracle proxy upgrade — anyone could call `transferOwnership` / `setImplementation`",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "contract OracleProxyAdmin {\n    address public implementation;\n    address public owner;\n\n    // ❌ Access control completely missing — anyone can replace the implementation\n    function setImplementation(address _newImpl) external {\n        // No onlyOwner or msg.sender validation\n        implementation = _newImpl;\n    }\n\n    // ❌ Ownership transfer also unrestricted\n    function transferOwnership(address _newOwner) external {\n        // No require(msg.sender == owner, \"Not owner\")\n        owner = _newOwner;\n    }\n\n    // ❌ tx.origin-based validation (bypassable)\n    function setExpiryPrice(address _asset, uint256 _expiry, uint256 _price) external {\n        require(tx.origin == authorizedDispatcher, \"Unauthorized\"); // tx.origin is bypassed when called via contract\n        // Price setting logic...\n    }\n}",
+  "// ❌ Vulnerable code: price stored without precision validation\nfunction setExpiryPrice(address _asset, uint256 _expiry, uint256 _price) external {\n    // Price submitted with 18-decimal precision misinterpreted as 8-decimal\n    // e.g., USDC strike 3,800 → actually 38,000,000,000 (10x inflation)\n    expiryPrice[_asset][_expiry] = _price;\n    emit ExpiryPriceUpdated(_asset, _expiry, _price, block.timestamp);\n}\n\n// ❌ Vulnerable settlement calculation\nfunction getPayoutForOption(\n    address _collateral,   // WETH (18 decimals)\n    address _strike,       // USDC (8 decimals)\n    uint256 _strikePrice,\n    uint256 _expiryPrice\n) internal view returns (uint256 payout) {\n    // Direct division without precision normalization — unit mismatch occurs\n    payout = (_expiryPrice - _strikePrice) * COLLATERAL_AMOUNT / _strikePrice;\n}"
+ ],
+ "code_after": [
+  "contract OracleProxyAdmin {\n    address public implementation;\n    address public owner;\n\n    // ✅ msg.sender-based owner validation\n    modifier onlyOwner() {\n        require(msg.sender == owner, \"OracleProxyAdmin: caller is not owner\");\n        _;\n    }\n\n    // ✅ Only owner can replace implementation\n    function setImplementation(address _newImpl) external onlyOwner {\n        require(_newImpl != address(0), \"OracleProxyAdmin: zero address\");\n        emit ImplementationUpgraded(implementation, _newImpl);\n        implementation = _newImpl;\n    }\n\n    // ✅ Only owner can transfer ownership\n    function transferOwnership(address _newOwner) external onlyOwner {\n        require(_newOwner != address(0), \"OracleProxyAdmin: zero address\");\n        emit OwnershipTransferred(owner, _newOwner);\n        owner = _newOwner;\n    }\n\n    // ✅ msg.sender validation + whitelist instead of tx.origin\n    function setExpiryPrice(address _asset, uint256 _expiry, uint256 _price) external {\n        require(authorizedDispatchers[msg.sender], \"OracleProxyAdmin: unauthorized dispatcher\");\n        // Price setting logic...\n    }\n}",
+  "// ✅ Explicitly normalize precision per asset\nfunction getPayoutForOption(\n    address _collateral,\n    address _strike,\n    uint256 _strikePrice,\n    uint256 _expiryPrice\n) internal view returns (uint256 payout) {\n    uint8 collateralDecimals = IERC20Metadata(_collateral).decimals();\n    uint8 strikeDecimals = IERC20Metadata(_strike).decimals();\n\n    // ✅ Normalize to 18 decimals before calculation\n    uint256 normalizedStrike = _strikePrice * (10 ** (18 - strikeDecimals));\n    uint256 normalizedExpiry = _expiryPrice * (10 ** (18 - strikeDecimals));\n    uint256 normalizedCollateral = COLLATERAL_AMOUNT * (10 ** (18 - collateralDecimals));\n\n    if (normalizedExpiry <= normalizedStrike) return 0;\n    payout = (normalizedExpiry - normalizedStrike) * normalizedCollateral / normalizedExpiry;\n}"
+ ],
+ "steps": [
+  "- **2025-12-06**: Aevo deploys oracle upgrade → proxy admin access control unintentionally removed",
+  "Mastermind(0x4c0d) → Executor(0x4BFD) + Engineer(0x9c61)",
+  "Engineer → ProxyAdmin(0x9D7b).setImplementation(malicious)",
+  "→ No access control → Immediately succeeds",
+  "→ Malicious oracle implementation (0xE1f0) installed",
+  "Malicious oracle → setExpiryPrice(wstETH, expiry, extreme)",
+  "Malicious oracle → setExpiryPrice(AAVE, expiry, near +∞)",
+  "Malicious oracle → setExpiryPrice(LINK, expiry, extreme)",
+  "→ ExpiryPriceUpdated event emitted → System accepts as valid",
+  "Executor (Bagman) → Burns 225 oTokens",
+  "→ Settlement based on forged expiry prices",
+  "→ Settlement amount abnormally inflated by decimal mismatch",
+  "→ 22.46 WETH extracted per transaction",
+  "→ Repeated execution fully drains vault",
+  "→ Attempts to minimize on-chain traces",
+  "Distributor(0x354a) → Splits across 15 wallets",
+  "→ Batches of 100.1 ETH (split as 99 + 1 + 0.1 ETH)",
+  "→ Funds moved toward Tornado Cash"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────────┐\n│                     Attacker Wallet Infrastructure               │\n│  Mastermind(0x4c0d)  →  Executor(0x4BFD) + Engineer(0x9c61)     │\n└──────────────────┬───────────────────────────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  [Phase 1] Oracle Proxy Hijacking                                │\n│                                                                  │\n│  Tx: 0xb73e...0e1e                                               │\n│  Engineer → ProxyAdmin(0x9D7b).setImplementation(malicious)     │\n│  → No access control → Immediately succeeds                      │\n│  → Malicious oracle implementation (0xE1f0) installed            │\n└"
+ ]
+}

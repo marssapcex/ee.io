@@ -1,0 +1,49 @@
+{
+ "id": "2025__2025-04-01_OPC_BusinessLogic_BSC",
+ "source_file": "2025/2025-04-01_OPC_BusinessLogic_BSC.md",
+ "title": "OPC Token — Business Logic Vulnerability Analysis",
+ "date": "2025-04-01",
+ "protocol": "OPC",
+ "chain": "BSC",
+ "loss_raw": "~$107,000 (approximately 350 BNB)",
+ "loss_usd": 107000.0,
+ "root_cause": "Business Logic Flaw — abnormal profit extraction due to improper state validation in the token sell/reward calculation functions",
+ "attack_tx": "On-chain verification required (BscScan)",
+ "vulnerable_contract": "OPC Token Contract (BscScan)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable OPC token contract (estimated pattern — source not public)\n// CWE-841: Improper Enforcement of Behavioral Workflow\n// CWE-682: Incorrect Calculation (using pool reserves as real-time price)\n\ncontract OPCToken {\n    address public uniswapPair;    // PancakeSwap OPC-WBNB pair\n    uint256 public totalRewardPool; // Reward pool balance\n    mapping(address => uint256) public stakedAmount;\n    mapping(address => uint256) public lastClaimBlock;\n\n    // ❌ Core vulnerability: getReward() calculates rewards based on\n    //    real-time pool price (spot price) manipulable via flash loan\n    function getReward() external {\n        uint256 userStake = stakedAmount[msg.sender];\n        require(userStake > 0, \"No stake\");\n\n        // ❌ Queries current pool reserves in real time (manipulable)\n        (uint112 reserve0, uint112 reserve1,) =\n            IPancakePair(uniswapPair).getReserves();\n\n        // ❌ Spot-price-based reward calculation — when reserves are\n        //    manipulated via flash loan, reward increases exponentially\n        uint256 opcPrice = uint256(reserve1) * 1e18 / uint256(reserve0);\n        uint256 reward = userStake * opcPrice / 1e18;\n\n        // ❌ Transfer without validating totalRewardPool balance\n        //    Passes even when manipulated reward exceeds totalRewardPool\n        require(reward <= totalRewardPool, \"Insufficient reward pool\");\n\n        // ❌ lastClaimBlock update occurs after transfer\n        //    Vulnerable to reentrancy or multiple calls within the same block\n        IERC20(address(this)).transfer(msg.sender, reward);\n        lastClaimBlock[msg.sender] = block.number;\n        totalRewardPool -= reward;\n    }\n\n    // ❌ sellTokens() — sell fee calculation error\n    function sellTokens(uint256 amount) external {\n        require(balanceOf(msg.sender) >= amount, \"Insufficient balance\");\n\n        // ❌ Fee calculated on pre-sell balance (should use post-sell balance)\n        uint256 fee = calculateFee(amount);  // Fee calculation\n        uint256 netAmount = amount - fee;\n\n        // ❌ Burns fee without transferring to contract\n        //    Only adjusts internal balance without removing tokens from pool\n        _burn(msg.sender, fee);\n        _transfer(msg.sender, uniswapPair, netAmount);\n\n        // ❌ sync() not explicitly called, allowing pool reserves\n        //    to remain out of sync with actual balances\n        // IPancakePair(uniswapPair).sync();  // Missing!\n    }\n}",
+  "// ❌ Flash loan unprotected — balance manipulation and reward claim possible in same block\nfunction pancakeCall(\n    address sender,\n    uint256 amount0,\n    uint256 amount1,\n    bytes calldata data\n) external {\n    // After receiving flash loan funds, immediately manipulate OPC pool state\n    // ... manipulation logic ...\n\n    // ❌ getReward() can be called within the same transaction\n    IOPCToken(opcToken).getReward();\n\n    // ... repay principal + fee ...\n}",
+  "❌ Vulnerable code — direct transfer without sync()\nfunction distributeFees() internal {\n    uint256 feeAmount = collectedFees;\n    collectedFees = 0;\n    //"
+ ],
+ "code_after": [
+  "// ✅ Fixed OPC token contract\n// Key fixes: TWAP-based pricing + reentrancy protection + state consistency guarantees\n\ncontract OPCTokenFixed {\n    address public uniswapPair;\n    uint256 public totalRewardPool;\n    mapping(address => uint256) public stakedAmount;\n    mapping(address => uint256) public lastClaimBlock;\n\n    // ✅ TWAP price accumulator (time-weighted average price)\n    uint256 public price0CumulativeLast;\n    uint256 public price1CumulativeLast;\n    uint32 public blockTimestampLast;\n    uint256 public twapPrice;  // 30-minute TWAP\n\n    bool private _locked;\n\n    modifier nonReentrant() {\n        require(!_locked, \"ReentrancyGuard: reentrant call blocked\");\n        _locked = true;\n        _;\n        _locked = false;\n    }\n\n    // ✅ Uses TWAP for reward calculation — not manipulable via flash loan\n    function getReward() external nonReentrant {\n        uint256 userStake = stakedAmount[msg.sender];\n        require(userStake > 0, \"No stake\");\n\n        // ✅ Prevents duplicate claims within the same block\n        require(\n            block.number > lastClaimBlock[msg.sender] + CLAIM_COOLDOWN_BLOCKS,\n            \"Claim cooldown: wait period required\"\n        );\n\n        // ✅ Uses TWAP price (non-manipulable)\n        uint256 opcPrice = _getTwapPrice();\n\n        // ✅ Compares against actual reward pool balance and applies ceiling\n        uint256 rawReward = userStake * opcPrice / 1e18;\n        uint256 maxReward = totalRewardPool / MAX_CLAIM_FRACTION; // Max 1/100 limit\n        uint256 reward = rawReward > maxReward ? maxReward : rawReward;\n\n        // ✅ Performs state update before transfer (Checks-Effects-Interactions)\n        lastClaimBlock[msg.sender] = block.number;\n        totalRewardPool -= reward;\n\n        // ✅ Transfer\n        IERC20(address(this)).transfer(msg.sender, reward);\n    }\n\n    // ✅ sellTokens() — includes pool synchronization\n    function sellTokens(uint256 amount) external nonReentrant {\n        require(balanceOf(msg.sender) >= amount, \"I",
+  "// ✅ Flash loan protection — claims prohibited within the same block\nmodifier noFlashLoan() {\n    require(\n        tx.origin == msg.sender,\n        \"NoFlashLoan: only direct EOA calls allowed\"\n    );\n    _;\n}\n\n// ✅ Additional: prohibit reward claims within the same block\nmodifier notInSameBlock() {\n    require(\n        block.number > lastInteractionBlock[msg.sender],\n        \"SameBlockGuard: duplicate call within same block prohibited\"\n    );\n    lastInteractionBlock[msg.sender] = block.number;\n    _;\n}\n\nfunction getReward() external nonReentrant noFlashLoan notInSameBlock {\n    // ... reward logic ...\n}"
+ ],
+ "steps": [
+  "Step 1: Deploy and call attack contract",
+  "Step 2: Flash loan callback",
+  "[2-A] Bulk swap WBNB → OPC",
+  "→ OPC price spikes",
+  "Step 3: Claim rewards at manipulated price",
+  "→ Before manipulation: 1 OPC = 0.001 BNB",
+  "→ After manipulation: 1 OPC = 10 BNB (10,000x)",
+  "→ Normal: 1 OPC reward",
+  "→ Manipulated: 10,000 OPC reward extracted",
+  "Step 4: Restore state and lock in profit",
+  "[4-A] Swap acquired OPC rewards → WBNB",
+  "Sell large OPC amount → acquire WBNB",
+  "Step 5: Withdraw profit",
+  "1. **Flash Loan Execution**: The attacker borrows a large amount of WBNB from PancakeSwap V2. Since this loan must be repaid within a single transaction, all attack logic completes within one transaction.",
+  "2. **Pool State Manipulation**: The borrowed WBNB is used to buy large amounts of OPC from the OPC-WBNB pair. This causes the pool's OPC reserves to drop sharply and WBNB reserves to surge. As a result, the OPC spot price returned by `getReserves()` rises to hundreds or tens of thousands of times it",
+  "3. **Exploiting the Vulnerable Function**: The `getReward()` function of the OPC token is called. Because this function calculates rewards based on the current pool's spot price, thousands to tens of thousands of times more reward is calculated under the manipulated price. This excessive reward is d",
+  "4. **State Restoration**: The acquired OPC rewards are swapped back to WBNB. In this process, the attacker repays the flash loan principal and fee, while realizing a net profit of approximately 350 BNB.",
+  "5. **Profit Transfer**: Immediately after the attack, funds are moved to Tornado Cash or a cross-chain bridge."
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// PoC Reconstruction: OPC Token Business Logic Exploit\n// Reference pattern: DeFiHackLabs — YBToken, Lifeprotocol, AIRWA (2025-04)\n// Actual transaction must be verified on BSCScan\n\nimport \"forge-std/Test.sol\";\nimport \"../interface.sol\";\n\n// ── Key address constants (actual addresses must be verified on BSCScan) ──\naddress constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;\naddress constant OPC_TOKEN = address(0); // Verify on BSCScan\naddress constant OPC_WBNB_PAIR = address(0); // Verify on BSCScan\naddress constant PANCAKE_ROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E;\n\ncontract OPCExploit is Test {\n\n    // ── Contract interfaces used in the attack ──\n    IPancakePair opcPair = IPancakePair(OPC_WBNB_PAIR);\n   ",
+  "# BSC RPC endpoint\nexport RPC_URL=\"https://bsc-mainnet.public.blastapi.io\"\nexport ATTACK_TX=\"<actual attack transaction hash>\"\n\n# Query basic transaction information\ncast tx $ATTACK_TX --rpc-url $RPC_URL\n\n# Query event logs (verify Transfer events)\ncast receipt --json $ATTACK_TX --rpc-url $RPC_URL | \\\n  python3 -c \"\nimport json, sys\nreceipt = json.load(sys.stdin)\nfor log in receipt.get('logs', []):\n    # Transfer event signature: 0xddf252ad...\n    if log['topics'][0].startswith('0xddf252ad'):\n        amount = int(log['data'], 16) / 1e18\n        print(f'Transfer: {log[\\\"address\\\"][:10]}... amount={amount:.4f}')\n\"\n\n# Execution trace (verify order of attack function calls)\ncast run $ATTACK_TX --rpc-url $RPC_URL 2>&1 | \\\n  grep -E \"(getReward|stake|swap|transfer|pancakeCall)\""
+ ]
+}

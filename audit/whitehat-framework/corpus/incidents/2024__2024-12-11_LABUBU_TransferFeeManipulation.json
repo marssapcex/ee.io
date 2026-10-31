@@ -1,0 +1,32 @@
+{
+ "id": "2024__2024-12-11_LABUBU_TransferFeeManipulation",
+ "source_file": "2024/2024-12-11_LABUBU_TransferFeeManipulation.md",
+ "title": "LABUBU — Transfer Fee Manipulation Vulnerability Analysis",
+ "date": "2024-12-11",
+ "protocol": "LABUBU Token",
+ "chain": "BSC",
+ "loss_raw": "~12,048 USD (17.4 BNB)",
+ "loss_usd": null,
+ "root_cause": "The LABUBU token's `BuyOrSell()` function is automatically invoked on every transfer and relies on AMM reserve-based pricing, allowing price manipulation; repeated transfers within a single transaction enable profitable arbitrage",
+ "attack_tx": "0xb06df371",
+ "vulnerable_contract": "0x2ff960f1",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ LABUBU Token: BuyOrSell() called from _transfer — manipulable\ncontract LABUBUToken {\n    function _transfer(address from, address to, uint256 amount) internal {\n        //",
+  "❌ BuyOrSell() called on transfer\n        if (isPair[from] || isPair[to]) {\n            BuyOrSell(from, to, amount);  //",
+  "❌ AMM state dependent\n        }\n        super._transfer(from, to, adjustedAmount);\n    }\n\n    function BuyOrSell(address from, address to, uint256 amount) internal {\n        //"
+ ],
+ "code_after": [
+  "✅ Fix:\n// Use fixed rate for fee calculation (remove oracle dependency)\n// Prevent repeated calls within a single transaction"
+ ],
+ "steps": [
+  "→ Profit accumulated via manipulated fees/price",
+  "[4] ▶ Sell LABUBU → WBNB",
+  "[5] ▶ Convert WBNB → BNB, repay flash loan with fee"
+ ],
+ "other_code": [
+  "Attacker (0x27441c62)\n  │\n  ├─[1]─▶ Deploy AttackerC\n  │\n  ├─[2]─▶ PancakeV3Pool.flash() — WBNB flash loan\n  │\n  ├─[3]─▶ pancakeV3FlashCallback:\n  │         └─ Outer loop × 16:\n  │             Buy LABUBU with WBNB (triggers BuyOrSell)\n  │             Inner loop × 15:\n  │                 Small LABUBU transfer (repeatedly triggers BuyOrSell)\n  │                 Fee mechanism manipulated repeatedly\n  │         → Profit accumulated via manipulated fees/price\n  │\n  ├─[4]─▶ Sell LABUBU → WBNB\n  │\n  ├─[5]─▶ Convert WBNB → BNB, repay flash loan with fee\n  │\n  └─[6]─▶ ~17.4 BNB net profit"
+ ]
+}

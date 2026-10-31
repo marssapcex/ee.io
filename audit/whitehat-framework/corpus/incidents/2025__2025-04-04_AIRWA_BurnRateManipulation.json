@@ -1,0 +1,31 @@
+{
+ "id": "2025__2025-04-04_AIRWA_BurnRateManipulation",
+ "source_file": "2025/2025-04-04_AIRWA_BurnRateManipulation.md",
+ "title": "AIRWA — Price Manipulation via Unauthorized Burn Rate Modification",
+ "date": "2025-04-04",
+ "protocol": "AIRWA Token",
+ "chain": "BSC",
+ "loss_raw": "~56.73 BNB",
+ "loss_usd": null,
+ "root_cause": "No access control on `setBurnRate()`, allowing anyone to set the burn rate to 100%",
+ "attack_tx": "0x5cf050cb...",
+ "vulnerable_contract": "0x3af7da38c9f68df9549ce1980eef4ac6b635223a",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable setBurnRate: no access control\ncontract AIRWAToken {\n    uint256 public burnRate;  // Burn rate (%)\n\n    function setBurnRate(uint256 _burnRate) external {\n        //",
+  "❌ No onlyOwner or other access control\n        burnRate = _burnRate; // Anyone can modify arbitrarily\n    }\n\n    function _transfer(address from, address to, uint256 amount) internal override {\n        uint256 burnAmount = amount * burnRate / 100;\n        if (burnAmount > 0) {\n            _burn(from, burnAmount); // Burn on transfer\n        }\n        super._transfer(from, to, amount - burnAmount);\n    }\n}\n\n//",
+  "// RECONSTRUCTED — not verified source\n// AIRWA token contract — setBurnRate() with no access control\n\ninterface IAIRWA is IERC20 {\n    function setBurnRate(uint256 _burnRate) external; // ❌ no access control — callable by anyone\n    function transfer(address to, uint256 amount) external returns (bool);\n}\n\n// Attack sequence from AIRWA_exp.sol (verbatim interface calls):\n// 1. Swap 0.1 BNB → AIRWA via PancakeSwap (wBNB → BSC-USD → AIRWA path)\n// 2. IAIRWA(AIRWA).setBurnRate(980); // ❌ set burn rate to 980 (effectively 100%+)\n// 3. IAIRWA(AIRWA).transfer(CAKE_LP, 0); // triggers _transfer with 980% burn against LP reserves\n// 4. IAIRWA(AIRWA).setBurnRate(0); // reset burn rate\n// 5. Swap AIRWA → BNB to realize profit\n\n// Reconstructed _transfer logic (based on PoC behavior):\ncontract AIRWAToken {\n    uint256 public burnRate; // ❌ no cap, no validation\n\n    function setBurnRate(uint256 _burnRate) external { // ❌ missing onlyOwner modifier\n        burnRate = _burnRate;\n    }\n\n    function _transfer(address from, address to, uint256 amount) internal override {\n        uint256 burnAmount = amount * burnRate / 100;\n        if (burnAmount > 0 && to == CAKE_LP) {\n            _burn(from, burnAmount); // ❌ burns from sender on LP transfers\n        }\n        super._transfer(from, to, amount - burnAmount); // ❌ reduced amount arrives at LP\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Correct code\ncontract AIRWAToken {\n    function setBurnRate(uint256 _burnRate) external onlyOwner { //",
+  "✅ Access control\n        require(_burnRate <= MAX_BURN_RATE, \"Burn rate too high\"); //"
+ ],
+ "steps": [
+  "► ❌ No access control → burn rate set to 100%",
+  "[2] ► Buy small amount of AIRWA tokens (BNB → AIRWA)",
+  "► Transfer on purchase → 100% burned → LP pool reserve decreases"
+ ],
+ "other_code": []
+}

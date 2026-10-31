@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-12-23_Moonhacker_FlashLoanBorrow",
+ "source_file": "2024/2024-12-23_Moonhacker_FlashLoanBorrow.md",
+ "title": "Moonhacker — Flash Loan Double Borrow Vulnerability Analysis",
+ "date": "2024-12-23",
+ "protocol": "Moonhacker Vault",
+ "chain": "Optimism",
+ "loss_raw": "~$320,000",
+ "loss_usd": 320000.0,
+ "root_cause": "Moonhacker Vault's `executeOperation` callback does not validate the caller, allowing arbitrary triggering to manipulate Moonwell MToken's `borrowBalanceCurrent` and enable excess borrowing",
+ "attack_tx": "0xd12016b2",
+ "vulnerable_contract": "0xd9b45e2c",
+ "classes": [
+  "arbitrary-call",
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Moonhacker Vault: No access control on executeOperation\ncontract MoonhackerVault {\n    IMusdc mUSDC;\n\n    function executeOperation(\n        address token,\n        uint256 amountBorrowed,\n        uint256 premium,\n        address initiator,\n        bytes calldata params\n    ) external {\n        //",
+  "❌ No validation that msg.sender == AAVE Pool\n        //",
+  "❌ No validation that initiator == address(this)\n\n        // Query borrow balance from Moonwell MToken\n        uint256 borrowBalance = mUSDC.borrowBalanceCurrent(address(this));\n        //"
+ ],
+ "code_after": [
+  "✅ Fix:\n// require(msg.sender == AAVE_POOL, \"not aave pool\");\n// require(initiator == address(this), \"not self\");"
+ ],
+ "steps": [],
+ "other_code": [
+  "// File: DataTypes.sol\n    ReserveConfigurationMap configuration;\n    //the liquidity index. Expressed in ray\n    uint128 liquidityIndex;\n    //the current supply rate. Expressed in ray\n    uint128 currentLiquidityRate;\n    //variable borrow index. Expressed in ray\n    uint128 variableBorrowIndex;\n    //the current variable borrow rate. Expressed in ray\n    uint128 currentVariableBorrowRate;\n    //the current stable borrow rate. Expressed in ray\n    uint128 currentStableBorrowRate;\n    //timestamp of last update\n    uint40 lastUpdateTimestamp;\n    //the id of the reserve. Represents the position in the list of the active reserves\n    uint16 id;\n    //aToken address\n    address aTokenAddress;\n    //stableDebtToken address\n    address stableDebtTokenAddress;\n    //variableDebtToken address\n ",
+  "contract Attacker {\n    function exploit() external {\n        // Trigger AAVE flash loan (with Moonhacker as receiver)\n        aaveV3.flashLoanSimple(\n            address(moonhacker),  // ← Moonhacker receives executeOperation\n            address(USDC),\n            attackAmount,\n            abi.encode(/* manipulated params */),\n            0\n        );\n        // Or call executeOperation directly\n        moonhacker.executeOperation(\n            address(USDC),\n            attackAmount,\n            0,\n            address(this),\n            abi.encode(/* params */)\n        );\n    }\n}"
+ ]
+}

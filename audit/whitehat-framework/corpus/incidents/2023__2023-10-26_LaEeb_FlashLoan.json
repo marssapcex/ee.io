@@ -1,0 +1,28 @@
+{
+ "id": "2023__2023-10-26_LaEeb_FlashLoan",
+ "source_file": "2023/2023-10-26_LaEeb_FlashLoan.md",
+ "title": "LaEeb — Flash Loan Attack Analysis",
+ "date": "2023-10-26",
+ "protocol": "LaEeb",
+ "chain": "BSC",
+ "loss_raw": "~1.8 WBNB",
+ "loss_usd": null,
+ "root_cause": "Token reward calculation logic relies on instantaneous balance changes, allowing excess rewards to be claimed by holding a large position within a single transaction",
+ "attack_tx": "0x0d13a61e9dc81cfa...",
+ "vulnerable_contract": "0x3921e8cb14e2c08d...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: pool balance-based distribution\nfunction distribute() public {\n    uint256 balance = token.balanceOf(pool);\n    distributeToHolders(balance); //",
+  "❌ Manipulable via flash loan\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: snapshot-based distribution"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: token reward calculation logic relies on instantaneous balance changes, allowing excess rewards to be claimed by holding a large position within a single transaction\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Borrow WBNB via PancakeSwap flash loan\n  ├─② Buy large amount of LaEeb tokens to manipulate pool\n  ├─③ Call distribute() to receive excess rewards\n  └─④ Sell tokens + repay flash loan + ~1.8 WBNB profit"
+ ]
+}

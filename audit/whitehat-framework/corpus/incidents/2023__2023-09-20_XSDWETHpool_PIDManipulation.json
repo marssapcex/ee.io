@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-09-20_XSDWETHpool_PIDManipulation",
+ "source_file": "2023/2023-09-20_XSDWETHpool_PIDManipulation.md",
+ "title": "XSDWETHpool PID Controller Manipulation Incident Analysis",
+ "date": "2023-09-20",
+ "protocol": "XSDWETHpool",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// File: XSDWETHpool_decompiled.sol\n    function setPIDController(address account, uint256 value) external {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ DPPOracle.flashLoan()",
+  "2 ▶ DPPAdvance.flashLoan()",
+  "3 ▶ Router.swapXSDForETH()",
+  "XSD → ETH swap to manipulate pool price",
+  "4 ▶ XSDWETHpool.swap()",
+  "5 ▶ PIDController.systemCalculations()",
+  "→ Triggers excessive BankX/XSD minting",
+  "6 ▶ Router.swapETHForBankX()",
+  "7 ▶ Repay flash loans + realize ~56.9 BNB profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: spot-price-based PID controller\ncontract PIDController {\n    IXSDWETHpool public xsdWethPool;\n\n    // Vulnerable: callable by anyone, uses spot price\n    function systemCalculations() external {\n        // Query the pool's current spot price (manipulable)\n        uint256 xsdPrice = xsdWethPool.getXSDPrice();\n\n        if (xsdPrice < targetPrice) {\n            // If XSD price is low, mint more (contraction measure)\n            // Vulnerable: manipulated low price triggers excessive XSD minting\n            uint256 mintAmount = calculateMintAmount(xsdPrice);\n            XSD.mint(address(this), mintAmount);\n        }\n    }\n}\n\ncontract XSDWETHpool {\n    // Vulnerable: returns spot price immediately\n    function getXSDPrice() external view returns (uint256) {\n        (uint2",
+  "Attacker [0x506eebd8d6061202a8e8fc600bb3d5d41f475ee1]\n  │\n  ├─1─▶ DPPOracle.flashLoan()\n  │      First flash loan\n  │\n  ├─2─▶ DPPAdvance.flashLoan()\n  │      Second chained flash loan\n  │      [WBNB: 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c]\n  │      [XSD: 0x39400E67820c88A9D67F4F9c1fbf86f3D688e9F6]\n  │\n  ├─3─▶ Router.swapXSDForETH()\n  │      XSD → ETH swap to manipulate pool price\n  │      Artificially depresses XSD price\n  │\n  ├─4─▶ XSDWETHpool.swap()\n  │      [XSDWETHpool: 0xfadda925e10d07430f5d7461689fd90d3d81bb48]\n  │      Additional price manipulation\n  │\n  ├─5─▶ PIDController.systemCalculations()\n  │      Perceives manipulated low XSD price\n  │      → Triggers excessive BankX/XSD minting\n  │\n  ├─6─▶ Router.swapETHForBankX()\n  │      Sells minted BankX\n  │\n  └─7─▶ Repay flash loans"
+ ]
+}

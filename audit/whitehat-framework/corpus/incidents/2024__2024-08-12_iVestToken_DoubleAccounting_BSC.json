@@ -1,0 +1,41 @@
+{
+ "id": "2024__2024-08-12_iVestToken_DoubleAccounting_BSC",
+ "source_file": "2024/2024-08-12_iVestToken_DoubleAccounting_BSC.md",
+ "title": "iVest Token — Custom ERC20 Transfer Logic (MakeDonation) AMM Pool Invariant Destruction Attack Analysis",
+ "date": "2024-08-12",
+ "protocol": "iVest Token",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~$172,000 (~338 WBNB)",
+ "loss_usd": 172000.0,
+ "root_cause": "`__MakeDonation` custom transfer logic burns additional tokens from the pool's reserve balance when `skim(address(0))` is called — causing the k-invariant to collapse after `sync()`, artificially inflating the iVest price",
+ "attack_tx": "0x12f2...121d",
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic",
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable iVest ERC20 transfer logic (reconstructed estimate)\nfunction _transfer(address sender, address recipient, uint256 amount) internal override {\n    // Standard balance deduction\n    _balances[sender] -= amount;\n\n    // ❌ __MakeDonation call: burns/donates additional tokens from the sender\n    //    (here the iVest_pair pool) independently of the transfer amount\n    //    → when the pool address is the sender, pool reserves shrink unexpectedly\n    __MakeDonation(sender, amount);\n\n    _balances[recipient] += amount;\n    emit Transfer(sender, recipient, amount);\n}\n\nfunction __MakeDonation(address from, uint256 amount) internal {\n    // ❌ Under certain conditions, burns an additional amount from the `from` balance\n    //    This logic is harmless for regular user transfers, but\n    //    when `from` is an AMM pool contract it corrupts the pool's actual balance\n    uint256 donationAmount = calculateDonation(amount);\n    if (donationAmount > 0) {\n        _balances[from] -= donationAmount;  // ❌ additional deduction from pool balance\n        _totalSupply -= donationAmount;\n        emit Transfer(from, address(0), donationAmount);\n    }\n}",
+  "// PancakeSwap V2 Pair code (immutable)\n// ❌ Callable by anyone: skim() transfers surplus balance to an arbitrary address\nfunction skim(address to) external lock {\n    address _token0 = token0;\n    address _token1 = token1;\n    // ❌ iVest.transfer(to, surplus) is called here\n    //    iVest's __MakeDonation additionally burns pool balance during this transfer\n    _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)).sub(reserve0));\n    _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)).sub(reserve1));\n}\n\n// ❌ Callable by anyone: sync() force-synchronizes reserves to current balance\nfunction sync() external lock {\n    // The balance reduced by the burn is recorded as the new reserve\n    _update(\n        IERC20(token0).balanceOf(address(this)),\n        IERC20(token1).balanceOf(address(this)),\n        reserve0, reserve1\n    );\n}",
+  "┌──────────────────────────────────────────────────────────────────┐\n│  1. PancakeSwap V3 Pool → flash(1200 WBNB)                      │\n│     ✦ pancakeV3FlashCallback triggered                           │\n└──────────────────────────┬───────────────────────────────────────┘\n                           │\n                           ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  2. [Repeat × 30] Swap 40 WBNB → iVest                          │\n│     ✦ Buy large amount of iVest with 1,200 WBNB total            │\n│     ✦ iVest price rises initially; attacker holds large iVest    │\n└──────────────────────────┬───────────────────────────────────────┘\n                           │\n                           ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  3. [Repeat × 3] Pool manipulation loop                          │\n│     ┌─────────────────────────────────────────┐                  │\n│     │  iVest.transfer(iVest_pair, 100_000_000_000)               │\n│     │    → Prepare __MakeDonation trigger       │                │\n│     │  iVest_pair.skim(address(0))              │                │\n│     │    → transfer(iVest_pair→0x0, surplus)   │                │\n│     │    → __MakeDonation(iVest_pair, surplus) │                │\n│     │    → ❌ Additional iVest burned from pool balance          │\n│     │  iVest_pair.sync()                        │                │\n│     │    → Record reduced balance as new reserve│                │\n│     └─────────────────────────────────────────┘                  │\n└──────────────────────────┬───────────────────────────────────────┘\n                           │\n                           ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  4. Final manipulation: iVest.transfer(iVest_pair, 13_520_128_050)│\n│     + iVest_pair.skim(address(0))                                │\n│     + iVest_pair.sync()                                          │\n│     ✦ Pool's iVest reserve drastically reduced → k invariant collapses│\n│     ✦ iVest price spike complete                                 │\n└──────────────────────────┬───────────────────────────────────────┘\n                           │\n                           ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  5. Swap iVest 30,820,994,590 → WBNB                             │\n│     ✦ Receive large amount of WBNB at manipulated price          │\n└──────────────────────────┬───────────────────────────────────────┘\n                           │\n                           ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  6. Repay flash loan: 1200 WBNB + fee → V3 pool                  │\n│     ✦ Net profit: ~338 WBNB (~$172,000)                          │\n└──────────────────────────────────────────────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Safe code — add AMM pool exception handling to custom burn logic\nfunction _transfer(address sender, address recipient, uint256 amount) internal override {\n    _balances[sender] -= amount;\n\n    // ✅ Exclude AMM pair contracts from donation\n    if (!isAMMPair[sender] && !isAMMPair[recipient]) {\n        __MakeDonation(sender, amount);\n    }\n\n    _balances[recipient] += amount;\n    emit Transfer(sender, recipient, amount);\n}",
+  "// ✅ Fix: Add AMM pairs to MakeDonation exclusion list\nmapping(address => bool) public isExcludedFromDonation;\n\nfunction setExcludedFromDonation(address account, bool excluded) external onlyOwner {\n    // ✅ Register AMM pairs, routers, and other DeFi protocol contracts\n    isExcludedFromDonation[account] = excluded;\n    emit ExcludedFromDonation(account, excluded);\n}\n\nfunction _transfer(address sender, address recipient, uint256 amount) internal override {\n    _balances[sender] -= amount;\n\n    // ✅ Skip donation if sender or recipient is on the exclusion list\n    if (!isExcludedFromDonation[sender] && !isExcludedFromDonation[recipient]) {\n        __MakeDonation(sender, amount);\n    }\n\n    _balances[recipient] += amount;\n    emit Transfer(sender, recipient, amount);\n}"
+ ],
+ "steps": [
+  "1. PancakeSwap V3 Pool → flash(1200 WBNB)",
+  "2. [Repeat × 30] Swap 40 WBNB → iVest",
+  "3. [Repeat × 3] Pool manipulation loop",
+  "→ Prepare __MakeDonation trigger",
+  "→ transfer(iVest_pair→0x0, surplus)",
+  "→ __MakeDonation(iVest_pair, surplus)",
+  "→ ❌ Additional iVest burned from pool balance",
+  "→ Record reduced balance as new reserve",
+  "4. Final manipulation: iVest.transfer(iVest_pair, 13_520_128_050)",
+  "✦ Pool's iVest reserve drastically reduced → k invariant collapses",
+  "5. Swap iVest 30,820,994,590 → WBNB",
+  "6. Repay flash loan: 1200 WBNB + fee → V3 pool"
+ ],
+ "other_code": []
+}

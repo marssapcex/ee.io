@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-04-14_OLIFE_DeliverReflectionDrain",
+ "source_file": "2023/2023-04-14_OLIFE_DeliverReflectionDrain.md",
+ "title": "OceanLife (OLIFE) Exploit — deliver() Reflection Rate Manipulation",
+ "date": "2023-04-14",
+ "protocol": "OLIFE",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "// File: PancakeRouter.sol\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(  // ❌\n\n// ...\n\n    function swapExactETHForTokensSupportingFeeOnTransferTokens(  // ❌\n\n// ...\n\n    function swapExactTokensForETHSupportingFeeOnTransferTokens(  // ❌\n\n// ...\n\n    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut)  // ❌\n\n// ...\n\n    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut)  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1. DODO.flashLoan(969 WBNB)",
+  "2. swap WBNB → OLIFE via PancakeSwap",
+  "3. for i in range(19):",
+  "4. Pair.swap(excessOLIFE, 0, this, \"\") // extract WBNB via price shift",
+  "5. swap OLIFE → WBNB",
+  "6. Repay DODO"
+ ],
+ "other_code": [
+  "1. DODO.flashLoan(969 WBNB)\n2. swap WBNB → OLIFE via PancakeSwap\n3. for i in range(19):\n     OLIFE.transfer(Pair, someAmount)   // cycle tokens\n     OLIFE.deliver(3_518_895_000e18)    // reduce rSupply each iter\n4. Pair.swap(excessOLIFE, 0, this, \"\") // extract WBNB via price shift\n5. swap OLIFE → WBNB\n6. Repay DODO",
+  "interface IOceanLife {\n    function deliver(uint256 tAmount) external;\n    function transfer(address to, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n}"
+ ]
+}

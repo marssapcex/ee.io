@@ -1,0 +1,29 @@
+{
+ "id": "2026__2026-01-10_FutureSwap_UnitMismatch",
+ "source_file": "2026/2026-01-10_FutureSwap_UnitMismatch.md",
+ "title": "FutureSwap — Unit Mismatch Vulnerability Analysis",
+ "date": "2026-01-10",
+ "protocol": "FutureSwap",
+ "chain": "Arbitrum",
+ "loss_raw": "~$394,743 USDC.e (~$433K total including WETH)",
+ "loss_usd": 394743.0,
+ "root_cause": "Fees are calculated and passed as token unit amounts, but FeeManager interprets them as basis points (bps), resulting in abnormally large fees being charged",
+ "attack_tx": "0xe1e6aa5332deaf0fa0a3584113c17bedc906148730cbbc73efae16306121687b",
+ "vulnerable_contract": "0xf7ca7384cc6619866749955065f17bedd3ed80bc (FutureSwap Proxy)",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: fee computed as token amount and passed directly to FeeManager\ncontract FutureSwap {\n    IFeeManager public feeManager;\n\n    function changePosition(\n        address user,\n        int256 deltaAsset,   // position delta\n        int256 deltaStable\n    ) external {\n        // ❌ Fee computed as absolute USDC.e amount (e.g., 5000_000000 = 5000 USDC.e)\n        uint256 feeAmount = calculateFee(deltaAsset);  // token units\n\n        // ❌ Token amount passed directly to FeeManager\n        //    FeeManager interprets this as basis points!\n        feeManager.applyFee(user, feeAmount);\n    }\n\n    function calculateFee(int256 deltaAsset) internal view returns (uint256) {\n        // Fee proportional to position size (absolute amount)\n        return uint256(abs(deltaAsset)) * feeRate / 10000;\n    }\n}\n\ncontract FeeManager {\n    function applyFee(address user, uint256 feeBps) external {\n        // ❌ feeBps is interpreted as basis points\n        // feeBps = 5_000_000 (5000 USDC.e in 6 decimals)\n        // → 5000 * 10000 / 10000 = 5000 bps = 50% fee!\n        uint256 feePercent = feeBps; // unit: bps (1/10000)\n        uint256 deduction = getUserBalance(user) * feePercent / 10000;\n        _deductBalance(user, deduction);\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: explicit unit definitions and conversions\ncontract FutureSwap {\n    IFeeManager public feeManager;\n    uint256 constant BPS_DENOMINATOR = 10000;\n\n    function changePosition(\n        address user,\n        int256 deltaAsset,\n        int256 deltaStable\n    ) external {\n        uint256 positionSize = getPositionSize(user);\n\n        // ✅ Fee computed in basis points (not as absolute amount)\n        uint256 feeBps = calculateFeeBps(deltaAsset, positionSize);\n\n        // ✅ FeeManager explicitly receives value in bps\n        feeManager.applyFeeBps(user, feeBps);\n    }\n\n    function calculateFeeBps(int256 deltaAsset, uint256 positionSize)\n        internal view returns (uint256)\n    {\n        // ✅ bps = (fee_amount / position_size) * 10000\n        uint256 rawFee = uint256(abs(deltaAsset)) * feeRate / BPS_DENOMINATOR;\n        return rawFee * BPS_DENOMINATOR / positionSize; // normalized to bps\n    }\n}\n\ncontract FeeManager {\n    // ✅ Unit explicitly stated in function name\n    function applyFeeBps(address user, uint256 feeBps) external {\n        require(feeBps <= 1000, \"Fee too high\"); // ✅ cap at 10% (1000 bps)\n        uint256 deduction = getUserBalance(user) * feeBps / 10000;\n        _deductBalance(user, deduction);\n    }\n}"
+ ],
+ "steps": [
+  "feePercent = millions of bps → tens of thousands of % fee"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1] Flash loan 500,000 USDC.e from Aave V3\n  │\n  ├─[2] Deploy helper contracts (set as victim addresses)\n  │       Multiple helper contracts created to expand attack surface\n  │\n  ├─[3] Helper contracts deposit USDC.e + WETH into FutureSwap\n  │       Victim positions established\n  │\n  ├─[4] Call changePosition() with extreme deltaAsset\n  │       deltaAsset = very large value (e.g., 10^15)\n  │       │\n  │       ├─ calculateFee(deltaAsset) executes\n  │       │   fee = 10^15 * feeRate / 10000\n  │       │   = value equivalent to millions of USDC.e\n  │       │\n  │       └─ FeeManager.applyFee(victim, feeAmount) called\n  │           ⚠️  Unit mismatch: feeAmount interpreted as bps\n  │           feePercent = millions of bps → tens of thousands of % fee\n  │           Victim balance",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\ninterface IAaveV3Pool {\n    function flashLoan(\n        address receiverAddress,\n        address[] calldata assets,\n        uint256[] calldata amounts,\n        uint256[] calldata interestRateModes,\n        address onBehalfOf,\n        bytes calldata params,\n        uint16 referralCode\n    ) external;\n}\n\ninterface IFutureSwap {\n    function changePosition(\n        address user,\n        int256 deltaAsset,\n        int256 deltaStable\n    ) external;\n\n    function deposit(uint256 amount) external;\n}\n\ninterface IERC20 {\n    function approve(address, uint256) external returns (bool);\n    function transfer(address, uint256) external returns (bool);\n    function balanceOf(address) external view returns (uint256);\n}\n\n// Helper contract used as "
+ ]
+}

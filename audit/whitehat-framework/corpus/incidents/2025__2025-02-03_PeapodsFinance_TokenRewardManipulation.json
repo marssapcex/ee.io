@@ -1,0 +1,35 @@
+{
+ "id": "2025__2025-02-03_PeapodsFinance_TokenRewardManipulation",
+ "source_file": "2025/2025-02-03_PeapodsFinance_TokenRewardManipulation.md",
+ "title": "Peapods Finance — Paired LP Token Reward Manipulation Analysis",
+ "date": "2025-02-03",
+ "protocol": "Peapods Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$3,500",
+ "loss_usd": 3500.0,
+ "root_cause": "`depositFromPairedLpToken()` allows the slippage parameter to be set to 999 without input validation, enabling reward calculation manipulation",
+ "attack_tx": "0x2c1a1998...",
+ "vulnerable_contract": "TokenRewards (0x7d48D6D7...)",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: reward calculation distorted when slippage parameter is 999\nfunction depositFromPairedLpToken(\n    uint256 _amountTknDepositing,\n    uint256 _slippageOverride  // range 0~1000; vulnerable when set to 999\n) external {\n    uint256 rewardAmount = _calculateReward(_slippageOverride);\n    // _slippageOverride=999 causes internal calculation error leading to excessive rewards\n    _distributeReward(msg.sender, rewardAmount);\n}\n\nfunction _calculateReward(uint256 slippage) internal returns (uint256) {\n    // slippage=999 causes the denominator to become extremely small, inflating the reward\n    uint256 multiplier = 1000 - slippage; // 1000-999=1 → nearly zero\n    return totalRewardPool / multiplier;   // division result increases drastically\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: slippage range validation\nfunction depositFromPairedLpToken(\n    uint256 _amountTknDepositing,\n    uint256 _slippageOverride\n) external {\n    require(_slippageOverride <= 200, \"Slippage too high\"); // max 20%\n    uint256 rewardAmount = _calculateReward(_slippageOverride);\n    _distributeReward(msg.sender, rewardAmount);\n}"
+ ],
+ "steps": [
+  "→ [1] Uniswap V2 Flash Swap: acquire large amount of pOHM",
+  "→ [2] Swap pOHM → PEAS via Uniswap V3",
+  "→ [3] Call depositFromPairedLpToken(0, 999)",
+  "slippage=999 → reward calculation distorted",
+  "→ [4] Swap acquired PEAS → pOHM via Uniswap V3",
+  "→ [5] Repay flash swap",
+  "→ [6] ~$3,500 profit in pOHM"
+ ],
+ "other_code": [
+  "// File: contracts/TokenRewards.sol\nfunction _addShares(address _wallet, uint256 _amount) internal {\n    if (shares[_wallet] > 0) {\n      _distributeReward(_wallet);\n    }\n    uint256 sharesBefore = shares[_wallet];\n    totalShares += _amount;\n    shares[_wallet] += _amount;\n    if (sharesBefore == 0 && shares[_wallet] > 0) {\n      totalStakers++;\n    }\n    rewards[_wallet].excluded = _cumulativeRewards(shares[_wallet]);\n  }\n  function _removeShares(address _wallet, uint256 _amount) internal {\n    require(shares[_wallet] > 0 && _amount <= shares[_wallet], 'REMOVE');\n    _distributeReward(_wallet);\n    totalShares -= _amount;\n    shares[_wallet] -= _amount;\n    if (shares[_wallet] == 0) {\n      totalStakers--;\n    }\n    rewards[_wallet].excluded = _cumulativeRewards(shares[_wallet]);\n  }\n  ",
+  "Attacker\n  │\n  ├─→ [1] Uniswap V2 Flash Swap: acquire large amount of pOHM\n  │         (borrow 9,420 pOHM from pOHM/PEAS pair)\n  │\n  ├─→ [2] Swap pOHM → PEAS via Uniswap V3\n  │         (swap pOHM for PEAS)\n  │\n  ├─→ [3] Call depositFromPairedLpToken(0, 999)\n  │         └─ slippage=999 → reward calculation distorted\n  │            receive excessive pOHM rewards with no actual deposit\n  │\n  ├─→ [4] Swap acquired PEAS → pOHM via Uniswap V3\n  │         (rewards + swap arbitrage)\n  │\n  ├─→ [5] Repay flash swap\n  │         (return 9,448 pOHM — 28 pOHM more than principal)\n  │\n  └─→ [6] ~$3,500 profit in pOHM"
+ ]
+}

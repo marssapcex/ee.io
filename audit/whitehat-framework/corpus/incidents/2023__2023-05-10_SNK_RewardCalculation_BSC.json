@@ -1,0 +1,47 @@
+{
+ "id": "2023__2023-05-10_SNK_RewardCalculation_BSC",
+ "source_file": "2023/2023-05-10_SNK_RewardCalculation_BSC.md",
+ "title": "SNK — Reward Calculation Error Vulnerability Analysis",
+ "date": "2023-05-10",
+ "protocol": "SNK",
+ "chain": "BSC",
+ "loss_raw": "~$197,000 (SNK tokens)",
+ "loss_usd": 197000.0,
+ "root_cause": "Child account balance summation error in `rewardPerToken()` calculation — the reward owed to a parent account is multiplied by the sum of all child account balances, resulting in over-payment",
+ "attack_tx": null,
+ "vulnerable_contract": "SNKMinter 0xA3f5ea94...",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — error of multiplying by child balance sum when calculating parent reward\nfunction earned(address parent) public view returns (uint256) {\n    // rewardPerToken() reflects the sum of all children's balances\n    // rather than the parent's own balance\n    uint256 reward = rewardPerToken(parent) * getAllChildrenBalance(parent);\n    //                               ^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^\n    // ❌ Problem: rewardPerToken should be based on the parent's individual contribution,\n    //    but the sum of children's balances enters the multiplication, distorting the reward rate\n    return reward;\n}\n\nfunction rewardPerToken(address account) internal view returns (uint256) {\n    // ❌ The sum of child account balances is included in the reward rate calculation\n    uint256 childrenTotalBalance = 0;\n    for (uint256 i = 0; i < children[account].length; i++) {\n        childrenTotalBalance += balanceOf[children[account][i]];\n        // ❌ Adding a new child or increasing its balance also amplifies the parent's reward\n    }\n    return accumulatedRewardPerToken * childrenTotalBalance / PRECISION;\n}",
+  "// ❌ Vulnerable code — anyone can bind as a child to an arbitrary parent\nfunction bindParent(address parent) external {\n    require(parentOf[msg.sender] == address(0), \"already bound\");\n    parentOf[msg.sender] = parent;\n    children[parent].push(msg.sender);\n    // ❌ Binding is possible unilaterally without parent consent\n    // ❌ Reflected in reward calculation immediately upon binding (no delay/lock)\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — reward calculation uses only the account's own staking balance\nfunction earned(address account) public view returns (uint256) {\n    // Reward is calculated proportionally to the account's own staking balance only\n    return (balanceOf[account] * (rewardPerTokenStored - userRewardPerTokenPaid[account])) / PRECISION\n           + rewards[account];\n    // ✅ Another account's (child's) balance does not affect this account's reward\n}\n\nfunction rewardPerToken() public view returns (uint256) {\n    // ✅ Unit reward calculated based on total staking supply\n    if (totalSupply == 0) return rewardPerTokenStored;\n    return rewardPerTokenStored + (rewardRate * (block.timestamp - lastUpdateTime) * PRECISION) / totalSupply;\n}",
+  "// ✅ Fixed code — requires parent pre-approval or delayed binding effect\nfunction requestBindParent(address parent) external {\n    require(parentOf[msg.sender] == address(0), \"already bound\");\n    pendingParent[msg.sender] = parent;\n    // ✅ Binding is only completed after the parent explicitly accepts\n}\n\nfunction acceptChild(address child) external {\n    require(pendingParent[child] == msg.sender, \"no pending request\");\n    parentOf[child] = msg.sender;\n    children[msg.sender].push(child);\n    // ✅ Reflected in reward calculation only at the time of binding acceptance\n}"
+ ],
+ "steps": [
+  "Step 1: Flash Loan Request",
+  "Attacker → PancakeSwap LP → Flash loan of 80,000 SNK",
+  "Step 2: Loop inside pancakeCall callback (10 iterations)",
+  "b. child.bind(parents[i]) → child binds to parent",
+  "c. Transfer all SNK tokens → to child",
+  "d. child.stake() → stake full amount (immediately reflected in reward calculation)",
+  "e. parents[i].exit2() → parent: execute getReward() + exit()",
+  "f. child.exit1() → child: execute exit() (recover principal)",
+  "Step 3: Repay Flash Loan",
+  "Step 4: Swap Profit",
+  "Remaining SNK → PancakeSwap → swap to BUSD → profit realized",
+  "→ Flash loan of 80,000 SNK",
+  "new HackerTemplate() → child contract",
+  "transfer 80,000 SNK → stake()",
+  "→ Return 85,000 SNK to LP (repay flash loan)",
+  "Swap SNK → BUSD",
+  "→ Attacker profit realized (~$197,000)"
+ ],
+ "other_code": [
+  "Step 1: Flash Loan Request\n  Attacker → PancakeSwap LP → Flash loan of 80,000 SNK\n\nStep 2: Loop inside pancakeCall callback (10 iterations)\n  Each iteration i:\n    a. Deploy new HackerTemplate (child) contract\n    b. child.bind(parents[i])  →  child binds to parent\n    c. Transfer all SNK tokens → to child\n    d. child.stake()  →  stake full amount (immediately reflected in reward calculation)\n    e. parents[i].exit2()  →  parent: execute getReward() + exit()\n                              (collect rewards amplified by child balance)\n    f. child.exit1()  →  child: execute exit() (recover principal)\n    g. Attacker retrieves all SNK\n\nStep 3: Repay Flash Loan\n  Return 85,000 SNK to PancakeSwap LP (principal 80,000 + fee 5,000)\n\nStep 4: Swap Profit\n  Remaining SNK → PancakeSwap → swap to BUSD",
+  "┌─────────────────────────────────────────────────┐\n│  Attacker (SNKExp Contract)                      │\n│  calls testExp()                                │\n└───────────────────┬─────────────────────────────┘\n                    │ pool.swap(80,000 SNK)\n                    ▼\n┌─────────────────────────────────────────────────┐\n│  PancakeSwap LP Pool                            │\n│  0x7957096Bd7324357172B765C4b0996Bb164ebfd4     │\n│  → Flash loan of 80,000 SNK                     │\n└───────────────────┬─────────────────────────────┘\n                    │ pancakeCall callback\n                    ▼\n┌─────────────────────────────────────────────────┐\n│  pancakeCall() callback — loop 10 times          │\n│                                                 │\n│  ┌───────────────────────────────────────"
+ ]
+}

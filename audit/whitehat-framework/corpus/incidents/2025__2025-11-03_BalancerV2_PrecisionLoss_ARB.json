@@ -1,0 +1,41 @@
+{
+ "id": "2025__2025-11-03_BalancerV2_PrecisionLoss_ARB",
+ "source_file": "2025/2025-11-03_BalancerV2_PrecisionLoss_ARB.md",
+ "title": "Balancer V2 — Precision Loss Vulnerability Analysis",
+ "date": "2025-11-03",
+ "protocol": "Balancer V2",
+ "chain": "Arbitrum, Ethereum, Polygon, Base, Sonic",
+ "loss_raw": "~$128,000,000 gross / ~$105,700,000 net (after whitehat recovery; per Check Point Research, BlockSec)",
+ "loss_usd": 128000000.0,
+ "root_cause": "Invariant D manipulation via Rounding Direction Mismatch in scaling logic",
+ "attack_tx": "0x6ed07db1...",
+ "vulnerable_contract": null,
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code (BasePool.sol)\nfunction _upscale(uint256 amount, uint256 scalingFactor)\n    internal pure returns (uint256)\n{\n    // mulDown = floor(amount * scalingFactor / 1e18)\n    // Rounds down the input value in EXACT_OUT swaps → returns a value smaller than actual\n    return FixedPoint.mulDown(amount, scalingFactor);\n}",
+  "// ❌ Vulnerable code (BaseGeneralPool.sol)\nfunction _swapGivenOut(\n    SwapRequest memory swapRequest,\n    uint256[] memory balances,\n    uint256 indexIn,\n    uint256 indexOut\n) internal virtual override returns (uint256) {\n    // Converts swapRequest.amount (output amount) with _upscale()\n    // → Round-down makes amountOut smaller than actual\n    swapRequest.amount = _upscale(swapRequest.amount, _scalingFactor(swapRequest.tokenOut));\n\n    // Recalculates invariant D with underestimated amountOut → D value shrinks\n    uint256 amountIn = _onSwapGivenOut(swapRequest, balances);\n    // ...\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code\nfunction _upscaleGivenOut(uint256 amount, uint256 scalingFactor)\n    internal pure returns (uint256)\n{\n    // Apply ceiling when upscaling output amount in EXACT_OUT\n    // → Pool perceives more tokens being withdrawn → prevents D from decreasing\n    return FixedPoint.mulUp(amount, scalingFactor);\n}",
+  "// ✅ Apply ceiling when upscaling output amount in EXACT_OUT swaps\nfunction _swapGivenOut(\n    SwapRequest memory swapRequest,\n    uint256[] memory balances,\n    uint256 indexIn,\n    uint256 indexOut\n) internal virtual override returns (uint256) {\n    // Change mulDown → mulUp: round in direction favorable to the protocol\n    swapRequest.amount = _upscaleGivenOut(\n        swapRequest.amount,\n        _scalingFactor(swapRequest.tokenOut)\n    );\n    // ...\n}\n\nfunction _upscaleGivenOut(uint256 amount, uint256 scalingFactor)\n    internal pure returns (uint256)\n{\n    return FixedPoint.mulUp(amount, scalingFactor);  // ✅ ceiling\n}"
+ ],
+ "steps": [
+  "1. Fund sourcing (via Tornado Cash)",
+  "2. Positioning phase",
+  "[Step A] BPT → base token swap (large amount)",
+  "Specific token balance in pool → reaches boundary value (9 wei)",
+  "Request: wstETH → cbETH, amountOut = 8 wei",
+  "→ Invariant D decreases on recalculation",
+  "→ Δx(amountIn) underestimated → attacker profits",
+  "[Step C] Base token → BPT reverse swap",
+  "→ Receives more BPT (arbitrage profit)",
+  "Each iteration further reduces D → cumulative profit grows",
+  "3. Profit realization"
+ ],
+ "other_code": [
+  "BPT Price = D / totalSupply\n\nAttack flow:\n  mulDown round-down → amountOut underestimated\n  → Invariant D decreases\n  → BPT Price = D / totalSupply decreases\n  → Attacker: sells BPT at lower price → realizes profit",
+  "Attacker (EOA: 0xaa760d...)\n    │\n    │  1. Fund sourcing (via Tornado Cash)\n    ▼\nDeploy helper contract\n    │  ┌─────────────────────────────────────────────────┐\n    │  │  Off-chain parameter calculation                 │\n    │  │  - Read pool state (balances, amp,              │\n    │  │    scalingFactor, fee)                          │\n    │  │  - Calculate optimal trickAmt via               │\n    │  │    StableMath mirror contract                   │\n    │  │  - Goal: position a specific token balance      │\n    │  │    at a boundary value (9 wei)                  │\n    │  └─────────────────────────────────────────────────┘\n    │\n    │  2. Positioning phase\n    ▼\nCall batchSwap()\n    │\n    │  [Step A] BPT → base token swap (large amount)\n    │           Specific token balance in pool"
+ ]
+}

@@ -1,0 +1,44 @@
+{
+ "id": "2024__2024-11-11_DeltaPrime_Reentrancy_ARB",
+ "source_file": "2024/2024-11-11_DeltaPrime_Reentrancy_ARB.md",
+ "title": "DeltaPrime — Reentrancy Attack Analysis",
+ "date": "2024-11-11",
+ "protocol": "DeltaPrime",
+ "chain": "Arbitrum",
+ "loss_raw": "$4,750,000 (Arbitrum $753K + Avalanche $4.1M)",
+ "loss_usd": 4750000.0,
+ "root_cause": "Reentrancy attack via arbitrary external contract callback in `claimReward()` combined with unvalidated parameters in `swapDebtParaSwap()`",
+ "attack_tx": "0x6a2f...8f7f",
+ "vulnerable_contract": "0x62cf...0c6c",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — no validation of the pair parameter\nfunction claimReward(address pair, uint256[] calldata ids) external {\n    // Does not verify whether the pair address is whitelisted\n    // Attacker can pass any arbitrary malicious contract as pair\n    ILBPair(pair).claim(msg.sender, ids);   // ← Point where malicious callback occurs\n\n    // Internal state updated only after callback completes → reentrancy possible\n    _updateBalances();\n}",
+  "// ❌ Vulnerable code — _repayAmount passed to swap adapter without validation\nfunction swapDebtParaSwap(\n    bytes32 _fromAsset,\n    bytes32 _toAsset,\n    uint256 _repayAmount,   // ← no validation even when set to 0\n    uint256 _borrowAmount,  // ← can be set above collateral value\n    bytes4 selector,\n    bytes memory data\n) external {\n    // Borrow of _borrowAmount executes even if _repayAmount is 0\n    // No isSolvent check after borrowing\n    _executeSwap(selector, data, _repayAmount, _borrowAmount);\n}",
+  "3. [Exploit Vulnerability 1: unvalidated borrow via swapDebtParaSwap]\n\n   DeltaPrimeExp\n       │  swapDebtParaSwap(\n       │    _fromAsset = USDC,\n       │    _toAsset   = ETH,\n       │    _repayAmount = 0,        ← ❌ no validation\n       │    _borrowAmount = 66.6 ETH ← borrowed without actual repayment\n       │  )\n       ▼\n   SmartLoan\n       │  Calls ParaSwap adapter → WETH.withdraw(66.6 ETH)\n       │  Borrowed ETH added to SmartLoan balance\n       │  No solvency re-check ❌\n       ▼\n   SmartLoan ETH balance: ~2,859 + 66.6 ETH"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — whitelist validation + CEI pattern applied\nmapping(address => bool) public approvedPairs;  // Admin-approved pair address list\n\nfunction claimReward(address pair, uint256[] calldata ids) external nonReentrant {\n    // 1. Check: verify the pair is approved\n    require(approvedPairs[pair], \"Pair not whitelisted\");\n\n    // 2. Effect: update internal state first\n    _updateBalances();\n\n    // 3. Interaction: external call last\n    ILBPair(pair).claim(msg.sender, ids);\n}",
+  "// ✅ Fixed code — parameter validation + post-execution solvency check\nfunction swapDebtParaSwap(\n    bytes32 _fromAsset,\n    bytes32 _toAsset,\n    uint256 _repayAmount,\n    uint256 _borrowAmount,\n    bytes4 selector,\n    bytes memory data\n) external nonReentrant {\n    // 1. Parameter validation: repay amount must not be 0\n    require(_repayAmount > 0, \"repayAmount must be > 0\");\n    require(_borrowAmount <= _repayAmount * MAX_BORROW_RATIO / 1e18, \"borrowAmount exceeds limit\");\n\n    _executeSwap(selector, data, _repayAmount, _borrowAmount);\n\n    // 2. Post-execution validation: re-verify solvency after swap\n    require(isSolvent(), \"Position insolvent after swap\");\n}"
+ ],
+ "steps": [
+  "1. [Flash Loan Request]",
+  "2. [Collateral Deposit + Position Creation]",
+  "WETH.withdraw() → convert to ETH",
+  "SmartLoansFactoryTUP.createLoan() → create SmartLoan",
+  "SmartLoan.call{value: ETH}(\"\") → deposit ETH as collateral",
+  "3. [Exploit Vulnerability 1: unvalidated borrow via swapDebtParaSwap]",
+  "Calls ParaSwap adapter → WETH.withdraw(66.6 ETH)",
+  "4. [Exploit Vulnerability 2: claimReward reentrancy]",
+  "→ Converts all ETH in SmartLoan to WETH",
+  "→ Asset conversion complete before internal state updated",
+  "SmartLoan ETH→WETH conversion: ~2,925 WETH",
+  "getRewardToken() → returns WETH",
+  "5. [Flash Loan Repayment and Profit Realization]"
+ ],
+ "other_code": [
+  "1. [Flash Loan Request]\n   Attacker EOA\n       │\n       ▼\n   DeltaPrimeExp.testExploit()\n       │  Balancer.flashLoan(full WETH amount)\n       ▼\n   Balancer Vault ──────── 2,859 WETH ──────────▶ DeltaPrimeExp",
+  "2. [Collateral Deposit + Position Creation]\n\n   DeltaPrimeExp\n       │  WETH.withdraw() → convert to ETH\n       │  SmartLoansFactoryTUP.createLoan() → create SmartLoan\n       │  SmartLoan.call{value: ETH}(\"\") → deposit ETH as collateral\n       ▼\n   SmartLoan (position contract)\n       └── ETH balance: ~2,859 ETH (collateral)"
+ ]
+}

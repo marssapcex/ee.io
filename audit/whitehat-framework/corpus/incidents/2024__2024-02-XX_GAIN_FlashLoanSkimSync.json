@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-02-XX_GAIN_FlashLoanSkimSync",
+ "source_file": "2024/2024-02-XX_GAIN_FlashLoanSkimSync.md",
+ "title": "GAIN — Flash Loan-Based skim/sync Reserve Manipulation Analysis",
+ "date": "2024-02-01",
+ "protocol": "GAIN",
+ "chain": "Ethereum",
+ "loss_raw": "~18 ETH",
+ "loss_usd": null,
+ "root_cause": "Repeated use of `skim()` and `sync()` on the Uniswap V2 pair to desynchronize pair reserves, then profiting via a swap",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: reserves can be manipulated via skim/sync combination\n// Standard Uniswap V2 functions — interact with GAIN token tax\ninterface Uni_Pair_V2 {\n    function skim(address to) external;      // sends excess balance to external address\n    function sync() external;               // updates reserves to current balances\n    function swap(uint, uint, address, bytes calldata) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\n// GAIN token charges a tax on transfer → actual received amount < sent amount\n// After skim() followed by sync(), reserves are set lower than actual balance\n// This mismatch is amplified through repeated cycles to realize profit\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: avoid combining tax tokens with V2 pairs\n// Or disable skim/sync and track reserves separately\nfunction sync() external {\n    // For tax tokens, use internal reserve tracking instead of direct balanceOf\n    require(!isTaxToken(token0) && !isTaxToken(token1), \"tax tokens unsupported\");\n    _update(IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)), ...);\n}"
+ ],
+ "steps": [
+  "→ [1] Uniswap V3 flash: flash loan 0.1 WETH",
+  "→ [2] Transfer WETH → V2 GAIN pair",
+  "→ [3] Execute V2 swap() (WETH → GAIN)",
+  "→ [4] Call skim() — extract excess GAIN tokens",
+  "→ [5] Call sync() — update reserves to lower actual balance",
+  "→ [6] Repeat cycle to amplify reserve-balance mismatch",
+  "→ [7] Final swap() to extract remaining WETH",
+  "→ [8] Repay V3 flash loan (including fee)",
+  "→ [9] ~18 ETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Uniswap V3 flash: flash loan 0.1 WETH\n  │\n  ├─→ [2] Transfer WETH → V2 GAIN pair\n  │\n  ├─→ [3] Execute V2 swap() (WETH → GAIN)\n  │\n  ├─→ [4] Call skim() — extract excess GAIN tokens\n  │\n  ├─→ [5] Call sync() — update reserves to lower actual balance\n  │\n  ├─→ [6] Repeat cycle to amplify reserve-balance mismatch\n  │\n  ├─→ [7] Final swap() to extract remaining WETH\n  │\n  ├─→ [8] Repay V3 flash loan (including fee)\n  │\n  └─→ [9] ~18 ETH profit",
+  "interface Uni_Pair_V2 {\n    function skim(address to) external;\n    function sync() external;\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ninterface Uni_Pair_V3 {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    Uni_Pair_V3 constant v3Pool  = Uni_Pair_V3(0xc7bBeC68d12a0d1830360F8Ec58fA599bA1b0e9b);\n    Uni_Pair_V2 constant v2Pair  = Uni_Pair_V2(0x31d80EA33271891986D873B397d849A92EF49255);\n    IERC20      constant GAIN    = IERC20(0xdE59b88abEFA5e6C8aA6D742EeE0f887Dab136ac);\n    IWETH       constant WETH    = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n\n    function test"
+ ]
+}

@@ -1,0 +1,43 @@
+{
+ "id": "2023__2023-07-24_Palmswap_OracleManipulation_BSC",
+ "source_file": "2023/2023-07-24_Palmswap_OracleManipulation_BSC.md",
+ "title": "Palmswap — Price Oracle Manipulation Attack Analysis",
+ "date": "2023-07-24",
+ "protocol": "Palmswap",
+ "chain": "BSC",
+ "loss_raw": "~$900,000",
+ "loss_usd": 900000.0,
+ "root_cause": "Vault balance manipulation via flash loan to distort PLP/USDP exchange rate (price oracle), then profit extraction",
+ "attack_tx": "0x62db...ac9",
+ "vulnerable_contract": "`0xd990094a611c3de34664dd3664ebf979a1230fc1` (LiquidityEvent)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — uses Vault's spot balance directly for exchange rate calculation\n// Inside LiquidityEvent contract (inferred)\n\nfunction _getPricePLP() internal view returns (uint256) {\n    // Divides Vault's current total asset value (including BUSDT balance) by total PLP supply\n    // ❌ Anyone can instantly manipulate this value by transferring BUSDT to the Vault\n    uint256 vaultTotalAssets = BUSDT.balanceOf(address(vault));\n    uint256 plpTotalSupply = IERC20(plp).totalSupply();\n    return vaultTotalAssets * PRECISION / plpTotalSupply;\n}\n\nfunction purchasePlp(\n    uint256 _amountIn,\n    uint256 _minUsdp,\n    uint256 _minPlp\n) external returns (uint256 amountOut) {\n    IERC20(busdt).transferFrom(msg.sender, address(this), _amountIn);\n    // ❌ Applies spot rate at time of purchase (before manipulation → 1:1)\n    uint256 usdpAmount = _amountIn; // simplified\n    amountOut = usdpAmount * PRECISION / _getPricePLP();\n    _mintPLP(msg.sender, amountOut);\n}\n\nfunction unstakeAndRedeemPlp(\n    uint256 _plpAmount,\n    uint256 _minOut,\n    address _receiver\n) external returns (uint256 usdpOut) {\n    // ❌ Applies spot rate at time of redemption (after manipulation → 1:1.9)\n    usdpOut = _plpAmount * _getPricePLP() / PRECISION;\n    _burnPLP(msg.sender, _plpAmount);\n    IERC20(usdp).transfer(_receiver, usdpOut);\n}",
+  "// ❌ Vulnerable code — processes tokens transferred directly to the Vault as-is\n// Inferred from IVault interface\n\nfunction buyUSDP(address _receiver) external returns (uint256) {\n    // ❌ Vault accepts BUSDT that msg.sender transferred beforehand\n    // Mints USDP equal to the transferred amount and delivers it to _receiver\n    uint256 amount = BUSDT.balanceOf(address(this)) - usdpReserve;\n    // ❌ At this point the Vault balance is inflated, distorting the price ratio\n    _mintUSDP(_receiver, amount);\n    usdpReserve += amount;\n    return amount;\n}",
+  "❌ Vault balance inflated │\n                │              └───────────────────────────┘\n                │ Holding PLP                  │\n                │              ┌───────────────┘\n                │              │ Vault balance spikes →\n                │              │ PLP price rises 1:1 → 1:1.9\n                │              │\n         [Step 5]▼             │\n    ┌───────────────────────┐  │\n    │ LiquidityEvent        │◀─┘\n    │ unstakeAndRedeemPlp() │\n    │ Redeem PLP → USDP     │\n    │ Rate 1:1.9 applied"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — uses manipulation-resistant TWAP oracle\n\nimport \"@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol\";\n\nfunction _getPricePLPSafe() internal view returns (uint256) {\n    // ✅ Uses Chainlink TWAP or a validated external oracle\n    (, int256 answer,, uint256 updatedAt,) = priceFeed.latestRoundData();\n    require(block.timestamp - updatedAt <= MAX_PRICE_AGE, \"Oracle: price data expired\");\n    require(answer > 0, \"Oracle: invalid price\");\n    return uint256(answer);\n}\n\nfunction purchasePlp(\n    uint256 _amountIn,\n    uint256 _minUsdp,\n    uint256 _minPlp\n) external nonReentrant returns (uint256 amountOut) {\n    // ✅ nonReentrant guard added\n    IERC20(busdt).transferFrom(msg.sender, address(this), _amountIn);\n    uint256 price = _getPricePLPSafe(); // ✅ Uses non-manipulable oracle price\n    amountOut = _amountIn * PRECISION / price;\n    require(amountOut >= _minPlp, \"slippage: insufficient PLP amount\");\n    _mintPLP(msg.sender, amountOut);\n}",
+  "// ✅ Fixed code — changed to transferFrom pattern\n\nfunction buyUSDP(uint256 _amount, address _receiver) external nonReentrant returns (uint256) {\n    // ✅ Explicitly receives funds from the caller; removes balance-based calculation\n    BUSDT.transferFrom(msg.sender, address(this), _amount);\n    uint256 usdpAmount = _convertToUSDP(_amount);\n    _mintUSDP(_receiver, usdpAmount);\n    return usdpAmount;\n}"
+ ],
+ "steps": [
+  "1 | `RadiantLP.flashLoan()` | Obtain 3,000,000 BUSDT flash loan | Radiant → Attack Contract",
+  "2 | `LiquidityEvent.purchasePlp(1_000_000e18, 0, 0)` | Buy PLP at cheap rate (1:1) before price manipulation | 1M BUSDT → PLP",
+  "3 | `BUSDT.transfer(Vault, 2_000_000e18)` | Inflate Vault balance | 2M BUSDT → Vault",
+  "4 | `Vault.buyUSDP(address(this))` | Confirm direct transfer and receive USDP | 2M BUSDT → USDP",
+  "5 | `LiquidityEvent.unstakeAndRedeemPlp(plpAmount - 13_294e15, 0, this)` | Redeem PLP at inflated rate (1:1.9) | PLP → ~1.9M USDP",
+  "6 | `USDP.transfer(Vault, amountUSDP - 3154e18)` | Return USDP to Vault | USDP → Vault",
+  "7 | `Vault.sellUSDP(address(this))` | Swap USDP for BUSDT | USDP → BUSDT",
+  "8 | Repay flash loan | Return 3M BUSDT + fees | Attack Contract → Radiant",
+  "9 | Retain surplus | Secure net profit | ~$900K BUSDT remaining",
+  "Vault balance spikes →",
+  "PLP price rises 1:1 → 1:1.9",
+  "Redeem PLP → USDP",
+  "Swap USDP → BUSDT"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo - Total Lost : ~$900K\n// Attacker : https://bscscan.com/address/0xf84efa8a9f7e68855cf17eaac9c2f97a9d131366\n// Attack Contract : https://bscscan.com/address/0x55252a6d50bfad0e5f1009541284c783686f7f25\n// Vulnerable Contract : https://bscscan.com/address/0xd990094a611c3de34664dd3664ebf979a1230fc1\n// Attack Tx : https://bscscan.com/tx/0x62dba55054fa628845fecded658ff5b1ec1c5823f1a5e0118601aa455a30eac9\n\ncontract PalmswapTest is Test {\n    IERC20 BUSDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IERC20 PLP   = IERC20(0x8b47515579c39a31871D874a23Fb87517b975eCC);\n    IERC20 USDP  = IERC20(0x04C7c8476F91D2D6Da5CaDA3B3e17FC4532Fe0cc);\n    IVault Vault = IVault(0x806f709558CDBBa39699FBf323C8fDA4e364Ac7A);\n    IL"
+ ]
+}

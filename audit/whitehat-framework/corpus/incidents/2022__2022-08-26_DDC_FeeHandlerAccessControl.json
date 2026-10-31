@@ -1,0 +1,31 @@
+{
+ "id": "2022__2022-08-26_DDC_FeeHandlerAccessControl",
+ "source_file": "2022/2022-08-26_DDC_FeeHandlerAccessControl.md",
+ "title": "DDC — Missing Access Control on Fee Handler Attack Analysis",
+ "date": "2022-08-26",
+ "protocol": "DDC Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~$104,600 USDT",
+ "loss_usd": 104600.0,
+ "root_cause": "`handleDeductFee()` function has no access control, allowing arbitrary fee deduction calls",
+ "attack_tx": "0xd08c...054 (block 20,840,080)",
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable handleDeductFee() - no access control\ninterface ITokenAFeeHandler {\n    function handleDeductFee(\n        uint256 feeType,\n        uint256 amount,\n        address pair,      // target pair\n        address recipient  // recipient\n    ) external;\n}\n\ncontract DDCFeeHandler is ITokenAFeeHandler {\n    function handleDeductFee(\n        uint256 feeType,\n        uint256 amount,\n        address pair,\n        address recipient\n    ) external override {\n        //",
+  "❌ No msg.sender validation → anyone can call\n        // Transfers DDC tokens from pair to recipient\n        IERC20(ddcToken).transferFrom(pair, recipient, amount);\n    }\n}\n\n//",
+  "// ❌ Root cause: `handleDeductFee()` function has no access control, allowing arbitrary fee deduction calls\n    function handleDeductFee(uint8 arg0, uint256 arg1, address arg2, address arg3) external view returns (uint256) {}  // 0x0881d06f  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Correct pattern - restrict caller to DDC token contract\ncontract DDCFeeHandler is ITokenAFeeHandler {\n    address public immutable ddcToken;\n\n    function handleDeductFee(\n        uint256 feeType,\n        uint256 amount,\n        address pair,\n        address recipient\n    ) external override {\n        require(msg.sender == ddcToken, \"Only DDC token\"); //",
+  "✅ caller validation\n        IERC20(ddcToken).transferFrom(pair, recipient, amount);\n    }\n}"
+ ],
+ "steps": [
+  "[1] 0.1 WBNB → USDT → Buy DDC",
+  "❌ No access control → transfers pair's DDC balance to attacker",
+  "[4] Sell DDC → USDT"
+ ],
+ "other_code": []
+}

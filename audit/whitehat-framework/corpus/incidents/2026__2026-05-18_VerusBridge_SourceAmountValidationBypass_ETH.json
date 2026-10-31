@@ -1,0 +1,41 @@
+{
+ "id": "2026__2026-05-18_VerusBridge_SourceAmountValidationBypass_ETH",
+ "source_file": "2026/2026-05-18_VerusBridge_SourceAmountValidationBypass_ETH.md",
+ "title": "Verus Ethereum Bridge — Cross-Chain Source Amount Validation Bypass Exploit Analysis",
+ "date": "2026-05-17",
+ "protocol": "Verus Ethereum Bridge",
+ "chain": "Ethereum",
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": "`checkCCEValues()` failed to verify that the sum of payout amounts in the import payload did not exceed the actual source-chain deposit totals (`CCE.totalAmounts[]`)",
+ "attack_tx": "0x6990f017...b321",
+ "vulnerable_contract": "0x71518580...cd7f63 (Verus: Ethereum Bridge / Delegator)",
+ "classes": [
+  "bridge-crosschain"
+ ],
+ "code_before": [
+  "// VerusBridge/SubmitImports.sol (vulnerable version, estimated)\nfunction checkCCEValues(\n    VerusObjects.CReserveTransferImport calldata _import,\n    VerusObjects.CCrossChainExport memory _cce,\n    uint256 height\n) internal view returns (bool) {\n    // ❌ 1. Only verifies hash integrity — relies on the assumption that notary signatures authenticate H\n    bytes32 hashOfTransfers = keccak256(_import.serializedTransfers);\n    require(hashOfTransfers == _import.hashTransfers, \"Hash mismatch\");\n\n    // ❌ 2. Only verifies CCE metadata format\n    require(_cce.sourceSystemID == VerusConstants.VerusSystemId, \"Wrong source\");\n    require(_cce.destSystemID == VerusConstants.EthSystemID, \"Wrong dest\");\n    require(_cce.startHeight <= height && _cce.endHeight >= height, \"Bad range\");\n\n    // ❌ 3. CRITICAL OMISSION:\n    //    No comparison between _cce.totalAmounts[] (actual source-chain deposit)\n    //    and the summed payout amounts from the blob\n    return true;\n}",
+  "❌ [MISSING STEP] No economic validation here:\n    //    There is no check that sum(payout amounts in serializedTransfers)\n    //    ≤ CCE.totalAmounts[] (declared source-chain deposit totals).\n    //    proveImports() authenticated the DATA, not its economic soundness.\n\n    // [Step C]",
+  "❌ Does NOT compare: payout amounts vs CCE.totalAmounts[]\n    │\n    ├─ [Step B]  isLastCCEInOrder()"
+ ],
+ "code_after": [
+  "function checkCCEValues(\n    VerusObjects.CReserveTransferImport calldata _import,\n    VerusObjects.CCrossChainExport memory _cce,\n    uint256 height\n) internal view returns (bool) {\n    bytes32 hashOfTransfers = keccak256(_import.serializedTransfers);\n    require(hashOfTransfers == _import.hashTransfers, \"Hash mismatch\");\n    require(_cce.sourceSystemID == VerusConstants.VerusSystemId, \"Wrong source\");\n    require(_cce.destSystemID == VerusConstants.EthSystemID, \"Wrong dest\");\n    require(_cce.startHeight <= height && _cce.endHeight >= height, \"Bad range\");\n\n    // ✅ [PATCH] Compare declared source-chain export totals vs summed payout blob amounts\n    VerusObjects.CCurrencyValueMap[] memory payoutSums =\n        VerusSerializer.sumTransfers(_import.serializedTransfers);\n    require(payoutSums.length == _cce.totalAmounts.length, \"Currency count mismatch\");\n    for (uint256 i = 0; i < payoutSums.length; i++) {\n        require(payoutSums[i].currency == _cce.totalAmounts[i].currency, \"Currency mismatch\");\n        // ✅ Payout cannot exceed the amount declared in the export\n        require(payoutSums[i].amount <= _cce.totalAmounts[i].amount, \"Payout exceeds source\");\n    }\n    return true;\n}",
+  "✅ Replay protection: reject already-processed txids\n    if (processedTxids[txidfound]) {\n        revert();\n    }\n\n    bool success;\n    bytes memory returnBytes;\n\n    // reverse 32-bit endianness\n    nVins = ((nVins & 0xFF00FF00) >> 8) | ((nVins & 0x00FF00FF) << 8);\n    nVins = (nVins >> 16) | (nVins << 16);\n\n    bytes32 hashOfTransfers;\n    uint64 fees;\n    uint128 CCEHeightsAndnIndex;\n\n    // Hash the serialized transfer blob\n    hashOfTransfers = keccak256(_import.serializedTransfers);\n\n    address verusProofAddress = contracts[uint(VerusConstants.ContractType.VerusProof)];\n\n    // [Step A]"
+ ],
+ "steps": [
+  "- data → `abi.encode` → `delegatecall` → `_createImports()`",
+  "- Blob decoded → fund transfer executed",
+  "**[Step 4] Bridge Reserves → Verus Exploiter 2**",
+  "- tBTC 103.56766017 → 0x65Cb8b128bF6E690761044CCEca422bB239C25F9",
+  "- USDC 147,658.836798 → 0x65Cb8b128bF6E690761044CCEca422bB239C25F9",
+  "Withdraw 1 ETH → Verus Exploiter 1",
+  "keccak256(payout_blob) → committed to state root",
+  "→ Only confirms \"hash exists in the block\"",
+  "payout vs source_total comparison absent → PASS",
+  "blob decoded → payout amounts confirmed",
+  "tBTC 103.56766017 → Exploiter 2",
+  "USDC 147,658.836798 → Exploiter 2",
+  "→ DEX swaps → consolidated into ~5,402 ETH"
+ ],
+ "other_code": []
+}

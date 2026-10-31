@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-11-21_Matez_IntegerTruncationStaking",
+ "source_file": "2024/2024-11-21_Matez_IntegerTruncationStaking.md",
+ "title": "Matez — Integer Truncation Staking Reward Free-Claim Vulnerability Analysis",
+ "date": "2024-11-21",
+ "protocol": "Matez Staking",
+ "chain": "BSC",
+ "loss_raw": "~80,000 USD",
+ "loss_usd": null,
+ "root_cause": "Integer truncation in `stake()` — inputs ≥ 2^128 truncate to 0 on transfer, recording a large stake with no tokens sent, allowing free reward claims",
+ "attack_tx": "0x840b0dc6",
+ "vulnerable_contract": "0x326FB70e",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Matez Staking: same integer truncation vulnerability as MFT\ncontract MatezStaking {\n    mapping(address => uint128) public stakedAmount;\n\n    function stake(uint256 amnt) external {\n        //",
+  "❌ uint128 truncation: 2^128 input → 0\n        uint128 truncated = uint128(amnt);\n        stakedAmount[msg.sender] += truncated;  // adds 0\n\n        //",
+  "❌ actual transfer is also 0\n        IERC20(MATEZ_TOKEN).transferFrom(msg.sender, address(this), truncated);\n        // → 0 MATEZ actually transferred\n        // → but reward calculation elsewhere uses the original amnt\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix:\n// require(amnt > 0 && amnt <= type(uint128).max, \"invalid amount\");\n// or use uint256"
+ ],
+ "steps": [
+  "❌ uint128 truncation → 0 MATEZ actually transferred",
+  "→ acquires 25 referrals",
+  "[5] ▶ Sell MATEZ → ~80,000 USD extracted"
+ ],
+ "other_code": []
+}

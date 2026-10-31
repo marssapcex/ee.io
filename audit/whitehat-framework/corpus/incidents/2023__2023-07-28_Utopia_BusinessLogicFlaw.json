@@ -1,0 +1,31 @@
+{
+ "id": "2023__2023-07-28_Utopia_BusinessLogicFlaw",
+ "source_file": "2023/2023-07-28_Utopia_BusinessLogicFlaw.md",
+ "title": "Utopia Business Logic Flaw Incident Analysis",
+ "date": "2023-07-28",
+ "protocol": "Utopia",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Execute WBNBToUtopia()",
+  "Swap WBNB → Utopia tokens",
+  "2 ▶ Call Pair.skim(address(this))",
+  "3 ▶ Call Pair.sync()",
+  "4 ▶ Execute UtopiaToWBNB()",
+  "Swap Utopia → WBNB",
+  "5 ▶ Realize profit (~$119K USD)"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: predictable airdrop address + skim/sync manipulation\ncontract Utopia {\n    address public pair;\n\n    function _transfer(address from, address to, uint256 amount) internal override {\n        // Vulnerable: partial transfer to a fixed, predictable airdrop address\n        uint256 airdropAmount = amount * 3 / 1000; // 0.3%\n        address airdropAddress = address(\n            uint160(uint256(keccak256(abi.encodePacked(from, to, block.number))))\n            // In practice, an even more predictable calculation is used\n        );\n        super._transfer(from, airdropAddress, airdropAmount);\n        super._transfer(from, to, amount - airdropAmount);\n    }\n}\n\n// Combined with the pair's skim/sync vulnerability\n// sync() → updates reserves to match current balances\n// skim() →",
+  "// Root cause: Business Logic Flaw\n// Unverified source code — analysis based on bytecode"
+ ]
+}

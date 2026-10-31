@@ -1,0 +1,49 @@
+{
+ "id": "2024__2024-01-12_WiseLending_BusinessLogic_ETH",
+ "source_file": "2024/2024-01-12_WiseLending_BusinessLogic_ETH.md",
+ "title": "Wise Lending — Share Price Inflation & Faulty Health Factor Check Analysis",
+ "date": "2024-01-12",
+ "protocol": "Wise Lending",
+ "chain": "Ethereum",
+ "loss_raw": "~$464,000 (177 ETH)",
+ "loss_usd": 464000.0,
+ "root_cause": "Empty pool first depositor inflation + Faulty health factor calculation (Business Logic Flaw)",
+ "attack_tx": "0x04e1...c31",
+ "vulnerable_contract": "0x37e4...E4",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// WiseLending.sol — share calculation inside depositExactAmount\nfunction _calculateDepositShares(\n    address _poolToken,\n    uint256 _amount\n) internal view returns (uint256 shares) {\n    (uint256 pseudoTotalPool, uint256 totalDepositShares,) =\n        lendingPoolData[_poolToken];\n\n    // ❌ Vulnerable point: no special handling when totalDepositShares == 0 (empty pool)\n    // shares = 0 can be returned when pseudoTotalPool is non-zero\n    // Attacker deposits pseudoTotalPool * 2 - 1 to receive only shares = 1\n    // and the remaining pseudoTotalPool - 1 tokens are donated to the pool\n    if (totalDepositShares == 0) {\n        return _amount; // ❌ No protection logic on first deposit\n    }\n    // shares = amount * totalDepositShares / pseudoTotalPool\n    // Integer division → floor → attacker can deliberately manipulate to get shares = 1\n    shares = _amount * totalDepositShares / pseudoTotalPool;\n}",
+  "// WiseSecurity.sol\nfunction maximumBorrowToken(\n    uint256 _nftId,\n    address _poolToken,\n    uint256 _interval\n) external view returns (uint256 tokenAmount) {\n    // ❌ Vulnerable point: uses the manipulated pseudoTotalPool directly for share valuation\n    // Attacker's 1 share represents the entire inflated pseudoTotalPool value\n    uint256 collateralValue = _getCollateralValue(_nftId, _poolToken);\n\n    // Apply collateralFactor (LTV)\n    tokenAmount = collateralValue\n        * lendingPoolData[_poolToken].collateralFactor\n        / PRECISION_FACTOR;\n\n    // ❌ No share price anomaly detection → returns inflated collateral value as-is\n}\n\nfunction _getCollateralValue(\n    uint256 _nftId,\n    address _poolToken\n) internal view returns (uint256) {\n    uint256 lendShares = getPositionLendingShares(_nftId, _poolToken);\n\n    // ❌ Share value calculated against a manipulated pseudoTotalPool\n    (uint256 pseudoTotalPool, uint256 totalDepositShares,) =\n        lendingPoolData[_poolToken];\n\n    // shares * pseudoTotalPool / totalDepositShares\n    // → 1 share * enormously large pseudoTotalPool / 1 = massive collateral value\n    uint256 tokenAmount = lendShares * pseudoTotalPool / totalDepositShares;\n\n    return _getTokenValue(_poolToken, tokenAmount); // apply oracle price\n}"
+ ],
+ "code_after": [
+  "// Fix 1: UniswapV2 approach — burn a portion of the initial liquidity\nfunction _calculateDepositShares(\n    address _poolToken,\n    uint256 _amount\n) internal returns (uint256 shares) {\n    (uint256 pseudoTotalPool, uint256 totalDepositShares,) =\n        lendingPoolData[_poolToken];\n\n    if (totalDepositShares == 0) {\n        // ✅ Burn MINIMUM_SHARES to address(0) on first deposit\n        // Prevents attacker from inflating the price with shares = 1\n        uint256 MINIMUM_SHARES = 1000;\n        shares = _amount - MINIMUM_SHARES;\n        // Burned shares are permanently locked → cost of price manipulation explodes\n        totalDepositShares_[_poolToken] += MINIMUM_SHARES; // address(0) portion\n        return shares;\n    }\n    shares = _amount * totalDepositShares / pseudoTotalPool;\n}\n\n// Fix 2: Share price upper bound validation\nfunction _validateSharePrice(address _poolToken) internal view {\n    (uint256 pseudoTotalPool, uint256 totalDepositShares,) =\n        lendingPoolData[_poolToken];\n    if (totalDepositShares == 0) return;\n\n    // ✅ Revert if share unit price is abnormally high\n    uint256 sharePrice = pseudoTotalPool * 1e18 / totalDepositShares;\n    require(sharePrice <= MAX_SHARE_PRICE, \"Share price manipulation detected\");\n}",
+  "function _getCollateralValue(\n    uint256 _nftId,\n    address _poolToken\n) internal view returns (uint256) {\n    uint256 lendShares = getPositionLendingShares(_nftId, _poolToken);\n    (uint256 pseudoTotalPool, uint256 totalDepositShares,) =\n        lendingPoolData[_poolToken];\n\n    // ✅ Apply upper bound to per-share price\n    uint256 sharePrice = pseudoTotalPool * SHARE_PRICE_PRECISION / totalDepositShares;\n    require(\n        sharePrice <= MAX_REASONABLE_SHARE_PRICE,\n        \"Abnormal share price: potential manipulation\"\n    );\n\n    uint256 tokenAmount = lendShares * pseudoTotalPool / totalDepositShares;\n    return _getTokenValue(_poolToken, tokenAmount);\n}"
+ ],
+ "steps": [
+  "- `Pool(poolToken).depositExactAmount(1 ether)` → receive poolToken 1e18",
+  "Step 1: Initial deposit + pool draining",
+  "→ Result: pseudoTotalPool ≈ 1 (minimum), totalDepositShares ≈ 0",
+  "Step 2: Iterative inflation loop (20 times)",
+  "→ shares = (pseudoTotalPool*2-1) * totalDepositShares / pseudoTotalPool = 1",
+  "→ donation amount = pseudoTotalPool - 1 (difference locked in pool)",
+  "→ After 20 iterations: pseudoTotalPool ≈ 2^20 × initial value (over 1 million× inflation)",
+  "Step 3: Final inflation deposit (without withdrawal)",
+  "→ Attacker holds: 1 share = entire value of manipulated pseudoTotalPool",
+  "Step 4: Transfer collateral to another address (other) + over-borrowing",
+  "Step 5: Profit taking",
+  "1) Obtain 1 ETH of PLP-stETH",
+  "depositExactAmount(1 ETH) → issue poolToken",
+  "2) NFT Mint + initial deposit/withdrawal",
+  "donation (difference) = P - 1 → locked in pool",
+  "3) Final deposit (holding shares)",
+  "→ returns excessive borrow limit based on manipulated P",
+  "4) borrowExactAmount(nftId, wsteth, amount)",
+  "5) Transfer to attacker address"
+ ],
+ "other_code": [
+  "Step 1: Initial deposit + pool draining\n  └─ wiseLending.depositExactAmount(nftId, poolToken, 1e9)\n  └─ Direct transfer(1e9) of poolToken to wiseLending address — balance increase without donation\n  └─ wiseLending.withdrawExactShares(nftId, poolToken, shares) — full withdrawal\n\n  → Result: pseudoTotalPool ≈ 1 (minimum), totalDepositShares ≈ 0\n\nStep 2: Iterative inflation loop (20 times)\n  for (i = 0; i < 20; i++) {\n    └─ Query pseudoTotalPool, totalDepositShares\n    └─ depositExactAmount(nftId, poolToken, pseudoTotalPool * 2 - 1)\n         → shares = (pseudoTotalPool*2-1) * totalDepositShares / pseudoTotalPool = 1\n         → donation amount = pseudoTotalPool - 1 (difference locked in pool)\n    └─ withdrawExactAmount(nftId, poolToken, shares = 1) — withdraw 1 share\n  }\n\n  → After 20 iterati",
+  "┌──────────────────────────────────────────────────────────┐\n│                     Attacker                             │\n│            0xb90cf1d740b206b6d8...                       │\n└────────────────────────┬─────────────────────────────────┘\n                         │ 1) Obtain 1 ETH of PLP-stETH\n                         ▼\n┌──────────────────────────────────────────────────────────┐\n│             Pool Contract (poolToken)                    │\n│     0xB40b073d7E47986D3A45Ca7Fd30772C25A2AD57f          │\n│  depositExactAmount(1 ETH) → issue poolToken             │\n└────────────────────────┬─────────────────────────────────┘\n                         │ 2) NFT Mint + initial deposit/withdrawal\n                         ▼\n┌──────────────────────────────────────────────────────────┐\n│            "
+ ]
+}

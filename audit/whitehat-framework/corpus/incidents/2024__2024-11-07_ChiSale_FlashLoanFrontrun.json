@@ -1,0 +1,26 @@
+{
+ "id": "2024__2024-11-07_ChiSale_FlashLoanFrontrun",
+ "source_file": "2024/2024-11-07_ChiSale_FlashLoanFrontrun.md",
+ "title": "ChiSale — Balancer Flash Loan Receiver Manipulation Vulnerability Analysis",
+ "date": "2024-11-07",
+ "protocol": "ChiSale",
+ "chain": "Ethereum",
+ "loss_raw": "~16,300 USD",
+ "loss_usd": null,
+ "root_cause": "The ChiSale contract did not validate the Balancer flash loan receiver, allowing an arbitrary address to be designated as the receiver and drain the contract's balance",
+ "attack_tx": "0x586a2a43",
+ "vulnerable_contract": "0x05016359",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ ChiSale contract: can be designated as flash loan receiver from outside\n// Balancer flashLoan(receiver, tokens, amounts, userData)\n// → receiver can be set to the ChiSale contract\n\ncontract ChiSaleVulnerable {\n    //",
+  "❌ No caller validation in receiveFlashLoan\n    //",
+  "❌ When designated as flash loan receiver, WETH balance is drained\n    function receiveFlashLoan(\n        address[] memory tokens,\n        uint256[] memory amounts,\n        uint256[] memory feeAmounts,\n        bytes memory userData\n    ) external {\n        //"
+ ],
+ "code_after": [
+  "✅ Fix:\n// require(msg.sender == BALANCER_VAULT, \"not vault\");\n// require(initiator == address(this), \"not self-initiated\");"
+ ],
+ "steps": [],
+ "other_code": []
+}

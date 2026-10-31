@@ -1,0 +1,26 @@
+{
+ "id": "2024__2024-11-24_proxy_b7e1_OrderManipulation",
+ "source_file": "2024/2024-11-24_proxy_b7e1_OrderManipulation.md",
+ "title": "Proxy b7e1 — Order Data Manipulation Vulnerability Analysis",
+ "date": "2024-11-24",
+ "protocol": "ERC1967Proxy b7e1",
+ "chain": "BSC",
+ "loss_raw": "~8,500 USD",
+ "loss_usd": null,
+ "root_cause": "Order processing function (selector 0x9b3e9b92) processes arbitrary order data including negative or overflow amounts without validation",
+ "attack_tx": "0x864d33d0",
+ "vulnerable_contract": "0xb7e1d137",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ proxy_b7e1: Missing input validation on order data\ncontract DEXProxy {\n    // selector 0x9b3e9b92 — order execution function\n    function executeOrder(\n        address token,\n        bytes32 fixedData,  //",
+  "❌ Allows manipulated negative/overflow values\n        uint256 param3,\n        uint256 param4,\n        // ...\n    ) external {\n        //",
+  "❌ No range validation on the amount field within fixedData\n        //"
+ ],
+ "code_after": [
+  "✅ Fix:\n// require(amount > 0 && amount <= maxOrderSize, \"invalid amount\");\n// Safe conversion from int256 → uint256 with validation"
+ ],
+ "steps": [],
+ "other_code": []
+}

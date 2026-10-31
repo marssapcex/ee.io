@@ -1,0 +1,31 @@
+{
+ "id": "2022__2022-10-10_Carrot_TransRewardOwnerTakeover",
+ "source_file": "2022/2022-10-10_Carrot_TransRewardOwnerTakeover.md",
+ "title": "Carrot — transReward() Ownership Hijack and transferFrom Attack Analysis",
+ "date": "2022-10-10",
+ "protocol": "Carrot Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~$31,318 BUSDT",
+ "loss_usd": 31318.0,
+ "root_cause": "`transReward()` (selector: `0xbf699b4b`) allows changing the pool owner without any access control, enabling subsequent `transferFrom()` bypass",
+ "attack_tx": null,
+ "vulnerable_contract": "0xcFF086EaD392CcB39C49eCda8C974ad5238452aC",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable transReward() - no access control\ncontract CarrotToken {\n    address public poolOwner;\n\n    //",
+  "❌ Anyone can change the pool owner to themselves\n    function transReward(address newOwner) external {\n        //",
+  "❌ No onlyOwner or any other access control\n        poolOwner = newOwner;\n    }\n\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract SafeCarrotToken {\n    function transReward(address newOwner) external onlyOwner {\n        //",
+  "✅ Only the current owner can change\n        poolOwner = newOwner;\n    }\n\n    function transferFrom(address from, address to, uint256 amount) public override returns (bool) {\n        //"
+ ],
+ "steps": [
+  "❌ No access control → poolOwner = attacker",
+  "msg.sender == poolOwner → ✅ (attacker is poolOwner)",
+  "[4] Stolen Carrot → Sell for BUSDT (PancakeRouter)"
+ ],
+ "other_code": []
+}

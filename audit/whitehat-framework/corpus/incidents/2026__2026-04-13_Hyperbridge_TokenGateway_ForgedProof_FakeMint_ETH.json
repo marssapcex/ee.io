@@ -1,0 +1,35 @@
+{
+ "id": "2026__2026-04-13_Hyperbridge_TokenGateway_ForgedProof_FakeMint_ETH",
+ "source_file": "2026/2026-04-13_Hyperbridge_TokenGateway_ForgedProof_FakeMint_ETH.md",
+ "title": "Hyperbridge — TokenGateway Forged-Proof Admin Takeover & Fake Mint (Ethereum)",
+ "date": "2026-04-13",
+ "protocol": "Hyperbridge",
+ "chain": "Ethereum",
+ "loss_raw": "**~$2,500,000** (revised per Hyperbridge post-mortem; initial reports cited ~$237K extracted ETH, but multi-chain forensic audit 3 days post-incident confirmed ~$2.5M total); ~1 billion bridged DOT forged (theoretical ~$1.17B at mid-market, but pool liquidity was too thin to monetize)",
+ "loss_usd": 2500000.0,
+ "root_cause": "HandlerV1 accepts a forged ISMP state proof; TokenGateway.onAccept() executes a `ChangeAssetAdmin` action that transfers admin / minter role to the attacker, who then mints arbitrary bridged ERC20s",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "function handlePostRequest(PostRequest calldata req, MmrProof calldata proof) external {\n    // ❌ The committed root, leaf index, or commitment hash is not rebound to\n    //    (sourceChain, nonce, destChain). A replayed or rotated-root leaf is\n    //    accepted as fresh.\n    require(_verifyMmr(proof.root, proof.leaf, proof.indices), \"bad proof\");\n\n    IDispatcher(destModule).onAccept(req);  // trusts the payload\n}",
+  "function onAccept(PostRequest calldata req) external onlyHandler {\n    Action action = abi.decode(req.body, (Action));\n    if (action.kind == ActionKind.ChangeAssetAdmin) {\n        // ❌ No domain check that req came from the registered Hyperbridge\n        //    hyperbridge.stateMachine (relies purely on HandlerV1 trust).\n        assetAdmin[action.asset] = action.newAdmin;\n        IBridgedERC20(action.asset).setMinter(action.newAdmin);\n    }\n    // ...\n}"
+ ],
+ "code_after": [],
+ "steps": [
+  "HandlerV1 accepts → TokenGateway.onAccept(ChangeAssetAdmin)",
+  "→ attacker becomes admin/minter of bridged ERC20",
+  "1 | 0xfa23fb22…61b6f6 | 24,868,216 | Gas/DAI preparation | 423.18 DAI routed 0x792A… → 0x989F17… → 0x3269Bf4…",
+  "2 | 0x240aeb9a…401109 | 24,868,295 | **First forgery mint** | 1,000,000,000 bridged DOT minted → Uniswap V4 PoolManager",
+  "3 | 0xb28ab952…f8ac09 | 24,868,422 | **Multi-token forgery** | Mints 1B of token `0x6A9143…55155` and 1B of `0x64CBd3…5f01`; swaps chunks for USDC / WETH on V3 pools; sinks ~1e27 of `0x6A91…` to attacker EOA",
+  "4 | 0xb80c7d4c…443c3a | 24,868,450 | Mint + V4 swap | 10,000 DOT → PoolManager → 0.00677 WETH back to recipient",
+  "5 | 0x743f4bdb…227125 | 24,868,484 | Mint to V4 | 1,000,000 DOT → PoolManager",
+  "6 | 0x6f1efcde…0a0808 | 24,868,577 | DAI/WETH swap + mint | 0.493 DAI ↔ 0.000225 WETH on Uniswap V3 DAI/WETH, then 712,403 DOT minted → PoolManager",
+  "7 | 0xb93aab83…4a0634 | 24,868,658 | Mint to V4 | 1,000 DOT → PoolManager"
+ ],
+ "other_code": [
+  "[Setup, tx1]  attacker borrows/acquires DAI (423.18 DAI from 0x792A…) for gas & slippage buffer\n       │\n       ▼\n[Proof Forgery, tx2–tx7]  master contract 0x365084… submits forged ISMP proof\n       │     HandlerV1 accepts  →  TokenGateway.onAccept(ChangeAssetAdmin)\n       │                         →  attacker becomes admin/minter of bridged ERC20\n       ▼\n[Mint]  bridged DOT (and siblings) minted from 0x0 to fresh per-tx recipient\n       │       (Tx2: 1e9, Tx4: 1e4, Tx5: 1e6, Tx6: 7.12e5, Tx7: 1e3; total ≈ 1.0017B DOT)\n       ▼\n[Monetize] minted tokens pulled into hub 0x365084… then\n           forwarded to Uniswap V4 PoolManager (0x000000…08A90)\n           swapped for WETH / USDC through V4 + V3 pools\n       ▼\n[Exit]  ~108.2 ETH to attacker EOA 0xC513E4F5…F1F8E7"
+ ]
+}

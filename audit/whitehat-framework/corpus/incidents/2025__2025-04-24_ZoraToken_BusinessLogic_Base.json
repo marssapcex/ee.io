@@ -1,0 +1,39 @@
+{
+ "id": "2025__2025-04-24_ZoraToken_BusinessLogic_Base",
+ "source_file": "2025/2025-04-24_ZoraToken_BusinessLogic_Base.md",
+ "title": "Zora Token Security Incident Analysis",
+ "date": "2025-04-24",
+ "protocol": "ZoraToken",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ZoraTokenCommunityClaim.sol (vulnerable version)\n\n/// @notice Claims airdrop tokens\n/// @param _claimTo Address to receive tokens — may differ from msg.sender (❌ no validation)\nfunction claim(address _claimTo) external override {\n    // No check that msg.sender == _claimTo\n    // If msg.sender is a permissionless contract, anyone can call this on its behalf\n    _claim(msg.sender, _claimTo);\n}\n\n/// @dev Internal claim logic\n/// @param _user    Address with registered allocation (msg.sender)\n/// @param _claimTo Address that will actually receive the tokens\nfunction _claim(address _user, address _claimTo) internal {\n    _checkCanClaim(); // Check claim period\n\n    if (accountClaims[_user].allocation == 0) {\n        revert NoAllocation();\n    }\n    if (accountClaims[_user].claimed) {\n        revert AlreadyClaimed();\n    }\n\n    uint256 amount = uint256(accountClaims[_user].allocation);\n    accountClaims[_user].claimed = true;\n\n    emit Claimed(_user, _claimTo, amount); // Records _user and _claimTo separately\n    // ❌ No check that _claimTo is the same as _user\n    SafeERC20.safeTransfer(token, _claimTo, amount);\n}",
+  "// 0x Settler (simplified structural example)\nfunction execute(bytes calldata actions) external {\n    // Parse actions and dispatch each one\n    _dispatch(actions);\n}\n\nfunction _basicSellToPool(\n    address sellToken,\n    address pool,     // ← Can be set to ZoraTokenCommunityClaim address\n    bytes calldata data // ← ABI-encoded claim(attacker) call data\n) internal {\n    // Performs a low-level call to pool\n    // msg.sender = Settler, so Settler's claim allocation is executed\n    (bool success, ) = pool.call(data); // ❌ Arbitrary contract call\n    require(success, \"call failed\");\n}"
+ ],
+ "code_after": [
+  "// ZoraTokenCommunityClaim.sol (fixed version)\n\n/// @notice Claims airdrop tokens — only callable by msg.sender themselves\nfunction claim() external override {\n    // ✅ Fixes _claimTo to msg.sender, blocking third-party claim delegation\n    _claim(msg.sender, msg.sender);\n}\n\n/// @notice Claims to a beneficiary-specified recipient address via EIP-712 signature\n/// @param _user    Signing party (actual beneficiary)\n/// @param _claimTo Token recipient address\n/// @param _deadline Signature expiry timestamp\n/// @param _signature EIP-712 signature from the beneficiary (_user)\nfunction claimWithSignature(\n    address _user,\n    address _claimTo,\n    uint256 _deadline,\n    bytes calldata _signature\n) external override {\n    // ✅ Only allows arbitrary _claimTo address if signed by the beneficiary\n    _verifySignature(_user, _claimTo, _deadline, _signature);\n    _claim(_user, _claimTo);\n}\n\nfunction _claim(address _user, address _claimTo) internal {\n    _checkCanClaim();\n\n    if (accountClaims[_user].allocation == 0) {\n        revert NoAllocation();\n    }\n    if (accountClaims[_user].claimed) {\n        revert AlreadyClaimed();\n    }\n\n    uint256 amount = uint256(accountClaims[_user].allocation);\n    accountClaims[_user].claimed = true;\n\n    emit Claimed(_user, _claimTo, amount);\n    SafeERC20.safeTransfer(token, _claimTo, amount);\n}",
+  "// Vulnerable state: 0x Settler registered as beneficiary\n// accountClaims[0x5C9bdC801a600c006c388FC032dCb27355154cC9].allocation = 5,500,777 ZORA\n// Anyone can call Settler.execute() to claim this allocation\n\n// ✅ Recommended: Validate whether beneficiary addresses are permissionless contracts before airdrop\nfunction setAllocations(bytes32[] calldata packedData) external onlyOwner {\n    for (uint256 i = 0; i < packedData.length; i++) {\n        address recipient = address(uint160(uint256(packedData[i])));\n        // ✅ Contract addresses require owner verification or explicit whitelisting\n        if (recipient.code.length > 0) {\n            // Apply separate review process for contract recipients\n            require(approvedContracts[recipient], \"Contract recipient not approved\");\n        }\n    }\n    // ...allocation setup logic\n}"
+ ],
+ "steps": [
+  "Relay Solver → Attacker (gas fee ETH)",
+  "⑤ Swap ZORA → ETH",
+  "66.74 ETH bridged Base → other chain",
+  "1. **[Preparation] Attacker Funding**",
+  "2. **[Execution] Malicious Calldata Passed to 0x Settler**",
+  "3. **[Vulnerability Trigger] Settler Delegates the Claim Function Call**",
+  "4. **[Token Theft] ZORA Transferred to Attacker Address**",
+  "5. **[Monetization] Swap ZORA → ETH**",
+  "6. **[Exit] Bridge Out via Across Protocol**"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────────┐\n│                    Zora Airdrop Composability Attack                     │\n└─────────────────────────────────────────────────────────────────────────┘\n\n  [Attacker EOA]\n  0xb957Ed2F...\n       │\n       │ ① ETH funding (preparation phase)\n       │   TX: 0x2b8d34af...\n       │   Relay Solver → Attacker (gas fee ETH)\n       ▼\n  ┌─────────────────────────┐\n  │  Attacker Wallet         │\n  │  0xb957Ed2F...          │\n  └────────────┬────────────┘\n               │\n               │ ② Calls execute()\n               │   actions = basicSellToPool(\n               │     sellToken: ZORA address,\n               │     pool: ZoraTokenCommunityClaim,\n               │     data: abi.encode(claim(attacker address))\n               │  ",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n// ─────────────────────────────────────────────────────────────\n// Interface Definitions\n// ─────────────────────────────────────────────────────────────\n\ninterface IZoraTokenCommunityClaim {\n    // Airdrop claim function — transfers msg.sender's allocation to _claimTo\n    // Vulnerability: no validation that msg.sender == _claimTo\n    function claim(address _claimTo) external;\n}\n\ninterface I0xSettler {\n    // 0x Settler execution entry point — actions is an ABI-encoded action array\n    function execute(bytes calldata actions) external payable;\n}\n\ninterface IERC20 {\n    function balanceOf(address account) external view returns (uint256);\n}\n\n// ─────────────────────────────────────────────────────────────\n// Attack Contract (Reconstr"
+ ]
+}

@@ -1,0 +1,44 @@
+{
+ "id": "2024__2024-01-31_CheckDotProtocol_AccessControl_BSC",
+ "source_file": "2024/2024-01-31_CheckDotProtocol_AccessControl_BSC.md",
+ "title": "CheckDot Protocol — Governance Proxy Access Control Vulnerability Analysis",
+ "date": "2024-01-31",
+ "protocol": "CheckDotProtocol",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~$120,000 (CDT tokens and protocol assets)",
+ "loss_usd": 120000.0,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// UpgradableProxyDAO.sol — upgrade() function\n// @audit ❌ When isInProduction() == false, DAO voting is completely skipped\nfunction upgrade(\n    address _newAddress,\n    bytes memory _initializationData\n) external payable {\n    require(_getOwner() == msg.sender, \"Proxy: FORBIDDEN\");  // owner only\n    require(_doHaveTheGraal() == false, \"Proxy: THE_GRAAL\");\n\n    if (_isInProduction() == false) {\n        // @audit ❌ Core issue: if production mode is off, upgrade executes immediately\n        // Any implementation can be substituted without a CDT token holder vote\n        _upgrade(_newAddress, _initializationData);\n    } else {\n        // DAO voting process only proceeds in production mode\n        ProxyUpgrades.Upgrades storage _proxyUpgrades = \n            ProxyUpgrades.getUpgradesSlot(_UPGRADES_SLOT).value;\n\n        require(\n            _proxyUpgrades.isEmpty() || _proxyUpgrades.current().isFinished,\n            \"Proxy: UPGRADE_ALREADY_INPROGRESS\"\n        );\n        _proxyUpgrades.add(\n            _newAddress,\n            _initializationData,\n            block.timestamp,\n            block.timestamp + _getVoteDuration()\n        );\n    }\n}",
+  "// ProxyDAO.sol — delegates all calls to the current implementation\n// @audit ❌ Once implementation is replaced with a malicious one, all delegatecalls are exploited\nfallback() external payable {\n    _delegate(_getImplementation());  // delegates to current (malicious) implementation\n}\n\nreceive() external payable {\n    _delegate(_getImplementation());\n}\n\nfunction _delegate(address implementation) internal {\n    assembly {\n        calldatacopy(0, 0, calldatasize())\n        // @audit ❌ Malicious implementation can access proxy storage in its context\n        let result := delegatecall(\n            gas(),\n            implementation,  // malicious implementation address\n            0,\n            calldatasize(),\n            0,\n            0\n        )\n        returndatacopy(0, 0, returndatasize())\n        switch result\n        case 0 { revert(0, returndatasize()) }\n        default { return(0, returndatasize()) }\n    }\n}",
+  "// ProxyDAO.sol\n// @audit ⚠️ Calls initialize() via delegatecall immediately after replacing the implementation\n// Malicious initialize() can instantly drain assets via transfer() etc.\nfunction _afterUpgrade(\n    address _newFunctionalAddress,\n    bytes memory _initializationData\n) internal virtual override {\n    address implementation = _newFunctionalAddress;\n    bytes memory data = abi.encodeWithSignature(\n        \"initialize(bytes)\",\n        _initializationData  // data controlled by the attacker\n    );\n\n    assembly {\n        // @audit ❌ delegatecall: malicious contract executes in proxy context\n        let result := delegatecall(\n            gas(),\n            implementation,\n            add(data, 0x20),\n            mload(data),\n            0,\n            0\n        )\n        // ...\n    }\n}"
+ ],
+ "code_after": [
+  "// Fix 1: Force-activate production mode immediately after deployment\nconstructor(address _cdtGouvernanceAddress) {\n    _setOwner(msg.sender);\n    _setGovernance(_cdtGouvernanceAddress);\n    _setInProduction(true);   // @fix ✅ Activate production mode immediately on deployment\n    _setVoteDuration(86400);\n    _setTheGraal(false);\n}\n\n// Fix 2: Or enforce production mode as a mandatory condition in upgrade()\nfunction upgrade(\n    address _newAddress,\n    bytes memory _initializationData\n) external payable {\n    require(_getOwner() == msg.sender, \"Proxy: FORBIDDEN\");\n    require(_doHaveTheGraal() == false, \"Proxy: THE_GRAAL\");\n    // @fix ✅ DAO vote always required regardless of production mode\n    require(_isInProduction() == true, \"Proxy: NOT_IN_PRODUCTION\");\n    \n    ProxyUpgrades.Upgrades storage _proxyUpgrades = \n        ProxyUpgrades.getUpgradesSlot(_UPGRADES_SLOT).value;\n\n    require(\n        _proxyUpgrades.isEmpty() || _proxyUpgrades.current().isFinished,\n        \"Proxy: UPGRADE_ALREADY_INPROGRESS\"\n    );\n    _proxyUpgrades.add(\n        _newAddress,\n        _initializationData,\n        block.timestamp,\n        block.timestamp + _getVoteDuration()\n    );\n}",
+  "// Fixed constructor\nconstructor(address _cdtGouvernanceAddress) {\n    _setOwner(msg.sender);\n    _setGovernance(_cdtGouvernanceAddress);\n    // @fix ✅ Activate production mode immediately on deployment (deploy after testing)\n    _setInProduction(true);\n    _setVoteDuration(86400); // Minimum 1-day voting period\n    _setTheGraal(false);\n}"
+ ],
+ "steps": [
+  "1. Attacker deploys malicious implementation",
+  "2. Calls upgrade(MaliciousImpl, drainCalldata) on",
+  "3. _setImplementation(MaliciousImpl) executes",
+  "→ Malicious address stored in EIP-1967 slot",
+  "4. _afterUpgrade() → delegatecall(MaliciousImpl,",
+  "5. Attacker gains: ~$120,000 worth of assets",
+  "6. BlockSec Phalcon detects → immediately notifies",
+  "CheckDot team → team implements patch",
+  "1. **Attacker Preparation**: The attacker pre-deploys a malicious implementation contract on BSC. This contract contains logic in its `initialize(bytes)` function to transfer the full CDT token balance to the attacker's address.",
+  "2. **Governance Bypass**: The attacker (or a compromised owner key) calls the `upgrade()` function on the `UpgradableCheckDotInsuranceCovers` proxy. Since `isInProduction() == false`, the implementation is replaced immediately without a DAO vote.",
+  "3. **Implementation Replacement**: The malicious implementation address is stored in the EIP-1967 standard slot (`0x3608...bbc`). All subsequent `fallback()` calls are delegated to the malicious implementation.",
+  "4. **Automatic Drain Execution**: `_afterUpgrade()` calls the new implementation's `initialize()` via `delegatecall`. The malicious `initialize()` executes in the proxy contract's context (storage, balance), transferring CDT tokens and BNB to the attacker.",
+  "5. **Detection and Response**: The BlockSec Phalcon system detected the attack transaction in real time and notified the CheckDot team, who immediately acknowledged the critical severity of the vulnerability and applied a patch."
+ ],
+ "other_code": [
+  "Attack Vector:\n1. Deploy malicious implementation (containing drain function)\n2. Call upgrade(_maliciousImpl, \"\") → immediately replaces implementation\n3. fallback() → _delegate(_maliciousImpl) → drain executes\n4. Transfer all protocol assets to attacker's address",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.9;\n\n// CheckDot Protocol Governance Bypass PoC (Reconstructed)\n// Vulnerability: upgrade() callable directly without DAO vote when isInProduction() == false\n\ninterface IUpgradableProxyDAO {\n    function upgrade(\n        address _newAddress,\n        bytes memory _initializationData\n    ) external payable;\n    \n    function getOwner() external view returns (address);\n    function isInProduction() external view returns (bool);\n    function getImplementation() external view returns (address);\n}\n\ninterface ICDT {\n    function balanceOf(address account) external view returns (uint256);\n    function transfer(address to, uint256 amount) external returns (bool);\n}\n\n// Step 1: Malicious implementation — when upgrade() is called, _afterUpgrade\n//  "
+ ]
+}

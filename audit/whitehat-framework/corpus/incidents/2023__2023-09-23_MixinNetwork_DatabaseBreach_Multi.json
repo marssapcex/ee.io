@@ -1,0 +1,23 @@
+{
+ "id": "2023__2023-09-23_MixinNetwork_DatabaseBreach_Multi",
+ "source_file": "2023/2023-09-23_MixinNetwork_DatabaseBreach_Multi.md",
+ "title": "Mixin Network — Cloud Database Breach Private Key Exposure Analysis",
+ "date": "2023-09-23",
+ "protocol": "Mixin Network",
+ "chain": "Multiple",
+ "loss_raw": "~$200,000,000 (Ethereum ~$94M largest asset (~60,000 ETH), Bitcoin ~$23M (~891 BTC), Tether USDT ~$23M, and other chain assets)",
+ "loss_usd": 200000000.0,
+ "root_cause": "Mixin Network's cloud service provider database was compromised, exposing private keys or key material for the network's asset custody hot wallets. The attacker used the obtained key material to drain assets across all chains supported by Mixin",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Architecture Flaw:\n- Mixin stored critical key material in cloud database (centralized point of failure)\n- Despite marketing as \"decentralized,\" custody relied on centralized cloud infrastructure\n- Database compromise → full control over hot wallet funds\n\nBreach Pattern:\n- Cloud database (Google Cloud) compromised via unknown vector\n- Key material / private keys extracted from database\n- Attacker had time to drain ~$200M before discovery and shutdown\n\nBetter Architecture (not implemented):\n- Hardware Security Modules (HSMs) for all key storage — never stored in database\n- MPC (Multi-Party Computation) key sharding across geographically distributed nodes\n- No single database should contain enough information to reconstruct private keys\n- Zero-knowledge proofs for transaction authorization w",
+  "Attacker\n    │\n    ├─[1] Compromise Mixin Network's Google Cloud database\n    │       (attack vector not publicly disclosed)\n    │\n    ├─[2] Extract private keys / key material for Mixin hot wallets\n    │       across all supported chains\n    │\n    ├─[3] Drain $200M in assets:\n    │       - Ethereum (~$94M equivalent, ~60,000 ETH — largest single asset)\n    │       - Bitcoin (~$23M, ~891 BTC)\n    │       - Tether USDT (~$23M)\n    │       - Other chain assets\n    │\n    ├─[4] Mixin discovers the breach; suspends deposits/withdrawals\n    │       CEO confirms publicly September 25, 2023\n    │\n    └─[5] Mixin halts network; working with blockchain investigators\n              Offered $20M bounty for return of funds (no confirmed recovery)"
+ ]
+}

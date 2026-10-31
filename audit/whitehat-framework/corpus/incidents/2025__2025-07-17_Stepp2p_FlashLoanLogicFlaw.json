@@ -1,0 +1,34 @@
+{
+ "id": "2025__2025-07-17_Stepp2p_FlashLoanLogicFlaw",
+ "source_file": "2025/2025-07-17_Stepp2p_FlashLoanLogicFlaw.md",
+ "title": "Stepp2p — Flash Loan Business Logic Flaw Analysis",
+ "date": "2025-07-17",
+ "protocol": "Stepp2p",
+ "chain": "BSC",
+ "loss_raw": "~43,000 USD",
+ "loss_usd": null,
+ "root_cause": "The collateral validation logic in the P2P lending contract is based on instantaneous balance, allowing bypass by providing temporary collateral within a single transaction",
+ "attack_tx": "0xe94752783",
+ "vulnerable_contract": "0x99855380e5f48db0a6babeae312b80885a816dce",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: collateral validation implemented in a way bypassable via flash loan\ncontract Stepp2p {\n    mapping(address => uint256) public collateral;\n    mapping(address => uint256) public borrowed;\n\n    function depositCollateral(uint256 amount) external {\n        IERC20(BSC_USD).transferFrom(msg.sender, address(this), amount);\n        collateral[msg.sender] += amount;\n    }\n\n    function borrow(uint256 amount) external {\n        // Collateral from flash loan is present at validation time — check passes\n        require(collateral[msg.sender] >= amount * MIN_COLLATERAL_RATIO / 1e18, \"Insufficient collateral\");\n        borrowed[msg.sender] += amount;\n        IERC20(BSC_USD).transfer(msg.sender, amount);\n        // Even if collateral is withdrawn within the same transaction, borrowed remains\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: collateral lock period and flash loan defense\nfunction depositCollateral(uint256 amount) external {\n    IERC20(BSC_USD).transferFrom(msg.sender, address(this), amount);\n    collateral[msg.sender] += amount;\n    collateralLockedUntil[msg.sender] = block.number + LOCK_BLOCKS;\n}\n\nfunction withdrawCollateral(uint256 amount) external {\n    require(block.number >= collateralLockedUntil[msg.sender], \"Collateral locked\");\n    require(collateral[msg.sender] - amount >= borrowed[msg.sender] * MIN_COLLATERAL_RATIO / 1e18);\n    collateral[msg.sender] -= amount;\n    IERC20(BSC_USD).transfer(msg.sender, amount);\n}"
+ ],
+ "steps": [
+  "1 ▶ PancakeSwap V3 (USDC/USDT): flash(BSC-USD)",
+  "2 ▶ Stepp2p.depositCollateral(large BSC-USD amount)",
+  "3 ▶ Stepp2p.borrow(excessive amount)",
+  "LTV check passes with flash loan collateral → loan executed",
+  "4 ▶ Withdraw collateral from Stepp2p (or collateral remains after flash loan repayment)",
+  "5 ▶ PancakeSwap V3: repay flash loan + retain loan proceeds as profit"
+ ],
+ "other_code": [
+  "// File: contracts/Stepp2p.sol\nfunction setSellFee(uint256 _sellFee) external onlyOwner {\n        sellFee = _sellFee;\n    }\n    function setBuyFee(uint256 _buyFee) external onlyOwner {\n        buyFee = _buyFee;\n    }\n    function setFeeAccount(address _feeAccount) external onlyOwner {\n        feeAccount = _feeAccount;\n    }\n    function createSaleOrder(\n        uint256 _amount\n    ) external nonReentrant returns (uint256) {\n        require(_amount > 0, \"Amount must be greater than 0\");\n        lastSaleId++;\n\n        USDT.safeTransferFrom(msg.sender, address(this), _amount);\n\n        uint256 feeAmount = sellFee > 0 ? (_amount * sellFee) / 1000 : 0;\n        uint256 saleAmount = _amount - feeAmount;\n\n        if (feeAmount > 0) {\n            USDT.safeTransfer(feeAccount, feeAmount);\n        }\n",
+  "Attacker\n  │\n  ├─1─▶ PancakeSwap V3 (USDC/USDT): flash(BSC-USD)\n  │         [callback entry]\n  │\n  ├─2─▶ Stepp2p.depositCollateral(large BSC-USD amount)\n  │         └─ collateral ratio satisfied\n  │\n  ├─3─▶ Stepp2p.borrow(excessive amount)\n  │         └─ LTV check passes with flash loan collateral → loan executed\n  │\n  ├─4─▶ Withdraw collateral from Stepp2p (or collateral remains after flash loan repayment)\n  │         └─ loan balance retained, collateral returned\n  │\n  └─5─▶ PancakeSwap V3: repay flash loan + retain loan proceeds as profit"
+ ]
+}

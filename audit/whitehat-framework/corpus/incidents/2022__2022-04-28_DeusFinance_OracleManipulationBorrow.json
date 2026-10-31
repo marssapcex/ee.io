@@ -1,0 +1,39 @@
+{
+ "id": "2022__2022-04-28_DeusFinance_OracleManipulationBorrow",
+ "source_file": "2022/2022-04-28_DeusFinance_OracleManipulationBorrow.md",
+ "title": "Deus Finance — On-Chain Price Oracle Manipulation DEI Lending Exploit Analysis",
+ "date": "2022-04-28",
+ "protocol": "Deus Finance",
+ "chain": "Fantom",
+ "loss_raw": "~$13,400,000 (USDC, DEI)",
+ "loss_usd": 13400000.0,
+ "root_cause": "The collateral price oracle `getOnChainPrice()` directly consumed the Solidly AMM spot price, allowing an attacker to temporarily manipulate the price via a large swap and then borrow an excessive amount of DEI",
+ "attack_tx": "Block 37,093,708",
+ "vulnerable_contract": "DeiLenderSolidex 0x8D643d954798392403eeA19dB8108f595bB8B730",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable DeiLenderSolidex (pseudocode)\ncontract DeiLenderSolidex {\n    IOracle oracle;\n\n    function borrow(uint256 amount) external {\n        // Calculate collateral value\n        uint256 collateralValue = _getCollateralValue(msg.sender);\n\n        //",
+  "❌ Oracle based on spot price\n        // Manipulable via flash loan\n        uint256 price = oracle.getOnChainPrice();\n\n        uint256 maxBorrow = collateralValue * price / 1e18 * LTV / 100;\n        require(amount <= maxBorrow, \"exceeds LTV\");\n\n        // Execute borrow\n        DEI.transfer(msg.sender, amount);\n    }\n}\n\n//",
+  "❌ Vulnerable price oracle\ncontract OnChainOracle {\n    ISolidlyPair pair; // DEI/USDC Solidly AMM pool\n\n    function getOnChainPrice() external view returns (uint256) {\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract TWAPOracle {\n    function getPrice() external view returns (uint256) {\n        //",
+  "✅ Use minimum 30-minute TWAP\n        return pair.observe(30 minutes);\n    }\n}"
+ ],
+ "steps": [
+  "[1] Anyswap bridge: Transfer 150,000,000 USDC from ETH → Fantom",
+  "[2] Purchase small amount of DEI (1,000,000 USDC → DEI)",
+  "addLiquidity(USDC, DEI) → obtain LP tokens",
+  "12,000,000,000,000,000,000,000,000 USDC → DEI",
+  "DEI price (USDC per DEI) plummets → inverse: DEI per USDC spikes",
+  "→ DEI increases in LP, USDC decreases → LP value shifts",
+  "→ Borrow far more DEI than actual collateral value",
+  "[6] Borrowed DEI → swap to USDC (realize profit)"
+ ],
+ "other_code": [
+  "Attacker (Fantom)\n    │\n    ├─[1] Anyswap bridge: Transfer 150,000,000 USDC from ETH → Fantom\n    │\n    ├─[2] Purchase small amount of DEI (1,000,000 USDC → DEI)\n    │       Reason: required to trigger the loan\n    │\n    ├─[3] Add liquidity to DEI/USDC LP\n    │       addLiquidity(USDC, DEI) → obtain LP tokens\n    │\n    ├─[4] Large USDC swap on Solidly AMM\n    │       12,000,000,000,000,000,000,000,000 USDC → DEI\n    │       DEI price (USDC per DEI) plummets → inverse: DEI per USDC spikes\n    │       → DEI increases in LP, USDC decreases → LP value shifts\n    │\n    ├─[5] DeiLenderSolidex.addCollateral() + borrow()\n    │       LP value over-calculated based on manipulated spot price\n    │       → Borrow far more DEI than actual collateral value\n    │\n    ├─[6] Borrowed DEI → swap to USDC (re",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IDeiLender {\n    function addCollateral(address account, uint256 amount) external;\n    function borrow(uint256 amount) external returns (uint256);\n    function getOnChainPrice() external view returns (uint256);\n}\n\ninterface ISolidlyRouter {\n    function swapExactTokensForTokensSimple(\n        uint amountIn, uint amountOutMin,\n        address tokenFrom, address tokenTo,\n        bool stable, address to, uint deadline\n    ) external returns (uint[] memory);\n\n    function addLiquidity(\n        address tokenA, address tokenB, bool stable,\n        uint amountADesired, uint amountBDesired,\n        uint amountAMin, uint amountBMin,\n        address to, uint deadline\n    ) external returns (uint, "
+ ]
+}

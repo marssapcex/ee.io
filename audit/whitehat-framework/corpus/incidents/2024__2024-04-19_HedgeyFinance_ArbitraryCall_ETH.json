@@ -1,0 +1,49 @@
+{
+ "id": "2024__2024-04-19_HedgeyFinance_ArbitraryCall_ETH",
+ "source_file": "2024/2024-04-19_HedgeyFinance_ArbitraryCall_ETH.md",
+ "title": "Hedgey Finance — Arbitrary Call Vulnerability Analysis",
+ "date": "2024-04-19",
+ "protocol": "Hedgey Finance",
+ "chain": "Ethereum + Arbitrum",
+ "loss_raw": "~$2,100,000 (ETH) / Total ~$44,700,000 nominal (ETH + ARB; Arbitrum nominal ~$42.6M, largely illiquid BONUS tokens)",
+ "loss_usd": 2100000.0,
+ "root_cause": "Arbitrary approve abuse via unvalidated user input (`tokenLocker`) — allowance not revoked on campaign cancellation",
+ "attack_tx": null,
+ "vulnerable_contract": "0xBc45...D511",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — ClaimCampaigns.sol (reconstructed)\nfunction createLockedCampaign(\n    bytes16 id,\n    Campaign memory campaign,\n    ClaimLockup memory claimLockup,  // ❌ No validation on the tokenLocker field\n    Donation memory donation\n) external {\n    // Store campaign\n    campaigns[id] = campaign;\n    claimLockups[id] = claimLockup;\n\n    // Pull tokens into the contract\n    TransferHelper.transferTokens(\n        campaign.token,\n        msg.sender,\n        address(this),\n        campaign.amount\n    );\n\n    // ❌ Core vulnerability: claimLockup.tokenLocker is freely specifiable by the user\n    //    Grants token spending permission to the tokenLocker address\n    //    If the attacker designates their own contract as tokenLocker,\n    //    that contract gains permission to spend ClaimCampaigns' tokens\n    SafeERC20.safeApprove(\n        IERC20(campaign.token),\n        claimLockup.tokenLocker,  // ❌ approve granted to arbitrary address\n        campaign.amount\n    );\n}",
+  "// ❌ Vulnerable code — cancelCampaign function (reconstructed)\nfunction cancelCampaign(bytes16 campaignId) external {\n    Campaign memory campaign = campaigns[campaignId];\n    ClaimLockup memory claimLockup = claimLockups[campaignId];\n\n    require(campaign.manager == msg.sender, \"not manager\");\n\n    uint256 remaining = campaign.amount - claimedAmounts[campaignId];\n\n    // Delete campaign data\n    delete campaigns[campaignId];\n    delete claimLockups[campaignId];\n\n    // Return remaining tokens to tokenLocker\n    TransferHelper.transferTokens(\n        campaign.token,\n        address(this),\n        claimLockup.tokenLocker,\n        remaining\n    );\n\n    // ❌ Critical omission: approve is never reset to 0\n    // SafeERC20.safeApprove(IERC20(campaign.token), claimLockup.tokenLocker, 0);\n    // → The absence of this single line leaves the allowance intact\n}",
+  "Step 1: Obtain flash loan\n  Tx: 0xa17f...a517\n  Balancer Vault → [Attacker] borrows 1,305,000 USDC\n\nStep 2: Approve ClaimCampaigns to spend USDC\n  [Attacker] → USDC.approve(ClaimCampaigns, 1,305,000)\n\nStep 3: Create campaign (core vulnerability point)\n  [Attacker] → ClaimCampaigns.createLockedCampaign(\n    campaign_id = 0x00...01,\n    campaign = { token: USDC, amount: 1,305,000, ... },\n    claimLockup = { tokenLocker: [attacker contract] }  ← malicious address injected\n  )\n  → ClaimCampaigns grants approve(1,305,000) to [attacker contract]\n  → 1,305,000 USDC transferred into ClaimCampaigns\n\nStep 4: Immediately cancel campaign\n  [Attacker] → ClaimCampaigns.cancelCampaign(campaign_id)\n  → 1,305,000 USDC returned to [attacker contract]\n  → ❌ approve permission is NOT revoked (allowance persists)\n\nStep 5: Repay flash loan\n  [Attacker] → Repays 1,305,000 USDC to Balancer Vault\n  (At this point [attacker contract] holds a valid allowance over ClaimCampaigns)"
+ ],
+ "code_after": [
+  "// ✅ Fixed code\nfunction createLockedCampaign(\n    bytes16 id,\n    Campaign memory campaign,\n    ClaimLockup memory claimLockup,\n    Donation memory donation\n) external {\n    // ✅ tokenLocker must be an address included in the protocol-managed whitelist\n    require(\n        approvedLockers[claimLockup.tokenLocker],\n        \"ClaimCampaigns: tokenLocker not approved\"\n    );\n\n    campaigns[id] = campaign;\n    claimLockups[id] = claimLockup;\n\n    TransferHelper.transferTokens(\n        campaign.token,\n        msg.sender,\n        address(this),\n        campaign.amount\n    );\n\n    SafeERC20.safeApprove(\n        IERC20(campaign.token),\n        claimLockup.tokenLocker,\n        campaign.amount\n    );\n}",
+  "// ✅ Fixed code\nfunction cancelCampaign(bytes16 campaignId) external {\n    Campaign memory campaign = campaigns[campaignId];\n    ClaimLockup memory claimLockup = claimLockups[campaignId];\n\n    require(campaign.manager == msg.sender, \"not manager\");\n\n    uint256 remaining = campaign.amount - claimedAmounts[campaignId];\n\n    delete campaigns[campaignId];\n    delete claimLockups[campaignId];\n\n    TransferHelper.transferTokens(\n        campaign.token,\n        address(this),\n        claimLockup.tokenLocker,\n        remaining\n    );\n\n    // ✅ On campaign cancellation, the tokenLocker's approve permission must be revoked\n    SafeERC20.safeApprove(\n        IERC20(campaign.token),\n        claimLockup.tokenLocker,\n        0  // Reset allowance to 0\n    );\n}"
+ ],
+ "steps": [
+  "Step 1: Obtain flash loan",
+  "Balancer Vault → [Attacker] borrows 1,305,000 USDC",
+  "Step 2: Approve ClaimCampaigns to spend USDC",
+  "[Attacker] → USDC.approve(ClaimCampaigns, 1,305,000)",
+  "Step 3: Create campaign (core vulnerability point)",
+  "[Attacker] → ClaimCampaigns.createLockedCampaign(",
+  "→ ClaimCampaigns grants approve(1,305,000) to [attacker contract]",
+  "→ 1,305,000 USDC transferred into ClaimCampaigns",
+  "Step 4: Immediately cancel campaign",
+  "[Attacker] → ClaimCampaigns.cancelCampaign(campaign_id)",
+  "→ 1,305,000 USDC returned to [attacker contract]",
+  "→ ❌ approve permission is NOT revoked (allowance persists)",
+  "Step 5: Repay flash loan",
+  "[Attacker] → Repays 1,305,000 USDC to Balancer Vault",
+  "Step 6: Drain other users' tokens using residual allowance",
+  "[Attacker contract] → USDC.transferFrom(ClaimCampaigns, attacker, entireBalance)",
+  "→ Drains the entire USDC balance of ClaimCampaigns",
+  "ClaimCampaigns → returned to attacker"
+ ],
+ "other_code": [
+  "Step 6: Drain other users' tokens using residual allowance\n  Tx: 0x2606...9739\n  [Attacker contract] → USDC.transferFrom(ClaimCampaigns, attacker, entireBalance)\n  → Drains the entire USDC balance of ClaimCampaigns\n  (NOBL and MASA tokens are also drained in the same manner)",
+  "[Tx 1: 0xa17f...a517]\n  1. Approval(owner=ClaimCampaigns, spender=attackerContract, value=1,305,000)  ← approve granted\n  2. Transfer(from=attacker, to=ClaimCampaigns, value=1,305,000 USDC)           ← campaign created\n  3. Transfer(from=ClaimCampaigns, to=attackerContract, value=1,305,000 USDC)   ← campaign cancelled\n  4. Transfer(from=attackerContract, to=BalancerVault, value=1,305,000 USDC)    ← flash loan repaid\n  [At this point: Approval is still valid]\n\n[Tx 2/3: Actual drain]\n  5. Transfer(from=ClaimCampaigns, to=attacker, value=entireBalance USDC/NOBL/MASA)  ← transferFrom drain"
+ ]
+}

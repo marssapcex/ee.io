@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-05-21_MultiChainCapital_DeliverSkimReflection",
+ "source_file": "2023/2023-05-21_MultiChainCapital_DeliverSkimReflection.md",
+ "title": "MultiChain Capital (MCC) Exploit — deliver() Reflection Manipulation + skim() Drain",
+ "date": "2023-05-21",
+ "protocol": "MultiChainCapital",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// File: multichain.sol\n        function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(  // ❌\n\n// ...\n\n        function swapExactTokensForTokensSupportingFeeOnTransferTokens(  // ❌\n\n// ...\n\n        function swapExactETHForTokensSupportingFeeOnTransferTokens(  // ❌\n\n// ...\n\n        function swapExactTokensForETHSupportingFeeOnTransferTokens(  // ❌\n\n// ...\n\n            require(!_isExcluded[sender], \"Excluded addresses cannot call this function\");  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "// a. func1f46(): WETH → MCC via Router",
+  "// → reduce _rTotal, inflate balanceOf(pair)",
+  "// d. func19c(): pair.skim(address(this)) → collect excess MCC",
+  "// f. MCC → WETH via Router"
+ ],
+ "other_code": [
+  "// 1. Aave.flashLoan([WETH], [600 ether], 0, \"\")\n// 2. executeOperation():\n//    a. func1f46(): WETH → MCC via Router\n//    b. func21b0(): MCC.deliver(large_amount) × multiple iterations\n//       → reduce _rTotal, inflate balanceOf(pair)\n//    c. func1d89(): transfer via excluded address (bypass fee)\n//    d. func19c():  pair.skim(address(this))  → collect excess MCC\n//    e. Repeat deliver/skim cycles\n//    f. MCC → WETH via Router\n// 3. Repay 600 WETH + Aave fee",
+  "interface IMCC is IERC20 {\n    function deliver(uint256 amount) external;\n    function isExcluded(address account) external view returns (bool);\n    function isExcludedFromFee(address account) external view returns (bool);\n    function reflectionFromToken(uint256 tAmount, bool deductTransferFee) external view returns (uint256);\n    function tokenFromReflection(uint256 rAmount) external view returns (uint256);\n}\n\ninterface IAaveFlashloan {\n    function flashLoan(\n        address receiverAddress, address[] calldata assets,\n        uint256[] calldata amounts, uint256[] calldata modes,\n        address onBehalfOf, bytes calldata params, uint16 referralCode\n    ) external;\n}\n\ninterface IUniswapV2Pair {\n    function skim(address to) external;\n    function sync() external;\n}"
+ ]
+}

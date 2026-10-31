@@ -1,0 +1,27 @@
+{
+ "id": "2023__2023-05-xx_SELLC02_StakingReferralChainReward",
+ "source_file": "2023/2023-05-xx_SELLC02_StakingReferralChainReward.md",
+ "title": "SELLC02 Exploit — StakingRewards Referral Chain Reward Inflation",
+ "date": "2023-01-01",
+ "protocol": "SELLC02",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "// File: StakingRewards.sol\n    function stakedOfTimeSum(address,address,uint)external view returns (uint);  // ❌\n\n// ...\n\n    function stakedSum(address,address)external view returns (uint);  // ❌\n\n// ...\n\n    function myReward(address)external view returns (address);  // ❌\n\n// ...\n\n    function upaddress(address)external view returns (address);  // ❌\n\n// ...\n\n    function users(address,address)external view returns (uint,uint,uint);  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → flash loan callback: addLiquidity, claim all exploiter rewards, removeL, repay"
+ ],
+ "other_code": [
+  "// 1. deal(USDT, address(this), 1_000e18)\n// 2. for (uint i = 0; i < 10; i++) {\n//       Exploiter e = new Exploiter(address(StakingRewards));\n//       exploiters[i] = e;\n//    }\n// 3. Set up referral chain: exploiters[0] refers exploiters[1]...exploiters[9]\n// 4. Each exploiter stakes 100 USDT\n// 5. vm.warp(+1 hour)\n// 6. Deploy malicious TokenA with 100 supply\n// 7. Pair.swap(10_000 QIQI, 0, address(this), data)\n//    → flash loan callback: addLiquidity, claim all exploiter rewards, removeL, repay\n// 8. Collect excess SELLC rewards",
+  "interface IStakingRewards {\n    function stake(uint256 amount) external;\n    function claim() external;\n}"
+ ]
+}

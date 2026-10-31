@@ -1,0 +1,29 @@
+{
+ "id": "2024__2024-12-27_Bizness_SplitLockReentrancy",
+ "source_file": "2024/2024-12-27_Bizness_SplitLockReentrancy.md",
+ "title": "Bizness — splitLock Reentrancy Vulnerability Analysis",
+ "date": "2024-12-27",
+ "protocol": "Bizness Token Locker",
+ "chain": "Base",
+ "loss_raw": "~15,700 USD",
+ "loss_usd": null,
+ "root_cause": "Reentrancy allowed in LOCKER's `splitLock()` — the original lock becomes empty during the split, enabling double withdrawal",
+ "attack_tx": "0x984cb29c",
+ "vulnerable_contract": "0xd6a7cfa8",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ LOCKER's splitLock: reentrancy vulnerable\ncontract Locker {\n    struct Lock {\n        address token;\n        uint256 amount;\n        uint256 unlockDate;\n        address owner;\n    }\n\n    mapping(uint256 => Lock) public locks;\n\n    function splitLock(uint256 lockId, uint256 newAmount, uint256 newUnlockDate)\n        external payable returns (uint256 newLockId)\n    {\n        Lock storage lock = locks[lockId];\n        require(msg.sender == lock.owner);\n\n        //",
+  "❌ No nonReentrant guard\n        //",
+  "❌ External callback can occur without state update before split\n        lock.amount -= newAmount;  // Reduce original\n\n        //"
+ ],
+ "code_after": [
+  "✅ Fix:\n// modifier nonReentrant() { ... }\n// Apply nonReentrant to splitLock() function"
+ ],
+ "steps": [
+  "→ Lock ownership transferred to attacker",
+  "→ Double withdrawal"
+ ],
+ "other_code": []
+}

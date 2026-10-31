@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-06-08_MyAi_AccessControl",
+ "source_file": "2023/2023-06-08_MyAi_AccessControl.md",
+ "title": "MyAi — Access Control Vulnerability Analysis",
+ "date": "2023-06-08",
+ "protocol": "MyAi Token",
+ "chain": "BSC",
+ "loss_raw": "~10 BNB",
+ "loss_usd": null,
+ "root_cause": "No validation of `_from` parameter in `batchTokenTransfer()` — arbitrary address asset drainage",
+ "attack_tx": "0x346f65ac...",
+ "vulnerable_contract": "0xdb103fd2...",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ No validation of _from parameter\ninterface IMultiSender {\n    // ❌ _from can be set arbitrarily\n    function batchTokenTransfer(\n        address _from,          // ❌ No caller verification\n        address[] memory _address,\n        uint256[] memory _amounts,\n        address token,\n        uint256 totalAmount,\n        bool isToken\n    ) external;\n}\n\n// Vulnerable implementation (inferred)\nfunction batchTokenTransfer(\n    address _from,\n    address[] memory _address,\n    uint256[] memory _amounts,\n    address token,\n    uint256 totalAmount,\n    bool isToken\n) external {\n    // ❌ No msg.sender == _from check\n    IERC20(token).transferFrom(_from, address(this), totalAmount);\n    for (uint256 i = 0; i < _address.length; i++) {\n        IERC20(token).transfer(_address[i], _amounts[i]);\n    }\n}",
+  "// File: MyAi_decompiled.sol\n    function batchTokenTransfer(address account, address[] param1, uint256[] param2, address owner, uint256 tokenId, bool enabled) external {}  // ❌",
+  "┌──────────────────────────────────────────────────────────┐\n│  1. Victim approves MyAi tokens to MultiSender           │\n│     (for legitimate batch transfer purposes)             │\n└──────────────────────────────┬───────────────────────────┘\n                               ▼\n┌──────────────────────────────────────────────────────────┐\n│  2. Attacker: batchTokenTransfer(_from=victim, ...)      │\n│     ❌ No _from validation                               │\n│     → All victim-approved tokens drained                 │\n└──────────────────────────────────────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Fix: validate _from\nfunction batchTokenTransfer(\n    address _from,\n    address[] memory _address,\n    uint256[] memory _amounts,\n    address token,\n    uint256 totalAmount,\n    bool isToken\n) external {\n    // ✅ Only the caller can transfer their own tokens\n    require(_from == msg.sender, \"Unauthorized: _from must be caller\");\n    IERC20(token).transferFrom(_from, address(this), totalAmount);\n    // ...\n}"
+ ],
+ "steps": [
+  "1. Victim approves MyAi tokens to MultiSender",
+  "2. Attacker: batchTokenTransfer(_from=victim, ...)",
+  "→ All victim-approved tokens drained"
+ ],
+ "other_code": [
+  "require(_from == msg.sender, \"Caller must be _from\");"
+ ]
+}

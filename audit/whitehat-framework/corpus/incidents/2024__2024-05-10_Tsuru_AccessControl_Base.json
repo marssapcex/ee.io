@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-05-10_Tsuru_AccessControl_Base",
+ "source_file": "2024/2024-05-10_Tsuru_AccessControl_Base.md",
+ "title": "Tsuru — ERC1155 Callback Access Control Missing (Unauthorized Minting) Analysis",
+ "date": "2024-05-10",
+ "protocol": "Tsuru",
+ "chain": "Base",
+ "loss_raw": "~$410,000 (137.78 ETH)",
+ "loss_usd": 410000.0,
+ "root_cause": "Missing `msg.sender` validation in `onERC1155Received()` callback — arbitrary callers can mint TSURU tokens without authorization",
+ "attack_tx": "0xe63a...f62",
+ "vulnerable_contract": "0x75ac...3da (TSURUWrapper)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ VULNERABLE: Does not validate whether msg.sender is the actual ERC1155 contract\n// The if conditional is structured as an early return,\n// so when called from an arbitrary address, the minting logic executes instead\nfunction onERC1155Received(\n    address,            // operator (unused)\n    address from,       // transfer sender — used as TSURU minting recipient\n    uint256 id,         // ERC1155 token ID\n    uint256 amount,     // transfer amount\n    bytes calldata\n) external override nonReentrant returns (bytes4) {\n    // ❌ Only validates token ID — no msg.sender validation\n    require(id == tokenID, \"Token ID does not match\");\n\n    // ❌ if branch: early returns when msg.sender is the official ERC1155 contract\n    // Conversely, if called by an arbitrary address (attacker), this if block is skipped\n    if (msg.sender == address(erc1155Contract)) {\n        return this.onERC1155Received.selector;  // ← normal case: returns without minting\n    }\n\n    // ❌ Also executes when msg.sender is NOT erc1155Contract!\n    // If the attacker calls directly with from=their address, amount=167_200_200,\n    // mass minting occurs without any access control\n    safeMint(from, amount * ERC1155RATIO);  // ← vulnerable point\n\n    return this.onERC1155Received.selector;\n}",
+  "// Minting with ERC1155RATIO multiplier — unlimited issuance possible when access control is bypassed\nfunction safeMint(address to, uint256 amount) internal {\n    // ❌ Since the external access control function (onERC1155Received) is vulnerable,\n    //    this function can be indirectly called without restriction\n    require(\n        totalSupply() + amount <= maxTotalSupply(),\n        \"TSURUWrapper: max total supply exceeded\"\n    );\n    _mint(to, amount);\n}",
+  "Attacker EOA (0x7a5e...ae386)\n         │\n         │ Query tokenID (preparation)\n         │\n         ▼\n┌─────────────────────────────────────────────────┐\n│  Step 1: Direct call to onERC1155Received()      │\n│                                                 │\n│  TSURUWrapper.onERC1155Received(                │\n│      operator = address(0),                     │\n│      from     = attackerAddress,  ← recipient   │\n│      id       = tokenID,          ← passes check│\n│      amount   = 167_200_200,      ← mass mint   │\n│      data     = \"\"                              │\n│  )                                              │\n│                                                 │\n│  msg.sender ≠ erc1155Contract                   │\n│  → if block SKIP → safeMint() executes ← ❌ vuln│\n└──────────────────────┬──────────────────────────┘\n                       │ safeMint(attacker, amount × ERC1155RATIO)\n                       ▼\n┌─────────────────────────────────────────────────┐\n│  Step 2: Mass issuance of TSURU tokens           │\n│                                                 │\n│  167,200,200 TSURU (× ERC1155RATIO) minted      │\n│  → transferred to attacker wallet               │\n└──────────────────────┬──────────────────────────┘\n                       │ Attacker TSURU balance increases\n                       ▼\n┌─────────────────────────────────────────────────┐\n│  Step 3: TSURU → ETH swap via Uniswap V2 pool   │\n│                                                 │\n│  TSURU.approve(UniswapRouter, max)              │\n│  Router.swapExactTokensForETH(                  │\n│      amountIn  = 167,200,200 TSURU,             │\n│      amountOut = 137.78 ETH                     │\n│  )                                              │\n│                                                 │\n│  Massive TSURU inflow → massive ETH outflow     │\n└──────────────────────┬──────────────────────────┘\n                       │ 137.78 ETH received\n                       ▼\n              Attacker profit realized\n         (~137.78 ETH / ~$410,000)\n         Subsequently moved to Ethereum mainnet"
+ ],
+ "code_after": [
+  "// ✅ FIX: Restrict msg.sender to the official ERC1155 contract\nfunction onERC1155Received(\n    address,\n    address from,\n    uint256 id,\n    uint256 amount,\n    bytes calldata\n) external override nonReentrant returns (bytes4) {\n    // ✅ First validate that the caller is the official ERC1155 contract\n    require(\n        msg.sender == address(erc1155Contract),\n        \"TSURUWrapper: unauthorized ERC1155 contract\"\n    );\n\n    // ✅ Validate token ID\n    require(id == tokenID, \"TSURUWrapper: token ID mismatch\");\n\n    // ✅ Execute minting only after passing validation\n    safeMint(from, amount * ERC1155RATIO);\n\n    return this.onERC1155Received.selector;\n}",
+  "// ✅ Fix Method 1: Enforce caller validation with require (recommended)\nfunction onERC1155Received(\n    address,\n    address from,\n    uint256 id,\n    uint256 amount,\n    bytes calldata\n) external override nonReentrant returns (bytes4) {\n    // ✅ msg.sender must be the official ERC1155 contract\n    require(\n        msg.sender == address(erc1155Contract),\n        \"TSURUWrapper: unauthorized caller\"\n    );\n\n    // ✅ Validate token ID\n    require(id == tokenID, \"TSURUWrapper: token ID mismatch\");\n\n    // ✅ Execute minting after validation is complete\n    safeMint(from, amount * ERC1155RATIO);\n\n    return this.onERC1155Received.selector;\n}"
+ ],
+ "steps": [
+  "1. **[Step 1] Query tokenID**: Retrieve valid `tokenID` value from contract state",
+  "2. **[Step 2] Direct callback call**: Call `onERC1155Received(address(0), attackerAddress, tokenID, 167_200_200, \"\")` directly from an arbitrary address — since `msg.sender != erc1155Contract`, `safeMint()` executes without early return",
+  "3. **[Step 3] Mass mint TSURU**: Issue `167,200,200 × ERC1155RATIO` TSURU tokens to the attacker address",
+  "4. **[Step 4] Swap for ETH**: Swap TSURU → ETH via Uniswap V2 pool, obtaining 137.78 ETH (~$410,000)",
+  "Step 1: Direct call to onERC1155Received()",
+  "→ if block SKIP → safeMint() executes ← ❌ vuln",
+  "Step 2: Mass issuance of TSURU tokens",
+  "→ transferred to attacker wallet",
+  "Step 3: TSURU → ETH swap via Uniswap V2 pool",
+  "Massive TSURU inflow → massive ETH outflow",
+  "137.78 ETH received"
+ ],
+ "other_code": []
+}

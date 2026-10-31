@@ -1,0 +1,44 @@
+{
+ "id": "2025__2025-11-10_DRLVaultV3_SlippageAmm_ETH",
+ "source_file": "2025/2025-11-10_DRLVaultV3_SlippageAmm_ETH.md",
+ "title": "DRLVaultV3 Security Incident Analysis",
+ "date": "2025-11-10",
+ "protocol": "DRLVaultV3",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": "`0x6A06707ab339BEE00C6663db17DdB422301ff5e8` (Etherscan)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// DRLVaultV3.swapToWETH() — estimated reconstructed code\n// Vulnerability: amountOutMinimum calculated from manipulable slot0() spot price\n\nfunction swapToWETH(uint256 _amount) external returns (uint256 _amountOut) {\n    // ❌ Reads current spot price from Uniswap V3 slot0()\n    // This value can be easily manipulated by large swaps within the same block\n    (uint160 sqrtPriceX96, , , , , , ) = IUniswapV3Pool(USDC_WETH_POOL).slot0();\n\n    // ❌ Calculates minimum WETH output using the manipulated spot price\n    // Since the price has spiked, amountOutMinimum is calculated far lower than actual\n    uint256 currentPrice = uint256(sqrtPriceX96) * uint256(sqrtPriceX96) / (2**192);\n    uint256 amountOutMinimum = _amount * 1e12 / currentPrice * 95 / 100; // 5% slippage tolerance\n\n    // ❌ Swap executed with manipulated reference — actually receives far fewer WETH\n    ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({\n        tokenIn: USDC_ADDR,\n        tokenOut: WETH_ADDR,\n        fee: 500,\n        recipient: address(this),\n        deadline: block.timestamp,\n        amountIn: _amount,\n        amountOutMinimum: amountOutMinimum, // ❌ manipulated value\n        sqrtPriceLimitX96: 0\n    });\n\n    IERC20(USDC_ADDR).approve(address(swapRouter), _amount);\n    _amountOut = swapRouter.exactInputSingle(params);\n}",
+  "// ❌ No access control — callable by anyone\nfunction swapToWETH(uint256 _amount) external returns (uint256 _amountOut) {\n    // Core function that swaps vault assets\n    // Attacker can call arbitrarily immediately after price manipulation\n    ...\n}",
+  "// PoC price calculation function — reproduces vault internal logic\nfunction CalcPrice() internal returns (uint256 finalPrice) {\n    IPancakeV3PoolState pool = IPancakeV3PoolState(USDC_WETH_POOL);\n    (uint256 sqrtPriceX96, int24 tick, , , , , ) = pool.slot0();\n    // ❌ Uses sqrtPriceX96 from slot0 directly — manipulable via flash loan\n    finalPrice = 1e12 / (sqrtPriceX96 / 2**96)**2;\n}"
+ ],
+ "code_after": [
+  "// Fixed swapToWETH() — uses off-chain Chainlink oracle or TWAP\n\nfunction swapToWETH(\n    uint256 _amount,\n    uint256 _minAmountOut // ✅ Caller directly specifies slippage externally\n) external onlyAuthorized returns (uint256 _amountOut) {\n    // ✅ Verify ETH/USD price via Chainlink oracle (not manipulable)\n    (, int256 answer, , uint256 updatedAt, ) = chainlinkFeed.latestRoundData();\n    require(block.timestamp - updatedAt <= 3600, \"Stale oracle price\"); // ✅ staleness check\n    uint256 ethUsdPrice = uint256(answer); // 8 decimals\n\n    // ✅ Set amountOutMinimum floor based on oracle to validate caller-specified value\n    uint256 expectedWeth = _amount * 1e20 / ethUsdPrice; // USDC(6 dec) → WETH(18 dec)\n    uint256 oracleBasedMinimum = expectedWeth * 98 / 100; // max 2% slippage\n    require(_minAmountOut >= oracleBasedMinimum, \"Slippage exceeds oracle-based limit\");\n\n    ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({\n        tokenIn: USDC_ADDR,\n        tokenOut: WETH_ADDR,\n        fee: 500,\n        recipient: address(this),\n        deadline: block.timestamp + 300, // ✅ appropriate deadline\n        amountIn: _amount,\n        amountOutMinimum: _minAmountOut, // ✅ externally specified + oracle-validated\n        sqrtPriceLimitX96: 0\n    });\n\n    IERC20(USDC_ADDR).approve(address(swapRouter), _amount);\n    _amountOut = swapRouter.exactInputSingle(params);\n}",
+  "// ✅ Access control added — onlyRole or onlyOwner applied\nfunction swapToWETH(\n    uint256 _amount,\n    uint256 _minAmountOut\n) external onlyRole(REBALANCER_ROLE) returns (uint256 _amountOut) {\n    // Only approved rebalancers can call\n    ...\n}"
+ ],
+ "steps": [
+  "② Large USDC → WETH swap (13.98M USDC → ~7,800 WETH)",
+  "→ Exchanges USDC for extremely few WETH at far worse than market price",
+  "→ Vault loss: ~100,000 USDC",
+  "④ Reverse WETH → USDC swap (~780 ETH)",
+  "→ Large WETH sell normalizes price + secures profit USDC",
+  "⑤ Remaining ETH → WETH conversion then additional pool swap",
+  "pool.swap() → final USDC settlement",
+  "1. **① Flash Loan Borrow**: The attack contract borrows 13,980,773 USDC (approximately $14 million) from Morpho Blue with zero fees. This amount is sufficient to meaningfully manipulate the USDC-WETH pool price.",
+  "2. **② Price Manipulation (Large USDC → WETH Swap)**: All flash-loaned USDC is used to purchase WETH via DexRouter. The large buy causes the Uniswap V3 pool's `sqrtPriceX96` to spike sharply, driving up WETH's spot price.",
+  "3. **③ Vault Swap Function Call (Core Attack)**: Calls `vault.swapToWETH(100,000 USDC)`. The vault calculates `amountOutMinimum` based on the manipulated `slot0()` price, so it actually receives an extremely small amount of WETH for 100,000 USDC input (a far worse exchange than normal). From the vau",
+  "4. **④ Profit Realization (Reverse WETH → USDC Swap)**: The approximately 780 WETH acquired through large-scale buying is sold back to USDC. During price normalization, the value extracted from the vault is converted into the attacker's profit.",
+  "5. **⑤ Final Swap**: Remaining ETH is converted to WETH and a pool swap is executed for final USDC settlement.",
+  "6. **⑥ Flash Loan Repayment**: The borrowed 13,980,773 USDC is repaid to Morpho Blue, retaining approximately 100,000 USDC in net profit."
+ ],
+ "other_code": [
+  "+─────────────────────────────────────────────────────────────────────+\n│                     DRLVaultV3 Attack Flow Diagram                   │\n+─────────────────────────────────────────────────────────────────────+\n\n  ┌─────────────────────┐\n  │   Attacker EOA       │\n  │ 0xC0ffeEBABE...     │\n  └──────────┬──────────┘\n             │ calls attack contract\n             ▼\n  ┌─────────────────────┐\n  │  Attack Contract     │\n  │ DRLVaultV3_EXP      │\n  └──────────┬──────────┘\n             │ ① flashLoan(USDC, 13,980,773 USDC)\n             ▼\n  ┌─────────────────────┐\n  │   Morpho Blue       │◄──── ⑥ USDC repayment (13,980,773 USDC)\n  │  (flash loan provider)│\n  └──────────┬──────────┘\n             │ ② onMorphoFlashLoan callback\n             ▼\n  ┌───────────────────────────────────────────────",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.15;\n\n// ── Key Constants ──────────────────────────────────────────────────────────\n// Flash loan provider: Morpho Blue (0% fee)\naddress constant MORPHO_ADDR = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;\n// 1inch DexAggregator Router (used for USDC↔WETH swaps)\naddress constant DEXROUTER_ADDR = 0x2E1Dee213BA8d7af0934C49a23187BabEACa8764;\n// Vulnerable vault contract\naddress constant VAULT_ADDR = 0x6A06707ab339BEE00C6663db17DdB422301ff5e8;\n// USDC-WETH Uniswap V3 pool (target of price manipulation)\naddress constant USDC_WETH_POOL = 0xE0554a476A092703abdB3Ef35c80e0D76d32939F;\n\n// ── Attack Entry Point ──────────────────────────────────────────────────────\nfunction testExploit() public balanceLog {\n    // [Step 1] Borrow 14M USDC via "
+ ]
+}

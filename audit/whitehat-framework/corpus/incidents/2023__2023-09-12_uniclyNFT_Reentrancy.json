@@ -1,0 +1,37 @@
+{
+ "id": "2023__2023-09-12_uniclyNFT_Reentrancy",
+ "source_file": "2023/2023-09-12_uniclyNFT_Reentrancy.md",
+ "title": "Unicly NFT Reentrancy Attack Incident Analysis",
+ "date": "2023-09-12",
+ "protocol": "uniclyNFT",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// File: PointFarm.sol\n        @dev Handles the receipt of a single ERC1155 token type. This function is  // ❌\n\n// ...\n\n    function onERC1155Received(  // ❌\n\n// ...\n\n        @dev Handles the receipt of a multiple ERC1155 token types. This function  // ❌\n\n// ...\n\n    function onERC1155BatchReceived(  // ❌\n\n// ...\n\n    function balanceOf(address account, uint256 id) public view virtual override returns (uint256) {\n        require(account != address(0), \"ERC1155: balance query for the zero address\");  // ❌\n        return _balances[id][account];\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ WETH.approve() / uJENNY.approve()",
+  "2 ▶ WETHToUJENNY() - Swap WETH → uJENNY",
+  "3 ▶ PointFarm.deposit(0, amount) - First deposit",
+  "ERC1155 safeTransferFrom() invoked →",
+  "→ Points manipulated",
+  "4 ▶ vm.roll() - Advance blocks (accumulate points)",
+  "5 ▶ PointFarm.deposit(0, 0) - Trigger additional reentrancy",
+  "6 ▶ PointFarm.withdraw(0, amount) - Withdraw deposit",
+  "7 ▶ UJENNYToWETH() - Swap uJENNY → WETH",
+  "8 ▶ Realm NFT.setApprovalForAll(PointShop, true)",
+  "9 ▶ PointShop.redeem() - Acquire NFT #4689 with manipulated points"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: reentrancy possible during ERC1155 transfer\ncontract PointFarm {\n    mapping(address => uint256) public userPoints;\n    mapping(address => uint256) public userDeposits;\n\n    // Vulnerable: state update occurs after ERC1155 safeTransferFrom call (CEI violation)\n    function deposit(uint256 poolId, uint256 amount) external {\n        if (amount > 0) {\n            // ERC1155 transfer — reentrancy entry point\n            // onERC1155Received() callback is invoked on the attacker\n            IERC1155(nftContract).safeTransferFrom(msg.sender, address(this), poolId, amount, \"\");\n        }\n\n        // Vulnerable: state update occurs after the ERC1155 transfer\n        userDeposits[msg.sender] += amount;\n        userPoints[msg.sender] += calculatePoints(amount);\n    }\n\n    func",
+  "Attacker [0x92cfcb70b2591ceb1e3c6d90e21e8154e7d29832]\n  │\n  ├─1─▶ WETH.approve() / uJENNY.approve()\n  │      [WETH: 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2]\n  │      [uJENNY: 0xa499648fD0e80FD911972BbEb069e4c20e68bF22]\n  │\n  ├─2─▶ WETHToUJENNY() - Swap WETH → uJENNY\n  │\n  ├─3─▶ PointFarm.deposit(0, amount) - First deposit\n  │      [PointFarm: 0xd3C41c85bE295607E8EA5c58487eC5894300ee67]\n  │      ERC1155 safeTransferFrom() invoked →\n  │      └─ onERC1155Received() callback:\n  │           └─ PointFarm.deposit(0, 0) reentrancy\n  │                → Points manipulated\n  │\n  ├─4─▶ vm.roll() - Advance blocks (accumulate points)\n  │\n  ├─5─▶ PointFarm.deposit(0, 0) - Trigger additional reentrancy\n  │\n  ├─6─▶ PointFarm.withdraw(0, amount) - Withdraw deposit\n  │\n  ├─7─▶ UJENNYToWETH() - Swap uJENNY"
+ ]
+}

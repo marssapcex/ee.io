@@ -1,0 +1,42 @@
+{
+ "id": "2026__2026-03-12_AMToken_BusinessLogic_BSC",
+ "source_file": "2026/2026-03-12_AMToken_BusinessLogic_BSC.md",
+ "title": "AM Token Security Incident Analysis",
+ "date": "2026-03-12",
+ "protocol": "AMToken",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// AM Token — Deferred Burn Mechanism (Vulnerable Version, Reconstructed)\n\nuint256 public toBurnAmount;  // ❌ Pending burn amount accumulated in state variable\n\nfunction _transfer(\n    address from,\n    address to,\n    uint256 amount\n) internal override {\n    // ❌ Process pending burn amount accumulated from previous transaction first\n    if (toBurnAmount > 0 && from != uniswapV2Pair && to != uniswapV2Pair) {\n        // ❌ Burn occurs directly from the pair's reserve — not the seller's cost!\n        _burn(uniswapV2Pair, toBurnAmount);\n        // ❌ sync() call immediately reflects the manipulated reserve\n        IUniswapV2Pair(uniswapV2Pair).sync();\n        toBurnAmount = 0;\n    }\n\n    // Sell detection: if `to` is the pair address, record current sell amount in toBurnAmount\n    if (to == uniswapV2Pair && !_isExcludedFromFee[from]) {\n        // ❌ Records entire sell amount for \"next burn point\"\n        //    This value is not immediately deducted from the seller's balance\n        toBurnAmount = amount * burnRate / 10000;\n    }\n\n    super._transfer(from, to, amount);\n}"
+ ],
+ "code_after": [
+  "// AM Token — Immediate Burn + Seller-Borne Cost (Fixed Version)\n\n// ✅ Remove deferred burn state variable — cost is attributed to seller immediately\n// uint256 public toBurnAmount;  ← removed\n\nfunction _transfer(\n    address from,\n    address to,\n    uint256 amount\n) internal override {\n    // ✅ Burn immediately on sell transaction (deducted from seller's balance)\n    if (to == uniswapV2Pair && !_isExcludedFromFee[from]) {\n        uint256 burnAmount = amount * burnRate / 10000;\n\n        // ✅ Burn must always be deducted from the seller (from)\n        _burn(from, burnAmount);\n\n        // ✅ Only the net amount (after burn) is forwarded to the pair\n        amount -= burnAmount;\n\n        // ✅ Pair reserve is unaffected — cannot be manipulated\n    }\n\n    super._transfer(from, to, amount);\n}",
+  "// ✅ Fix 1: Completely remove deferred burn — replace with immediate burn\n//           Burn cost is always attributed to the seller or sender side\n\n// Remove: uint256 public toBurnAmount;\n\nfunction _transfer(\n    address from,\n    address to,\n    uint256 amount\n) internal virtual override {\n    // Sell detection: if to is a DEX pair address\n    if (to == uniswapV2Pair && !_isExcludedFromFee[from]) {\n        uint256 burnAmount = amount * burnRate / 10000;\n\n        // ✅ Immediate burn: burn must always be deducted from sender (from)\n        if (burnAmount > 0) {\n            _burn(from, burnAmount);     // immediately deducted from seller balance\n            amount -= burnAmount;        // adjust net amount to forward to pair\n        }\n        // Result:\n        //   from.balance  -= amount + burnAmount (full deduction including burn)\n        //   pair.balance  += (amount - burnAmount) (only net amount increases)\n        //   pair.reserve  is unaffected (no sync)\n    }\n\n    super._transfer(from, to, amount);\n    // Pair reserve updates normally after swap — cannot be manipulated\n}"
+ ],
+ "steps": [
+  "→ toBurnAmount = ~4,303 AM is set",
+  "→ Pool's AM reserve drops to ~4,303 AM after bulk withdrawal",
+  "→ Triggers toBurnAmount execution inside _transfer()",
+  "→ Burns ~4,303 AM from the pair",
+  "→ sync() called: pool's AM reserve ≈ 0 (extreme drain!)",
+  "→ AMM invariant x*y=k: AM reserve ≈ 0 → AM price spikes",
+  "→ Attacker extracts large amount of USDT at artificial price",
+  "1. **Flash Loan**: The attacker borrows approximately 27.3M USDC and 361K WBNB via flash loan from Lista DAO. Using Venus lending protocol (vWBNB, vUSDT), they secure roughly 100.4M USDT equivalent. The large capital is needed to reduce the AM/USDT pool's AM reserve to a level matching `toBurnAmount",
+  "2. **Set toBurnAmount**: The attacker sells approximately 5,062 AM tokens into the AM/USDT pool. During this sell transaction, `_transfer()` internally sets `toBurnAmount = ~4,303` (after applying the burn rate). This value represents the amount to be burned from the pair at the next non-swap transf",
+  "3. **Drain Reserve**: The attacker uses the large USDT acquired in the previous step to buy AM. The bulk buy causes the pool's AM reserve to drop sharply, converging to approximately the same level as `toBurnAmount` (~4,303 AM).",
+  "4. **Trigger Deferred Burn**: The attacker transfers 6 wei (a dust amount) of AM internally within the attack contract. Since this is a plain `transfer()` call, not a swap, it satisfies the `toBurnAmount` execution condition. At this point, `_burn(uniswapV2Pair, 4303 AM)` executes, draining the pool",
+  "5. **Exploit Artificial Price Spike**: Per the AMM invariant `x * y = k`, as the AM reserve approaches zero, AM's unit price approaches infinity. The attacker sells all their held AM at this artificially elevated price, extracting a large amount of USDT.",
+  "6. **Repay Flash Loan and Secure Profit**: The flash loan is repaid with fees, and the remaining ~$131,000 is kept as net profit."
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│                     AM Token Attack Flow Summary                     │\n└─────────────────────────────────────────────────────────────────────┘\n\nAttacker (0x0B9a...333B)\n  │\n  │ [Preparation]\n  ├─[1]─────────────────────────────────────────────────────────────────\n  │       Lista DAO flash loan: borrow ~27.3M USDC + ~361K WBNB\n  │       Use Venus vWBNB and vUSDT to secure large capital\n  │       Final capital secured: ~100.4M USDT\n  │\n  │ [Step 1: Set toBurnAmount]\n  ├─[2]─────────────────────────────────────────────────────────────────\n  │       Sell ~5,062 AM tokens into AM/USDT pool\n  │       → toBurnAmount = ~4,303 AM is set\n  │         (scheduled for burn on next non-swap transfer)\n  │\n  │ [Step 2: Drain Reserve]",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.15;\n\n/**\n * @title AM Token Exploit PoC (Reconstructed)\n * @notice Reconstructed based on BlockSec analysis and on-chain transaction data\n *\n * @KeyInfo\n * - Total Loss: ~$131,000\n * - Attacker: https://bscscan.com/address/0x0B9a1391269e95162bfeC8785E663258C209333B\n * - Attack Contract: https://bscscan.com/address/0x11ab0C24fbc359a585587397D270B5FEd2c85FD4\n * - Vulnerable Contract: https://bscscan.com/address/0x27f9787DbdcA43F92cCC499892a082494c23213f\n * - Attack Tx: https://bscscan.com/tx/0xd0d13179645985eae599c029574e866d79b286fbea395b66504f87f31629f859\n * - Attack Block: 86066209\n */\n\ninterface IUniswapV2Pair {\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function sync() ext"
+ ]
+}

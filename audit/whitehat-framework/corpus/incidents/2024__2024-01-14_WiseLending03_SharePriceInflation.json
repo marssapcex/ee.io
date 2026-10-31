@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-01-14_WiseLending03_SharePriceInflation",
+ "source_file": "2024/2024-01-14_WiseLending03_SharePriceInflation.md",
+ "title": "Wise Lending (3rd) — Share Price Inflation Second Attack Analysis",
+ "date": "2024-01-14",
+ "protocol": "Wise Lending",
+ "chain": "Ethereum",
+ "loss_raw": "Unconfirmed (WL03-specific loss amount unverified; WL02 on 2024-01-12 caused ~$464,000)",
+ "loss_usd": 464000.0,
+ "root_cause": "Same share price inflation pattern as WL02 + health factor validation bypass via 1-wei withdrawal to force bad debt creation",
+ "attack_tx": null,
+ "vulnerable_contract": "WiseLending 0x37e49bf3",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: health factor check missing on 1-wei withdrawal\nfunction withdrawExactAmount(uint256 nftId, address token, uint256 amount)\n    external returns (uint256 shares) {\n    shares = calculateSharesFromAmount(amount);\n    lendingPoolData[token].totalDepositShares -= shares;\n    IERC20(token).transfer(msg.sender, amount);\n    // No health factor re-check after withdrawal — bad debt possible\n}\n\n//",
+  "// File: WiseLending.sol\n    function withdrawExactAmountETH(\n        uint256 _nftId,\n        uint256 _amount\n    )\n        external\n        syncPool(WETH_ADDRESS)\n        returns (uint256)\n    {\n        uint256 withdrawShares = _preparationsWithdraw(  // ❌ vulnerability\n            _nftId,\n            msg.sender,\n            WETH_ADDRESS,\n            _amount\n        );\n\n        _coreWithdrawToken(\n            {\n                _caller: msg.sender,\n                _nftId: _nftId,\n                _poolToken: WETH_ADDRESS,\n                _amount: _amount,\n                _shares: withdrawShares,\n                _onBehalf: false\n            }\n        );\n\n        _unwrapETH(\n            _amount\n        );\n\n        _sendValue(\n            msg.sender,\n            _amount\n        );\n\n        return withdrawShares;\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: health factor validation after withdrawal\nfunction withdrawExactAmount(...) external returns (uint256 shares) {\n    shares = calculateSharesFromAmount(amount);\n    lendingPoolData[token].totalDepositShares -= shares;\n    IERC20(token).transfer(msg.sender, amount);\n    // Immediately verify health factor after withdrawal\n    require(_checkHealthFactor(nftId) >= MIN_HEALTH_FACTOR, \"unhealthy position\");\n}"
+ ],
+ "steps": [
+  "→ [1] Use NFT #8 position → withdraw all shares (reset pool state)",
+  "→ [2] Repeat share price inflation",
+  "Deposit 2x-1, withdraw 1 → gradually raise share price",
+  "→ [3] Deposit 6x additional underlying → mint large number of shares",
+  "→ [4] Deploy 6 Helper contracts",
+  "Each helper: transfer collateral → borrow wstETH/LPT/WETH",
+  "→ [5] 1-wei withdrawal from each helper → health factor drops below 0",
+  "→ [6] Withdraw all LPTPoolTokens",
+  "→ Convert to PendleLPT",
+  "→ [7] Realize profit from borrowed assets + converted assets"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Use NFT #8 position → withdraw all shares (reset pool state)\n  │         └─ Set state to 2 wei underlying, 1 wei shares\n  │\n  ├─→ [2] Repeat share price inflation\n  │         └─ Deposit 2x-1, withdraw 1 → gradually raise share price\n  │         └─ Target: share price = 36 ether\n  │\n  ├─→ [3] Deposit 6x additional underlying → mint large number of shares\n  │\n  ├─→ [4] Deploy 6 Helper contracts\n  │         └─ Each helper: transfer collateral → borrow wstETH/LPT/WETH\n  │\n  ├─→ [5] 1-wei withdrawal from each helper → health factor drops below 0\n  │         └─ Force bad debt creation\n  │\n  ├─→ [6] Withdraw all LPTPoolTokens\n  │   └─→ Convert to PendleLPT\n  │\n  └─→ [7] Realize profit from borrowed assets + converted assets",
+  "interface IWiseLending {\n    function depositExactAmount(uint256 nftId, address token, uint256 amount) external returns (uint256);\n    function withdrawExactShares(uint256 nftId, address token, uint256 shares) external returns (uint256);\n    function withdrawExactAmount(uint256 nftId, address token, uint256 amount) external returns (uint256);\n    function getPositionLendingShares(uint256 nftId, address token) external view returns (uint256);\n    function getTotalPool(address token) external view returns (uint256);\n    function borrowExactAmount(uint256 nftId, address token, uint256 amount) external returns (uint256);\n    function mintPosition() external returns (uint256);\n}\n\ncontract HelperContract {\n    function executeAttack(\n        address lending,\n        address lptToken,\n        uin"
+ ]
+}

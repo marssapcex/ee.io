@@ -1,0 +1,31 @@
+{
+ "id": "2024__2024-11-05_RPP_FlashLoanPriceManipulation",
+ "source_file": "2024/2024-11-05_RPP_FlashLoanPriceManipulation.md",
+ "title": "RPP — Flash Loan Price Manipulation Vulnerability Analysis",
+ "date": "2024-11-05",
+ "protocol": "RPP Token",
+ "chain": "BSC",
+ "loss_raw": "~14,100 USD",
+ "loss_usd": null,
+ "root_cause": "RPP token's transfer/swap logic directly references AMM spot reserves without TWAP, allowing profit extraction via 1,450 repeated manipulations within a single transaction",
+ "attack_tx": "0x76c39537",
+ "vulnerable_contract": "0x7d1a6930",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ RPP Token: AMM spot reserve-based logic\ncontract RPPToken {\n    IPancakePair lpPair;\n\n    function getTokenPrice() internal view returns (uint256) {\n        //",
+  "❌ Price calculated from spot reserves — manipulable via flash loan\n        (uint112 r0, uint112 r1,) = lpPair.getReserves();\n        return (r1 * 1e18) / r0;\n    }\n\n    function _transfer(address from, address to, uint256 amount) internal {\n        //",
+  "❌ Fee or exchange rate calculated based on spot price\n        uint256 fee = amount * getTokenPrice() / BASE;\n        // → Fee/exchange rate distorted by manipulated price\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Use TWAP or Chainlink oracle"
+ ],
+ "steps": [
+  "Swap USDT → RPP (manipulate AMM reserves)",
+  "Swap RPP → USDT (profit at manipulated price)"
+ ],
+ "other_code": [
+  "Attacker (0x709b30b6)\n  │\n  ├─[1]─▶ USDT.approve(PANCAKE_V2_ROUTER, max)\n  │         RPP.approve(PANCAKE_V2_ROUTER, max)\n  │\n  ├─[2]─▶ PancakeV3Pool.flash(this, 1_200_000 USDT, 0, \"\")\n  │\n  ├─[3]─▶ pancakeV3FlashCallback executes:\n  │         └─ Repeated 1,450 times:\n  │             Swap USDT → RPP (manipulate AMM reserves)\n  │             Exploit RPP's spot price-based logic\n  │             Swap RPP → USDT (profit at manipulated price)\n  │\n  ├─[4]─▶ Repay flash loan including fees\n  │\n  └─[5]─▶ ~14,100 USD profit"
+ ]
+}

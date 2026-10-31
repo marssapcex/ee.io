@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-09-07_DAppSocial_Reentrancy",
+ "source_file": "2023/2023-09-07_DAppSocial_Reentrancy.md",
+ "title": "DAppSocial — Reentrancy Attack Analysis",
+ "date": "2023-09-07",
+ "protocol": "DAppSocial",
+ "chain": "Ethereum",
+ "loss_raw": "~$16K",
+ "loss_usd": 16.0,
+ "root_cause": "Reentrancy vulnerability in the reward withdrawal function of the social token staking contract",
+ "attack_tx": "0xbd72bccec6dd824f...",
+ "vulnerable_contract": "0x319ec3ad98cf8b12...",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: state updated after reward transfer\nfunction claimReward() external {\n    uint256 reward = rewards[msg.sender];\n    (bool ok,) = msg.sender.call{value: reward}(\"\"); //",
+  "❌ reentrancy\n    require(ok);\n    rewards[msg.sender] = 0; //",
+  "❌ too late\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: CEI pattern\nfunction claimReward() external nonReentrant {\n    uint256 reward = rewards[msg.sender];\n    rewards[msg.sender] = 0; //",
+  "✅ reset first\n    (bool ok,) = msg.sender.call{value: reward}(\"\");\n    require(ok);\n}"
+ ],
+ "steps": [
+  "② receives ETH → reenters via receive()"
+ ],
+ "other_code": [
+  "// Root cause: reentrancy vulnerability in the reward withdrawal function of the social token staking contract\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① calls claimReward()\n  ├─② receives ETH → reenters via receive()\n  │       └─③ repeatedly calls claimReward()\n  └─④ multiple reward withdrawals + ~$16K"
+ ]
+}

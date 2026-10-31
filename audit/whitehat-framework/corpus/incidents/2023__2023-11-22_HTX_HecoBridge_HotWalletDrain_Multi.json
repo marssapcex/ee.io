@@ -1,0 +1,22 @@
+{
+ "id": "2023__2023-11-22_HTX_HecoBridge_HotWalletDrain_Multi",
+ "source_file": "2023/2023-11-22_HTX_HecoBridge_HotWalletDrain_Multi.md",
+ "title": "HTX Exchange / Heco Bridge — Hot Wallet Compromise Analysis",
+ "date": "2023-11-22",
+ "protocol": "HTX Exchange",
+ "chain": "Ethereum, Heco Chain, Tron",
+ "loss_raw": "~$99,000,000–$115,000,000 combined (HTX hot wallets ~$13.6M; Heco Bridge ~$87M; combined total varies by source and timing of assessment; CNBC cited ~$115M including later-discovered HTX losses)",
+ "loss_usd": 99000000.0,
+ "root_cause": "Private keys for both the HTX exchange hot wallets and the Heco Bridge cross-chain bridge custody accounts were compromised simultaneously, allowing the attacker to drain assets across both systems in a coordinated attack",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Attacker (Lazarus Group suspected)\n    │\n    ├─[Pre-exploit] Obtain private keys for:\n    │       - HTX exchange hot wallets\n    │       - Heco Bridge Ethereum custody account\n    │       (method: phishing, insider, shared infrastructure breach)\n    │\n    ├─[2023-11-22] Coordinated simultaneous drain:\n    │       │\n    │       ├─ HTX hot wallets: ~$13.6M\n    │       │   (ETH, USDT, HUSD, other tokens)\n    │       │\n    │       └─ Heco Bridge custody: ~$87M (ImmuneBytes/Halborn on-chain)\n    │           (USDT ~$42M, ETH ~$22M, HBTC ~$10M, SHIB/LINK/UNI/others ~$13M)\n    │           Total bridge drain: ~$87M\n    │\n    ├─[Justin Sun response] Acknowledges both hacks publicly\n    │       HTX promises to compensate hot wallet losses from revenue\n    │       Heco Bridge suspended\n    │\n    └─[To"
+ ]
+}

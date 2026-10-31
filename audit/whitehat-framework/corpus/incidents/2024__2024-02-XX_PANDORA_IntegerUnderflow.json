@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-02-XX_PANDORA_IntegerUnderflow",
+ "source_file": "2024/2024-02-XX_PANDORA_IntegerUnderflow.md",
+ "title": "PANDORA — ERC404 Integer Underflow Vulnerability Analysis",
+ "date": "2024-02-01",
+ "protocol": "PANDORA",
+ "chain": "Ethereum",
+ "loss_raw": "~$17,000",
+ "loss_usd": 17000.0,
+ "root_cause": "Integer underflow bug in the `transferFrom()` implementation of the PANDORA ERC404 token, causing a mismatch between pair reserves and actual balances — WETH drained via a combination of `sync()` and `swap()`",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: ERC404 transferFrom integer underflow\nfunction transferFrom(\n    address from,\n    address to,\n    uint256 amount\n) public override returns (bool) {\n    uint256 allowed = allowance[from][msg.sender];\n    // Underflow occurs in Solidity < 0.8 or inside an unchecked block\n    // Underflow possible when computing ERC721 NFT balance of `from`\n    uint256 fromNFTBalance = balanceOf[from] / _unit;  // ← underflow point\n    // ...\n    _transfer(from, to, amount);\n    return true;\n}\n\n//",
+  "// File: PandorasNodes404.sol\ncontract PandorasNodes404 is ERC404 {\n    string public dataURI;\n    string public baseTokenURI;\n\n    constructor(address _owner) ERC404(\"Pandora's Nodes 404\", \"BLOCK\", 18, 200, _owner) {\n        balanceOf[_owner] = totalSupply;  // ❌ vulnerability\n        setWhitelist(_owner, true);\n    }\n\n    function setDataURI(string memory _dataURI) public onlyOwner {\n        dataURI = _dataURI;\n    }\n\n    function setTokenURI(string memory _tokenURI) public onlyOwner {\n        baseTokenURI = _tokenURI;\n    }\n\n    function setNameSymbol(string memory _name, string memory _symbol) public onlyOwner {\n        _setNameSymbol(_name, _symbol);\n    }\n\n    function tokenURI(uint256 id) public view override returns (string memory) {\n        if (bytes(baseTokenURI).length > 0) {\n            return concatenate(baseTokenURI, Strings.toString(id));\n        } else {"
+ ],
+ "code_after": [
+  "✅ Safe code: use SafeMath or checked arithmetic\nfunction transferFrom(\n    address from,\n    address to,\n    uint256 amount\n) public override returns (bool) {\n    require(balanceOf[from] >= amount, \"insufficient balance\");\n    // Solidity 0.8+ checked arithmetic (no unchecked block)\n    _transfer(from, to, amount);\n    return true;\n}"
+ ],
+ "steps": [
+  "→ [1] Extract most PANDORA tokens from the pair (leave only 1)",
+  "→ [2] Call pair.sync()",
+  "→ [3] Transfer large amount of PANDORA back to the pair",
+  "→ [4] Reserve/actual-balance discrepancy state created",
+  "→ [5] Call pair.swap()",
+  "→ [6] ~$17K WETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Extract most PANDORA tokens from the pair (leave only 1)\n  │\n  ├─→ [2] Call pair.sync()\n  │         └─ Reserves updated to 1 PANDORA\n  │\n  ├─→ [3] Transfer large amount of PANDORA back to the pair\n  │         └─ Underflow triggered on transferFrom() call\n  │\n  ├─→ [4] Reserve/actual-balance discrepancy state created\n  │\n  ├─→ [5] Call pair.swap()\n  │         └─ Receive excess WETH by exploiting the discrepancy\n  │\n  └─→ [6] ~$17K WETH profit",
+  "// PANDORA is a non-standard ERC20 with no return value on transferFrom\ninterface NoReturnTransferFrom {\n    function transferFrom(address from, address to, uint256 amount) external;\n}\n\ninterface Uni_Pair_V2 {\n    function getReserves() external view returns (uint112 r0, uint112 r1, uint32);\n    function sync() external;\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    NoReturnTransferFrom constant PANDORA = NoReturnTransferFrom(0xddaDF1bf44363D07E750C20219C2347Ed7D826b9);\n    Uni_Pair_V2          constant pair    = Uni_Pair_V2(0x89CB997C36776D910Cfba8948Ce38613636CBc3c);\n    IERC20               constant WETH    = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n\n    function testExploit() external {\n       "
+ ]
+}

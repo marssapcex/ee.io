@@ -1,0 +1,35 @@
+{
+ "id": "2022__2022-09_Yyds_FlashSwapWithdrawDrain",
+ "source_file": "2022/2022-09_Yyds_FlashSwapWithdrawDrain.md",
+ "title": "YYDS — Flash Swap + Multiple Withdrawal Functions Reward Draining Attack Analysis",
+ "date": "2022-09-01",
+ "protocol": "YYDS Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "No access control on `claim()` and multiple `withdrawReturnAmount*()` functions, enabling immediate mass withdrawal after a flash swap",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable TargetClaim - claim() with no access control\ncontract TargetClaim {\n    //",
+  "❌ Anyone can claim on behalf of an arbitrary address\n    function claim(address user) external {\n        uint256 userYYDSBalance = YYDS.balanceOf(user);\n        //",
+  "❌ Reward calculated based on balance (manipulable via flash loan)\n        uint256 reward = calculateReward(userYYDSBalance);\n        YYDS.transfer(user, reward);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - snapshot-based staking rewards\ncontract SafeTargetWithdraw {\n    mapping(address => uint256) public stakedBalance;  // snapshot balance\n    mapping(address => uint256) public lastWithdrawTime;\n\n    function withdrawReturnAmountByMerchant() external {\n        //",
+  "✅ Uses snapshot balance that cannot be manipulated by flash loans\n        uint256 stakedAmt = stakedBalance[msg.sender];\n        require(stakedAmt > 0, \"No stake\");\n        require(block.timestamp > lastWithdrawTime[msg.sender] + 1 days, \"Too early\");\n\n        uint256 amount = calculateMerchantReward(stakedAmt);\n        lastWithdrawTime[msg.sender] = block.timestamp;\n        YYDS.transfer(msg.sender, amount);\n    }\n}"
+ ],
+ "steps": [
+  "Balance-based reward calculation → large YYDS payout",
+  "→ Claim merchant reward",
+  "→ Claim consumer reward",
+  "→ Claim referral reward",
+  "[8] Drained YYDS → swap back to USDT for net profit"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ITargetClaim {\n    function claim(address user) external;\n}\n\ninterface ITargetWithdraw {\n    function withdrawReturnAmountByMerchant() external;\n    function withdrawReturnAmountByConsumer() external;\n    function withdrawReturnAmountByReferral() external;\n}\n\ninterface IUniPair {\n    function swap(uint256, uint256, address, bytes calldata) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ninterface IERC20 {\n    function balanceOf(address) external view returns (uint256);\n    function transfer(address, uint256) external returns (bool);\n    function approve(address, uint256) external returns (bool);\n}\n\ncontract YYDSExploit is Test {\n    ITargetClaim"
+ ]
+}

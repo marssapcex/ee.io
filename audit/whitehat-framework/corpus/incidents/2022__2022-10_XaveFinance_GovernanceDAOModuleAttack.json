@@ -1,0 +1,35 @@
+{
+ "id": "2022__2022-10_XaveFinance_GovernanceDAOModuleAttack",
+ "source_file": "2022/2022-10_XaveFinance_GovernanceDAOModuleAttack.md",
+ "title": "XaveFinance — SafeSnap DAO Module Governance Manipulation Attack Analysis",
+ "date": "2022-10-01",
+ "protocol": "Xave Finance",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "100,000,000,000,000 RNBW tokens (ownership takeover)",
+ "loss_usd": null,
+ "root_cause": "SafeSnap DAO module did not validate proposal transactions, allowing arbitrary transaction execution",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "governance"
+ ],
+ "code_before": [
+  "❌ Vulnerable addProposal() — no validation of transaction contents\ncontract DaoModule {\n    struct Transaction {\n        address to;\n        uint256 value;\n        bytes data;\n        Enum.Operation operation;\n        uint256 nonce;\n    }\n\n    mapping(bytes32 => bytes32[]) public questionIds;\n    mapping(bytes32 => Transaction) public txHashes;\n\n    //",
+  "❌ Proposal transaction contents are not validated at all\n    // Anyone can create a proposal containing arbitrary transactions\n    function addProposal(\n        string calldata proposalId,\n        bytes32[] calldata txHashes_\n    ) external {\n        // Does not validate the execution code in txHashes_\n        bytes32 questionId = _buildQuestion(proposalId, txHashes_);\n        questionIds[bytes32(bytes(proposalId))] = txHashes_;\n        // Register question on Realitio\n        realitio.askQuestion(questionId, ...);\n    }\n\n    //",
+  "❌ executeProposalWithIndex() — only checks oracle answer, does not validate transaction safety\n    function executeProposalWithIndex(\n        string calldata proposalId,\n        bytes32[] calldata txHashes_,\n        Transaction calldata tx_,\n        uint256 txIndex\n    ) external {\n        bytes32 questionId = questionIds[bytes32(bytes(proposalId))];\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern — proposal transaction whitelist or timelock\ncontract SafeDaoModule {\n    uint256 public constant MIN_TIMELOCK = 7 days; // Sufficient timelock\n    mapping(address => bool) public allowedTargets;\n\n    function executeProposalWithIndex(...) external {\n        //",
+  "✅ Sufficient timelock ensures time for community review\n        require(block.timestamp >= proposalTime + MIN_TIMELOCK, \"Timelock active\");\n        //"
+ ],
+ "steps": [
+  "→ Register question on Realitio",
+  "→ Attacker immediately submits \"yes\" answer + deposits bond",
+  "TX2: RNBW ownership → attacker",
+  "TX3: LPOP ownership → attacker",
+  "TX4: PrimaryBridge ownership → attacker"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IDaoModule {\n    function addProposal(string calldata proposalId, bytes32[] calldata txHashes) external;\n    function getTransactionHash(\n        address to, uint256 value, bytes calldata data,\n        uint8 operation, uint256 nonce\n    ) external view returns (bytes32);\n    function executeProposalWithIndex(\n        string calldata proposalId,\n        bytes32[] calldata txHashes,\n        address to,\n        uint256 value,\n        bytes calldata data,\n        uint8 operation,\n        uint256 txIndex\n    ) external;\n}\n\ninterface IRealitio {\n    function submitAnswer(bytes32 questionId, bytes32 answer, uint256 maxPrevious) external payable;\n    function resultFor(bytes32 questionId) exter"
+ ]
+}

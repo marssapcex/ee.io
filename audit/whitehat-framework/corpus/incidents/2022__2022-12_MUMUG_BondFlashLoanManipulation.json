@@ -1,0 +1,37 @@
+{
+ "id": "2022__2022-12_MUMUG_BondFlashLoanManipulation",
+ "source_file": "2022/2022-12_MUMUG_BondFlashLoanManipulation.md",
+ "title": "MUMUG — mu_bond()/mu_gold_bond() Flash Loan Bond Manipulation Attack Analysis",
+ "date": "2022-12-01",
+ "protocol": "MU Bank",
+ "chain": "Avalanche",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "The bond issuance price in `mu_bond()`/`mu_gold_bond()` relies on the AMM spot price (`_getMUSpotPrice()`), allowing price manipulation via a full MU dump within a single transaction to over-mint MUG (no TWAP / no cooldown)",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable MU Bank — bond purchase possible with flash loan funds\ncontract MUBank {\n    IERC20 public muToken;\n    IERC20 public mugToken;\n    IERC20 public usdce;\n\n    //",
+  "❌ Flash loan + bond purchase allowed within the same transaction\n    //",
+  "❌ MU price derived from AMM spot price → manipulable\n    function mu_bond(uint256 usdceAmount) external {\n        usdce.transferFrom(msg.sender, address(this), usdceAmount);\n\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern — TWAP-based pricing + flash loan protection\ncontract SafeMUBank {\n    uint256 public constant BOND_LOCK_PERIOD = 1 days;\n    mapping(address => uint256) public lastBondTime;\n\n    function mu_bond(uint256 usdceAmount) external {\n        //",
+  "✅ Prevent consecutive bond purchases (blocks flash loans)\n        require(block.timestamp >= lastBondTime[msg.sender] + BOND_LOCK_PERIOD,\n            \"Bond cooldown active\");\n        lastBondTime[msg.sender] = block.timestamp;\n\n        usdce.transferFrom(msg.sender, address(this), usdceAmount);\n\n        //"
+ ],
+ "steps": [
+  "[2] Swap MU → USDC.e (Joe Router)",
+  "Large MU dump → MU price drops (or acquire USDC.e)",
+  "3,300 USDC.e (18-dec) → acquire excess MU Coin",
+  "6,990 USDC.e (18-dec) → acquire excess MU Gold",
+  "[5] Reverse-swap USDC.e → MU to repay flash loan",
+  "[6] Sell remaining MUG → USDC.e",
+  "MUG holdings → realize profit"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IMUBank {\n    function mu_bond(address stable, uint256 amount) external;       // real verified signature\n    function mu_gold_bond(address stable, uint256 amount) external;  // real verified signature\n}\n\ninterface IRouter {\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        uint256, uint256, address[] calldata, address, uint256\n    ) external;\n}\n\ninterface IPair {\n    function swap(uint256, uint256, address, bytes calldata) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ninterface IERC20 {\n    function balanceOf(address) external view returns (uint256);\n    function approve(address, uint256) external returns (bool);\n   "
+ ]
+}

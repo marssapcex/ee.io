@@ -1,0 +1,45 @@
+{
+ "id": "2025__2025-03-25_MIMSpell_CauldronRounding_ARB",
+ "source_file": "2025/2025-03-25_MIMSpell_CauldronRounding_ARB.md",
+ "title": "Abracadabra Money (MIM) — Cauldron Phantom Collateral / Accounting Discrepancy Analysis",
+ "date": "2025-03-25",
+ "protocol": "Abracadabra Money",
+ "chain": "Arbitrum",
+ "loss_raw": "$13,408,309 (≈ 6,262 ETH)",
+ "loss_usd": 13408309.0,
+ "root_cause": "`sendValueInCollateral()` does not update internal accounting variables (`inputAmount`, `minOut`) after actually withdrawing tokens, enabling repeated borrowing against phantom collateral",
+ "attack_tx": null,
+ "vulnerable_contract": "GmxV2CauldronRouterOrder + 5 Cauldrons",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — no internal state update after actual token withdrawal\nfunction sendValueInCollateral(\n    address recipient,\n    uint256 shareMarketToken\n) public onlyCauldron {\n    (uint256 shortExchangeRate, uint256 marketExchangeRate) = getExchangeRates();\n\n    // Transfers actual shortToken (e.g., USDC) to DegenBox\n    uint256 amountShortToken = (degenBox.toAmount(IERC20(market), shareMarketToken, true) *\n        oracleDecimalScale) / (shortExchangeRate * marketExchangeRate);\n\n    shortToken.safeTransfer(address(degenBox), amountShortToken);\n    degenBox.deposit(IERC20(shortToken), address(degenBox), recipient, amountShortToken, 0);\n\n    // ❌ Problem: inputAmount, minOut, minOutLong are never decremented\n    // After this function returns, orderValueInCollateral() still returns\n    // the same amount as before the withdrawal\n}",
+  "// ❌ Vulnerable code — collateral calculated using stale inputAmount/minOut\nfunction orderValueInCollateral() public view returns (uint256 result) {\n    (uint256 shortExchangeRate, uint256 marketExchangeRate) = getExchangeRates();\n\n    if (depositType) {\n        // ❌ inputAmount: still holds original value even after tokens were withdrawn\n        uint256 marketTokenFromValue = (inputAmount * shortExchangeRate * marketExchangeRate) /\n            oracleDecimalScale;\n        // ❌ minOut: also not updated → returns phantom collateral\n        result = minOut < marketTokenFromValue ? minOut : marketTokenFromValue;\n    } else {\n        uint256 marketTokenFromValue = ((minOut + minOutLong) * shortExchangeRate *\n            marketExchangeRate) / oracleDecimalScale;\n        result = inputAmount < marketTokenFromValue ? inputAmount : marketTokenFromValue;\n    }\n}",
+  "// ❌ Vulnerable pattern — single solvency check after all actions\nfunction cook(\n    uint8[] calldata actions,\n    uint256[] calldata values,\n    bytes[] calldata datas\n) external payable returns (uint256 value1, uint256 value2) {\n    CookStatus memory status;\n\n    for (uint256 i = 0; i < actions.length; i++) {\n        uint8 action = actions[i];\n        if (action == ACTION_BORROW) {\n            // Borrow → sets needsSolvencyCheck = true\n            (status, value1, value2) = _cookActionBorrow(status, ...);\n        } else if (action == ACTION_LIQUIDATE) {\n            // Self-liquidation: calls sendValueInCollateral() → internal state not updated\n            _cookActionLiquidate(...);\n        } else if (action == ACTION_CALL) {\n            // Allows arbitrary calls\n            _cookActionCall(...);\n        }\n    }\n\n    // ❌ Final check: orderValueInCollateral() returns stale value\n    // → tokens already withdrawn are still counted as collateral → false pass\n    if (status.needsSolvencyCheck) {\n        require(_isSolvent(msg.sender), \"Cauldron: user insolvent\");\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — internal accounting variables proportionally decremented after withdrawal\nfunction sendValueInCollateral(\n    address recipient,\n    uint256 shareMarketToken\n) public onlyCauldron {\n    (uint256 shortExchangeRate, uint256 marketExchangeRate) = getExchangeRates();\n\n    uint256 amountShortToken = (degenBox.toAmount(IERC20(market), shareMarketToken, true) *\n        oracleDecimalScale) / (shortExchangeRate * marketExchangeRate);\n\n    shortToken.safeTransfer(address(degenBox), amountShortToken);\n    degenBox.deposit(IERC20(shortToken), address(degenBox), recipient, amountShortToken, 0);\n\n    // ✅ Fix: decrement internal tracking variables by the actual withdrawn amount\n    if (depositType) {\n        // Deposit type: decrement inputAmount (in shortToken terms)\n        uint256 shortEquivalent = amountShortToken;\n        inputAmount = inputAmount >= shortEquivalent ? inputAmount - shortEquivalent : 0;\n        if (minOut > shareMarketToken) {\n            minOut -= shareMarketToken;\n        } else {\n            minOut = 0;\n        }\n    } else {\n        // Withdrawal type: decrement inputAmount (in marketToken terms)\n        inputAmount = inputAmount >= shareMarketToken ? inputAmount - shareMarketToken : 0;\n        uint256 longEquivalent = shareMarketToken / 2; // simplified example\n        if (minOutLong > longEquivalent) minOutLong -= longEquivalent;\n        if (minOut > shareMarketToken - longEquivalent) minOut -= (shareMarketToken - longEquivalent);\n    }\n}",
+  "// ✅ Fix: immediately decrement internal tracking variables right after token withdrawal\nfunction sendValueInCollateral(\n    address recipient,\n    uint256 shareMarketToken\n) public onlyCauldron {\n    (uint256 shortExchangeRate, uint256 marketExchangeRate) = getExchangeRates();\n\n    uint256 amountShortToken = (degenBox.toAmount(IERC20(market), shareMarketToken, true) *\n        oracleDecimalScale) / (shortExchangeRate * marketExchangeRate);\n\n    // Actual transfer\n    shortToken.safeTransfer(address(degenBox), amountShortToken);\n    degenBox.deposit(IERC20(shortToken), address(degenBox), recipient, amountShortToken, 0);\n\n    // ✅ Key fix: immediately synchronize internal accounting variables\n    _decrementAccountingState(amountShortToken, shareMarketToken);\n}\n\n// ✅ New function: internal state decrement logic extracted to a separate function\nfunction _decrementAccountingState(\n    uint256 amountShortToken,\n    uint256 shareMarketToken\n) internal {\n    if (depositType) {\n        inputAmount = inputAmount >= amountShortToken\n            ? inputAmount - amountShortToken\n            : 0;\n        minOut = minOut >= shareMarketToken\n            ? minOut - shareMarketToken\n            : 0;\n    } else {\n        inputAmount = inputAmount >= shareMarketToken\n            ? inputAmount - shareMarketToken\n            : 0;\n        // Proportionally decrement minOut and minOutLong\n        if (minOut + minOutLong > 0) {\n            uint256 ratio = (shareMarketToken * 1e18) / (minOut + minOutLong);\n            minOut = minOut - (minOut * ratio / 1e18);\n            minOutLong = minOutLong - (minOutLong * ratio / 1e18);\n        }\n    }\n}"
+ ],
+ "steps": [
+  "1. **Action 5 (ACTION_BORROW)**: Initial MIM borrow → sets `needsSolvencyCheck = true`",
+  "2. **Action 30 (ACTION_CALL)**: Custom contract call to calculate liquidation amount",
+  "3. **Action 31 (ACTION_LIQUIDATE)**: Self-liquidation — `sendValueInCollateral()` withdraws real USDC from RouterOrder but internal state is not updated",
+  "4. **Action 30 (ACTION_CALL)**: Post-liquidation recalculation",
+  "5. **Action 5 (ACTION_BORROW)**: **Additional MIM borrow** backed by phantom collateral",
+  "6. **Action 30 (ACTION_CALL)**: Swap borrowed MIM to extract ETH",
+  "7. **Batch end**: `_isSolvent()` check → false pass due to stale value from `orderValueInCollateral()`",
+  "→ deposit fails",
+  "GMX deposit fails → USDC remains in RouterOrder",
+  "→ real USDC withdrawn Internal",
+  "→ inputAmount/minOut NOT ❌ state not",
+  "Swap MIM → ETH DegenBox",
+  "→ false pass false pass",
+  "5 Cauldrons × 6 wallets × multiple iterations",
+  "56 transactions total, ~100 minutes",
+  "- **GMX price impact**: $55.20 → $46.92 (-15%)",
+  "- **MIM price impact**: $1.20 → $1.08 (-10%)"
+ ],
+ "other_code": []
+}

@@ -1,0 +1,31 @@
+{
+ "id": "2024__2024-07-20_MRP_ReentrancyFallback",
+ "source_file": "2024/2024-07-20_MRP_ReentrancyFallback.md",
+ "title": "MRP (WMRP) — Token Balance Manipulation via Fallback Reentrancy Analysis",
+ "date": "2024-07-20",
+ "protocol": "MRP / WMRP",
+ "chain": "BSC",
+ "loss_raw": "~17 BNB",
+ "loss_usd": null,
+ "root_cause": "Repeated manipulation of WMRP contract state via reentrancy through `fallback()`",
+ "attack_tx": "0x4353...101 (block 40,122,170)",
+ "vulnerable_contract": "WMRP Token Contract",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: external call before state update on ETH receive (CEI pattern violation)\nreceive() external payable {\n    uint256 mrpAmount = calculateMRP(msg.value);\n    //",
+  "❌ External transfer call before state update — reentrancy possible\n    IMRP(MRP_TOKEN).transfer(msg.sender, mrpAmount);\n    totalDistributed += mrpAmount;  //",
+  "❌ State update occurs after reentrancy\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: Apply CEI (Checks-Effects-Interactions) pattern\nreceive() external payable {\n    uint256 mrpAmount = calculateMRP(msg.value);\n    totalDistributed += mrpAmount;  //",
+  "✅ State update first\n    IMRP(MRP_TOKEN).transfer(msg.sender, mrpAmount);  //"
+ ],
+ "steps": [
+  "[3] ► Send additional BNB → WMRP.receive() executes"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Send initial BNB to WMRP contract\n  │\n  ├─[2]─► Transfer MRP tokens to WMRP contract (prepare for state manipulation)\n  │\n  ├─[3]─► Send additional BNB → WMRP.receive() executes\n  │         └─► MRP.transfer(attacker, amount) called\n  │               └─► Attacker fallback() triggered\n  │                     └─► On receiving 50~100 ether, recursive call made\n  │                           └─► Send BNB back to WMRP contract\n  │                                 └─► Repeat from [3]\n  │\n  ├─[4]─► Accumulate MRP balance to 6000+ ether, then exit loop\n  │\n  ├─[5]─► Verify balance (assert)\n  │\n  ├─[6]─► Realize profits via 20 distributed MRP token transfers\n  │\n  └─[7]─► Total loss: ~17 BNB"
+ ]
+}

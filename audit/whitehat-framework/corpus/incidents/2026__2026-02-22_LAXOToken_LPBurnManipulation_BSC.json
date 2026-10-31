@@ -1,0 +1,42 @@
+{
+ "id": "2026__2026-02-22_LAXOToken_LPBurnManipulation_BSC",
+ "source_file": "2026/2026-02-22_LAXOToken_LPBurnManipulation_BSC.md",
+ "title": "LAXO Token — Liquidity Drain via LP Burn Trigger Mechanism Analysis",
+ "date": "2026-02-22",
+ "protocol": "LAXO Token",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~263,904 USDT lost by LP liquidity providers",
+ "loss_usd": null,
+ "root_cause": "LAXO token's LP burn trigger mechanism — small self-transfer triggers 19x LP burn",
+ "attack_tx": "0xd58f3ef6414b59f95f55dae1acb3d5d6e626acf5333917c6d43fe422d98ac7d3",
+ "vulnerable_contract": "0x62951cad7659393bf07fbe790cf898a3b6d317cb (LAXO Token)",
+ "classes": [
+  "oracle-price-manipulation",
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// LAXO token vulnerable code (estimated) — LP burn logic embedded in transfer hook\nmapping(address => bool) private _isExcludedFromFees;\naddress public uniswapV2Pair;  // = registered as LP1 address\nuint256 public MAX_BURN = 186_900_000 * 10**18;  // 93.45% of supply!\n\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    // ❌ Transfer to the token contract itself triggers LP burn\n    if (to == address(this)) {\n        _triggerLPBurn(amount);  // ← callable by anyone!\n        return;\n    }\n    // ...normal transfer logic\n}\n\nfunction _triggerLPBurn(uint256 triggerAmount) private {\n    // ❌ 19x amplification: burns 19x the transferred amount from LP\n    uint256 burnAmount = triggerAmount * 19;\n    \n    // ❌ Only MAX_BURN check exists, no access control\n    if (burnAmount > MAX_BURN) burnAmount = MAX_BURN;\n    \n    // ❌ Burns directly from LP pair (ERC20 _burn typically only reduces balance)\n    _burn(uniswapV2Pair, burnAmount);  // Direct burn from LP!\n    \n    // Call LP sync to update AMM reserves\n    IUniswapV2Pair(uniswapV2Pair).sync();\n    \n    // Small redistribution\n    _transfer(address(this), uniswapV2Pair, triggerAmount);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: LP burn trigger restricted to owner only\nmodifier onlyOwner() {\n    require(msg.sender == owner(), \"not owner\");\n    _;\n}\n\nfunction triggerLPBurn(uint256 amount) external onlyOwner {  // ✅ Access restricted\n    // Only owner can burn from LP\n    _burn(uniswapV2Pair, amount);\n    IUniswapV2Pair(uniswapV2Pair).sync();\n}\n\n// ✅ Fix: Remove self-transfer trigger\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    require(to != address(this), \"cannot send to contract\");  // ✅ Block self-transfer\n    // ...normal transfer logic only\n}"
+ ],
+ "steps": [
+  "1. [log 0] USDT Transfer: TARGET(PancakeV3) → EXPLOITER: 350,000 USDT (flash loan)",
+  "2. [log 2] USDT Transfer: EXPLOITER → LP1: 350,000 USDT (buy LAXO)",
+  "3. [log 4] LAXO Transfer: LP1 → 0xe256024e: 43,238,694.72 LAXO (swap output)",
+  "4. [log 8] PairCreated: PancakeFactory → LP2 newly created (LAXO/WBNB)",
+  "5. [logs 9-22] LP2 small liquidity add/remove (0.0001 BNB + dust LAXO)",
+  "6. [log 23] LAXO Transfer: 0xe256024e → EXPLOITER: 43,238,694.72 LAXO returned",
+  "7. [log 25] LAXO Transfer: EXPLOITER → LAXO Contract: 2,161,718.59 LAXO (trigger!)",
+  "8. [log 26] LAXO Transfer: LP1 → 0x000dead: 41,072,653.26 LAXO (burned! ← vulnerability)",
+  "9. [log 28] LAXO Transfer: LAXO Contract → LP1: 2,161,761.26 LAXO (redistribution)",
+  "10. [log 29] USDT Transfer: LP1 → fee: 126,408.42 USDT (LAXO transfer tax fee)",
+  "11. [log 36] LAXO Transfer: EXPLOITER → LP1: 41,072,653.26 LAXO (sell)",
+  "12. [log 37] USDT Transfer: LP1 → EXPLOITER: 487,495.18 USDT (sell proceeds)",
+  "13. [log 40] USDT Transfer: EXPLOITER → TARGET: 350,175 USDT (flash loan repayment)",
+  "14. [log 42] USDT Transfer: EXPLOITER → 0x6de0...: 137,320.18 USDT (net profit)"
+ ],
+ "other_code": [
+  "Flash(\n  sender=0x6588...,\n  recipient=0x6588..., \n  amount0=350,000 USDT,\n  amount1=0,\n  paid0=175 USDT (fee = 0.05%),\n  paid1=0\n)"
+ ]
+}

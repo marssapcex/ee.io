@@ -1,0 +1,33 @@
+{
+ "id": "2023__2023-10-18_MicDao_HelperContractArbitrage",
+ "source_file": "2023/2023-10-18_MicDao_HelperContractArbitrage.md",
+ "title": "MicDao Helper Contract Arbitrage Incident Analysis",
+ "date": "2023-10-18",
+ "protocol": "MicDao",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// File: MicDao_decompiled.sol\ncontract MicDao {  // ❌\n\n    // Selector: 0x06fdde03\n    function name() external view returns (string memory) {}\n\n    // Selector: 0x095ea7b3\n    function approve(address account, uint256 value) external returns (bool) {}\n\n    // Selector: 0x18160ddd\n    function totalSupply() external view returns (uint256) {}\n\n    // Selector: 0x23b872dd\n    function transferFrom(address account, address recipient, uint256 shares) external returns (bool) {}\n\n    // Selector: 0x313ce567\n    function decimals() external view returns (uint256) {}\n\n    // Selector: 0x39509351\n    function increaseAllowance(address account, uint256 value) external {}\n\n    // Selector: 0x43c6f8f9\n    function setDelivers(address[] param0, bool enabled) external {}\n\n    // Selector: 0x70a08231\n    function balanceOf(address account) external view returns (uint256) {}\n\n    // Selector: 0x715018a6\n    function renounceOwnership() external {}\n\n    // Selector: 0x8356514f\n    function setPairList(address[] param0, bool enabled) external {}\n\n    // Selector: 0x8da5cb5b\n    function owner() external view returns (address) {}\n\n    // Selector: 0x95d89b41\n    function symbol() external view returns (string memory) {}\n\n    // Selector: 0xa457c2d7\n    function decreaseAllowance(address account, uint256 value) external {}\n\n    // Selector: 0xa9059cbb\n    function transfer(address account, uint256 value) external returns (bool) {}\n\n    // Selector: 0xae2116b8\n    function pairList(address account) external view {}\n\n    // Selector: 0xb8616acb\n    function isDelivers(address account) external view {}\n\n    // Selector: 0xdd62ed3e\n    function allowance(address account, address recipient) external view returns (uint256) {}\n\n    // Selector: 0xf2fde38b\n    function transferOwnership(address account) external {}\n\n}"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ DPPOracle.flashLoan()",
+  "2 ▶ BUSDTToMicDao() - Swap BUSDT → MicDao",
+  "3 ▶ Deploy 80 HelperContracts in a loop:",
+  "→ Each receives a separate reward",
+  "→ Total of 80x rewards accumulated",
+  "4 ▶ MicDaoToBUSDT() - Swap accumulated MicDao + rewards back to BUSDT",
+  "5 ▶ BUSDT.transfer(DPPOracle) - Repay flash loan"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: reward accumulation via repeated work() calls\ncontract MicDao {\n    mapping(address => uint256) public rewards;\n    uint256 public distributionPool;\n\n    // Vulnerable: function that pays out a fixed reward on each call\n    function work() external {\n        // Allows repeated calls without internal state guard\n        uint256 reward = distributionPool / 1000; // pays 0.1% each time\n        rewards[msg.sender] += reward;\n        distributionPool -= reward;\n        // Vulnerable: each distinct caller contract receives its own reward\n    }\n\n    function claimRewards() external {\n        uint256 amount = rewards[msg.sender];\n        rewards[msg.sender] = 0;\n        BUSDT.transfer(msg.sender, amount);\n    }\n}",
+  "Attacker [0xcd03ed98868a6cd78096f116a4b56a5f2c67757d]\n  │\n  ├─1─▶ DPPOracle.flashLoan()\n  │      [DPPOracle: 0x26d0c625e5F5D6de034495fbDe1F6e9377185618]\n  │      Borrow large amount of BUSDT\n  │      [BUSDT: 0x55d398326f99059fF775485246999027B3197955]\n  │\n  ├─2─▶ BUSDTToMicDao() - Swap BUSDT → MicDao\n  │      [MicDao: 0xf6876f6AB2637774804b85aECC17b434a2B57168]\n  │\n  ├─3─▶ Deploy 80 HelperContracts in a loop:\n  │      for (i = 0; i < 80; i++) {\n  │          new HelperContract().work()\n  │      }\n  │      Each HelperContract: independently calls MicDao.work()\n  │      → Each receives a separate reward\n  │      → Total of 80x rewards accumulated\n  │\n  ├─4─▶ MicDaoToBUSDT() - Swap accumulated MicDao + rewards back to BUSDT\n  │      Receive more BUSDT than deposited\n  │\n  └─5─▶ BUSDT.transfer("
+ ]
+}

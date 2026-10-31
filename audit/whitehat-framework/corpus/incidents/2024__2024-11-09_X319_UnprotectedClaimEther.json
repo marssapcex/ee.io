@@ -1,0 +1,28 @@
+{
+ "id": "2024__2024-11-09_X319_UnprotectedClaimEther",
+ "source_file": "2024/2024-11-09_X319_UnprotectedClaimEther.md",
+ "title": "X319 — Unprotected claimEther Vulnerability Analysis",
+ "date": "2024-11-09",
+ "protocol": "X319",
+ "chain": "BSC",
+ "loss_raw": "~12,900 USD",
+ "loss_usd": null,
+ "root_cause": "No access control on `claimEther(receiver, amount)` — anyone can transfer the contract's ETH to an arbitrary recipient",
+ "attack_tx": "0x679028cb",
+ "vulnerable_contract": "0xedd632ea",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ X319 contract: ETH withdrawal function with no access control\ncontract X319 {\n    //",
+  "❌ No onlyOwner — anyone can transfer any amount to any address\n    function claimEther(address receiver, uint256 amount) external {\n        payable(receiver).transfer(amount);\n    }\n}\n\n//",
+  "// File: X319_decompiled.sol\ncontract X319 {\n    function claimEther(address p0, uint256 p1) external {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Fix:\n// function claimEther(address receiver, uint256 amount) external onlyOwner {\n//     require(amount <= address(this).balance, \"insufficient balance\");\n//     payable(receiver).transfer(amount);\n// }"
+ ],
+ "steps": [
+  "❌ No access control → transfers 20.85 BNB to attacker EOA"
+ ],
+ "other_code": []
+}

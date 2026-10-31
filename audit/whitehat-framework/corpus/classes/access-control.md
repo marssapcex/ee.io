@@ -1,0 +1,48 @@
+# access-control
+
+96 incidents.
+
+## Worst first
+
+| date | protocol | chain | loss | root cause | file |
+|---|---|---|---|---|---|
+| 2021-08-10 | Poly Network | Ethereum | $611,000,000 | `verifyHeaderAndExecuteTx()` does not block calls to the `EthCrossChainData` contract, allowing cross-chain messages to replace the keeper public key and transf | `2021__2021-08-10_PolyNetwork_CrossChain_AccessControl.json` |
+| 2022-01-27 | Qubit Finance | Ethereum → BSC | $80,000,000 | The `deposit()` function treated the zero address (0x0000...0000) as a valid whitelisted token, allowing xETH to be minted on BSC without any ETH being transfer | `2022__2022-01-27_Qubit_DepositZeroAddressWhitelist.json` |
+| 2025-05-28 | Cork Protocol | Ethereum | $11,979,183 | Insufficient access control in CorkHook.beforeSwap() + unauthorized market creation enabling unauthorized fund withdrawal | `2025__2025-05-28_CorkProtocol_AccessControl_ETH.json` |
+| 2024-08-06 | Ronin Bridge | Ethereum | $11,810,813 | `initializeV3` not called during bridge contract upgrade → `_totalOperatorWeight = 0` → `minimumVoteWeight = 0` → signature verification bypassed | `2024__2024-08-06_RoninBridge_Misconfiguration_ETH.json` |
+| 2023-03-28 | SafeMoon | BSC | $8,900,000 | Public `burn()` function with no access control allows direct burning of LP pool balance, enabling price manipulation | `2023__2023-03-28_SafeMoon_PublicBurnLP_BSC.json` |
+| 2025-04-14 | KiloEx | Base, BNB Chain, opBNB, Taiko | $7,491,500 | Unauthorized price feed manipulation due to insufficient signature verification in `MinimalForwarder.execute()` | `2025__2025-04-14_KiloEx_AccessControl_Base.json` |
+| 2023-08-18 | Exactly Protocol | Optimism | $7,300,000 | DebtManager `leverage()` — permit signature bypass and arbitrary `_msgSender` impersonation via a fake market contract | `2023__2023-08-18_ExactlyProtocol_PeripheralAccessControl_OP.json` |
+| 2021-09-04 | DAO Maker | Ethereum | $7,000,000 | Unprotected `init()` function in SHO contracts allowed re-initialization to change ownership, followed by `emergencyExit()` to drain funds | `2021__2021-09-04_DaoMaker_UnprotectedInit_EmergencyExit.json` |
+| 2023-05-05 | DEI | Arbitrum | $5,000,000 | The `burnFrom()` function arbitrarily sets the callee's allowance without validating the existing allowance, enabling the attacker to burn/withdraw the entire D | `2023__2023-05-05_DEI_BurnFromExploit_ARB.json` |
+| 2021-06-21 | Eleven Finance | BSC | $4,500,000 | emergencyBurn() burns vault shares without withdrawing actual LP from MasterChef, enabling double-withdrawal of LP via a subsequent withdraw() call | `2021__2021-06-21_ElevenFinance_EmergencyBurn_NoWithdraw.json` |
+| 2025-12-12 | Ribbon Finance | Ethereum | $2,700,000 | Insufficient access control on oracle proxy upgrade — anyone could call `transferOwnership` / `setImplementation` | `2025__2025-12-12_RibbonFinance_AccessControl_ETH.json` |
+| 2025-04-10 | Morpho Blue | Ethereum | $2,601,443 | Frontend SDK update misconfiguration — token approvals were incorrectly directed to the Bundler3 contract itself rather than the Bundler3 adapter | `2025__2025-04-10_MorphoBlue_Misconfiguration_ETH.json` |
+| 2023-10-12 | Platypus Finance | Avalanche | $2,000,000 | Business logic flaw exploiting the asymmetric pool coverage ratio structure via flash loan | `2023__2023-10-12_Platypus_EmergencyWithdraw_AVAX.json` |
+| 2023-11-07 | MEV Bot | Ethereum | $2,000,000 | Missing access control on public swap execution function (`0xf6ebebbb`) — unauthorized theft of tokens held by the bot | `2023__2023-11-07_MEVBot_AccessControl_ETH.json` |
+| 2024-09-26 | Bedrock | Ethereum | $2,000,000 | Misconfiguration — ETH/uniBTC exchange rate not set | `2024__2024-09-26_RockX_UniBTC_Misconfiguration_ETH.json` |
+| 2025-06-25 | MEV Bot 0xB5CB05 | BSC | $2,000,000 | Missing caller authorization check in `printMoney()` — arbitrary external call allowed | `2025__2025-06-25_MEVBot_0xB5CB05_AccessControl_BSC.json` |
+| 2022-08-13 | ReaperFarm | Fantom | $1,700,000 | `redeem(shares, receiver, owner)` function allows withdrawal of another user's shares without validating the `owner` parameter | `2022__2022-08-13_ReaperFarm_MissingOwnerCheck.json` |
+| 2024-04-01 | XBridge | Ethereum | $1,600,000 | `listToken()` allowed the same token address to be registered multiple times under different chain IDs (85936, 95838), enabling an attacker to drain all STC tok | `2024__2024-04-XX_XBridge_ListTokenWithdrawUnauthorized.json` |
+| 2023-02-27 | swapX | BSC | $1,000,000 | Missing `_from` parameter validation in swap function — allows token transfer from arbitrary addresses | `2023__2023-02-27_swapX_AccessControl_BSC.json` |
+| 2024-04-24 | SaitaChain XBridge | Ethereum | $1,000,000 | In `listToken()`, when `_baseToken == _correspondingToken`, the token owner (`_tokenOwner`) can be set without any caller validation → subsequent `withdrawToken | `2024__2024-04-24_SaitaChain_AccessControl_ETH.json` |
+| 2024-08-13 | VOW | Ethereum Mainnet | $1,000,000 | Critical exchange rate parameter misconfigured in production for testing purposes (usdRate: normal [5,1] → at time of attack [1,100]) | `2024__2024-08-13_VOW_Misconfiguration_ETH.json` |
+| 2024-12-29 | FEG | Ethereum | $1,000,000 | Missing source address validation on cross-chain messages (access control flaw) | `2024__2024-12-29_FEG_AccessControl_ETH.json` |
+| 2022-04-19 | CF Token | BSC | $880,000 | `_transfer(address, address payable, uint256)` was declared `public`, allowing anyone to directly drain tokens from the LP pool contract | `2022__2022-04-19_CFToken_PublicTransferDrain.json` |
+| 2023-04-11 | MetaPoint | BSC | $820,000 | Missing access control on victim contract's `approve()` function — anyone can call it to set unlimited allowance | `2023__2023-04-11_MetaPoint_AccessControl_BSC.json` |
+| 2025-07-28 | SuperRare | Ethereum Mainnet | $730,000 | `//` error in `updateMerkleRoot()` — inverted access control condition allows anyone to modify the Merkle root | `2025__2025-07-28_SuperRare_AccessControl_ETH.json` |
+| 2024-12-10 | Unknown | BSC | $640,000 | Missing access control (`onlyOwner`) on `swapTokenU()` — anyone can call it to swap protocol assets to an arbitrary address | `2024__2024-12-10_UnknownProtocol_AccessControl_BSC.json` |
+| 2023-08-01 | LeetSwap | Base | $630,000 | No access control on `_transferFeesSupportingTaxTokens()` — anyone can transfer tokens out of the pair contract | `2023__2023-08-01_LeetSwap_AccessControl_Base.json` |
+| 2024-05-10 | Tsuru | Base | $410,000 | Missing `msg.sender` validation in `onERC1155Received()` callback — arbitrary callers can mint TSURU tokens without authorization | `2024__2024-05-10_Tsuru_AccessControl_Base.json` |
+| 2023-11-12 | MEV Bot | BSC | $365,000 | Missing access control on the AssetHarvestingContract's role designation function (`0xac3994ec`) and asset extraction function (`0x1270d364`) — anyone could tra | `2023__2023-11-12_MEVBot_0x8c2d4e_AccessControl_BSC.json` |
+| 2024-05-10 | GalaxyFox Token | Ethereum Mainnet | $330,000 | Missing access control modifier on `setMerkleRoot()` — anyone could replace the Merkle root | `2024__2024-05-10_GalaxyFoxToken_AccessControl_ETH.json` |
+| 2024-01-22 | DAO SoulMate | Ethereum Mainnet | $319,000 | No access control (e.g., `ownerOnly` or whitelist) on the `redeem()` function — any arbitrary address can burn the Vault's entire BUI balance and receive the un | `2024__2024-01-22_DAOSoulMate_AccessControl_ETH.json` |
+| 2024-03-20 | ParaSwap | Optimism | $300,000 | Missing caller validation in `uniswapV3SwapCallback()` — a fake Uniswap V3 pool triggers the callback to gain control of `fromAddress` and drain victim tokens | `2024__2024-03-20_ParaSwap_AccessControl_Multichain.json` |
+| 2025-05-30 | Malda | Linea | $273,000 | Migrator contract trusts user-supplied contract addresses without validation — allows fake position migration via fake Mendi market contracts | `2025__2025-05-30_Malda_AccessControl_Linea.json` |
+| 2024-03-23 | ARK Token | BSC | $200,000 | Public `autoBurnLiquidityPairTokens()` function with no access control — anyone can call it repeatedly to burn LP pool tokens and manipulate the price | `2024__2024-03-23_ARKToken_AccessControl_BSC.json` |
+| 2024-04-27 | Ember Sword | Polygon | $196,000 | Access Control vulnerability — missing authorization validation logic to prevent unauthorized `transferFrom` calls in the NFT auction contract; attacker drained | `2024__2024-04-27_EmberSword_AccessControl_Polygon.json` |
+| 2024-04-25 | NGFS Token | BSC | $190,000 | Unauthorized addresses could sequentially call the proxy registration and balance manipulation functions (missing access control) | `2024__2024-04-25_NGFSToken_AccessControl_BSC.json` |
+| 2023-07-08 | CIVNFT | Ethereum | $180,000 | Missing caller validation in `uniswapV3MintCallback` — a fake Uniswap V3 Pool triggers the callback to drain victim's approved tokens | `2023__2023-07-08_CIVNFT_AccessControl_ETH.json` |
+| 2024-05-29 | MetaDragon | BSC | $180,000 | When the `to == address(this)` condition is met inside `transfer()`, `transform()` can be invoked without any access control — allowing unlimited META token min | `2024__2024-05-29_MetaDragon_AccessControl_BSC.json` |
+| 2024-05-01 | MetaDragon | BSC | $180,000 | In the `transfer(to, tokenId)` function, when `to == address(this) // to == erc721`, `transform(value)` is called, triggering unlimited minting. The attacker it | `2024__2024-05-XX_MetaDragon_TransferToContractUnrestrictedMint.json` |
+| 2023-02-07 | CowSwap | Ethereum | $166,000 | Unlimited token approvals granted to the SwapGuard contract could be drained via malicious interactions | `2023__2023-02-07_CowSwap_ApprovalAbuse.json` |

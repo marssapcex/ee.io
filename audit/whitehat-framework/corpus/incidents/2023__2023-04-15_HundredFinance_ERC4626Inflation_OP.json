@@ -1,0 +1,43 @@
+{
+ "id": "2023__2023-04-15_HundredFinance_ERC4626Inflation_OP",
+ "source_file": "2023/2023-04-15_HundredFinance_ERC4626Inflation_OP.md",
+ "title": "Hundred Finance — ERC4626 Inflation Attack Analysis",
+ "date": "2023-04-15",
+ "protocol": "Hundred Finance",
+ "chain": "Optimism",
+ "loss_raw": "~$7,400,000 (confirmed by Immunebytes, Halborn, CoinTelegraph; \"$7M\" in earlier reports understated by ~$400K)",
+ "loss_usd": 7400000.0,
+ "root_cause": "Exchange rate inflation via direct WBTC donation to the hWBTC cToken — borrowing all protocol assets after inflating collateral value",
+ "attack_tx": "0x6e9e...f451",
+ "vulnerable_contract": "hWBTC: 0x3559...c60",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — totalCash uses the actual token balance, which can be increased by external direct transfers\nfunction exchangeRateStoredInternal() internal view returns (MathError, uint) {\n    uint _totalSupply = totalSupply;\n    if (_totalSupply == 0) {\n        // Return initial exchange rate if the pool is empty\n        return (MathError.NO_ERROR, initialExchangeRateMantissa);\n    } else {\n        uint totalCash = getCash(); // ← getCash() = IERC20(underlying).balanceOf(address(this))\n        // totalCash can be increased by direct transfers (donations)\n        // If totalSupply is 1–2 and totalCash is hundreds of WBTC, exchangeRate skyrockets\n        uint cashPlusBorrowsMinusReserves;\n        MathError err;\n        (err, cashPlusBorrowsMinusReserves) = addThenSubUInt(totalCash, totalBorrows, totalReserves);\n        if (err != MathError.NO_ERROR) { return (err, 0); }\n\n        uint exchangeRate;\n        (err, exchangeRate) = divScalarByExpTruncate(cashPlusBorrowsMinusReserves, Exp({mantissa: _totalSupply}));\n        if (err != MathError.NO_ERROR) { return (err, 0); }\n        return (MathError.NO_ERROR, exchangeRate);\n    }\n}",
+  "// ❌ Vulnerable code — liquidation amount calculated using manipulated exchangeRate\nfunction getLiquidationRepayAmount(address hToken) public view returns (uint256) {\n    uint256 exchangeRate = hWBTC.exchangeRateStored(); // ← inflated rate\n    uint256 liquidationIncentiveMantissa = 1_080_000_000_000_000_000; // 1.08 (8% incentive)\n    uint256 priceBorrowedMantissa = priceOracle.getUnderlyingPrice(address(hToken));\n    uint256 priceCollateralMantissa = priceOracle.getUnderlyingPrice(address(hWBTC));\n    uint256 hTokenAmount = 1; // ← only 1 hWBTC share\n\n    // If exchangeRate is millions of times inflated, even hTokenAmount=1 evaluates as millions of dollars in collateral\n    uint256 liquidateAmount = 1e18\n        / (\n            priceBorrowedMantissa * liquidationIncentiveMantissa\n                / (exchangeRate * hTokenAmount * priceCollateralMantissa / 1e18)\n        ) + 1;\n    return liquidateAmount; // ← massive liquidations possible with negligible collateral\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — tracks actual deposited balance separately via an internal variable\nuint256 internal _totalAssets; // Actual deposited underlying asset balance (excludes direct transfers)\n\nfunction _deposit(uint256 assets, address receiver) internal returns (uint256 shares) {\n    // _totalAssets is only increased on deposit\n    _totalAssets += assets;\n    // ...\n}\n\nfunction exchangeRateStoredInternal() internal view returns (MathError, uint) {\n    uint _totalSupply = totalSupply;\n    if (_totalSupply == 0) {\n        return (MathError.NO_ERROR, initialExchangeRateMantissa);\n    } else {\n        // ✅ Use internal tracking variable instead of balanceOf → donations are neutralized\n        uint totalCash = _totalAssets + totalBorrows - totalReserves;\n        // ...\n    }\n}",
+  "// ✅ OZ ERC4626 recommended pattern — virtual offset defends against inflation attacks\nfunction _convertToShares(uint256 assets, Math.Rounding rounding) internal view virtual returns (uint256) {\n    return assets.mulDiv(\n        totalSupply() + 10 ** _decimalsOffset(),  // ← add virtual share offset\n        totalAssets() + 1,                         // ← add virtual asset of 1\n        rounding\n    );\n}"
+ ],
+ "steps": [
+  "→ Pre-transfer the entire WBTC balance to the pre-computed address (address calculated in advance via CREATE2)",
+  "- exchangeRate goes from normal → skyrockets (2 shares are now valued at ~500 WBTC in collateral)",
+  "→ hWBTC.redeem(redeem all previously held shares)",
+  "→ Sequentially drain 7 pools",
+  "exchangeRate: normal → millions of times inflated",
+  "2 hWBTC shares = ~500 WBTC collateral value",
+  "→ obtain ETH/SNX/USDC/DAI/USDT/sUSD/FRAX",
+  "1. Attack contract → drain contract: ~500 WBTC transfer (for donation)",
+  "2. Drain contract → hWBTC: mint 4 WBTC",
+  "3. hWBTC → drain contract: return 4 WBTC redeem",
+  "4. hWBTC → drain contract: return ~500 WBTC redeemUnderlying",
+  "5. Drain contract → attack contract: return ~500 WBTC",
+  "6. Attack contract → Aave V3: repay 500.25 WBTC (flash loan + fee)"
+ ],
+ "other_code": [
+  "exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply",
+  "┌─────────────────────────────────────────────────────────────────────┐\n│                    Attacker EOA (0x155D...7528)                     │\n└─────────────────────┬───────────────────────────────────────────────┘\n                      │ Aave V3 flashLoanSimple(500 WBTC)\n                      ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│                 Attack Contract (0x978D...4982)                      │\n│  executeOperation() callback executes                               │\n│  → hWBTC.redeem(redeem all previously held shares)                  │\n│  → Sequentially drain 7 pools                                       │\n└──────────────┬──────────────────────────────────────────────────────┘\n               │ (repeated per pool)\n               │  Transfer WBTC "
+ ]
+}

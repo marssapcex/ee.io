@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-11-24_MetaLend_CompoundFork",
+ "source_file": "2023/2023-11-24_MetaLend_CompoundFork.md",
+ "title": "MetaLend — Compound Fork Vulnerability Analysis",
+ "date": "2023-11-24",
+ "protocol": "MetaLend",
+ "chain": "Ethereum",
+ "loss_raw": "~$4K",
+ "loss_usd": 4.0,
+ "root_cause": "Donation attack against an empty Compound fork market",
+ "attack_tx": "0x4c684fb2618c2974...",
+ "vulnerable_contract": "0x5578f2e245e932a5...",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Same pattern: balanceOf-based rate\nfunction getCash() public view returns (uint256) {\n    return underlying.balanceOf(address(this)); //",
+  "❌\n}\n//",
+  "// ⚠️ RECONSTRUCTED — not verified source. Based on Compound v2 pattern + PoC trace.\n// CToken (MetaLend fork): 0x5578f2e245e932a599c46215a0ca88707230f17b (Ethereum)\n\ncontract CToken {\n    IERC20 public underlying;\n    uint256 public totalSupply;      // shares (cTokens) outstanding\n\n    // ❌ getCash() reads token balance directly from the ERC-20 contract\n    // Anyone can inflate this by sending tokens directly to this contract address\n    function getCash() public view returns (uint256) {\n        return underlying.balanceOf(address(this)); // ❌ manipulable via direct transfer\n    }\n\n    // Exchange rate = (cash + totalBorrows - totalReserves) / totalSupply\n    // When totalSupply is 1 (1 wei deposited), a large direct transfer inflates cash:\n    // exchangeRate = (1_donation + 1_wei) / 1 = 1_donation + 1 ← enormous\n    function exchangeRateStoredInternal() internal view returns (uint256) {\n        if (totalSupply == 0) {\n            return initialExchangeRateMantissa;\n        }\n        // ❌ getCash() is the attack vector — inflated by direct ERC-20 transfer\n        uint256 cashPlusBorrowsMinusReserves = getCash() + totalBorrows - totalReserves; // ❌\n        return cashPlusBorrowsMinusReserves * expScale / totalSupply;\n    }\n\n    // Borrow checks that the borrower has sufficient collateral at the current exchange rate\n    function borrowInternal(uint256 borrowAmount) internal {\n        // collateral value = cToken balance * exchangeRate (now massively inflated)\n        // ❌ attacker's 1-wei cToken deposit appears worth billions after donation\n        uint256 accountLiquidity = getAccountLiquidity(msg.sender); // ❌ inflated\n        require(accountLiquidity >= borrowAmount, \"insufficient liquidity\");\n        doTransferOut(msg.sender, borrowAmount);\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Use internal variable instead",
+  "// ✅ Fix: track cash with an internal accounting variable, never read balanceOf()\nuint256 internal _cash; // incremented on mint/repay, decremented on borrow/redeem\n\nfunction getCash() public view returns (uint256) {\n    return _cash; // ✅ immune to direct token transfers\n}\n// Also: seed the market with protocol-owned liquidity at deployment so totalSupply > 0\n// and exchangeRate starts at a safe value, making the inflation attack uneconomical."
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  ├─① Deposit 1 wei into empty market\n  ├─② Manipulate exchange rate via direct transfer\n  └─③ Borrow inflated amount",
+  "cToken.mint(1);\nunderlying.transfer(address(cToken), giftAmount);\ncToken.borrow(inflatedAmount);"
+ ]
+}

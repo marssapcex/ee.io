@@ -1,0 +1,42 @@
+{
+ "id": "2023__2023-11-28_SwampFinance_FlashLoan",
+ "source_file": "2023/2023-11-28_SwampFinance_FlashLoan.md",
+ "title": "SwampFinance Flash Loan Venus Manipulation Incident Analysis",
+ "date": "2023-11-28",
+ "protocol": "SwampFinance",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ DPPOracle.flashLoan(3,100 WBNB, 150,000 BUSDT)",
+  "2 ▶ Comptroller.enterMarkets([vUSDT, vBNB])",
+  "3 ▶ vUSDT.mint(150,000 BUSDT)",
+  "BUSDT collateral deposit → receive vUSDT",
+  "4 ▶ vBNB.borrow(500 BNB)",
+  "5 ▶ WBNB.deposit{value: 500 BNB}()",
+  "BNB → WBNB conversion",
+  "6 ▶ beltBNB.deposit(WBNB, 1)",
+  "WBNB → beltBNB conversion",
+  "7 ▶ NativeFarm.deposit(135, beltBNB.balance)",
+  "8 ▶ StrategyBeltToken.earn()",
+  "Instant reward trigger → excess profit generated",
+  "9 ▶ NativeFarm.withdraw(135, max)",
+  "10 ▶ beltBNB.withdraw(beltBNB, 1)",
+  "beltBNB → WBNB reverse conversion",
+  "11 ▶ WBNB.withdraw(500 BNB) + vBNB.repayBorrow{value: 500 BNB}()",
+  "12 ▶ vUSDT.redeemUnderlying(150,000 BUSDT)",
+  "13 ▶ DPPOracle flash loan repayment + profit realized"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: NativeFarm earn() immediate reward distribution\ncontract NativeFarm {\n    IStrategyBeltToken public strategy;\n\n    // Vulnerable: calling earn() immediately after stake triggers instant reward\n    function earn() external {\n        strategy.earn(); // beltBNB compound - instant reward based on current staking balance\n    }\n\n    // No timelock on deposit/withdraw\n    function deposit(uint256 _pid, uint256 _amount) external {\n        // No minimum staking period\n    }\n}",
+  "// Root Cause: DODO Flash Loan + Venus Collateral Manipulation + beltBNB Staking Arbitrage (Flash Loan + Venus Collateral + beltBNB Staking Arbitrage)\n// Unverified source code — based on bytecode analysis"
+ ]
+}

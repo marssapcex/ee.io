@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-10_INUKO_BondFlashLoanOracleManipulation",
+ "source_file": "2022/2022-10_INUKO_BondFlashLoanOracleManipulation.md",
+ "title": "INUKO — Bond Flash Loan Oracle Manipulation Attack Analysis",
+ "date": "2022-10-01",
+ "protocol": "INUKO Finance",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed (INUKO tokens)",
+ "loss_usd": null,
+ "root_cause": "The bond price calculation in `buyBond()` relies on `Unitroller.getUnderlyingPrice()` (Venus internal LP spot price), which can be manipulated via large deposits — no independent external oracle is used",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable buyBond() — uses Venus LP spot price\ncontract INUKOBond {\n    IUnitroller unitroller; // Venus controller\n\n    function buyBond(uint256 lpAmount) external {\n        //",
+  "❌ Collateral value assessed using current Venus LP token price\n        // LP price can be manipulated by depositing large amounts into Venus via flash loan\n        uint256 lpPrice = unitroller.getUnderlyingPrice(vToken);\n        uint256 bondAmount = lpAmount * lpPrice / BOND_PRICE;\n\n        IERC20(lpToken).transferFrom(msg.sender, address(this), lpAmount);\n        //",
+  "❌ Excessive bondAmount issued based on manipulated lpPrice\n        pendingBonds[msg.sender] += bondAmount;\n        bondExpiry[msg.sender] = block.timestamp + 3 days;\n    }\n\n    function claimBond() external {\n        require(block.timestamp >= bondExpiry[msg.sender], \"Not mature\");\n        uint256 amount = pendingBonds[msg.sender];\n        pendingBonds[msg.sender] = 0;\n        INUKO.transfer(msg.sender, amount);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern — use TWAP or external oracle\ncontract SafeINUKOBond {\n    AggregatorV3Interface chainlinkFeed;\n\n    function buyBond(uint256 lpAmount) external {\n        //",
+  "✅ Use manipulation-resistant external oracle price\n        (, int256 price, , uint256 updatedAt, ) = chainlinkFeed.latestRoundData();\n        require(block.timestamp - updatedAt <= 3600, \"Stale oracle\");\n        uint256 bondAmount = lpAmount * uint256(price) / BOND_PRICE;\n        // ...\n    }\n}"
+ ],
+ "steps": [
+  "DODO1 → DODO2 → ... → DODO8",
+  "→ Venus LP token price rises (TVL increases from large deposit)",
+  "[8] Sell INUKO → USDT to realize profit"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IINUKOBond {\n    function buyBond(uint256 lpAmount) external;\n    function claimBond() external;\n}\n\ninterface IDODO {\n    function flashLoan(uint256, uint256, address, bytes calldata) external;\n}\n\ninterface IVToken {\n    function mint(uint256) external returns (uint256);\n    function borrow(uint256) external returns (uint256);\n    function repayBorrow(uint256) external returns (uint256);\n    function redeem(uint256) external returns (uint256);\n}\n\ncontract INUKOExploit is Test {\n    IINUKOBond bond = IINUKOBond(0x09beDDae85a9b5Ada57a5bd7979bb7b3dd08B538);\n    // 8 DODO pools (dodo1~dodo8)\n    IDODO[8] dodos;\n\n    function setUp() public {\n        vm.createSelectFork(\"bsc\", 22_169_169);\n "
+ ]
+}

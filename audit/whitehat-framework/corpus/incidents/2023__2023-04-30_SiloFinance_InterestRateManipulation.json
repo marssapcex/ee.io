@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-04-30_SiloFinance_InterestRateManipulation",
+ "source_file": "2023/2023-04-30_SiloFinance_InterestRateManipulation.md",
+ "title": "Silo Finance Exploit — WETH Donation Inflates Interest Accrual",
+ "date": "2023-04-30",
+ "protocol": "SiloFinance",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// File: BaseSilo.sol\nimport \"@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol\";  // ❌\n\n// ...\n\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";  // ❌\n\n// ...\n\nimport \"./interfaces/IInterestRateModel.sol\";  // ❌\n\n// ...\n\n    mapping(address => AssetInterestData) private _interestData;  // ❌\n\n// ...\n\n        uint256 allDeposits = _assetState.totalDeposits + _assetState.collateralOnlyDeposits;  // ❌",
+  "// File: IInterestRateModel.sol\n    function getCurrentInterestRate(  // ❌\n\n// ...\n\n    function calculateCurrentInterestRate(  // ❌\n\n// ...\n\n    function calculateCompoundInterestRateWithOverflowDetection(  // ❌\n\n// ...\n\n    function calculateCompoundInterestRate(  // ❌\n\n// ...\n\n    function interestRateModelPing() external pure returns (bytes4);  // ❌",
+  "// File: Solvency.sol\nimport \"@openzeppelin/contracts/token/ERC20/ERC20.sol\";  // ❌\n\n// ...\n\nimport \"../interfaces/IInterestRateModel.sol\";  // ❌\n\n// ...\n\n    function getRcomp(ISilo _silo, ISiloRepository _siloRepository, address _asset, uint256 _timestamp)\n\n// ...\n\n    function totalDepositsWithInterest(uint256 _assetTotalDeposits, uint256 _protocolShareFee, uint256 _rcomp)  // ❌\n\n// ...\n\n    function totalBorrowAmountWithInterest(uint256 _totalBorrowAmount, uint256 _rcomp)  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → totalDeposits = smallAmount",
+  "// → contract balance >> totalDeposits (donation)",
+  "// → calculates interest on donated balance, inflating borrow capacity",
+  "// → deposit LINK as collateral-only",
+  "// → borrow inflated WETH using manipulated interest state",
+  "// → borrow XAI tokens exploiting same manipulated state"
+ ],
+ "other_code": [
+  "// 1. deposit small WETH amount via silo.deposit(WETH, smallAmount, false)\n//    → totalDeposits = smallAmount\n// 2. WETH.transfer(address(silo), largeAmount)\n//    → contract balance >> totalDeposits (donation)\n// 3. silo.accrueInterest(WETH)\n//    → calculates interest on donated balance, inflating borrow capacity\n// 4. From secondary account: silo.deposit(LINK, collateralAmount, true)\n//    → deposit LINK as collateral-only\n// 5. silo.borrow(WETH, maxAmount)\n//    → borrow inflated WETH using manipulated interest state\n// 6. silo.borrow(XAI, maxAmount)\n//    → borrow XAI tokens exploiting same manipulated state",
+  "interface ISilo {\n    function deposit(address asset, uint256 amount, bool collateralOnly) external returns (uint256 collateralAmount, uint256 collateralShare);\n    function borrow(address asset, uint256 amount) external returns (uint256 debtAmount, uint256 debtShare);\n    function accrueInterest(address asset) external;\n    function assetStorage(address asset) external view returns (IBaseSilo.AssetStorage memory);\n}\n\ninterface IBaseSilo {\n    struct AssetStorage {\n        address collateralToken;\n        address collateralOnlyToken;\n        address debtToken;\n        uint256 totalDeposits;\n        uint256 collateralOnlyDeposits;\n        uint256 totalBorrowAmount;\n    }\n}"
+ ]
+}

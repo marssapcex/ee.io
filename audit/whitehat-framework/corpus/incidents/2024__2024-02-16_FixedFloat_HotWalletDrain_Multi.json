@@ -1,0 +1,25 @@
+{
+ "id": "2024__2024-02-16_FixedFloat_HotWalletDrain_Multi",
+ "source_file": "2024/2024-02-16_FixedFloat_HotWalletDrain_Multi.md",
+ "title": "FixedFloat Exchange — Hot Wallet Private Key Compromise Analysis",
+ "date": "2024-02-16",
+ "protocol": "FixedFloat",
+ "chain": "Multiple",
+ "loss_raw": "~$26,100,000 (~1,728 ETH ($4.85M) + ~409 BTC ($21.17M))",
+ "loss_usd": 26100000.0,
+ "root_cause": "Hot wallet private keys for both the Bitcoin and Ethereum operational wallets were compromised, enabling simultaneous drain of both chains' hot wallet balances",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "Ethereum: ~1,728 ETH ($4.85M) → attacker address",
+  "Bitcoin: ~409 BTC ($21.17M) → attacker address"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[Pre-exploit] Gain access to FixedFloat infrastructure\n    │       (likely: admin panel breach, API credential compromise, or insider)\n    │\n    ├─[2024-02-16] Drain hot wallets:\n    │       Ethereum: ~1,728 ETH ($4.85M) → attacker address\n    │       Bitcoin: ~409 BTC ($21.17M) → attacker address\n    │       Total: ~$26.1M\n    │\n    ├─[User reports] Frozen orders trigger user complaints on social media\n    │       FixedFloat website shows maintenance mode\n    │\n    ├─[FixedFloat response]\n    │       Acknowledges \"minor technical problems\" initially\n    │       Feb 17: Issues official statement confirming hack\n    │       Suspends exchange operations; investigates breach\n    │       Later resumes operations with improved security measures\n    │\n    └─[Laundering] ETH "
+ ]
+}

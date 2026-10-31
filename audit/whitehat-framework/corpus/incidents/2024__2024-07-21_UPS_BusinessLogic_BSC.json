@@ -1,0 +1,38 @@
+{
+ "id": "2024__2024-07-21_UPS_BusinessLogic_BSC",
+ "source_file": "2024/2024-07-21_UPS_BusinessLogic_BSC.md",
+ "title": "UPS (UtopiaSphere) — _swapBurn Business Logic Flaw Analysis",
+ "date": "2024-07-21",
+ "protocol": "UtopiaSphere",
+ "chain": "BSC",
+ "loss_raw": "~$521,225 USDT (on-chain confirmed: 521,225.55 USDT)",
+ "loss_usd": 521225.0,
+ "root_cause": "`_swapBurn()` logic burns 95% of the transferred amount, reducing the AMM reserve to 1 wei and causing an extreme imbalance",
+ "attack_tx": "0x1ddf...f604",
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: 95% burn on transfer to pair — exploitable externally\nfunction _transfer(address sender, address recipient, uint256 amount) internal override {\n    if (recipient == upsUsdtPair && sender != owner()) {\n        // Call _swapBurn which burns 95% of the transferred amount\n        _swapBurn(amount);\n    }\n    super._transfer(sender, recipient, amount);\n}\n\nfunction _swapBurn(uint256 amount) internal {\n    uint256 burnAmount = amount * 95 / 100;  // ❌ Burns 95% of transferred amount\n\n    // Query current UPS balance of the pair\n    uint256 pairBalance = balanceOf(upsUsdtPair);\n\n    // ❌ Burns 95% of pair balance — can reduce reserve to 1 wei\n    uint256 pairBurnAmount = pairBalance * 95 / 100;\n    _burn(upsUsdtPair, pairBurnAmount);\n\n    // ❌ sync() call synchronizes reserve to the actual balance (= 1 wei level)\n    IUniswapV2Pair(upsUsdtPair).sync();\n}",
+  "// ❌ Vulnerable: sync() call after _swapBurn reflects manipulated state into reserve\nfunction _swapBurn(uint256 amount) internal {\n    // ... burn logic ...\n    IUniswapV2Pair(upsUsdtPair).sync();  // ❌ Force-updates reserve to actual balance (manipulated value)\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: Remove burn mechanism or add minimum reserve protection\nfunction _transfer(address sender, address recipient, uint256 amount) internal override {\n    // ✅ Remove burn logic on direct transfer to pair\n    super._transfer(sender, recipient, amount);\n}\n\n// ✅ Alternative: Minimum reserve protection\nfunction _swapBurn(uint256 amount) internal {\n    uint256 pairBalance = balanceOf(upsUsdtPair);\n    uint256 MIN_RESERVE = 1000 * 1e18;  // ✅ Protect minimum 1,000 UPS\n\n    if (pairBalance <= MIN_RESERVE) {\n        revert(\"Reserve too low: burn disabled\");  // ✅ Reject burn when reserve is insufficient\n    }\n\n    uint256 pairBurnAmount = (pairBalance - MIN_RESERVE) * 95 / 100;\n    _burn(upsUsdtPair, pairBurnAmount);\n    IUniswapV2Pair(upsUsdtPair).sync();\n}",
+  "// ✅ Fixed: Remove sync() call — reserve should only update via swap()\nfunction _swapBurn(uint256 amount) internal {\n    uint256 pairBalance = balanceOf(upsUsdtPair);\n    if (pairBalance <= MIN_RESERVE) revert ReserveTooLow();\n    uint256 burnAmount = pairBalance * 5 / 100;  // ✅ Burn at most 5%\n    _burn(upsUsdtPair, burnAmount);\n    // ✅ Remove sync() — prevents reserve manipulation\n}"
+ ],
+ "steps": [
+  "- Additional borrow via Venus vUSDC (`0xeca881...`): 7,917,356 USDC → 6,523,902 USDT swap",
+  "**Step 2: Bulk UPS Purchase (96,196,121 USDT → 810,832,586 UPS)**",
+  "UPS: 560,128 → 4,982,240 USDT: 815.6M → 96.8M",
+  "UPS: 4,982,240 → 1 wei USDT: 96,756,249 retained",
+  "(reserveIn = 1 wei → receive all USDT)",
+  "521,225 USDT → swapped to ETH → 147.6 ETH",
+  "→ Ethereum bridge → 0x2Eb883...0dCC257",
+  "- Protocol loss: Entire USDT liquidity of the UPS/USDT pair wiped (~96.8M USDT → unrecoverable)"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────┐\n│                    Attacker (0x6e12ce...d8d9c)                   │\n└───────────────────────────┬─────────────────────────────────────┘\n                            │ attack() call\n                            ▼\n┌─────────────────────────────────────────────────────────────────┐\n│          Attack Contract (0x9671eD...244E09)                     │\n│                                                                 │\n│  [Step 1] Recursive Flash Loan Borrowing                        │\n│  ┌──────────────────────────────────────────────────────────┐  │\n│  │ PancakeSwap V3 Pool #1  ──▶ flashLoan(42,027,230 USDT)  │  │\n│  │         └──▶ Pool #2   ──▶ flashLoan(15,437,932 USDT)  │  │\n│  │               └──▶ Pool #3 ──▶ ... (14 source",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// TX: https://bscscan.com/tx/0xd03702e...\n// Loss: ~28K USD (April incident), ~521K USD (July repeat)\n// Cause: _swapBurn business logic flaw\n\ncontract ContractTest is Test {\n    // [Step 1] Set up references to relevant contracts\n    IERC20 USDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IERC20 UPS  = IERC20(0xe2bb1B04c978A8C8CC1E0bccA5AD30e274b69Bfa);\n    Uni_Pair_V3 pool     = Uni_Pair_V3(0x4f31Fa980a675570939B737Ebdde0471a4Be40Eb);\n    Uni_Pair_V2 ups_usdt = Uni_Pair_V2(0x5db4604c8952a8c3474e8ac33e0d31814d75f786);\n\n    function testExploit() external {\n        // [Step 2] Request PancakeSwap V3 flash loan (3,500,000 USDT)\n        borrow_amount = 3_500_000 ether;\n        pool.flash(address(this), borrow_amo"
+ ]
+}

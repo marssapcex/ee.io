@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-01-10_IPC_ChainedFlashLoanTimelockBypass",
+ "source_file": "2025/2025-01-10_IPC_ChainedFlashLoanTimelockBypass.md",
+ "title": "IPC Token — Nested Flash Loan + Timelock Bypass Analysis",
+ "date": "2025-01-10",
+ "protocol": "IPC Token",
+ "chain": "BSC",
+ "loss_raw": "~$590,000 USDT",
+ "loss_usd": 590000.0,
+ "root_cause": "Timelock could be reset with a 1-unit trade, allowing price manipulation via consecutive swaps",
+ "attack_tx": "0x3a36...9a44",
+ "vulnerable_contract": "IPC Token trading pair (BSC)",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// IPC Token — Token.sol (Sourcify partial match, BSC chain 56)\n// TRANSFER_LOCK constant\nuint256 constant TRANSFER_LOCK = 30 minutes;\n\n// transferTime mapping tracks last sell/transfer timestamp per address\n// (set on BUY, checked on SELL and wallet-to-wallet transfer)\n\nfunction _transfer(address sender, address recipient, uint256 amount) internal {\n    if (isOpenSwap == false) {\n        if (isMarketer[sender] == false && isMarketer[recipient] == false) {\n            revert NoOpenSwap();\n        }\n    }\n\n    if (sender == address(0) || recipient == address(0)) revert ZeroAddress();\n    if (amount > balanceOf(sender)) revert InsufficientBalance();\n\n    uint256 fee = 0;\n    address pair = IUniswapV2Factory(SWAP_V2_FACTORY).getPair(address(this), USDT);\n\n    if (pair != address(0)) {\n        uint256 LPTotalSupply = IERC20(pair).totalSupply();\n        if (lastLPTotalSupply < LPTotalSupply && lastSellIsAdd == false) {\n            if (destroyNum >= lastDestroyNum) destroyNum -= lastDestroyNum;\n        }\n        lastSellIsAdd = false;\n        lastLPTotalSupply = LPTotalSupply;\n        if (sender == pair && !_isRemoveLP(pair) && recipient != address(this)) {\n            // BUY path: record the buyer's timestamp — starts the 30-minute lock\n            fee = amount * MARKET_TAX / 1000;\n            transferTime[recipient] = block.timestamp; // ❌ lock timer set on buy\n            _buy(fee);\n        } else if (recipient == pair && sender != address(this)) {\n            if (_isAddLP(pair)) {\n                lastSellIsAdd = true;\n            } else {\n                // SELL path: enforce the 30-minute timelock\n                if (block.timestamp < transferTime[sender] + TRANSFER_LOCK) revert TransferTimeLock(); // ❌ checked here\n                fee = amount * (MARKET_TAX + PUBLISH_TAX) / 1000;\n                _destroy(destroyNum);\n                destroyNum += (amount - fee) / 2;\n                lastDestroyNum = (amount - fee) / 2;\n                _sell(fee);\n            }\n        }\n\n        if (sender != pair && recipient != pair) {\n            // Wallet-to-wallet transfer also enforces the lock\n            if (block.timestamp < transferTime[sender] + TRANSFER_LOCK) revert TransferTimeLock();\n            _destroy(destroyNum);\n        }\n    }\n\n    balances[sender] -= amount;\n    balances[recipient] += amount - fee;\n    emit Transfer(sender, recipient, amount - fee);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: enforce a minimum buy amount before updating transferTime\nif (sender == pair && !_isRemoveLP(pair) && recipient != address(this)) {\n    require(amount >= MIN_TRADE_AMOUNT, \"ERR_BELOW_MIN\"); // ✅ prevent micro-buy timelock reset\n    fee = amount * MARKET_TAX / 1000;\n    transferTime[recipient] = block.timestamp;\n    _buy(fee);\n}"
+ ],
+ "steps": [
+  "→ [1] DODO dvm1 flash loan (large amount of USDT)",
+  "→ [2] DODO dvm2 nested flash loan (additional USDT)",
+  "→ [3] USDT → IPC large swap (price increases)",
+  "→ [4] Micro-trade (1 unit) → timelock reset",
+  "→ [5] IPC → USDT reverse swap (profit realization)",
+  "→ [6] Steps 3~5 repeated 16 times",
+  "→ [7] Repay dvm2 flash loan",
+  "→ [8] Repay dvm1 flash loan",
+  "→ [9] ~590,000 USDT profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] DODO dvm1 flash loan (large amount of USDT)\n  │         │\n  │         └─→ [2] DODO dvm2 nested flash loan (additional USDT)\n  │                   │\n  │                   ├─→ [3] USDT → IPC large swap (price increases)\n  │                   │\n  │                   ├─→ [4] Micro-trade (1 unit) → timelock reset\n  │                   │\n  │                   ├─→ [5] IPC → USDT reverse swap (profit realization)\n  │                   │\n  │                   └─→ [6] Steps 3~5 repeated 16 times\n  │\n  ├─→ [7] Repay dvm2 flash loan\n  │\n  ├─→ [8] Repay dvm1 flash loan\n  │\n  └─→ [9] ~590,000 USDT profit",
+  "// Full PoC not obtained — reconstructed from summary\n\ncontract IPCAttacker {\n    address constant DVM1 = /* DODO dvm1 address */;\n    address constant DVM2 = /* DODO dvm2 address */;\n\n    function attack() external {\n        // [1] Request large flash loan from DODO dvm1\n        IDODO(DVM1).flashLoan(\n            flashAmount1, 0, address(this), abi.encode(\"outer\")\n        );\n    }\n\n    // DODO flash loan callback (outer flash loan)\n    function DVMFlashLoanCall(address, uint256, uint256, bytes calldata data) external {\n        if (keccak256(data) == keccak256(abi.encode(\"outer\"))) {\n            // [2] Nested: additional flash loan from dvm2\n            IDODO(DVM2).flashLoan(\n                flashAmount2, 0, address(this), abi.encode(\"inner\")\n            );\n            // [7] Repay outer f"
+ ]
+}

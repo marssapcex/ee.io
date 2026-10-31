@@ -1,0 +1,42 @@
+{
+ "id": "2023__2023-02-17_Dexible_ArbitraryCall_ETH",
+ "source_file": "2023/2023-02-17_Dexible_ArbitraryCall_ETH.md",
+ "title": "Dexible — selfSwap() Arbitrary Call Vulnerability Analysis",
+ "date": "2023-02-17",
+ "protocol": "Dexible",
+ "chain": "Ethereum",
+ "loss_raw": "~$2,000,000 (ETH + ARB, drained from 17 victim addresses)",
+ "loss_usd": 2000000.0,
+ "root_cause": "The `RouterRequest.router` parameter in `selfSwap()` is not validated, allowing an attacker to call arbitrary contracts and drain tokens that victims had previously `approve`d",
+ "attack_tx": "0x138d...1a6",
+ "vulnerable_contract": "0xDE62...8024 (Dexible)",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — Dexible.sol (0xDE62E1b0edAa55aAc5ffBE21984D321706418024)\n\n// RouterRequest struct definition\nstruct RouterRequest {\n    address router;       // ❌ External contract address to call — no validation\n    address spender;      // ❌ Address to receive token approval — no validation\n    TokenTypes.TokenAmount routeAmount;\n    bytes routerData;     // ❌ Calldata passed to external contract — no validation\n}\n\nfunction selfSwap(SwapTypes.SelfSwap calldata request) external {\n    // Fee token handling (attacker uses small amount of USDC)\n    IERC20(request.feeToken).transferFrom(msg.sender, address(this), request.tokenIn.amount);\n\n    // Execute each router request\n    for (uint i = 0; i < request.routes.length; i++) {\n        RouterRequest memory route = request.routes[i];\n\n        // ❌ router address is not checked against an allowed DEX list\n        // ❌ function selector of routerData is not validated\n        // Attacker can specify router=TRU_token_address, routerData=transferFrom(victim,...)\n        (bool success, ) = route.router.call(route.routerData);\n        require(success, \"Router call failed\");\n    }\n}",
+  "// Calldata crafted by the attacker — transferFrom(victim, attacker, amount)\nbytes memory callDatas = abi.encodeWithSignature(\n    \"transferFrom(address,address,uint256)\",\n    victim,        // Victim address: 0x58f5F0684C381fCFC203D77B2BbA468eBb29B098\n    address(this), // Attacker contract address\n    transferAmount // Minimum of victim's TRU balance or allowance granted to Dexible\n);\n\n// ❌ RouterRequest construction — router=TRU token address, routerData=transferFrom calldata\nSwapTypes.RouterRequest memory route = SwapTypes.RouterRequest({\n    router: address(TRU),   // ❌ TRU token contract address, not a DEX router\n    spender: address(Dexible),\n    routeAmount: TokenTypes.TokenAmount({amount: 0, token: address(TRU)}),\n    routerData: callDatas   // ❌ Injected transferFrom call calldata\n});",
+  "┌─────────────────────────────────┐\n│          Attacker EOA           │\n│  (small amount of USDC ~14.4)  │\n└────────────────┬────────────────┘\n                 │ 1. Deploy attacker contract\n                 ▼\n┌─────────────────────────────────┐\n│        Attacker Contract        │\n│  router = TRU token address     │\n│  routerData = transferFrom(     │\n│    victim, attacker, amount)    │\n└────────────────┬────────────────┘\n                 │ 2. Call selfSwap()\n                 │    (feeToken=USDC, tokenIn=14.4 USDC)\n                 ▼\n┌─────────────────────────────────────────────────────┐\n│               Dexible Contract                      │\n│  (0xDE62E1b0edAa55aAc5ffBE21984D321706418024)        │\n│                                                      │\n│  selfSwap() {                                        │\n│    ① USDC.transferFrom(attacker → Dexible, 14.4)     │\n│    ② ❌ External call without router validation:    │\n│       route.router.call(route.routerData)            │\n│       = TRU.transferFrom(victim, attacker, amount)  │\n│  }                                                   │\n└────────────────┬────────────────────────────────────┘\n                 │ 3. TRU.transferFrom(victim → attacker)\n                 │    (called by Dexible as spender)\n                 ▼\n┌─────────────────────────────────┐\n│         TRU Token Contract      │\n│  (0x4C19596f5aAfF459fA38B0f7...)│\n│                                  │\n│  transferFrom(                   │\n│    from = victim,                │\n│    to   = attacker,              │\n│    amt  = within allowance      │\n│  )                               │\n│  → allowance[victim][Dexible]    │\n│    → validation passes ✓ (victim │\n│       had previously approved)   │\n└────────────────┬────────────────┘\n                 │ 4. Victim's TRU transferred to attacker\n                 ▼\n┌─────────────────────────────────┐\n│          Attacker Profit        │\n│  Drained TRU (victim balances)  │\n│  Total loss: ~$1,500,000        │\n└─────────────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — router whitelist and calldata validation added\n\n// Allowlist of permitted DEX router addresses\nmapping(address => bool) public allowedRouters;\n\nfunction selfSwap(SwapTypes.SelfSwap calldata request) external {\n    IERC20(request.feeToken).transferFrom(msg.sender, address(this), request.tokenIn.amount);\n\n    for (uint i = 0; i < request.routes.length; i++) {\n        RouterRequest memory route = request.routes[i];\n\n        // ✅ Validate router address against whitelist\n        require(allowedRouters[route.router], \"Router not whitelisted\");\n\n        // ✅ Validate function selector of routerData to block dangerous functions like transferFrom\n        bytes4 selector = bytes4(route.routerData[:4]);\n        require(isAllowedSelector(selector), \"Selector not allowed\");\n\n        (bool success, ) = route.router.call(route.routerData);\n        require(success, \"Router call failed\");\n    }\n}",
+  "// ✅ Fix 1: Manage allowlist of permitted DEX routers\nmapping(address => bool) public allowedRouters;\n\n// Only governance or admin can add routers\nfunction addAllowedRouter(address router) external onlyOwner {\n    allowedRouters[router] = true;\n    emit RouterAdded(router);\n}\n\nfunction removeAllowedRouter(address router) external onlyOwner {\n    allowedRouters[router] = false;\n    emit RouterRemoved(router);\n}\n\n// ✅ Fix 2: Per-router calldata selector whitelist\nmapping(address => mapping(bytes4 => bool)) public allowedSelectors;\n\nfunction selfSwap(SwapTypes.SelfSwap calldata request) external {\n    IERC20(request.feeToken).transferFrom(\n        msg.sender, address(this), request.tokenIn.amount\n    );\n\n    for (uint i = 0; i < request.routes.length; i++) {\n        RouterRequest memory route = request.routes[i];\n\n        // ✅ Router whitelist validation\n        require(allowedRouters[route.router], \"Dexible: router not whitelisted\");\n\n        // ✅ Calldata selector validation (minimum 4 bytes)\n        require(route.routerData.length >= 4, \"Dexible: invalid routerData length\");\n        bytes4 selector = bytes4(route.routerData);\n        require(\n            allowedSelectors[route.router][selector],\n            \"Dexible: selector not allowed for this router\"\n        );\n\n        (bool success, ) = route.router.call(route.routerData);\n        require(success, \"Dexible: router call failed\");\n    }\n}"
+ ],
+ "steps": [
+  "1. **[Step 1] Deploy attacker contract**: Deploy contract containing attack logic",
+  "2. **[Step 2] Prepare and approve USDC**: Approve 14.4 USDC to Dexible (for fees)",
+  "3. **[Step 3] Query victim balances**: Query `TRU.balanceOf(victim)` and `TRU.allowance(victim, Dexible)`",
+  "4. **[Step 4] Construct malicious SelfSwap request**: Build calldata with `router=TRU address`, `routerData=transferFrom(victim, attacker, amount)`",
+  "5. **[Step 5] Call selfSwap()**: Send malicious SelfSwap request to Dexible",
+  "6. **[Step 6] Drain tokens**: Dexible executes `TRU.transferFrom(victim, attacker, amount)` → victim's TRU stolen",
+  "7. **[Step 7] Repeat**: Repeat steps 3–6 for additional victims",
+  "1. Deploy attacker contract",
+  "2. Call selfSwap()",
+  "① USDC.transferFrom(attacker → Dexible, 14.4)",
+  "3. TRU.transferFrom(victim → attacker)",
+  "→ allowance[victim][Dexible]",
+  "→ validation passes ✓ (victim",
+  "4. Victim's TRU transferred to attacker"
+ ],
+ "other_code": []
+}

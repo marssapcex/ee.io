@@ -1,0 +1,31 @@
+{
+ "id": "2026__2026-05-17_SEA_SameTxSpotQuoteRedemption_ARB",
+ "source_file": "2026/2026-05-17_SEA_SameTxSpotQuoteRedemption_ARB.md",
+ "title": "SEA — Same-Tx Spot Quote Redemption Analysis",
+ "date": "2026-05-17",
+ "protocol": "SEA",
+ "chain": "Arbitrum One",
+ "loss_raw": "**~$153K** (estimated; multiple flagged txs)",
+ "loss_usd": 153.0,
+ "root_cause": "SEA redemption/burn mechanism reads the SEA/USDT AMM spot quote within the same transaction. Attacker executes 60 swaps on the pair to inflate the spot SEA price, then burns SEA tokens at the inflated rate to redeem USDT from the protocol treasury, extracting ~$153K profit.",
+ "attack_tx": "0x001cb16e...716",
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable redemption pricing (reconstructed from on-chain behavior)\nfunction redeemPosition(uint256 positionId, uint256 seaAmount) external {\n    require(positions[positionId].owner == msg.sender, \"Not owner\");\n\n    // ❌ Reads AMM spot quote — same-tx manipulable\n    uint256 seaPerUsdt = _getSpotPrice(SEA_USDT_PAIR); // pair.getReserves() based\n\n    // ❌ Payout calculated at attacker-controlled price\n    uint256 usdtOut = seaAmount * seaPerUsdt / 1e18;\n\n    positions[positionId].amount -= seaAmount;\n    treasury.transfer(msg.sender, usdtOut); // over-pays\n}\n\nfunction _getSpotPrice(address pair) internal view returns (uint256) {\n    // ❌ Uniswap V2-style — 60 sequential swaps move this price incrementally\n    (uint112 reserve0, uint112 reserve1,) = IUniswapV2Pair(pair).getReserves();\n    return (uint256(reserve1) * 1e18) / uint256(reserve0);\n}"
+ ],
+ "code_after": [
+  "// ✅ TWAP-based pricing — 60 in-tx swaps cannot move a 30-minute TWAP\nfunction _getOraclePrice(address pair) internal view returns (uint256) {\n    // Uniswap V2 TWAP via cumulative price accumulators\n    (uint256 price0Cumulative, uint256 price1Cumulative, uint32 blockTimestamp)\n        = UniswapV2OracleLibrary.currentCumulativePrices(pair);\n\n    uint32 timeElapsed = blockTimestamp - priceSnapshot.timestamp;\n    require(timeElapsed >= MIN_TWAP_PERIOD, \"TWAP period too short\");\n\n    uint256 price0Average = FixedPoint.fraction(\n        price0Cumulative - priceSnapshot.price0Cumulative,\n        timeElapsed\n    ).decode144();\n    return price0Average;\n}"
+ ],
+ "steps": [
+  "- Each swap emits 1 `Swap` + 1 `Sync` (→ 60+60 in the log)",
+  "- Net effect: `reserve1(USDT)` depleted, `reserve0(SEA)` inflated → `SEA price in USDT` increases",
+  "- `usdtOut = seaAmount × inflatedPrice` → treasury over-pays USDT",
+  "424 Transfer events = flash loan (×2) + 60 swap internal transfers (×2 directions, ~120) + seaAmount burn transfers + usdtOut treasury transfer + fee accruals + profit routing."
+ ],
+ "other_code": [
+  "// Minimum: 30-minute TWAP\n// Even a 60-swap same-tx manipulation cannot move a 30-min TWAP by more than a few basis points\nrequire(timeElapsed >= 1800, \"TWAP window too short\");"
+ ]
+}

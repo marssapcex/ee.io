@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-04-XX_MARS_ReflectionTaxSwapSyncManipulation",
+ "source_file": "2024/2024-04-XX_MARS_ReflectionTaxSwapSyncManipulation.md",
+ "title": "MARS — Reflection Tax Token Repeated Swap / sync Reserve Manipulation Analysis",
+ "date": "2024-04-01",
+ "protocol": "MARS",
+ "chain": "BSC",
+ "loss_raw": ">$100,000",
+ "loss_usd": 100000.0,
+ "root_cause": "The reflection tax mechanism updates only `balanceOf` without updating the pair's internal reserves, causing an accumulated divergence between reserves and actual balances across repeated buy/sell cycles, enabling arbitrage profit",
+ "attack_tx": null,
+ "vulnerable_contract": "MARS 0x3dC7E6FF",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: reflection tax token + AMM reserve mismatch\ncontract MARSToken {\n    uint256 public reflectionFee = 5; // 5% reflection tax\n\n    function _transfer(address from, address to, uint256 amount) internal {\n        uint256 fee = amount * reflectionFee / 100;\n        uint256 netAmount = amount - fee;\n\n        _balances[from] -= amount;\n        _balances[to] += netAmount;\n\n        // Reflect: fee is distributed proportionally to all holders\n        // ← The pair contract is also a holder, so pair balance grows beyond reserves\n        _reflectFee(fee);\n    }\n}\n\n// Uniswap V2 Pair\n// reserve = value at the last sync() call\n// balance = actual token balance (continuously increasing via reflection tax)\n// On swap: balance > reserve → arbitrage profit occurs\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: reflection tax tokens are incompatible with standard AMMs\n// - Disable reflection tax (exclude the pair)\n// - Add pair address to reflection tax exclusion list\nmapping(address => bool) public isExcludedFromReflection;\n\nfunction _reflectFee(uint256 fee) internal {\n    // Exclude the pair contract from receiving reflection tax\n    // → pair balance always equals reserves\n}"
+ ],
+ "steps": [
+  "→ [1] PancakeSwap V3 flash loan: borrow 350 WBNB",
+  "→ [2] Repeated buy cycle (via TokenReceiver):",
+  "Swap WBNB → MARS (PancakeRouter)",
+  "Reflection tax → pair balance > reserves divergence accumulates",
+  "→ [3] Repeated sell cycle:",
+  "Swap MARS → WBNB",
+  "→ [4] Repay V3 flash loan + fee",
+  "→ [5] >$100K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] PancakeSwap V3 flash loan: borrow 350 WBNB\n  │\n  ├─→ [2] Repeated buy cycle (via TokenReceiver):\n  │         ├─ Swap WBNB → MARS (PancakeRouter)\n  │         └─ Reflection tax → pair balance > reserves divergence accumulates\n  │\n  ├─→ [3] Repeated sell cycle:\n  │         ├─ Swap MARS → WBNB\n  │         └─ balance > reserve arbitrage profit realized\n  │\n  ├─→ [4] Repay V3 flash loan + fee\n  │\n  └─→ [5] >$100K profit",
+  "interface IPancakeV3Pool {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ninterface IPancakeRouter {\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        uint256 amountIn, uint256 amountOutMin,\n        address[] calldata path, address to, uint256 deadline\n    ) external;\n}\n\ncontract TokenReceiver {\n    // Intermediary contract for receiving reflection tax\n    IERC20 constant MARS = IERC20(0x436D3629888B50127EC4947D54Bb0aB1120962A0);\n    function withdraw() external {\n        MARS.transfer(msg.sender, MARS.balanceOf(address(this)));\n    }\n}\n\ncontract AttackContract {\n    IPancakeV3Pool constant v3Pool  = IPancakeV3Pool(/* V3 WBNB pool */);\n    IPancakeRouter constant router  = IPancakeRouter(/* PancakeRouter *"
+ ]
+}

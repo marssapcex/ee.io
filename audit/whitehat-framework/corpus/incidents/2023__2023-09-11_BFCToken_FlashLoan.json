@@ -1,0 +1,28 @@
+{
+ "id": "2023__2023-09-11_BFCToken_FlashLoan",
+ "source_file": "2023/2023-09-11_BFCToken_FlashLoan.md",
+ "title": "BFC Token — Flash Loan Attack Analysis",
+ "date": "2023-09-11",
+ "protocol": "BFC Token",
+ "chain": "BSC",
+ "loss_raw": "~$38K",
+ "loss_usd": 38.0,
+ "root_cause": "Token transfer fee reduces the LP pair's reserve, causing a discrepancy between `balanceOf` and reserve — excess can be extracted via `skim()`",
+ "attack_tx": "0x8ee76291c1b46d26...",
+ "vulnerable_contract": "0x595eac4a0ce9b717...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: fee + spot price combined\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 fee = amount * feeRate / 100;\n    super._transfer(from, feeCollector, fee);\n    super._transfer(from, to, amount - fee);\n    //",
+  "❌ Fee collection alters pool balance → price distortion\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: exempt fees during swaps"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: token transfer fee reduces the LP pair's reserve, causing a discrepancy between balanceOf and reserve — excess can be extracted via skim()\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Borrow via flash loan\n  ├─② Trigger fee mechanism to manipulate pool price\n  ├─③ Execute favorable swap\n  └─④ ~$38K profit"
+ ]
+}

@@ -1,0 +1,39 @@
+{
+ "id": "2023__2023-06-17_Pawnfi_UntrustedInput_ETH",
+ "source_file": "2023/2023-06-17_Pawnfi_UntrustedInput_ETH.md",
+ "title": "Pawnfi — Untrusted Input Vulnerability Analysis",
+ "date": "2023-06-17",
+ "protocol": "Pawnfi",
+ "chain": "Ethereum",
+ "loss_raw": "~$820,000 (APE + ETH)",
+ "loss_usd": 820000.0,
+ "root_cause": "Unauthorized `setCollectRate()` call permitted — staking collect rate manipulated via untrusted input",
+ "attack_tx": "0x8d30...59a5",
+ "vulnerable_contract": "0x8501...a92C (ApeStaking)",
+ "classes": [
+  "arbitrary-call",
+  "staking-reward"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: no onlyOwner or access control modifier\n// Anyone can arbitrarily set collectRate\nfunction setCollectRate(uint256 newCollectRate) external {\n    // No input validation — allows setting 1e18 (100%)\n    collectRate = newCollectRate;\n}",
+  "// ❌ withdrawApeCoin distributes APE based on collectRate\n// If collectRate is 1e18, all APE is sent to msg.sender\nfunction withdrawApeCoin(\n    address nftAsset,\n    IApeCoinStaking.SingleNft[] memory _nfts,\n    IApeCoinStaking.PairNftWithdrawWithAmount[] memory _nftPairs\n) external {\n    // Handle ApeCoin withdrawal\n    uint256 pendingAmount = _calculatePending(nftAsset, _nfts);\n    \n    // ❌ No collectRate validation — 100% causes full external leak\n    uint256 collectAmount = (pendingAmount * collectRate) / 1e18;\n    uint256 protocolAmount = pendingAmount - collectAmount;\n    \n    // Transfer collectAmount to msg.sender (attacker takes it)\n    IERC20(APE).transfer(msg.sender, collectAmount);\n    // protocolAmount goes to protocol (becomes 0)\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: restrict access with onlyOwner or governance control\n// Or add maximum value (MAX_COLLECT_RATE) validation\nmodifier onlyOperator() {\n    require(msg.sender == operator, \"ApeStaking: caller is not operator\");\n    _;\n}\n\nfunction setCollectRate(uint256 newCollectRate) external onlyOperator {\n    require(newCollectRate <= MAX_COLLECT_RATE, \"ApeStaking: rate exceeds maximum\");\n    emit CollectRateUpdated(collectRate, newCollectRate);\n    collectRate = newCollectRate;\n}",
+  "// ✅ Fix 1: add access control modifier\nmodifier onlyOperator() {\n    require(\n        msg.sender == operator || msg.sender == owner(),\n        \"ApeStaking: unauthorized caller\"\n    );\n    _;\n}\n\n// ✅ Fix 2: add upper bound validation on input\nuint256 public constant MAX_COLLECT_RATE = 0.1e18; // max 10%\n\nfunction setCollectRate(uint256 newCollectRate) external onlyOperator {\n    require(\n        newCollectRate <= MAX_COLLECT_RATE,\n        \"ApeStaking: collect rate exceeds maximum\"\n    );\n    require(\n        newCollectRate != collectRate,\n        \"ApeStaking: collect rate unchanged\"\n    );\n    emit CollectRateUpdated(collectRate, newCollectRate);\n    collectRate = newCollectRate;\n}"
+ ],
+ "steps": [
+  "200,000 APE → transferred to attacker contract",
+  "② APE → sAPE wrap (sAPE.mint)",
+  "③ sAPE → isAPE wrap (isAPE.mint)",
+  "⑥ PBAYC.randomTrade(1) → obtain BAYC NFT",
+  "Burn 1000 PBAYC → exchange for 1 random BAYC NFT",
+  "⑨ borrowEth() → borrow all ETH from CEther",
+  "→ stake APE from PBAYC pool in ApeStaking1",
+  "→ collectRate=100% so all APE goes to"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────┐\n│                Attacker Contract                      │\n│            0xB618...DA1                              │\n└──────────────────┬───────────────────────────────────┘\n                   │\n          ① Flash Loan request (200,000 APE)\n                   │\n                   ▼\n┌──────────────────────────────────────────────────────┐\n│             UniswapV3 Pool                           │\n│         0xAc4b...7DAF (APE/WETH)                    │\n│   200,000 APE → transferred to attacker contract     │\n└──────────────────┬───────────────────────────────────┘\n                   │\n          ② APE → sAPE wrap (sAPE.mint)\n                   ▼\n┌──────────────────────────────────────────────────────┐\n│                sAPE Contract          ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// [Step 1] Execute Flash Loan — borrow 200,000 APE with no collateral\nfunction testExploit() public {\n    deal(address(this), 0); // start with 0 initial capital\n    UniV3Pool.flash(address(this), 200_000 * 1e18, 0, new bytes(1));\n}\n\n// [Step 2] Flash Loan callback — execute attack logic\nfunction uniswapV3FlashCallback(uint256 fee0, uint256 fee1, bytes calldata data) external {\n    // [2-A] Wrap APE → sAPE → isAPE in sequence (create collateral asset)\n    APE.approve(address(sAPE), APE.balanceOf(address(this)));\n    sAPE.mint(APE.balanceOf(address(this)));\n    sAPE.approve(address(isAPE), sAPE.balanceOf(address(this)));\n    isAPE.mint(sAPE.balanceOf(address(this)));\n\n    // [2-B] Enter lending market with isAPE as collateral"
+ ]
+}

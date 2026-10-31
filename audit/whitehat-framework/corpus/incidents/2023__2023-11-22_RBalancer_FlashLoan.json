@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-11-22_RBalancer_FlashLoan",
+ "source_file": "2023/2023-11-22_RBalancer_FlashLoan.md",
+ "title": "RBalancer Flash Loan Attack Incident Analysis",
+ "date": "2023-11-22",
+ "protocol": "RBalancer",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// File: ExcessivelySafeCall.sol\n     * @notice Swaps function selectors in encoded contract calls  // ❌\n\n// ...\n\n     * for the new selector. This function modifies memory in place, and should  // ❌\n\n// ...\n\n    function swapSelector(bytes4 _newSelector, bytes memory _buf)  // ❌",
+  "// File: NonblockingLzApp.sol\n    function _blockingLzReceive(uint16 _srcChainId, bytes memory _srcAddress, uint64 _nonce, bytes memory _payload) internal virtual override {\n        (bool success, bytes memory reason) = address(this).excessivelySafeCall(gasleft(), 150, abi.encodeWithSelector(this.nonblockingLzReceive.selector, _srcChainId, _srcAddress, _nonce, _payload));  // ❌\n        // try-catch all errors/exceptions\n        if (!success) {\n            _storeFailedMessage(_srcChainId, _srcAddress, _nonce, _payload, reason);\n        }\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Balancer.flashLoan(WETH, 8,600 ETH)",
+  "2 ▶ address(VulnContract).call{value: 8600 ether}(",
+  "3 ▶ Stone.approve(VulnContract, max)",
+  "4 ▶ address(VulnContract).call(",
+  "5 ▶ address(VulnContract).call(",
+  "6 ▶ Convert to WETH and repay Balancer",
+  "7 ▶ Realize ~17 ETH profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: custom functions with no access control\ncontract StoneProtocol {\n    // 0xd0e30db0: deposit-like function — called with ETH\n    // internal balance can be manipulated without access control\n    fallback() external payable {\n        bytes4 sel = bytes4(msg.data);\n        if (sel == 0xd0e30db0) {\n            _handleDeposit();\n        } else if (sel == 0x5069fb57) {\n            _handleStateChange(); // no access control\n        } else if (sel == 0xb18f2e91) {\n            _handleWithdraw(/*params*/); // allows large-scale withdrawal\n        }\n    }\n}",
+  "// File: TransferHelper.sol\n    function safeTransferFrom(\n\n// ...\n\n    function safeTransfer(\n\n// ...\n\n    function safeApprove("
+ ]
+}

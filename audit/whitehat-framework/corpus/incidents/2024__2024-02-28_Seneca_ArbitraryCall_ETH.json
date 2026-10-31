@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-02-28_Seneca_ArbitraryCall_ETH",
+ "source_file": "2024/2024-02-28_Seneca_ArbitraryCall_ETH.md",
+ "title": "Seneca Protocol — Arbitrary External Call Vulnerability Analysis",
+ "date": "2024-02-28",
+ "protocol": "Seneca Protocol",
+ "chain": "Ethereum",
+ "loss_raw": "~$6,400,000 (confirmed CertiK, The Block; 80% / ~$5.3M recovered by whitehat)",
+ "loss_usd": 6400000.0,
+ "root_cause": "The `_call()` function inside `performOperations()` can invoke arbitrary external contracts with user-controlled calldata — allowing the attacker to drain tokens that victims had previously `approve`d to the Chamber contract",
+ "attack_tx": "0x23fc...1286",
+ "vulnerable_contract": "0x65c2...1F06 (Chamber Proxy)",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — Chamber.sol (implementation 0x45e1...48B)\nfunction _call(\n    uint256 value,\n    bytes memory data,\n    uint256 value1,\n    uint256 value2\n) whenNotPaused internal returns (bytes memory, uint8) {\n    // Decode callee address and callData — fully controlled by the user\n    (address callee, bytes memory callData, bool useValue1, bool useValue2, uint8 returnValues) =\n        abi.decode(data, (address, bytes, bool, bool, uint8));\n\n    // Optionally append value1/value2 to callData based on useValue flags\n    if (useValue1 && !useValue2) {\n        callData = abi.encodePacked(callData, value1);\n    } else if (!useValue1 && useValue2) {\n        callData = abi.encodePacked(callData, value2);\n    } else if (useValue1 && useValue2) {\n        callData = abi.encodePacked(callData, value1, value2);\n    }\n\n    // ❌ Blacklist check: only blocks bentoBox, Chamber itself, and BentoBox owner\n    //    ERC-20 token addresses are NOT on the blacklist → calls allowed\n    require(!blacklisted[callee], \"Chamber: can't call\");\n\n    // ❌ Executes external call to arbitrary address with arbitrary calldata\n    //    Chamber contract is msg.sender → can exploit tokens victim approved to Chamber\n    (bool success, bytes memory returnData) = callee.call{value: value}(callData);\n    require(success, \"Chamber: call failed\");\n    return (returnData, returnValues);\n}",
+  "// ❌ Vulnerable code — OPERATION_CALL branch: delegates to _call() without validation\n} else if (action == Constants.OPERATION_CALL) {\n    // ❌ Anyone who includes OPERATION_CALL(=30) in the actions array\n    //    triggers _call(), enabling arbitrary external calls\n    (bytes memory returnData, uint8 returnValues) = _call(values[i], datas[i], value1, value2);\n\n    if (returnValues == 1) {\n        (value1) = abi.decode(returnData, (uint256));\n    } else if (returnValues == 2) {\n        (value1, value2) = abi.decode(returnData, (uint256, uint256));\n    }\n}",
+  "// ❌ Vulnerable code — token contracts not included in blacklist\nconstructor(IBentoBoxV1 bentoBox_, IERC20 senUSD_) {\n    bentoBox = bentoBox_;\n    senUSD = senUSD_;\n    masterContract = this;\n    \n    // Blacklist only adds BentoBox, Chamber itself, and BentoBox owner\n    // ❌ Collateral tokens and other ERC-20 tokens are NOT blacklisted\n    blacklisted[address(bentoBox)] = true;\n    blacklisted[address(this)] = true;\n    blacklisted[Ownable(address(bentoBox)).owner()] = true;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — restrict callable contracts via allowlist\nfunction _call(\n    uint256 value,\n    bytes memory data,\n    uint256 value1,\n    uint256 value2\n) whenNotPaused internal returns (bytes memory, uint8) {\n    (address callee, bytes memory callData, bool useValue1, bool useValue2, uint8 returnValues) =\n        abi.decode(data, (address, bytes, bool, bool, uint8));\n\n    if (useValue1 && !useValue2) {\n        callData = abi.encodePacked(callData, value1);\n    } else if (!useValue1 && useValue2) {\n        callData = abi.encodePacked(callData, value2);\n    } else if (useValue1 && useValue2) {\n        callData = abi.encodePacked(callData, value1, value2);\n    }\n\n    // ✅ Only allow calls to contracts registered in the allowlist\n    require(allowlisted[callee], \"Chamber: callee not allowed\");\n\n    // ✅ Additional: block dangerous function selectors (transferFrom, approve, etc.)\n    bytes4 selector;\n    if (callData.length >= 4) {\n        assembly { selector := mload(add(callData, 32)) }\n    }\n    require(!blockedSelectors[selector], \"Chamber: selector not allowed\");\n\n    (bool success, bytes memory returnData) = callee.call{value: value}(callData);\n    require(success, \"Chamber: call failed\");\n    return (returnData, returnValues);\n}",
+  "// ✅ Fixed code — restrict OPERATION_CALL to privileged callers only\n} else if (action == Constants.OPERATION_CALL) {\n    // ✅ OPERATION_CALL restricted to the protocol admin (owner) only\n    require(msg.sender == masterContract.owner(), \"Chamber: CALL action restricted\");\n    (bytes memory returnData, uint8 returnValues) = _call(values[i], datas[i], value1, value2);\n    // ...\n}"
+ ],
+ "steps": [
+  "Step 1: Construct malicious calldata",
+  "Step 2: Call performOperations()",
+  "Step 3: Chamber._call() executes internally",
+  "Step 4: ERC-20 transferFrom executes",
+  "victim → attacker, amount",
+  "→ action == OPERATION_CALL(30)",
+  "→ _call() invoked",
+  "→ sent to attacker's wallet"
+ ],
+ "other_code": [
+  "Step 1: Construct malicious calldata\n   - Encode transferFrom(victim, attacker, amount)\n   - target: PendlePrincipalToken address (not on blacklist)\n\nStep 2: Call performOperations()\n   - actions = [30] (OPERATION_CALL)\n   - values  = [0]\n   - datas   = [abi.encode(PendlePrincipalToken, callData, false, false, 0)]\n\nStep 3: Chamber._call() executes internally\n   - callee  = PendlePrincipalToken ← passes blacklist check ✗\n   - Chamber contract calls transferFrom as msg.sender\n\nStep 4: ERC-20 transferFrom executes\n   - from: victim (0x9CBF...06ce)\n   - to:   attacker (0x9464...42DC)\n   - amount: victim's entire balance",
+  "┌─────────────────────────────────────┐\n│  Attacker EOA                        │\n│  0x9464...42DC                      │\n│                                     │\n│  actions = [OPERATION_CALL(=30)]    │\n│  data = encode(                     │\n│    callee: PendlePrincipalToken,    │\n│    callData: transferFrom(          │\n│      victim → attacker, amount      │\n│    )                                │\n│  )                                  │\n└─────────────────┬───────────────────┘\n                  │ performOperations() call\n                  ▼\n┌─────────────────────────────────────┐\n│  Chamber Proxy                      │\n│  0x65c2...1F06                      │\n│  (EIP-1167 MinimalProxy)            │\n└─────────────────┬───────────────────┘\n                  │ delegatecall\n                  ▼\n┌"
+ ]
+}

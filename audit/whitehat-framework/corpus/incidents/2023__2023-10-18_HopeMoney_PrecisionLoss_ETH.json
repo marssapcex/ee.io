@@ -1,0 +1,48 @@
+{
+ "id": "2023__2023-10-18_HopeMoney_PrecisionLoss_ETH",
+ "source_file": "2023/2023-10-18_HopeMoney_PrecisionLoss_ETH.md",
+ "title": "Hope.money (HopeLend) — Precision Loss Vulnerability Analysis",
+ "date": "2023-10-18",
+ "protocol": "Hope.money / HopeLend",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$825,000 (WETH, USDT, USDC, HOPE, stHOPE)",
+ "loss_usd": 825000.0,
+ "root_cause": "Share/asset conversion precision loss via liquidityIndex manipulation (division floor error)",
+ "attack_tx": "0x1a7e...0392",
+ "vulnerable_contract": "0x53Fb...030 (Pool)",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Share calculation during withdraw — precision loss occurs here\nfunction withdraw(address asset, uint256 amount, address to)\n    external returns (uint256)\n{\n    // amount(assets) / liquidityIndex = amountScaled(shares) — floor division\n    // If liquidityIndex is very large, amountScaled is computed smaller than it should be\n    uint256 amountScaled = amount.rayDiv(\n        reserveCache.nextLiquidityIndex   // ❌ manipulated, extremely large index value\n    );\n    // Burns amountScaled shares and transfers amount assets\n    // But due to rayDiv floor error, amountScaled < correct ratio → excess asset withdrawal\n    IAToken(reserveData.aTokenAddress).burn(\n        msg.sender, to, amount, reserveCache.nextLiquidityIndex\n    );\n}",
+  "// ❌ Flash loan fees accumulate into liquidityIndex\n// Fee rate: 0.09%, minus 30% protocol cut → effective 0.063%\n// After 60 iterations: index += premium * 60\nuint256 premiumPerFlashloan = 2000e8 * 9 / 10_000;       // 0.09% fee\npremiumPerFlashloan -= (premiumPerFlashloan * 30 / 100);  // 30% protocol cut\nuint256 nextLiquidityIndex = premiumPerFlashloan * 60 + 1;  // accumulated over 60 iterations"
+ ],
+ "code_after": [
+  "// ✅ Calculate shares first before withdrawal, then back-calculate the actual withdrawable assets\nfunction withdraw(address asset, uint256 amount, address to)\n    external returns (uint256)\n{\n    uint256 userBalance = IAToken(reserveData.aTokenAddress)\n        .scaledBalanceOf(msg.sender);\n\n    uint256 amountToWithdraw = amount;\n    if (amount == type(uint256).max) {\n        amountToWithdraw = userBalance.rayMul(reserveCache.nextLiquidityIndex);\n    }\n\n    // ✅ Calculate shares first — final withdrawal amount determined from shares to burn\n    uint256 sharesToBurn = amountToWithdraw.rayDiv(\n        reserveCache.nextLiquidityIndex\n    );\n    // ✅ At least 1 share must be burned (prevents precision loss)\n    require(sharesToBurn > 0, \"HopeLend: amount too small for current index\");\n    // ✅ Recalculate actual withdrawal from shares (prevents excess withdrawal)\n    uint256 actualWithdraw = sharesToBurn.rayMul(reserveCache.nextLiquidityIndex);\n\n    IAToken(reserveData.aTokenAddress).burn(\n        msg.sender, to, actualWithdraw, reserveCache.nextLiquidityIndex\n    );\n}",
+  "// ✅ Permanently lock minimum shares to a burn address during Pool initialization\nuint256 constant VIRTUAL_SHARES = 1e3; // or a larger value\nuint256 constant VIRTUAL_ASSETS = 1;\n\nfunction initializeReserve(address asset) internal {\n    // Permanently allocate initial 1000 shares to address(0) → fundamentally blocks first depositor attack\n    _mint(address(0), VIRTUAL_SHARES);\n    // Also assign minimum 1 unit of real assets\n    totalAssets += VIRTUAL_ASSETS;\n}"
+ ],
+ "steps": [
+  "1. Request Aave V3 flashLoan(2300 WBTC)",
+  "2. HopeLend.deposit(2000 WBTC) → mint 2000 hWBTC",
+  "3. HopeLend.flashLoan(2000 WBTC) → enter callback",
+  "4. Directly transfer 2000 WBTC to hEthWBTC contract",
+  "→ totalAssets spikes, totalSupply unchanged",
+  "5. HopeLend.withdraw(2000 WBTC - 1)",
+  "→ burns nearly all shares → totalSupply = 1",
+  "6. Call HopeLend.flashLoan 60 times",
+  "→ each call adds flash loan fee → liquidityIndex accumulates",
+  "→ collateral value of 1 share equals thousands of WBTC",
+  "7. Borrow entire protocol liquidity",
+  "8. deposit(depositAmount) → mint 1 share",
+  "9. withdraw(withdrawAmount=1.5x) → burn 1 share",
+  "→ 0.5x net profit (excess withdrawal via precision loss)",
+  "10. Repeat count times → drain all WBTC from hEthWBTC",
+  "11. Convert WBTC → WETH → ETH",
+  "12. Pay 264 ETH to coinbase (MEV/block reward)",
+  "13. Retain remaining ETH"
+ ],
+ "other_code": [
+  "// Optimal withdrawal amounts calculated by the attacker\nuint256 depositAmount  = nextLiquidityIndex;        // Minimum assets needed to mint 1 share\nuint256 withdrawAmount = nextLiquidityIndex * 3 / 2 - 1; // Maximum assets withdrawable by burning 1 share\n\n// Net profit per cycle\nuint256 profitPerCycle = withdrawAmount - depositAmount;  // ≈ 0.5 * nextLiquidityIndex",
+  "┌─────────────────────────────────────────────────────┐\n│  Attacker (0xA8Bb...145b)                           │\n│  1. Request Aave V3 flashLoan(2300 WBTC)            │\n└───────────────────┬─────────────────────────────────┘\n                    │ Receive 2300 WBTC\n                    ▼\n┌─────────────────────────────────────────────────────┐\n│  executeOperation — Phase 1 (index=1, AaveV3 callback) │\n│  2. HopeLend.deposit(2000 WBTC) → mint 2000 hWBTC  │\n│  3. HopeLend.flashLoan(2000 WBTC) → enter callback  │\n└───────────────────┬─────────────────────────────────┘\n                    │\n                    ▼\n┌─────────────────────────────────────────────────────┐\n│  executeOperation — Phase 2 (index=2, HopeLend callback) │\n│  4. Directly transfer 2000 WBTC to hEthWBTC contract │\n│     → totalA"
+ ]
+}

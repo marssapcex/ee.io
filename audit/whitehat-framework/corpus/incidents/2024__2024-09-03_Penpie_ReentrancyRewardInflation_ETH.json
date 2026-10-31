@@ -1,0 +1,50 @@
+{
+ "id": "2024__2024-09-03_Penpie_ReentrancyRewardInflation_ETH",
+ "source_file": "2024/2024-09-03_Penpie_ReentrancyRewardInflation_ETH.md",
+ "title": "Penpie — Reward Inflation via Reentrancy Attack Analysis",
+ "date": "2024-09-03",
+ "protocol": "Penpie",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "$27,000,000 (agETH + rswETH)",
+ "loss_usd": 27000000.0,
+ "root_cause": "Reward inflation via reentrancy after registering a malicious Pendle market",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code: PendleMarketRegisterHelper.registerPenpiePool()\n// Anyone can register an arbitrary market in Penpie with no caller validation\nfunction registerPenpiePool(address _market) external {\n    // No access control such as onlyOwner or onlyGovernance\n    // Does not validate whether _market is an official Pendle market\n    IPenpiePoolHelper(pendleMarketDepositHelper).registerPool(_market);\n    // Adding the pool to PendleStaking also permits malicious markets\n}",
+  "// ❌ Vulnerable code: PendleStaking.batchHarvestMarketRewards()\n// Violates CEI (Checks-Effects-Interactions) pattern\n// State is not updated before the external call\nfunction batchHarvestMarketRewards(\n    address[] calldata _markets,\n    uint256 minEthToRecieve\n) external {\n    for (uint256 i = 0; i < _markets.length; i++) {\n        address market = _markets[i];\n        Pool storage pool = pools[market];\n        \n        // ❌ This external call triggers the attacker's callback\n        // SY.claimRewards() invokes the attacker contract's claimRewards()\n        uint256[] memory rewards = ISY(pool.sy).claimRewards(address(this));\n        \n        // ❌ Reward accounting is performed after the external call\n        // The attacker reenters during the external call, calls depositMarket(),\n        // and claims rewards based on the inflated deposit amount\n        _updateRewards(market, rewards);\n    }\n}",
+  "Attacker EOA (0x7A2f...1D1B)\n        │\n        │ [Tx 1: Block #20,671,877]\n        ▼\n┌─────────────────────────────────────────┐\n│  Attacker Contract (acting as malicious SY) │\n│  ① createYieldContract(SY=self)         │\n│     → Create PT + YT                    │\n│  ② PendleMarketFactoryV3.createNewMarket│\n│     → Create malicious PENDLE_LPT       │\n│  ③ registerPenpiePool(malicious_LPT) ← ❌ │\n│     Register in Penpie with no auth check │\n│  ④ Initial LP deposit (seed liquidity)  │\n└─────────────────────────────────────────┘\n        │\n        │ [Tx 2: Block #20,671,878]\n        ▼\n┌─────────────────────────────────────────┐\n│  attack() called                         │\n│  Balancer flashLoan(agETH, rswETH)      │\n└──────────────┬──────────────────────────┘\n               │\n               ▼\n┌─────────────────────────────────────────┐\n│  Enter receiveFlashLoan()                │\n│  batchHarvestMarketRewards([malicious_LPT]) │\n└──────────────┬──────────────────────────┘\n               │ PendleStaking → maliciousSY.claimRewards() external call\n               ▼\n┌─────────────────────────────────────────┐\n│  claimRewards() callback ← ❌ Reentrancy │\n│  ┌───────────────────────────────────┐  │\n│  │  agETH → addLiquiditySingleToken  │  │\n│  │  → Obtain PENDLE_LPT_0x6010 LP    │  │\n│  │  → depositMarket(LPT_0x6010)      │  │◀── Inflate deposit amount\n│  │                                   │  │\n│  │  rswETH → addLiquiditySingleToken │  │\n│  │  → Obtain PENDLE_LPT_0x038c LP    │  │\n│  │  → depositMarket(LPT_0x038c)      │  │◀── Inflate deposit amount\n│  └───────────────────────────────────┘  │\n└──────────────┬──────────────────────────┘\n               │ claimRewards() returns\n               ▼\n┌─────────────────────────────────────────┐\n│  batchHarvestMarketRewards reward accounting │\n│  ← Calculated based on inflated deposits ❌ │\n│  multiclaim() → Collect inflated rewards │\n└──────────────┬──────────────────────────┘\n               │\n               ▼\n┌─────────────────────────────────────────┐\n│  Withdraw LP → removeLiquiditySingleToken │\n│  Recover agETH + rswETH                 │\n│  Repay Balancer (no flash loan fee)     │\n│  Net profit: ~$27,000,000              │\n└─────────────────────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Fixed code: Added access control and market validation\nfunction registerPenpiePool(address _market) external onlyOwner {\n    // Verify the market was created by the official Pendle market factory\n    require(\n        IPendleMarketFactory(PENDLE_MARKET_FACTORY).isValidMarket(_market),\n        \"Unauthorized market: only official Pendle markets may be registered\"\n    );\n    IPenpiePoolHelper(pendleMarketDepositHelper).registerPool(_market);\n}",
+  "// ✅ Fixed code: Added nonReentrant guard + CEI pattern compliance\n// nonReentrant modifier applied to block reentrancy\nfunction batchHarvestMarketRewards(\n    address[] calldata _markets,\n    uint256 minEthToRecieve\n) external nonReentrant {\n    for (uint256 i = 0; i < _markets.length; i++) {\n        address market = _markets[i];\n        Pool storage pool = pools[market];\n        \n        // ✅ Snapshot: record total supply before the call\n        uint256 totalSupplyBefore = IERC20(pool.receiptToken).totalSupply();\n        \n        // External call\n        uint256[] memory rewards = ISY(pool.sy).claimRewards(address(this));\n        \n        // ✅ Verify total supply has not changed after the call\n        uint256 totalSupplyAfter = IERC20(pool.receiptToken).totalSupply();\n        require(totalSupplyBefore == totalSupplyAfter, \"Reentrancy detected: deposit amount changed\");\n        \n        _updateRewards(market, rewards);\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: Request flash loan from Balancer Vault",
+  "Step 2: Enter receiveFlashLoan() callback",
+  "Step 3: Call batchHarvestMarketRewards([malicious_PENDLE_LPT])",
+  "Step 4: Inside claimRewards() callback — Reentrancy",
+  "- agETH → PendleRouterV4.addLiquiditySingleTokenKeepYt()",
+  "→ Obtain PENDLE_LPT_0x6010 LP tokens",
+  "- PENDLE_LPT_0x6010 LP → PendleMarketDepositHelper.depositMarket()",
+  "→ Deposit LP into Penpie (inflates reward calculation basis)",
+  "- rswETH → PendleRouterV4.addLiquiditySingleTokenKeepYt()",
+  "→ Obtain PENDLE_LPT_0x038c LP tokens",
+  "- PENDLE_LPT_0x038c LP → PendleMarketDepositHelper.depositMarket()",
+  "Step 5: Malicious SY claimRewards() returns → batchHarvestMarketRewards reward accounting",
+  "Step 6: MasterPenpie.multiclaim() — Collect inflated rewards",
+  "Step 7: withdrawMarket() — Withdraw deposited LP, then removeLiquiditySingleToken()",
+  "Step 8: Repay flash loan to Balancer Vault (no fee)",
+  "→ Create PT + YT",
+  "→ Create malicious PENDLE_LPT",
+  "PendleStaking → maliciousSY.claimRewards() external call",
+  "agETH → addLiquiditySingleToken",
+  "→ Obtain PENDLE_LPT_0x6010 LP"
+ ],
+ "other_code": [
+  "Step 1: Request flash loan from Balancer Vault\n   - Full balance of agETH + full balance of rswETH (~$27M)\n\nStep 2: Enter receiveFlashLoan() callback\n\nStep 3: Call batchHarvestMarketRewards([malicious_PENDLE_LPT])\n   - PendleStaking calls claimRewards() on the malicious SY\n   - Enter attacker callback\n\nStep 4: Inside claimRewards() callback — Reentrancy\n   - agETH → PendleRouterV4.addLiquiditySingleTokenKeepYt()\n     → Obtain PENDLE_LPT_0x6010 LP tokens\n   - PENDLE_LPT_0x6010 LP → PendleMarketDepositHelper.depositMarket()\n     → Deposit LP into Penpie (inflates reward calculation basis)\n   - rswETH → PendleRouterV4.addLiquiditySingleTokenKeepYt()\n     → Obtain PENDLE_LPT_0x038c LP tokens\n   - PENDLE_LPT_0x038c LP → PendleMarketDepositHelper.depositMarket()\n     → Deposit LP into Penpie (in"
+ ]
+}

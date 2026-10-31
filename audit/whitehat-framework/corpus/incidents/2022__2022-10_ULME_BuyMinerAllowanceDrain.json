@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-10_ULME_BuyMinerAllowanceDrain",
+ "source_file": "2022/2022-10_ULME_BuyMinerAllowanceDrain.md",
+ "title": "ULME — buyMiner() Victim Allowance Drain Attack Analysis",
+ "date": "2022-10-01",
+ "protocol": "ULME Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~$250,000 (attacker net profit ~$50,000)",
+ "loss_usd": 250000.0,
+ "root_cause": "`buyMiner(address user, uint256 usdt)` function consumes the USDT allowance of an arbitrary address without validating the `user` parameter",
+ "attack_tx": null,
+ "vulnerable_contract": "0xAE975a25646E6eB859615d0A147B909c13D31FEd (ULME Token)",
+ "classes": [
+  "approval-abuse"
+ ],
+ "code_before": [
+  "❌ Vulnerable buyMiner() — no validation of user parameter\ncontract ULMEToken {\n    IERC20 public USDT;\n\n    //",
+  "❌ user parameter is not enforced to be msg.sender\n    function buyMiner(address user, uint256 usdt) external {\n        //",
+  "❌ user can be an arbitrary address\n        // By specifying a victim who has approved the ULME contract to spend their USDT as user,\n        // the victim's USDT can be spent on their behalf\n        USDT.transferFrom(user, address(this), usdt);\n\n        // Purchase ULME with USDT and send to user\n        uint256 ulmeAmount = usdt * EXCHANGE_RATE / 1e18;\n        _transfer(address(this), user, ulmeAmount);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern — enforce msg.sender\ncontract SafeULMEToken {\n    function buyMiner(uint256 usdt) external {\n        //",
+  "✅ Must use the caller's own USDT\n        USDT.transferFrom(msg.sender, address(this), usdt);\n        uint256 ulmeAmount = usdt * EXCHANGE_RATE / 1e18;\n        _transfer(address(this), msg.sender, ulmeAmount);\n    }\n}"
+ ],
+ "steps": [
+  "[3] Swap USDT → ULME (PancakeSwap)",
+  "→ USDT.transferFrom(victim, ULME_contract, amount)",
+  "→ Victim's USDT purchases ULME → ULME supply increases",
+  "[5] Swap ULME → USDT (PancakeSwap reverse swap)"
+ ],
+ "other_code": []
+}

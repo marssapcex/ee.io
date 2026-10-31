@@ -1,0 +1,26 @@
+{
+ "id": "2024__2024-10-16_RadiantCapital_MultisigCompromise_BSC_ARB",
+ "source_file": "2024/2024-10-16_RadiantCapital_MultisigCompromise_BSC_ARB.md",
+ "title": "Radiant Capital — Lazarus Group Multisig Hardware Wallet Compromise Analysis",
+ "date": "2024-10-16",
+ "protocol": "Radiant Capital",
+ "chain": "BSC + Arbitrum",
+ "loss_raw": "~$50,000,000",
+ "loss_usd": 50000000.0,
+ "root_cause": "Lazarus Group used malware-injected hardware wallet signing sessions to steal 3-of-11 multisig owner private keys; once threshold was met, the protocol's ownership was transferred to a malicious contract, draining all lending pools",
+ "attack_tx": null,
+ "vulnerable_contract": "Radiant LendingPoolAddressesProvider — ownership transferred to attacker",
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "function setLendingPoolImpl(address pool) external override onlyOwner {\n    _updateImpl(LENDING_POOL, pool); // ❌ replaces the live LendingPool implementation\n    emit LendingPoolUpdated(pool);\n}\n\nfunction _updateImpl(bytes32 id, address newAddress) internal {\n    address payable proxyAddress = payable(_addresses[id]);\n\n    InitializableImmutableAdminUpgradeabilityProxy proxy = InitializableImmutableAdminUpgradeabilityProxy(\n        proxyAddress\n    );\n    bytes memory params = abi.encodeWithSignature(\"initialize(address)\", address(this));\n\n    if (proxyAddress == address(0)) {\n        proxy = new InitializableImmutableAdminUpgradeabilityProxy(address(this));\n        proxy.initialize(newAddress, params);\n        _addresses[id] = address(proxy);\n        emit ProxyCreated(id, address(proxy));\n    } else {\n        proxy.upgradeToAndCall(newAddress, params); // ❌ atomically upgrades proxy to malicious impl\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: add a time-lock between setLendingPoolImpl() proposal and execution\n// (e.g., 48-hour delay with a guardian that can cancel malicious proposals)\n// Also: conduct signing ceremonies on air-gapped, internet-isolated machines"
+ ],
+ "steps": [],
+ "other_code": [
+  "Lazarus Group\n  │\n  ├─1─▶ Social engineering: deliver malicious PDF via Telegram\n  │       → malware infects hardware wallet signing env of 3 signers\n  │\n  ├─2─▶ Intercept signing sessions → extract 3 private keys\n  │\n  ├─3─▶ Construct 3-of-11 multisig tx: setLendingPoolImpl(maliciousImpl)\n  │\n  ├─4─▶ Malicious impl drains all token pools: USDC, WBTC, ETH, etc.\n  │       BSC: ~$32M | ARB: ~$18M\n  │\n  └─5─▶ Funds laundered through Tornado Cash and cross-chain bridges"
+ ]
+}

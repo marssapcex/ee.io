@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-10-18_Market_ReadOnlyReentrancy",
+ "source_file": "2022/2022-10-18_Market_ReadOnlyReentrancy.md",
+ "title": "Market (MAI Finance) — Read-Only Reentrancy Oracle Manipulation Attack Analysis",
+ "date": "2022-10-18",
+ "protocol": "MAI Finance / mMarket",
+ "chain": "Polygon",
+ "loss_raw": "~$180,000",
+ "loss_usd": 180000.0,
+ "root_cause": "During Curve `remove_liquidity()`, `mMAI.borrow()` is called via the `receive()` hook — using a temporarily inconsistent Curve LP price as the oracle",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable mMAI - directly uses Curve LP virtual price\ncontract mMAI {\n    ICurvePool public curvePool;\n    IBeefyVault public beefyVault;\n\n    function getCollateralPrice() public view returns (uint256) {\n        //",
+  "❌ Curve's get_virtual_price() can return an inconsistent value\n        // during the receive() callback mid-remove_liquidity()\n        uint256 lpVirtualPrice = curvePool.get_virtual_price();\n        uint256 beefyPricePerShare = beefyVault.getPricePerFullShare();\n        return lpVirtualPrice * beefyPricePerShare / 1e18;\n    }\n\n    function borrow(uint256 amount) external {\n        uint256 collateralValue = collateral[msg.sender] * getCollateralPrice() / 1e18;\n        require(collateralValue >= amount * COLLATERAL_RATIO / 100, \"Undercollateralized\");\n        //",
+  "❌ If called during a receive() hook, allows over-borrowing at a manipulated price\n        MAI.mint(msg.sender, amount);\n        debt[msg.sender] += amount;\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - Curve reentrancy protection\ncontract SafemMAI {\n    // Check reentrancy lock state of the Curve pool\n    function getCollateralPrice() public view returns (uint256) {\n        //",
+  "✅ Check Curve pool's is_killed() or reentrancy state\n        // Leverage reentrancy protection if the Curve pool provides it\n        curvePool.claim_admin_fees(); // ← Detect lock state by calling a nonReentrant function\n        // Or use an external Chainlink oracle\n        return chainlinkOracle.getPrice();\n    }\n}"
+ ],
+ "steps": [
+  "add_liquidity() → receive mooCurvestMATIC-MATIC LP",
+  "[3] Deposit LP into Beefy Vault → receive mooCurve tokens",
+  "get_virtual_price() → abnormally high value",
+  "[7] Swap MAI → USDC (via Curve USDC pool)"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ICurvePool {\n    function add_liquidity(uint256[2] calldata amounts, uint256 min_mint_amount) external payable;\n    function remove_liquidity(uint256 _amount, uint256[2] calldata min_amounts) external;\n    function get_virtual_price() external view returns (uint256);\n}\n\ninterface ImMAI {\n    function mint(address token, uint256 amount) external;\n    function borrow(uint256 amount) external;\n    function liquidateBorrow(address borrower, uint256 repayAmount, address cTokenCollateral) external;\n}\n\ninterface IBeefyVault {\n    function deposit(uint256 amount) external;\n    function withdraw(uint256 shares) external;\n}\n\ncontract MarketExploit is Test {\n    ICurvePool curve  = ICurvePool(0xFb"
+ ]
+}

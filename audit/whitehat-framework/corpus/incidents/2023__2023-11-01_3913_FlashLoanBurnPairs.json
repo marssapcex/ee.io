@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-11-01_3913_FlashLoanBurnPairs",
+ "source_file": "2023/2023-11-01_3913_FlashLoanBurnPairs.md",
+ "title": "3913 Flash Loan BurnPairs Attack Incident Analysis",
+ "date": "2023-11-01",
+ "protocol": "3913",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// File: 3913_decompiled.sol\n    function burnPairs() external {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ DODO Pool 1 flashLoan (large BUSD borrow)",
+  "2 ▶ swapExactTokensForTokens(BUSD → 3913)",
+  "3 ▶ Token3913.burnPairs()",
+  "→ AMM price distortion across both pairs",
+  "4 ▶ Pair(3913/BUSD).skim(address(this))",
+  "5 ▶ Pair(3913/9419).skim(address(this))",
+  "6 ▶ Sell 3913 + sell 9419 → obtain BUSD",
+  "7 ▶ Repay all 5 DODO flash loans sequentially + realize ~$31,354 profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: public burnPairs function\ncontract Token3913 {\n    address public pair_busd;\n    address public pair_9419;\n\n    // Vulnerable: burns tokens held in pairs with no access control\n    function burnPairs() external {\n        uint256 busdPairBalance = balanceOf(pair_busd);\n        uint256 pairBalance_9419 = balanceOf(pair_9419);\n\n        // Burning pair balances without calling sync() causes AMM reserve mismatch\n        _burn(pair_busd, busdPairBalance * 90 / 100);\n        _burn(pair_9419, pairBalance_9419 * 90 / 100);\n        // → surplus BUSD/9419 can be extracted via skim()\n    }\n}",
+  "Attacker [0xb29f18b89e56cc0151c7c17de0625a21018d8ae7]\n  │\n  ├─1─▶ DODO Pool 1 flashLoan (large BUSD borrow)\n  │      └─ DODO Pool 2 flashLoan (nested)\n  │           └─ DODO Pool 3 flashLoan (nested)\n  │                └─ DODO Pool 4 flashLoan (nested)\n  │                     └─ DODO Pool 5 flashLoan (nested)\n  │\n  ├─2─▶ swapExactTokensForTokens(BUSD → 3913)\n  │      Acquire large amount of 3913\n  │\n  ├─3─▶ Token3913.burnPairs()\n  │      [3913: 0xd74F28c6E0E2c09881Ef2d9445F158833c174775]\n  │      Burns balances in pair_busd and pair_9419\n  │      → AMM price distortion across both pairs\n  │\n  ├─4─▶ Pair(3913/BUSD).skim(address(this))\n  │      [Pair: 0x715762906489D5D671eA3eC285731975DA617583]\n  │      Recover surplus BUSD\n  │\n  ├─5─▶ Pair(3913/9419).skim(address(this))\n  │      [Pair: 0xd6d"
+ ]
+}

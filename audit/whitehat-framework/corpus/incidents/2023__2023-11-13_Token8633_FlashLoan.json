@@ -1,0 +1,33 @@
+{
+ "id": "2023__2023-11-13_Token8633_FlashLoan",
+ "source_file": "2023/2023-11-13_Token8633_FlashLoan.md",
+ "title": "Token8633/9419 — Flash Loan Attack Analysis",
+ "date": "2023-11-13",
+ "protocol": "Token 8633/9419",
+ "chain": "BSC",
+ "loss_raw": "~$52K",
+ "loss_usd": 52.0,
+ "root_cause": "Both token contracts use unvalidated AMM spot reserves for reward/price calculation, allowing manipulation within a single transaction",
+ "attack_tx": "0xf6ec3c22b718c3da...",
+ "vulnerable_contract": "0x11cd2168fc420ae1...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Both tokens share the same vulnerable pattern\n// Price calculation based on pool balance\nfunction getPrice() public view returns (uint256) {\n    return token.balanceOf(pool) * 1e18 / BUSD.balanceOf(pool); //",
+  "❌\n}\n//",
+  "// ❌ RECONSTRUCTED — not verified source.\n// Token8633 / helper contract pattern — spot reserve price used directly\n\nfunction autoSwapAndAddToMarketing() external {\n    // ❌ Reads current AMM spot reserves without TWAP or manipulation check\n    (uint112 reserve0, uint112 reserve1,) = IPancakePair(pair).getReserves();\n    uint256 price = uint256(reserve1) * 1e18 / uint256(reserve0); // ❌ spot price, manipulable\n\n    uint256 tokenBalance = IERC20(token).balanceOf(address(this));\n    if (tokenBalance > threshold) {\n        // Calculates swap/reward amount based on manipulated spot price\n        uint256 swapAmount = tokenBalance * price / 1e18;\n        _swapTokensForMarketing(swapAmount); // sends to marketing wallet\n    }\n}\n\nfunction autoAddLp() external {\n    // ❌ Uses spot reserves to determine LP add ratio — inflated by flash loan\n    (uint112 reserve0, uint112 reserve1,) = IPancakePair(pair).getReserves();\n    uint256 half = IERC20(token).balanceOf(address(this)) / 2;\n    uint256 otherHalf = half * uint256(reserve1) / uint256(reserve0); // ❌ spot price ratio\n    _addLiquidity(half, otherHalf); // adds LP at manipulated ratio → mints inflated LP tokens\n}"
+ ],
+ "code_after": [
+  "✅ Use TWAP instead",
+  "// ✅ Fix: replace spot price oracle with Uniswap V2 TWAP\n// Use price0CumulativeLast / price1CumulativeLast over a sufficient window (e.g. 30 min)\n// Also add: onlyOwner or caller whitelist, and a per-block call frequency limit"
+ ],
+ "steps": [
+  "② Manipulate Token 8633 pool price → profit",
+  "③ Manipulate Token 9419 pool price → profit"
+ ],
+ "other_code": [
+  "Attacker\n  ├─① Borrow BUSD via flash loan\n  ├─② Manipulate Token 8633 pool price → profit\n  ├─③ Manipulate Token 9419 pool price → profit\n  └─④ Repay flash loan + ~$52K",
+  "// Simultaneously attack both vulnerable tokens\nflashLoan(busdAmount);\nattackToken8633();\nattackToken9419();\nrepayFlashLoan();"
+ ]
+}

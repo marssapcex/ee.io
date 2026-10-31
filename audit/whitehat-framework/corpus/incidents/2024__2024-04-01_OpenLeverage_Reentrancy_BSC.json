@@ -1,0 +1,44 @@
+{
+ "id": "2024__2024-04-01_OpenLeverage_Reentrancy_BSC",
+ "source_file": "2024/2024-04-01_OpenLeverage_Reentrancy_BSC.md",
+ "title": "OpenLeverage — Debt Tracking Bypass Attack via Cross-Contract Reentrancy Analysis",
+ "date": "2024-04-01",
+ "protocol": "OpenLeverage",
+ "chain": "BSC",
+ "loss_raw": "~$234,000 (BSC: ~$194,000 + Arbitrum: ~$40,000)",
+ "loss_usd": 234000.0,
+ "root_cause": "Reentrancy during DEX swap callback within `marginTrade()` — `OPBorrowingDelegator.borrow()` is re-entered from the `Executor.execute()` callback, creating an inconsistent state where a margin position and a separate borrow position coexist, then `liquidate()` + `payoffTrade()` are used to seize the full collateral without repaying debt",
+ "attack_tx": null,
+ "vulnerable_contract": "0xf436...5E47 (OPBorrowingDelegator)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — OpenLevV1.marginTrade() (inferred)\nfunction marginTrade(\n    uint16 marketId,\n    bool longToken,\n    bool depositToken,\n    uint256 deposit,\n    uint256 borrow,\n    uint256 minBuyAmount,\n    bytes memory dexData\n) external payable returns (uint256) {\n    // Issue: no nonReentrant modifier\n    // Issue: control transferred to external contract (Executor) during DEX swap\n    // Issue: position state is not yet fully recorded at the time of Executor.execute() callback\n\n    // 1. Transfer collateral in\n    _transferIn(depositToken ? token0 : token1, msg.sender, deposit);\n\n    // 2. Calculate borrow amount and borrow from LToken\n    uint256 borrowed = _borrow(marketId, longToken, borrow);\n\n    // 3. Execute DEX swap — external aggregator callback occurs here\n    //    Even if OPBorrowingDelegator.borrow() is re-entered inside Executor.execute(),\n    //    there is no mechanism to prevent it (❌ missing reentrancy guard)\n    uint256 bought = _swapViaDex(borrow + deposit, dexData);\n\n    // 4. Record position (state inconsistency possible since this runs after reentrancy)\n    activeTrades[msg.sender][marketId][longToken] = Trade(deposit, bought, depositToken, uint128(block.number));\n\n    return bought;\n}",
+  "// ❌ Vulnerable code — OPBorrowingDelegator.liquidate() (inferred)\nfunction liquidate(uint16 marketId, bool collateralIndex, address borrower) external {\n    BorrowVars memory vars = borrowVars[borrower][marketId][collateralIndex];\n\n    // Issue: liquidation only tracks positions created via borrow()\n    // Does not include collateral from the separate margin position created via marginTrade()\n    // However, the boundary between the two positions is unclear during collateral return after liquidation\n\n    uint256 collateral = vars.collateral;\n    uint256 debt = vars.borrowing;\n\n    // Pay liquidation bonus (provide some collateral to liquidator)\n    // Call repayBorrowEndByOpenLev → processes only minimum repayment amount\n    _repayAndClosePosition(borrower, marketId, collateralIndex, collateral, debt);\n    // ❌ No cross-validation with margin position debt\n}",
+  "// ❌ Vulnerable code — TradeController.payoffTrade() (inferred)\nfunction payoffTrade(uint16 marketId, bool longToken) external payable {\n    Trade memory trade = activeTrades[msg.sender][marketId][longToken];\n    require(trade.held > 0, \"No position exists\");\n\n    // Issue: does not check the outstanding borrow position state in OPBorrowingDelegator\n    // Even if the borrow position is recorded as liquidated via a prior liquidate() call,\n    // there is no cross-check logic to verify the entire debt was actually repaid\n\n    uint256 depositAmount = trade.depositToken ? trade.deposited : _swapForDeposit(trade.held);\n\n    // ❌ Returns collateral without checking for outstanding debt\n    _transferOut(trade.depositToken ? token0 : token1, msg.sender, depositAmount);\n    delete activeTrades[msg.sender][marketId][longToken];\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — apply nonReentrant and follow CEI pattern\n// Requires inheriting OpenZeppelin ReentrancyGuard\nfunction marginTrade(\n    uint16 marketId,\n    bool longToken,\n    bool depositToken,\n    uint256 deposit,\n    uint256 borrow,\n    uint256 minBuyAmount,\n    bytes memory dexData\n) external payable nonReentrant returns (uint256) {\n    // ✅ nonReentrant blocks reentrancy\n    // ✅ Record position before external calls (CEI pattern)\n\n    _transferIn(depositToken ? token0 : token1, msg.sender, deposit);\n\n    uint256 borrowed = _borrow(marketId, longToken, borrow);\n\n    // ✅ Record state first (before external calls)\n    activeTrades[msg.sender][marketId][longToken] = Trade(deposit, 0, depositToken, uint128(block.number));\n\n    // Then execute external DEX swap\n    uint256 bought = _swapViaDex(borrow + deposit, dexData);\n\n    // ✅ Update only the final amount\n    activeTrades[msg.sender][marketId][longToken].held = bought;\n\n    return bought;\n}",
+  "// ✅ Fixed code\nfunction liquidate(uint16 marketId, bool collateralIndex, address borrower) external {\n    // ✅ Cross-validate between marginTrade position and borrow position\n    Trade memory marginPos = tradeController.activeTrades(borrower, marketId, true);\n    BorrowVars memory borrowPos = borrowVars[borrower][marketId][collateralIndex];\n\n    // ✅ Block liquidation if both positions coexist for the same user/market\n    require(\n        marginPos.held == 0 || borrowPos.borrowing == 0,\n        \"Concurrent margin+borrow positions exist: liquidation blocked\"\n    );\n\n    // Proceed with normal liquidation logic\n    _repayAndClosePosition(borrower, marketId, collateralIndex, borrowPos.collateral, borrowPos.borrowing);\n}"
+ ],
+ "steps": [
+  "1. **Call `TradeController.marginTrade()`**: marketId=24, BUSDT collateral, WBNB borrow",
+  "- Internally executes an external DEX aggregator swap → **`Executor.execute()` callback triggered**",
+  "2. **[Reentrancy] Inside `Executor.execute()`**:",
+  "- Swaps WBNB → BUSDT and delivers to `TradeController`",
+  "- Executes `owner.call(borrow())` → **calls the attack contract's `borrow()` function**",
+  "- At this point `marginTrade()` is still executing → both positions are simultaneously recorded in the protocol state",
+  "3. **`marginTrade()` completes**: Margin position is finally recorded in `activeTrades`",
+  "4. **Call `OPBorrowingDelegator.liquidate(marketId=24, collateralIndex=true, borrower=attacker)`**:",
+  "5. **Call `TradeController.payoffTrade(marketId=24, longToken=true)`**:",
+  "6. **Profit realized**: ~$194,000 worth of BUSDT stolen compared to initial 5 BNB investment (BSC only)",
+  "① Swap WBNB → BUSDT and deliver to TradeController",
+  "→ Margin position + borrow position coexist for same user/market",
+  "② Logic flaw in repayBorrowEndByOpenLev → only minimal repayment",
+  "WBNB withdrawn → swapped to BUSDT"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n// Source: https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2024-04/OpenLeverage2_exp.sol\n// Total loss: ~234K USD | Attack date: 2024-04-01 | Chain: BSC\n\n// ── [Preparation] setUp() ───────────────────────────────────────────\n// Fork at BSC block 37,470,328\n// Targets:\n//   TradeController: 0x6A75aC4b8d8E76d15502E69Be4cb6325422833B4\n//   OPBorrowingDelegator: 0xF436F8FE7B26D87eb74e5446aCEc2e8aD4075E47\n//   LToken(WBNB): 0x7c5e04894410e98b1788fbdB181FfACbf8e60617\n//   marketId: 24 (WBNB/BUSDT market)\n\nfunction testExploit() public {\n    // ── [Step 1: TX 1 begins] ────────────────────────────────────────\n    deal(address(this), 5 ether);  // Attack seed funds: 5 BNB\n\n    // Acquire small amounts of USDC/OLE, creat"
+ ]
+}

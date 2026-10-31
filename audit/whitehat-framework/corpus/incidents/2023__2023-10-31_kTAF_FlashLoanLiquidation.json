@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-10-31_kTAF_FlashLoanLiquidation",
+ "source_file": "2023/2023-10-31_kTAF_FlashLoanLiquidation.md",
+ "title": "kTAF Flash Loan Liquidation Attack Incident Analysis",
+ "date": "2023-10-31",
+ "protocol": "kTAF",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Balancer.flashLoan(tokens, amounts)",
+  "2 ▶ Manipulate kTAF market price/liquidity",
+  "3 ▶ kTAF.liquidateBorrow(borrower, repayAmount, cTokenCollateral)",
+  "→ Profit from liquidationIncentive",
+  "4 ▶ Repay cToken + receive collateral tokens",
+  "5 ▶ Repay Balancer flash loan + realize ~$8,000 profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: liquidateBorrow condition manipulation\ncontract kTAF {\n    // Compound-style liquidation function\n    function liquidateBorrow(\n        address borrower,\n        uint256 repayAmount,\n        address cTokenCollateral\n    ) external returns (uint256) {\n        // Liquidation condition: collateral ratio < liquidationThreshold\n        (uint256 err, uint256 liquidity, uint256 shortfall) = getAccountLiquidity(borrower);\n        require(shortfall > 0, \"Insufficient shortfall\");\n\n        // Liquidator repays loan → receives collateral tokens\n        // Vulnerable: profit from liquidationIncentive after price manipulation via flash loan\n        uint256 seizeTokens = liquidateCalculateSeizeTokens(\n            address(this), cTokenCollateral, repayAmount\n        );\n        // .",
+  "// File: CErc20Immutable.sol\n    function transferVerify(address cToken, address src, address dst, uint transferTokens) external;\n\n// ...\n\n    function _resignImplementation() public;\n\n// ...\n\n    function liquidateBorrowFresh(address liquidator, address borrower, uint repayAmount, CTokenInterface cTokenCollateral) internal returns (uint, uint) {\n        /* Fail if liquidate not allowed */\n        uint allowed = comptroller.liquidateBorrowAllowed(address(this), address(cTokenCollateral), liquidator, borrower, repayAmount);\n        if (allowed != 0) {\n            return (failOpaque(Error.COMPTROLLER_REJECTION, FailureInfo.LIQUIDATE_COMPTROLLER_REJECTION, allowed), 0);\n        }\n\n        /* Verify market's block number equals current block number */\n        if (accrualBlockNumber != getBlock"
+ ]
+}

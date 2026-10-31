@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-10-11_Templedao_MigrateStakeAccessControl",
+ "source_file": "2022/2022-10-11_Templedao_MigrateStakeAccessControl.md",
+ "title": "TempleDAO — migrateStake() Missing Access Control Attack Analysis",
+ "date": "2022-10-11",
+ "protocol": "TempleDAO",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$2.3M",
+ "loss_usd": 2.3,
+ "root_cause": "`migrateStake()` function has no access control, allowing calls from arbitrary addresses",
+ "attack_tx": null,
+ "vulnerable_contract": "0xd2869042e12a3506100af1d192b5b04d65137941 (StaxLPStaking)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable migrateStake() - no access control\ncontract StaxLPStaking {\n    IERC20 public immutable stakingToken; // xFraxTempleLP\n\n    mapping(address => uint256) public stakedBalance;\n\n    //",
+  "❌ No onlyMigrator or onlyOwner modifier\n    // Anyone can call this to transfer the staking balance of an arbitrary address\n    function migrateStake(address staker, uint256 amount) external {\n        //",
+  "❌ No msg.sender validation\n        // staker: old contract address (can be set arbitrarily)\n        // amount: amount to transfer\n\n        // Deducts staker's balance and transfers to msg.sender\n        // In practice, pulls stakingToken from staker\n        stakingToken.transferFrom(staker, msg.sender, amount);\n        stakedBalance[msg.sender] += amount;\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - access control applied\ncontract SafeStaxLPStaking {\n    address public migrator;\n\n    modifier onlyMigrator() {\n        require(msg.sender == migrator, \"Not migrator\");\n        _;\n    }\n\n    //",
+  "✅ Only the designated migrator can call this\n    function migrateStake(address staker, uint256 amount) external onlyMigrator {\n        stakingToken.transferFrom(staker, msg.sender, amount);\n        stakedBalance[staker] -= amount;\n        stakedBalance[msg.sender] += amount;\n    }\n\n    function setMigrator(address _migrator) external onlyOwner {\n        migrator = _migrator;\n    }\n}"
+ ],
+ "steps": [
+  "→ stakingToken.transferFrom(StaxLPStaking, attacker, balance)",
+  "→ Possible if StaxLPStaking has approved itself for its own tokens"
+ ],
+ "other_code": []
+}

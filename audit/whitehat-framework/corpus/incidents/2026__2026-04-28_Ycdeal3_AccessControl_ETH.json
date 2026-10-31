@@ -1,0 +1,32 @@
+{
+ "id": "2026__2026-04-28_Ycdeal3_AccessControl_ETH",
+ "source_file": "2026/2026-04-28_Ycdeal3_AccessControl_ETH.md",
+ "title": "Ycdeal3 — Unprotected Privileged Function Drain",
+ "date": "2026-04-28",
+ "protocol": "Ycdeal3",
+ "chain": "Ethereum",
+ "loss_raw": "~$398K",
+ "loss_usd": 398.0,
+ "root_cause": "ERC4626 `withdraw()` override missing caller authorization check — `msg.sender` is never validated against `owner` and `_spendAllowance()` is never called, allowing any address to withdraw any depositor's funds by supplying the victim as `owner` and themselves as `receiver`",
+ "attack_tx": "`0x6b04344d5627df59d3bc645e7454f4605a90272852a91e435e370376643353b3`",
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "// SPDX-License-Identifier: MIT\n// File: RWAVault.sol (ERC4626 Fixed-term vault)\n// Source: Etherscan verified — 0xB9C7C84A1Aa0dD40b5B38Aae815AD0CDD2E5F88a (Ethereum)\n\ncontract RWAVault is ERC4626, AccessControl, Pausable, ReentrancyGuard, IRWAVault {\n    // ...\n\n    // ❌ Missing caller authorization — any address can pass any `owner` + `receiver`\n    function withdraw(\n        uint256 assets,\n        address receiver,  // ❌ arbitrary receiver — attacker sets this to themselves\n        address owner      // ❌ arbitrary owner — attacker sets this to any depositor\n    )\n        public\n        override(ERC4626, IERC4626)\n        nonReentrant\n        whenNotPaused\n        returns (uint256 shares)\n    {\n        // Phase check (Matured or Defaulted) — bypassable if vault is in Matured phase\n        if (currentPhase != Phase.Matured && currentPhase != Phase.Defaulted) {\n            revert RWAErrors.InvalidPhase();\n        }\n        if (withdrawalStartTime == 0 || block.timestamp < withdrawalStartTime) {\n            revert RWAErrors.WithdrawalNotAvailable();\n        }\n\n        _claimRemainingInterest(owner); // ❌ called for arbitrary owner address\n\n        DepositInfo storage info = _depositInfos[owner]; // ❌ looks up victim's deposit\n        if (info.shares == 0) revert RWAErrors.ZeroAmount();\n\n        uint256 grossValue = convertToAssets(info.shares);\n        uint256 userDebt   = _userClaimedInterest[owner];\n        uint256 netValue   = grossValue - userDebt;\n        if (assets > netValue) { assets = netValue; }\n        if (assets == 0) revert RWAErrors.ZeroAmount();\n\n        shares = Math.mulDiv(assets, info.shares, netValue, Math.Rounding.Ceil);\n\n        // ... deduct proportional principal and debt from victim's DepositInfo ...\n        _burn(owner, shares);                          // ❌ burns victim's shares\n        IERC20(asset()).safeTransfer(receiver, assets); // ❌ sends funds to attacker-controlled address\n\n        // ❌ NO allowance check: msg.sender is never compared to owner\n        // ❌ NO _spendAllowance() call — EIP-4626 §4 requires it when msg.sender != owner\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: enforce ERC4626 allowance semantics\nfunction withdraw(\n    uint256 assets,\n    address receiver,\n    address owner\n) public override returns (uint256 shares) {\n    // ... phase checks ...\n\n    // ✅ Require caller to be owner OR have sufficient allowance\n    if (msg.sender != owner) {\n        uint256 allowed = allowance(owner, msg.sender);\n        if (allowed != type(uint256).max) {\n            // Compute shares first, then check allowance\n            // _spendAllowance handles the check + deduction\n            _spendAllowance(owner, msg.sender, previewWithdraw(assets));\n        }\n    }\n\n    // ... rest of withdraw logic ...\n}"
+ ],
+ "steps": [
+  "1. Attacker identifies that the RWAVault is in `Matured` phase with `withdrawalStartTime` set, making the `withdraw()` function callable.",
+  "2. Attacker enumerates all depositor addresses and their USDC balances via on-chain events.",
+  "3. For each victim depositor, attacker calls `vault.withdraw(victim_balance, attacker_address, victim_address)`.",
+  "4. `withdraw()` burns the victim's shares and sends their USDC to the attacker — no allowance check performed.",
+  "5. 26 transfer events drain ~$398K USDC across all depositors in a single transaction.",
+  "6. The attack contract logs `\"Hack the world\"` and `\"root cause: no check on the relationship between receiver and owner\"` as inline event messages.",
+  "7. Final USDC balance of ~387K USDC returned to the attacker's EOA (`0x7137804200a073f616D92E87007f1f100100B56A`)."
+ ],
+ "other_code": []
+}

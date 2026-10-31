@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-08-29_CozyFinance_BusinessLogic_OP",
+ "source_file": "2025/2025-08-29_CozyFinance_BusinessLogic_OP.md",
+ "title": "Cozy Finance — Business Logic Vulnerability Analysis: Missing Receiver Validation",
+ "date": "2025-08-29",
+ "protocol": "Cozy Finance",
+ "chain": "Optimism",
+ "loss_raw": "~$427,606 USDC.e (377,084 stataOptUSDC → 427,606 USDC.e conversion)",
+ "loss_usd": 427606.0,
+ "root_cause": "Missing validation of the `receiver_` argument in `unwrapWrappedAssetViaConnectorForWithdraw`",
+ "attack_tx": "0x71e7...0517",
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — CozyRouter.completeWithdraw()\nfunction completeWithdraw(\n    address safetyModule_,\n    uint64 redemptionId_   // Anyone can specify an arbitrary redemptionId\n) external {\n    // No check that msg.sender is the original withdrawal requester ❌\n    // Anyone can complete the pending withdrawal identified by redemptionId_\n    ISafetyModule(safetyModule_).completeWithdraw(redemptionId_);\n    // Upon completion, assets are temporarily held by this contract (CozyRouter)\n}",
+  "// ❌ Vulnerable code — CozyRouter.unwrapWrappedAssetViaConnectorForWithdraw()\nfunction unwrapWrappedAssetViaConnectorForWithdraw(\n    address connector_,  // Unwrapping connector address\n    address receiver_    // Final recipient — no validation! ❌\n) external {\n    // No validation that connector_ is the connector held by the actual withdrawal requester ❌\n    // No validation that receiver_ matches the original withdrawal requester (connector_) ❌\n    \n    uint256 wrappedBalance = IWrappedAsset(connector_).balanceOf(address(this));\n    // Unwraps the entire wrapped token balance held by CozyRouter and sends to receiver_\n    IConnector(connector_).unwrap(wrappedBalance, receiver_);\n    // → Attacker sets receiver_ = their own address to steal victim's funds\n}",
+  "Attacker (0xce196f...)\n      │\n      │ multicall (aggregate3)\n      ▼\n┌─────────────────────────────────────────┐\n│  CozyRouter (0x1dbA25BD...)             │\n│                                         │\n│  [1] completeWithdraw(SM, redemptionId=6)│\n│      └─ Completes victim's pending withdrawal│\n│      └─ Receives 377,084 stataOptUSDC   │\n│                                         │\n│  [2] unwrapWrappedAssetViaConnector...  │\n│      connector = victim's address        │\n│      receiver_ = attacker's address ← ❌ no validation│\n└─────────────────────────────────────────┘\n      │\n      │ connector.unwrap(377084 stataOptUSDC, attacker)\n      ▼\n┌─────────────────────────────────────────┐\n│  stataOptUSDC Connector                 │\n│  stataOptUSDC → aOptUSDC unwrap         │\n│  377,084 stataOptUSDC → 420,423 aOptUSDC│\n└─────────────────────────────────────────┘\n      │\n      │ Aave withdraw(aOptUSDC, receiver=attacker)\n      ▼\n┌─────────────────────────────────────────┐\n│  Aave V3 Pool (0x794a61...)             │\n│  420,423 aOptUSDC burned                │\n│  → 427,606 USDC.e withdrawn             │\n└─────────────────────────────────────────┘\n      │\n      │ 427,606 USDC.e\n      ▼\nAttacker (0xce196f...) receives funds\n      │\n      │ Orbiter/Stargate bridge\n      ▼\nEthereum Mainnet → Tornado Cash deposit"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — receiver_ and caller validation added\nfunction unwrapWrappedAssetViaConnectorForWithdraw(\n    address connector_,\n    address receiver_\n) external {\n    // Fix 1: Verify that the caller is the actual withdrawal owner (connector_) ✅\n    // connector_ must be the address associated with the victim's withdrawal request\n    if (msg.sender != connector_) revert Unauthorized();\n    \n    // Fix 2: Verify that receiver_ equals connector_ (only self-redemption allowed) ✅\n    if (receiver_ != msg.sender) revert InvalidReceiver();\n    \n    uint256 wrappedBalance = IWrappedAsset(connector_).balanceOf(address(this));\n    IConnector(connector_).unwrap(wrappedBalance, receiver_);\n}",
+  "// ✅ Add redemptionId owner validation to completeWithdraw\nfunction completeWithdraw(\n    address safetyModule_,\n    uint64 redemptionId_\n) external {\n    // Look up the original owner of the request corresponding to redemptionId_ ✅\n    address owner = ISafetyModule(safetyModule_).redemptionOwner(redemptionId_);\n    \n    // Caller must be the original withdrawal requester ✅\n    if (msg.sender != owner) revert NotRedemptionOwner();\n    \n    ISafetyModule(safetyModule_).completeWithdraw(redemptionId_);\n}"
+ ],
+ "steps": [
+  "1. Attacker calls CozyRouter's multicall (aggregate3)",
+  "stataOptUSDC → aOptUSDC unwrap",
+  "377,084 stataOptUSDC → 420,423 aOptUSDC",
+  "→ 427,606 USDC.e withdrawn",
+  "Ethereum Mainnet → Tornado Cash deposit"
+ ],
+ "other_code": [
+  "1. Attacker calls CozyRouter's multicall (aggregate3)\n   └─ Call 1: completeWithdraw(SafetyModule=0x5624..., redemptionId=6)\n   └─ Call 2: unwrapWrappedAssetViaConnectorForWithdraw(\n                connector=0xeabd74ee...,  ← victim's address\n                receiver_=0xce196f...    ← attacker's address\n              )",
+  "Optimism:\n  Orbiter Finance → Attacker (0.096 ETH gas fee)\n  Attacker → CozyRouter (multicall execution)\n  Victim's stataOptUSDC → Attacker's USDC.e (427,606)\n  Attacker → Stargate Finance (USDC.e bridge)\n  Attacker → Orbiter Finance Router (ETH bridge)\n\nEthereum Mainnet:\n  Attacker → Tornado Cash (laundering)"
+ ]
+}

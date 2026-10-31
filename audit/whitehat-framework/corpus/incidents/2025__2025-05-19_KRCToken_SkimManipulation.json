@@ -1,0 +1,29 @@
+{
+ "id": "2025__2025-05-19_KRCToken_SkimManipulation",
+ "source_file": "2025/2025-05-19_KRCToken_SkimManipulation.md",
+ "title": "KRC Token — AMM Price Manipulation via skim() Function Analysis",
+ "date": "2025-05-19",
+ "protocol": "KRC Token",
+ "chain": "BSC",
+ "loss_raw": "7,000 USD",
+ "loss_usd": null,
+ "root_cause": "Uniswap V2 standard skim() function has no access control, allowing anyone to manipulate LP pool price via reserve imbalance",
+ "attack_tx": "0x78f242de...",
+ "vulnerable_contract": "0xdbead75d3610209a093af1d46d5296bbeffd53f5",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: skim() with no access control (Uniswap V2 standard)\n// PancakePair contract (immutable)\nfunction skim(address to) external lock {\n    address _token0 = token0;\n    address _token1 = token1;\n    // If actual balance exceeds reserves, transfer the difference to `to`\n    //",
+  "❌ Callable by anyone — no access control\n    _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)).sub(reserve0));\n    _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)).sub(reserve1));\n}\n\n//",
+  "// ❌ skim() — no access control, callable by anyone\nfunction skim(address to) external lock {\n    address _token0 = token0; // gas savings\n    address _token1 = token1; // gas savings\n    // ❌ Sends (balanceOf - reserve) to any address the caller chooses\n    // If the attacker first transfers USDT directly to the pair (inflating balance above reserve),\n    // skim() returns those tokens to the attacker — no authorization required.\n    _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)).sub(reserve0));\n    _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)).sub(reserve1));\n}\n\n// swap() — used after skim() to profit from manipulated reserves\nfunction swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external lock {\n    require(amount0Out > 0 || amount1Out > 0, 'Pancake: INSUFFICIENT_OUTPUT_AMOUNT');\n    (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings\n    require(amount0Out < _reserve0 && amount1Out < _reserve1, 'Pancake: INSUFFICIENT_LIQUIDITY');\n\n    uint balance0;\n    uint balance1;\n    { // scope for _token{0,1}, avoids stack too deep errors\n    address _token0 = token0;\n    address _token1 = token1;\n    require(to != _token0 && to != _token1, 'Pancake: INVALID_TO');\n    if (amount0Out > 0) _safeTransfer(_token0, to, amount0Out); // optimistically transfer tokens\n    if (amount1Out > 0) _safeTransfer(_token1, to, amount1Out); // optimistically transfer tokens\n    if (data.length > 0) IPancakeCallee(to).pancakeCall(msg.sender, amount0Out, amount1Out, data);\n    balance0 = IERC20(_token0).balanceOf(address(this));\n    balance1 = IERC20(_token1).balanceOf(address(this));\n    }\n    uint amount0In = balance0 > _reserve0 - amount0Out ? balance0 - (_reserve0 - amount0Out) : 0;\n    uint amount1In = balance1 > _reserve1 - amount1Out ? balance1 - (_reserve1 - amount1Out) : 0;\n    require(amount0In > 0 || amount1In > 0, 'Pancake: INSUFFICIENT_INPUT_AMOUNT');\n    { // scope for reserve{0,1}Adjusted, avoids stack too deep errors\n    uint balance0Adjusted = (balance0.mul(10000).sub(amount0In.mul(25)));\n    uint balance1Adjusted = (balance1.mul(10000).sub(amount1In.mul(25)));\n    require(balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(10000**2), 'Pancake: K');\n    }\n\n    _update(balance0, balance1, _reserve0, _reserve1);\n    emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);\n}"
+ ],
+ "code_after": [
+  "✅ Mitigation: restrict direct transfers in the KRC token contract itself\n// Or add a custom skim restriction to the LP contract\ncontract KRCToken {\n    function transfer(address to, uint256 amount) external override returns (bool) {\n        // Logic to restrict direct transfers to the LP pool\n        require(to != krcPair || msg.sender == router, \"Direct transfer to pair not allowed\");\n        return super.transfer(to, amount);\n    }\n}",
+  "// ✅ Fix options:\n// 1. In a custom LP contract, add onlyOwner or remove skim() entirely.\n// 2. In the KRC token contract, disallow direct transfers to the pair address\n//    (require transfers to go through the router):\nfunction transfer(address to, uint256 amount) external override returns (bool) {\n    require(to != krcPair || msg.sender == address(router), \"Direct transfer to pair not allowed\"); // ✅\n    return super.transfer(to, amount);\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► DODO Private Pool flash loan (borrow 248,157 USDT)\n  │\n  ├─[2]─► PancakeSwap V3 flash loan (borrow additional USDT) [nested]\n  │\n  ├─[3]─► Transfer borrowed USDT directly to KRC/USDT pair\n  │         └─► balanceOf(pair) >> reserve1 — imbalance created\n  │\n  ├─[4]─► Call KRC_pair.skim(attacker)\n  │         └─► Collect excess USDT\n  │\n  ├─[5]─► Swap KRC tokens for USDT (after price manipulation)\n  │\n  ├─[6]─► Repay nested flash loans (in reverse order)\n  │\n  └─[7]─► Net profit: ~7,000 USD"
+ ]
+}

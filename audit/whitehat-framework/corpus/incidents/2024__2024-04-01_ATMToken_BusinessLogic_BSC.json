@@ -1,0 +1,47 @@
+{
+ "id": "2024__2024-04-01_ATMToken_BusinessLogic_BSC",
+ "source_file": "2024/2024-04-01_ATMToken_BusinessLogic_BSC.md",
+ "title": "ATM Token — Business Logic Flaw (Fee-on-Transfer + skim() Combination) Analysis",
+ "date": "2024-04-01",
+ "protocol": "ATM Token",
+ "chain": "BSC",
+ "loss_raw": "~$182,000 USD (~182K BNB equivalent)",
+ "loss_usd": 182000.0,
+ "root_cause": "Business logic flaw caused by the combination of the ATM Fee-on-Transfer token's tax mechanism and PancakeSwap V2's `skim()` function",
+ "attack_tx": "0xee10553c...21a8",
+ "vulnerable_contract": "ATM Token 0xa595...8888",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable ATM token _transfer() function (estimated code)\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    require(from != address(0), \"Transfer from zero address\");\n    require(to != address(0), \"Transfer to zero address\");\n\n    // ❌ Problem 1: Tax applied even when transferring to LP address\n    if (_isExcludedFromFees[from] || _isExcludedFromFees[to]) {\n        // Fee-exempt addresses\n        super._transfer(from, to, amount);\n    } else {\n        // ❌ Problem 2: 3% sell fee deducted — applied even on direct transfer to LP\n        uint256 fees = amount * 300 / 10000; // 3% = 300 basis points\n        uint256 netAmount = amount - fees;\n\n        // Accumulate fee in the contract itself\n        super._transfer(from, address(this), fees);\n        // Deliver only the net amount to the actual recipient\n        super._transfer(from, to, netAmount);\n\n        // ❌ Problem 3: Mismatch between LP's actual balance and internal reserve\n        // LP expects to receive = amount\n        // LP actually receives = netAmount (short by 3%)\n        // → Gap arises between LP.getReserves() and LP.balanceOf(LP)\n    }\n}",
+  "// PancakeSwap V2 Pair contract's skim() function\n// ❌ This function itself is normal, but becomes vulnerable when combined with Fee-on-Transfer tokens\n\n// Internal state\nuint112 private reserve0; // WBNB reserve (synchronized value)\nuint112 private reserve1; // ATM reserve (synchronized value)\n\nfunction skim(address to) external lock {\n    address _token0 = token0; // WBNB\n    address _token1 = token1; // ATM\n\n    // ❌ Exploit point: if actual balance exceeds reserve, send the difference to `to`\n    // Directly transferring ATM does not cause reserve1 < balance1\n    // However, ATM's fee mechanism causes the internal accounting to diverge\n    _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)) - reserve0);\n    _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)) - reserve1);\n}\n\n// Normal sync() function — updates reserve to match actual balance\nfunction sync() external lock {\n    _update(\n        IERC20(token0).balanceOf(address(this)),\n        IERC20(token1).balanceOf(address(this)),\n        reserve0,\n        reserve1\n    );\n}",
+  "┌─────────────────────────────────────────────────────────────────────┐\n│                      Attacker (ContractTest)                        │\n└───────────────────────────────┬─────────────────────────────────────┘\n                                │ 1. flash() call\n                                ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│          PancakeSwap V3 Pool (0x3669...2050)                        │\n│          WBNB-USDT pool — provides ~550 WBNB flash loan             │\n└───────────────────────────────┬─────────────────────────────────────┘\n                                │ 2. pancakeV3FlashCallback() invoked\n                                ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│              Callback execution logic                               │\n│                                                                     │\n│  ┌─────────────┐   3. swap     ┌──────────────────┐                 │\n│  │  ~310 WBNB  │──────────────▶│   Secure USDT    │ (lock profit)   │\n│  └─────────────┘               └──────────────────┘                 │\n│                                                                     │\n│  ┌─────────────┐   4. swap     ┌──────────────────┐                 │\n│  │  70 WBNB    │──────────────▶│  Buy ATM (Rd 1)  │                 │\n│  └─────────────┘               └──────────────────┘                 │\n│                                         │                           │\n│                    5. loop (up to 100)  │                           │\n│                    ┌────────────────────┘                           │\n│                    ▼                                                │\n│  ┌────────────────────────────────────────────────────┐            │\n│  │  ATM.transfer(LP, ATM balance)                      │            │\n│  │   └─▶ ❌ Fee causes balance/reserve mismatch in LP  │            │\n│  │  LP.skim(attacker)                                  │            │\n│  │   └─▶ Extract excess WBNB (~7 BNB per call)         │            │\n│  │  [break if pair_lost == 7 BNB]                      │            │\n│  └────────────────────────────────────────────────────┘            │\n│                                                                     │\n│  ┌─────────────┐  same process ┌──────────────────┐                 │\n│  │  70 WBNB    │──────────────▶│  Buy ATM (Rd 2)  │                 │\n│  └─────────────┘               └──────────────────┘                 │\n│                                         │                           │\n│                    6. extra loop (15x)  │                           │\n│                    ┌────────────────────┘                           │\n│                    ▼                                                │\n│  ┌────────────────────────────────────────────────────┐            │\n│  │  ATM.transfer(LP, ATM balance) + LP.skim(attacker) │            │\n│  │  [break if pair_lost == 0 BNB]                      │            │\n│  └─────"
+ ],
+ "code_after": [
+  "// ✅ Fixed _transfer() — transfers to LP addresses are fee-exempt\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    require(from != address(0), \"Transfer from zero address\");\n    require(to != address(0), \"Transfer to zero address\");\n\n    // ✅ LP pair addresses are automatically registered in the fee-exempt list\n    bool isBuy = automatedMarketMakerPairs[from];\n    bool isSell = automatedMarketMakerPairs[to];\n\n    if (_isExcludedFromFees[from] || _isExcludedFromFees[to]\n        || isBuy // ✅ No fee on buys from LP (or separate buy fee applied)\n        ) {\n        super._transfer(from, to, amount);\n    } else if (isSell) {\n        // ✅ Fee applied only on sells to LP (direct transfers are fee-free)\n        uint256 fees = amount * sellFee / 10000;\n        super._transfer(from, address(this), fees);\n        super._transfer(from, to, amount - fees);\n    } else {\n        // ✅ Regular transfer: no fee or separate policy\n        super._transfer(from, to, amount);\n    }\n}",
+  "// ✅ Fix 1: Add LP pair addresses to the fee-exempt list\nmapping(address => bool) public automatedMarketMakerPairs;\n\n// Automatically exempt from fees when LP pair is registered\nfunction setAutomatedMarketMakerPair(address pair, bool value) public onlyOwner {\n    automatedMarketMakerPairs[pair] = value;\n    // ✅ LP addresses added to fee exemption — prevents skim() attack\n    _isExcludedFromFees[pair] = true;\n}\n\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    // ✅ Direct transfers to LP addresses are not subject to fees\n    bool takeFee = !automatedMarketMakerPairs[to] && !automatedMarketMakerPairs[from]\n                   && !_isExcludedFromFees[from] && !_isExcludedFromFees[to];\n\n    if (takeFee) {\n        uint256 fees = amount * totalFees / 10000;\n        super._transfer(from, address(this), fees);\n        amount -= fees;\n    }\n    super._transfer(from, to, amount);\n}"
+ ],
+ "steps": [
+  "1. **Flash loan initiation**: Borrowed approximately 550 WBNB from the PancakeV3 pool (fee: 0.25%)",
+  "2. **Locking USDT**: Swapped a portion (~310 WBNB) of the borrowed WBNB into USDT → secured profits safely",
+  "3. **ATM purchase** (Round 1): Swapped 70 WBNB → ATM",
+  "4. **skim() loop execution** (up to 100 iterations):",
+  "- Called LP's `skim()` → extracted WBNB",
+  "5. **ATM purchase** (Round 2): Repeated the same process",
+  "6. **Remaining skim() loop** (15 additional iterations):",
+  "7. **Cleanup**: Swapped ATM → WBNB, USDT → WBNB",
+  "8. **Flash loan repayment**: Repaid borrowed amount + fee (0.25%)",
+  "9. **Profit realization**: Net profit ~182K USD",
+  "1. flash() call",
+  "2. pancakeV3FlashCallback() invoked",
+  "70 WBNB ▶ Buy ATM (Rd 1)",
+  "5. loop (up to 100)",
+  "70 WBNB ▶ Buy ATM (Rd 2)",
+  "6. extra loop (15x)",
+  "8. repay flash loan"
+ ],
+ "other_code": [
+  "1. WBNB Transfer: V3Pool → ContractTest (~550 BNB flash loan)\n2. WBNB → USDT Swap: PancakeRouter V2\n3. WBNB → ATM Swap: PancakeRouter V2 (Round 1, 70 BNB)\n4. ATM Transfer: ContractTest → WBNB-ATM LP (repeated)\n5. WBNB Transfer: WBNB-ATM LP → ContractTest (skim, repeated)\n6. ATM Transfer: ContractTest → WBNB-ATM LP (Round 2, same)\n7. WBNB Transfer: WBNB-ATM LP → ContractTest (additional skim, repeated)\n8. ATM → WBNB Swap\n9. USDT → WBNB Swap\n10. WBNB Transfer: ContractTest → V3Pool (repayment)"
+ ]
+}

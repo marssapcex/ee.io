@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-08-01_NomadBridge_MessageVerification",
+ "source_file": "2022/2022-08-01_NomadBridge_MessageVerification.md",
+ "title": "Nomad Bridge — Unlimited Withdrawal Attack via Message Initialization Error Analysis",
+ "date": "2022-08-01",
+ "protocol": "Nomad Bridge",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$190,000,000 (CNBC; Elliptic lower-bound: $156M)",
+ "loss_usd": 190000000.0,
+ "root_cause": "Improper initialization of the Replica contract set `messages[0x0] = PROVEN`, causing arbitrary messages to be treated as valid",
+ "attack_tx": null,
+ "vulnerable_contract": "0x5D94309E5a0090b165FA4181519701637B6DAEBA",
+ "classes": [
+  "bridge-crosschain"
+ ],
+ "code_before": [
+  "❌ Vulnerable initialization — messages[0x0] is set to PROVEN\nfunction initialize(\n    uint32 _remoteDomain,\n    address _updater,\n    bytes32 _committedRoot,\n    uint256 _optimisticSeconds\n) public initializer {\n    //",
+  "❌ When initialized with _committedRoot = 0x0:\n    // committedRoot = 0x0\n    // messages[0x0] = MessageStatus.Proven  ← this line is the problem\n    committedRoot = _committedRoot;\n    // Bug: treats 0x0 root as PROVEN\n    if (_committedRoot != bytes32(0)) {\n        messages[_committedRoot] = MessageStatus.Proven;\n    }\n    //",
+  "❌ The condition above was absent or incorrect, resulting in messages[0x0] = Proven\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern — Merkle proof verification\nfunction process(bytes memory _message, bytes32[] calldata _proof) public returns (bool) {\n    bytes32 messageHash = keccak256(_message);\n    //",
+  "✅ Actually verifies proof against Merkle tree\n    require(\n        MerkleLib.verify(_proof, committedRoot, messageHash),\n        \"invalid proof\"\n    );\n    require(\n        messages[messageHash] == MessageStatus.None,\n        \"already processed\"\n    );\n    messages[messageHash] = MessageStatus.Processed;\n    return IMessageRecipient(recipient).handle(_origin, _sender, _body);\n}"
+ ],
+ "steps": [
+  "→ ❌ Judged as \"already proven\" → passes",
+  "[4] BridgeRouter.handle() → 100 WBTC transferred to attacker"
+ ],
+ "other_code": []
+}

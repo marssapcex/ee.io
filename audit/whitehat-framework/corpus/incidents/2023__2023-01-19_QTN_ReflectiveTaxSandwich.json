@@ -1,0 +1,38 @@
+{
+ "id": "2023__2023-01-19_QTN_ReflectiveTaxSandwich",
+ "source_file": "2023/2023-01-19_QTN_ReflectiveTaxSandwich.md",
+ "title": "QTN Token — Reflective Tax Mechanism Sandwich Attack Analysis",
+ "date": "2023-01-19",
+ "protocol": "QTN Token",
+ "chain": "Ethereum",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "Tax collection by the reflective tax token modifies the LP pair balance, but the reserve is not updated",
+ "attack_tx": "0x37cb8626...",
+ "vulnerable_contract": "0xC9fa8F4C...",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable QTN token tax mechanism\nfunction _transfer(address sender, address recipient, uint256 amount) internal {\n    uint256 taxAmount = amount * taxRate / 100;\n    //",
+  "❌ Tax sent directly to LP pair\n    _balances[address(pair)] += taxAmount;  // reserve still holds the old value\n    _balances[recipient] += amount - taxAmount;\n    _balances[sender] -= amount;\n    //",
+  "❌ pair.sync() not called → reserve and actual balance diverge\n}\n\n// Uniswap swap exploited by the attacker\nfunction swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external {\n    // Exchange rate calculated based on reserve\n    // If actual balance > reserve, the excess is sent to `to`\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: call sync() after tax collection\nfunction _transfer(...) internal {\n    // After tax processing\n    IUniswapV2Pair(pair).sync();  //",
+  "✅ Synchronize reserve\n}"
+ ],
+ "steps": [
+  "1 ▶ ETH → WETH → QTN swap",
+  "Tax → LP pair balance increases, reserve not updated",
+  "2 ▶ QTNContractFactory(): deploy multiple intermediate contracts",
+  "→ Tax accumulation deepens LP imbalance",
+  "3 ▶ Retrieve WETH balance from each intermediate contract",
+  "4 ▶ QTN → WETH final swap",
+  "5 ▶ Realize net WETH profit"
+ ],
+ "other_code": [
+  "// Root cause: tax collection by the reflective tax token modifies the LP pair balance, but the reserve is not updated\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ ETH → WETH → QTN swap\n  │       Tax → LP pair balance increases, reserve not updated\n  │\n  ├─2─▶ QTNContractFactory(): deploy multiple intermediate contracts\n  │       Each contract performs small QTN swaps\n  │       → Tax accumulation deepens LP imbalance\n  │\n  ├─3─▶ Retrieve WETH balance from each intermediate contract\n  │       Call QTNContractBack()\n  │\n  ├─4─▶ QTN → WETH final swap\n  │       Favorable exchange rate due to reserve imbalance\n  │\n  └─5─▶ Realize net WETH profit"
+ ]
+}

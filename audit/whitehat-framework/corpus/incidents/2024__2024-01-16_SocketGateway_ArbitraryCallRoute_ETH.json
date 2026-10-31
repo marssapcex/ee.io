@@ -1,0 +1,38 @@
+{
+ "id": "2024__2024-01-16_SocketGateway_ArbitraryCallRoute_ETH",
+ "source_file": "2024/2024-01-16_SocketGateway_ArbitraryCallRoute_ETH.md",
+ "title": "Socket Gateway — Arbitrary Route Call Vulnerability Analysis",
+ "date": "2024-01-16",
+ "protocol": "Socket",
+ "chain": "Ethereum",
+ "loss_raw": "~$3,300,000 (USDC drained from multiple victims)",
+ "loss_usd": 3300000.0,
+ "root_cause": "Newly added Permit2 route's `swapExtraData` calldata passed without validation, enabling arbitrary external call execution",
+ "attack_tx": "0xc6c3...fd6",
+ "vulnerable_contract": "0x3a23...97a5 (SocketGateway)",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// SocketGateway.sol (0x3a23F943181408EAC424116Af7b7790c94Cb97a5)\nfunction executeRoute(\n    uint32 routeId,        // Route identifier (406 used in the attack)\n    bytes calldata routeData  // ❌ Arbitrary calldata to be forwarded to the route\n) external payable returns (bytes memory) {\n    // Look up the route address mapped to routeId\n    address routeAddress = routes[routeId];\n    require(routeAddress != address(0), \"ROUTE_NOT_FOUND\");\n\n    // ❌ Delegates routeData to the route contract without any validation\n    (bool success, bytes memory result) = routeAddress.delegatecall(\n        abi.encodeWithSelector(ISocketRoute.performAction.selector, routeData)\n    );\n    require(success, \"ROUTE_EXECUTION_FAILED\");\n    return result;\n}",
+  "// WrappedTokenSwapperImpl.sol (0xCC5fDA5e3cA925bd0bb428C8b2669496eE43067e)\n\n// ❌ Vulnerable code\nfunction performAction(\n    address fromToken,      // Source token address for swap (attacker-controlled)\n    address toToken,        // Destination token address\n    uint256 amount,         // Swap amount (set to 0 in the attack)\n    address receiverAddress, // Recipient address\n    bytes32 metadata,       // Metadata\n    bytes calldata swapExtraData  // ❌ Core vulnerability: arbitrary calldata used for external call\n) external payable returns (uint256) {\n\n    // Uses fromToken address as the external call target\n    // Passes swapExtraData directly to call() without any validation\n    // ❌ Any function selector is permitted — including transferFrom!\n    (bool success,) = fromToken.call(swapExtraData);\n    require(success, \"SWAP_FAILED\");\n\n    // ... subsequent processing\n}",
+  "❌ No selector validation                                │\n│"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — whitelist validation for permitted function selectors\nfunction performAction(\n    address fromToken,\n    address toToken,\n    uint256 amount,\n    address receiverAddress,\n    bytes32 metadata,\n    bytes calldata swapExtraData\n) external payable returns (uint256) {\n\n    // ✅ Extract and validate the function selector from swapExtraData\n    bytes4 selector = bytes4(swapExtraData[:4]);\n\n    // ✅ Explicitly block dangerous ERC20 function calls such as transferFrom and approve\n    require(\n        selector != IERC20.transferFrom.selector &&\n        selector != IERC20.transfer.selector &&\n        selector != IERC20.approve.selector,\n        \"UNAUTHORIZED_SELECTOR\"\n    );\n\n    // ✅ Check fromToken against the allowlisted DEX aggregator addresses\n    require(isAllowedTarget[fromToken], \"TARGET_NOT_WHITELISTED\");\n\n    (bool success,) = fromToken.call(swapExtraData);\n    require(success, \"SWAP_FAILED\");\n}",
+  "✅ USDC sees SocketGateway (caller) has sufficient       │\n│        allowance, so transferFrom succeeds                   │\n└──────────────────┬──────────────────────────────────────────┘\n                   │\n                   ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Attacker wallet (0x50DF...9066)                             │\n│                                                              │\n│  5. Repeated against multiple victims → ~$3.3M USDC drained │\n└─────────────────────────────────────────────────────────────┘"
+ ],
+ "steps": [
+  "allowance(0x7d03...4242 → 0x3a23...97a5) = 115792089237316195423570985008687907853269984665640564039457584007913029639935",
+  "1. Deploy attack contract",
+  "2. executeRoute(routeId=406, routeData)",
+  "3. performAction() executes",
+  "USDC.transferFrom(victim → attacker)",
+  "4. transferFrom(",
+  "5. Repeated against multiple victims → ~$3.3M USDC drained"
+ ],
+ "other_code": [
+  "On-chain verification result (block 19021453):\n  allowance(0x7d03...4242 → 0x3a23...97a5) = 115792089237316195423570985008687907853269984665640564039457584007913029639935\n  (= type(uint256).max)",
+  "Block 19021454, Tx: 0xc6c3...fd6\n  from: 0x50DF5a2217588772471B84aDBbe4194A2Ed39066 (attacker)\n  to:   (contract deployment Tx — attack contract creation)\n  \nInside the attack contract:\n  → SocketGateway.executeRoute(406, routeData)\n  → [delegatecall] WrappedTokenSwapperImpl.performAction()\n  → USDC.call(transferFrom(victim, attacker, balance))\n  → Repeated per victim, totaling ~$3.3M drained"
+ ]
+}

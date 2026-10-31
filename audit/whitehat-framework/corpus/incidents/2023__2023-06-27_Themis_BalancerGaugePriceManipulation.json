@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-06-27_Themis_BalancerGaugePriceManipulation",
+ "source_file": "2023/2023-06-27_Themis_BalancerGaugePriceManipulation.md",
+ "title": "Themis Protocol — Balancer Gauge LP Price Manipulation Analysis",
+ "date": "2023-06-27",
+ "protocol": "Themis Protocol",
+ "chain": "Arbitrum",
+ "loss_raw": "~370K USD",
+ "loss_usd": null,
+ "root_cause": "Balancer Gauge token price relies on manipulable pool spot price",
+ "attack_tx": "0xff368294...",
+ "vulnerable_contract": "0x75f805e2...",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Gauge token price: based on Balancer pool spot price\ninterface IGauge is IERC20 {\n    function deposit(uint256 _amount, address _referrer) external;\n}\n\ninterface IPool is IERC20 {\n    function getPoolId() external view returns (bytes32);\n    // ❌ getRate() or getPrice(): spot ratio → manipulable\n}\n\ninterface IThemis {\n    function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;\n    function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external;\n    function borrow(address asset, uint256 amount, uint256 interestRateMode,\n                    uint16 referralCode, address onBehalfOf) external;\n}"
+ ],
+ "code_after": [
+  "// ✅ Balancer fair price calculation\n// 1. Obtain underlying asset prices from an external Chainlink oracle\n// 2. Calculate fair BPT price based on pool invariant\n// 3. Since Gauge = BPT, apply the same method"
+ ],
+ "steps": [
+  "1. Borrow large amount of tokens via Balancer",
+  "2. Large swap in Balancer pool",
+  "→ Manipulate pool ratio → Inflate Gauge token",
+  "3. Supply overvalued Gauge tokens as Themis",
+  "4. setUserUseReserveAsCollateral(Gauge, true)",
+  "5. Execute over-collateralized borrow",
+  "6. Restore price + repay flash loan + 370K USD"
+ ],
+ "other_code": [
+  "// Root cause: Balancer Gauge token price relies on manipulable pool spot price\n// Source code unverified — based on bytecode analysis",
+  "┌────────────────────────────────────────────────────┐\n│  1. Borrow large amount of tokens via Balancer     │\n│     flash loan                                     │\n└────────────────────────────────────┬───────────────┘\n                                     ▼\n┌────────────────────────────────────────────────────┐\n│  2. Large swap in Balancer pool                    │\n│     → Manipulate pool ratio → Inflate Gauge token  │\n│       price                                        │\n└────────────────────────────────────┬───────────────┘\n                                     ▼\n┌────────────────────────────────────────────────────┐\n│  3. Supply overvalued Gauge tokens as Themis       │\n│     collateral                                     │\n│  4. setUserUseReserveAsCollateral(Gauge, true)     │\n└──────"
+ ]
+}

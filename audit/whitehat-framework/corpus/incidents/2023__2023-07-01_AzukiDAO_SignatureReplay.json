@@ -1,0 +1,31 @@
+{
+ "id": "2023__2023-07-01_AzukiDAO_SignatureReplay",
+ "source_file": "2023/2023-07-01_AzukiDAO_SignatureReplay.md",
+ "title": "AzukiDAO Signature Replay Vulnerability Incident Analysis",
+ "date": "2023-07-01",
+ "protocol": "AzukiDAO",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "// File: ECDSA.sol\n * @dev Elliptic Curve Digital Signature Algorithm (ECDSA) operations.  // ❌\n\n// ...\n\n        InvalidSignature,  // ❌\n\n// ...\n\n        InvalidSignatureLength,  // ❌\n\n// ...\n\n        InvalidSignatureS,  // ❌\n\n// ...\n\n        InvalidSignatureV // Deprecated in v4.8  // ❌",
+  "// File: Bean.sol\n    address public signatureManager;  // ❌\n\n// ...\n\n    mapping(bytes => bool) public signatureClaimed;  // ❌\n\n// ...\n\n        address _signatureManager,  // ❌\n\n// ...\n\n        signatureManager = _signatureManager;  // ❌\n\n// ...\n\n    function setSignatureManager(address _signatureManager) external onlyOwner {  // ❌\n        signatureManager = _signatureManager;  // ❌\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Obtain a single valid signature (via social engineering or a publicly exposed signature)",
+  "2 ▶ Call Bean.claim() repeatedly (200 times)",
+  "200 calls × 31,250 = 6,250,000 Bean tokens drained",
+  "3 ▶ Convert Bean tokens → ETH to realize profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: no signature replay protection\nfunction claim(\n    address[] calldata contracts,\n    uint256[] calldata amounts,\n    uint256[] calldata tokenIds,\n    uint256 claimAmount,\n    uint256 endTime,\n    bytes calldata signature\n) external {\n    // Vulnerable: no record of signature usage (no nonce/bitmap)\n    require(block.timestamp <= endTime, \"Expired\");\n\n    bytes32 messageHash = keccak256(abi.encodePacked(\n        msg.sender, contracts, amounts, tokenIds, claimAmount, endTime\n    ));\n\n    // Signature is verified but there is no replay protection\n    address signer = ECDSA.recover(messageHash, signature);\n    require(signer == trustedSigner, \"Invalid signature\");\n\n    // claimAmount paid on every call — repeated calls are possible\n    _mint(msg.sender, claimAmount);\n}",
+  "Attacker [0x85d231c204b82915c909a05847cca8557164c75e]\n  │\n  ├─1─▶ Obtain a single valid signature (via social engineering or a publicly exposed signature)\n  │\n  ├─2─▶ Call Bean.claim() repeatedly (200 times)\n  │      params: contracts=[AZUKI, Elemental, Beanz]\n  │              amounts=[...], tokenIds=[...]\n  │              claimAmount=31,250 × 10^18\n  │              endTime=1,688,142,867\n  │              signature=<same signature>\n  │\n  │      Receive 31,250 Bean tokens per call\n  │      200 calls × 31,250 = 6,250,000 Bean tokens drained\n  │\n  └─3─▶ Convert Bean tokens → ETH to realize profit"
+ ]
+}

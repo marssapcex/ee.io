@@ -1,0 +1,31 @@
+{
+ "id": "2023__2023-11-12_FiberRouter_CalldataInjection",
+ "source_file": "2023/2023-11-12_FiberRouter_CalldataInjection.md",
+ "title": "FiberRouter Calldata Injection Attack Incident Analysis",
+ "date": "2023-11-12",
+ "protocol": "FiberRouter",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// File: FiberRouter_decompiled.sol\n    function nonEvmSwapAndCrossOneInch(address account, uint256 value, uint256 shares, string param3, string param4, string param5, bytes data, address from_, address from_, uint256 tokenId) external {}  // ❌\n\n// ...\n\n    function swapAndCrossOneInch(address account, uint256 value, uint256 shares, uint256 tokenId, address to, address from_, uint256 tokenId, bytes data, address from_, address from_) external {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ PancakeRouter.swapExactETHForTokens{0.0000001 ETH}",
+  "Small amount of WBNB → USDC swap",
+  "→ Sent to FiberRouter address (to satisfy amount condition)",
+  "2 ▶ FiberRouter.swapAndCrossOneInch(",
+  "3 ▶ 59 USDC drained from victim"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: external call without _calldata validation\ncontract FiberRouter {\n    function swapAndCrossOneInch(\n        address swapRouter,\n        uint256 amountIn,\n        uint256 amountCrossMin,\n        uint256 crossTargetNetwork,\n        address crossTargetToken,\n        address crossTargetAddress,\n        uint256 swapBridgeAmount,\n        bytes memory _calldata,       // ← unvalidated calldata\n        address fromToken,\n        address foundryToken\n    ) external {\n        // Vulnerable: _calldata forwarded as-is to swapRouter\n        (bool success,) = swapRouter.call(_calldata);\n        require(success, \"Swap failed\");\n        // If swapRouter = USDC contract and _calldata = encoded transferFrom(...), arbitrary transfer is possible\n    }\n}",
+  "Attacker [0x4826e896E39DC96A8504588D21e9D44750435e2D]\n  │\n  ├─1─▶ PancakeRouter.swapExactETHForTokens{0.0000001 ETH}\n  │      [PancakeRouter: 0x10ED43C718714eb63d5aA57B78B54704E256024E]\n  │      Small amount of WBNB → USDC swap\n  │      → Sent to FiberRouter address (to satisfy amount condition)\n  │\n  ├─2─▶ FiberRouter.swapAndCrossOneInch(\n  │          swapRouter = address(USDC),  ← USDC contract used as router\n  │          amountIn = 0,\n  │          amountCrossMin = 1,\n  │          crossTargetNetwork = 43114,\n  │          crossTargetToken = crossToken,\n  │          crossTargetAddress = crossToken,\n  │          swapBridgeAmount = 0,\n  │          _calldata = transferFrom(victim, attacker, victim_balance),  ← malicious calldata\n  │          fromToken = USDC,\n  │          foundryToken = USDC\n"
+ ]
+}

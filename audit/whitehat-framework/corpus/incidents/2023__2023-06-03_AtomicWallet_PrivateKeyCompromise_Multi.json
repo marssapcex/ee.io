@@ -1,0 +1,24 @@
+{
+ "id": "2023__2023-06-03_AtomicWallet_PrivateKeyCompromise_Multi",
+ "source_file": "2023/2023-06-03_AtomicWallet_PrivateKeyCompromise_Multi.md",
+ "title": "Atomic Wallet — Private Key Compromise Mass Theft Analysis",
+ "date": "2023-06-03",
+ "protocol": "Atomic Wallet",
+ "chain": "Multiple",
+ "loss_raw": "~$100,000,000+ (5,500+ victim wallets; Elliptic full cross-chain analysis and FBI attribution confirmed $100M; early reports cited $35M which was a 72-hour underestimate before complete cross-chain tracing)",
+ "loss_usd": 100000000.0,
+ "root_cause": "Private key compromise at scale — the exact technical vector was not fully disclosed by Atomic Wallet. Hypotheses include: weak entropy in key generation, compromised supply chain (malicious dependency), or server-side key exfiltration. Blockchain investigators noted transaction laundering patterns matching Lazarus Group methodology",
+ "attack_tx": null,
+ "vulnerable_contract": "Atomic Wallet application (off-chain key management / entropy generation)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "- Multiple chain hops (ETH → BTC → TRX → etc.)"
+ ],
+ "other_code": [
+  "Lazarus Group (DPRK)\n    │\n    ├─[Pre-exploit] Compromise Atomic Wallet key generation or storage mechanism\n    │       (specific vector undisclosed; suspected: entropy weakness or supply chain)\n    │\n    ├─[2023-06-02/03] Begin mass private key exploitation\n    │       5,500+ wallets drained across ETH, BTC, TRX, XRP, XLM, LTC, DOGE, BSC\n    │       Largest single victim: ~$7.95M\n    │       Top 5 victims: ~$17M combined\n    │\n    ├─[Laundering] Funds routed through:\n    │       - Multiple chain hops (ETH → BTC → TRX → etc.)\n    │       - Sinbad cryptocurrency mixer\n    │       - P2P exchange services\n    │       - Patterns matching Lazarus Group's Ronin/Harmony laundering methodology\n    │\n    └─[Attribution] FBI formally attributes to Lazarus Group, October 2023\n              OFAC adds "
+ ]
+}

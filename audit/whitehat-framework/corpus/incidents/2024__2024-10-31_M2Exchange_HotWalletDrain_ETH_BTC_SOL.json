@@ -1,0 +1,22 @@
+{
+ "id": "2024__2024-10-31_M2Exchange_HotWalletDrain_ETH_BTC_SOL",
+ "source_file": "2024/2024-10-31_M2Exchange_HotWalletDrain_ETH_BTC_SOL.md",
+ "title": "M2 Exchange — Hot Wallet Access Control Exploit Analysis",
+ "date": "2024-10-31",
+ "protocol": "M2 Exchange",
+ "chain": "Ethereum + Bitcoin + Solana",
+ "loss_raw": "~$13,700,000 (company covered all losses; zero user impact)",
+ "loss_usd": 13700000.0,
+ "root_cause": "Unauthorized access to M2 Exchange hot wallet private keys or signing infrastructure, enabling direct fund extraction across three chains",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─1─▶ Obtain access to hot wallet signing keys or HSM\n  │       (method: API breach, insider, or infrastructure compromise)\n  │\n  ├─2─▶ Execute ETH drain: ~$X from Ethereum hot wallet\n  │\n  ├─3─▶ Execute BTC drain: ~$Y from Bitcoin hot wallet\n  │\n  ├─4─▶ Execute SOL drain: ~$Z from Solana hot wallet\n  │       Total: ~$13.7M\n  │\n  └─5─▶ Laundering via cross-chain bridges / mixers"
+ ]
+}

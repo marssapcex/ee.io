@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-11-14_MahaLend_CompoundFork",
+ "source_file": "2023/2023-11-14_MahaLend_CompoundFork.md",
+ "title": "MahaLend — Compound Fork Vulnerability Analysis",
+ "date": "2023-11-14",
+ "protocol": "MahaLend",
+ "chain": "Ethereum",
+ "loss_raw": "~$20K",
+ "loss_usd": 20.0,
+ "root_cause": "Exchange rate donation attack on Compound fork",
+ "attack_tx": "0x2881e839d4d562fa...",
+ "vulnerable_contract": "0xfd11aba71c06061f...",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: balanceOf-based exchange rate\nfunction exchangeRateCurrent() public returns (uint256) {\n    uint256 cash = getCash(); // underlying.balanceOf(this)",
+  "❌\n    return computeExchangeRate(cash, totalBorrows, totalReserves, totalSupply);\n}\n//",
+  "// File: MathUtils.sol\n * @notice Provides functions to perform linear and compounded interest calculations  // ❌\n\n// ...\n\n  function calculateLinearInterest(uint256 rate, uint40 lastUpdateTimestamp)\n\n// ...\n\n  function calculateCompoundedInterest(  // ❌\n\n// ...\n\n  function calculateCompoundedInterest(uint256 rate, uint40 lastUpdateTimestamp)  // ❌"
+ ],
+ "code_after": [
+  "✅ Fix: track cash via internal _cash variable"
+ ],
+ "steps": [],
+ "other_code": [
+  "// File: ReserveLogic.sol\n  function getNormalizedDebt(DataTypes.ReserveData storage reserve)\n\n// ...\n\n  function _accrueToTreasury(\n\n// ...\n\n  function _updateIndexes(",
+  "Attacker\n  ├─① Deposit small amount to obtain shares\n  ├─② Directly transfer large amount of underlying tokens\n  ├─③ Exchange rate spikes dramatically\n  └─④ Execute over-collateralized borrow"
+ ]
+}

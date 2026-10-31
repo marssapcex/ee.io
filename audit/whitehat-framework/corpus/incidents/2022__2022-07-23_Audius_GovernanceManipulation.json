@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-07-23_Audius_GovernanceManipulation",
+ "source_file": "2022/2022-07-23_Audius_GovernanceManipulation.md",
+ "title": "Audius — Governance Re-initialization Attack Analysis",
+ "date": "2022-07-23",
+ "protocol": "Audius",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$6,050,000 (18.5M AUDIO tokens drained from community treasury; attacker netted ~$1,080,000 / 704 ETH after Uniswap slippage)",
+ "loss_usd": 6050000.0,
+ "root_cause": "The proxy contract's `initialize()` function could be re-called, allowing re-initialization with malicious governance parameters",
+ "attack_tx": null,
+ "vulnerable_contract": "0x4deca517d6817b6510798b7328f2314d3003abac (Governance Proxy)",
+ "classes": [
+  "governance"
+ ],
+ "code_before": [
+  "❌ Vulnerable initialize() — no re-initialization guard\nfunction initialize(\n    address _token,\n    uint256 _votingPeriod,     //",
+  "❌ Set to 3 by the attacker\n    uint256 _executionDelay,   //",
+  "❌ Set to 0 by the attacker\n    uint256 _votingQuorum,\n    uint16 _maxInProgressProposals,\n    address _guardianAddress\n) public {\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern (OpenZeppelin Initializable)\nfunction initialize(...) public initializer {\n    // initializer modifier prevents re-calls\n    token = IERC20(_token);\n    votingPeriod = _votingPeriod;\n    executionDelay = _executionDelay;\n}",
+  "// ✅ Fixed initialize()\nimport \"@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol\";\n\ncontract Governance is Initializable {\n    uint256 public constant MIN_VOTING_PERIOD = 6400; // ~1 day\n    uint256 public constant MIN_EXECUTION_DELAY = 172800; // 48 hours (seconds)\n\n    function initialize(\n        address _token,\n        uint256 _votingPeriod,\n        uint256 _executionDelay,\n        uint256 _votingQuorum,\n        uint16 _maxProposals,\n        address _guardian\n    ) public initializer {  // ✅ initializer modifier prevents re-calls\n        require(_votingPeriod >= MIN_VOTING_PERIOD, \"voting period too short\");\n        require(_executionDelay >= MIN_EXECUTION_DELAY, \"delay too short\");\n        // ...\n    }\n}"
+ ],
+ "steps": [
+  "Proposal marked as passed → AUDIO transfer executed",
+  "[Tx4] UniswapV2.swapExactTokensForETH(AUDIO → ETH)",
+  "Acquired AUDIO liquidated to ETH → 704 ETH stolen"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[Tx1] Governance.initialize(votingPeriod=3, executionDelay=0)\n    │         └─ Governance parameters maliciously overwritten\n    │\n    ├─[Tx1] Staking.initialize() + DelegateManagerV2.initialize()\n    │         └─ Staking/delegation contracts also re-initialized\n    │\n    ├─[Tx1] delegateStake(attacker, 1e31)\n    │         └─ Voting power artificially inflated to 1e31 AUDIO\n    │\n    ├─[Tx1] submitProposal(target=AUDIO, calldata=transfer(attacker, 99%))\n    │         └─ Proposal #85 submitted to transfer 99% of AUDIO tokens to attacker\n    │\n    ├─[Tx2] submitVote(proposal=85, vote=YES)  ← block 15,201,795\n    │         └─ YES vote cast within 3-block voting period (voting power 1e31)\n    │\n    ├─[Tx3] evaluateProposalOutcome(85)        ← block 15,201,798\n    │        ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IGovernance {\n    function initialize(\n        address token, uint256 votingPeriod, uint256 executionDelay,\n        uint256 votingQuorum, uint16 maxProposals, address guardian\n    ) external;\n    function submitProposal(\n        address[] calldata targets, uint256[] calldata values,\n        bytes[] calldata calldatas, string calldata description\n    ) external returns (uint256);\n    function submitVote(uint256 proposalId, uint8 vote) external;\n    function evaluateProposalOutcome(uint256 proposalId) external;\n}\n\ninterface IStaking {\n    function initialize(address token, address registry) external;\n}\n\ninterface IDelegateManagerV2 {\n    function initialize(address token, address registry"
+ ]
+}

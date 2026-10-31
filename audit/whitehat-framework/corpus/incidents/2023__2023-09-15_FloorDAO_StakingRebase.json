@@ -1,0 +1,37 @@
+{
+ "id": "2023__2023-09-15_FloorDAO_StakingRebase",
+ "source_file": "2023/2023-09-15_FloorDAO_StakingRebase.md",
+ "title": "FloorDAO Staking Rebase Manipulation Incident Analysis",
+ "date": "2023-09-15",
+ "protocol": "FloorDAO",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "// File: Staking.sol\n    function unstake(  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ floorUniPool.flash() - Uniswap V3 flash loan",
+  "2 ▶ floor.balanceOf() - Check balance",
+  "3 ▶ sFloor.circulatingSupply() - Check current circulating supply",
+  "4 ▶ floor.approve(FloorStaking, amount)",
+  "5 ▶ staking.stake(amount) - Stake large amount of FLOOR",
+  "sFloor minted → circulatingSupply changes",
+  "6 ▶ gFloor.balanceOf() - Check gFloor balance",
+  "7 ▶ staking.unstake(amount, trigger=true) - Trigger rebase",
+  "→ Excessive FLOOR profit generated",
+  "8 ▶ floorUniPool.swap() - Acquire additional FLOOR",
+  "9 ▶ floor.transfer(floorUniPool) - Repay flash loan"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: rebase calculation based on circulatingSupply\ncontract FloorStaking {\n    IsFloor public sFloor;\n    IERC20 public FLOOR;\n\n    // Vulnerable: circulatingSupply can be manipulated\n    function rebase() internal returns (uint256) {\n        uint256 supply = sFloor.circulatingSupply();\n        // When circulatingSupply decreases, the rebase rate increases\n        uint256 profit = totalStaked * rebaseRate / supply;\n        return profit;\n    }\n\n    function stake(uint256 amount, address recipient) external returns (bool) {\n        // FLOOR → sFloor minting\n        FLOOR.transferFrom(msg.sender, address(this), amount);\n        sFloor.mint(recipient, amount);\n        return true;\n    }\n\n    function unstake(uint256 amount, bool trigger) external returns (uint256) {\n        ",
+  "Attacker [0x4453aed57c23a50d887a42ad0cd14ff1b819c750]\n  │\n  ├─1─▶ floorUniPool.flash() - Uniswap V3 flash loan\n  │      Borrow large amount of FLOOR\n  │      [FLOOR: 0xf59257E961883636290411c11ec5Ae622d19455e]\n  │\n  ├─2─▶ floor.balanceOf() - Check balance\n  │\n  ├─3─▶ sFloor.circulatingSupply() - Check current circulating supply\n  │      [sFloor: 0x164AFe96912099543BC2c48bb9358a095Db8e784]\n  │\n  ├─4─▶ floor.approve(FloorStaking, amount)\n  │      [FloorStaking: 0x759c6De5bcA9ADE8A1a2719a31553c4B7DE02539]\n  │\n  ├─5─▶ staking.stake(amount) - Stake large amount of FLOOR\n  │      sFloor minted → circulatingSupply changes\n  │\n  ├─6─▶ gFloor.balanceOf() - Check gFloor balance\n  │      [gFloor: 0xb1Cc59Fc717b8D4783D41F952725177298B5619d]\n  │\n  ├─7─▶ staking.unstake(amount, trigger=true) - Trigger r"
+ ]
+}

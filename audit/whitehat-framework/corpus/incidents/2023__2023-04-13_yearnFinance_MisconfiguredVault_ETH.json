@@ -1,0 +1,43 @@
+{
+ "id": "2023__2023-04-13_yearnFinance_MisconfiguredVault_ETH",
+ "source_file": "2023/2023-04-13_yearnFinance_MisconfiguredVault_ETH.md",
+ "title": "yearnFinance — yUSDT Vault Misconfiguration Vulnerability Analysis",
+ "date": "2023-04-13",
+ "protocol": "yearnFinance",
+ "chain": "Ethereum",
+ "loss_raw": "~$11,000,000 (mixed USDC/DAI/USDT)",
+ "loss_usd": 11000000.0,
+ "root_cause": "yUSDT vault incorrectly used bZx strategy parameters for USDC → manipulated yield recommendations → artificially inflated PricePerShare",
+ "attack_tx": "0x055c...0328",
+ "vulnerable_contract": "yUSDT (0x83f7...07D)",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code (inferred — internal logic of the yUSDT vault)\naddress public bzxiToken = 0xF013406A0B1d544238083DF0B93ad0d2cBE0f65f; // bZxiUSDC ← for USDC!\n\n// USDT vault references the price of a USDC bZx token\nfunction balanceAave() public view returns (uint256) {\n    // ❌ bZxiUSDC.balanceOf(address(this)) * bZxiUSDC.tokenPrice() / 1e18\n    // USDT vault calculates based on USDC bZx contract balance and price\n    return IbZxiUSDC(bzxiToken).balanceOf(address(this))\n           * IbZxiUSDC(bzxiToken).tokenPrice()\n           / 1e18;\n}\n\n// getPricePerFullShare depends on balanceAave()\nfunction getPricePerFullShare() public view returns (uint256) {\n    // ❌ totalAssets = balance() + balanceAave() + ...\n    // PricePerShare spikes when bZxiUSDC balance increases\n    return totalAssets() * 1e18 / totalSupply();\n}",
+  "// ❌ Vulnerable external APR recommendation call (yUSDT vault)\nIIEarnAPRWithPool iEarnAprWithPool =\n    IIEarnAPRWithPool(0xdD6d648C991f7d47454354f4Ef326b04025a48A8);\n\nfunction rebalance() external {\n    // External contract compares Aave, Compound, bZx APRs and decides strategy\n    (string memory choice, , , uint256 aapr, ) =\n        iEarnAprWithPool.recommend(address(usdt));\n    // ❌ aapr fluctuates with Aave USDT utilization → manipulable\n    if (keccak256(abi.encodePacked(choice)) == keccak256(\"Aave\")) {\n        // Deposit into Aave\n    } else if (...) {\n        // Deposit into bZx ← attacker steers execution into this branch\n    }\n}",
+  "┌──────────────────────────────────────────────────────────────────┐\n│                      Attacker Contract                           │\n│                   (0x8102...579e)                                 │\n└────────────────────────┬─────────────────────────────────────────┘\n                         │ ① Request Balancer flash loan\n                         │   5M DAI + 5M USDC + 2M USDT\n                         ▼\n┌──────────────────────────────────────────────────────────────────┐\n│               Balancer Vault (flash loan provider)               │\n│           0xBA12222222228d8Ba445958a75a0704d566BF2C8             │\n└────────────────────────┬─────────────────────────────────────────┘\n                         │ receiveFlashLoan() callback\n                         ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  ② Swap DAI → USDT and USDC → USDT via Curve Y Pool             │\n│     exchange_underlying(0→2, 5M DAI) +                          │\n│     exchange_underlying(1→2, 3M USDC)                           │\n│     Result: attacker acquires large amount of USDT (~8M USDT)   │\n└────────────────────────┬─────────────────────────────────────────┘\n                         │\n                         ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  ③ Repay debt of hundreds of AaveV1 USDT borrowers (repay loop) │\n│     Liquidates USDT debt of 200+ users                          │\n│     → AaveV1 USDT utilization drops sharply                     │\n│     → Aave USDT APR falls                                       │\n│     → iEarnAPRWithPool.recommend(USDT) → selects \"bZx\"         │\n└────────────────────────┬─────────────────────────────────────────┘\n                         │\n                         ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  ④ yUSDT.deposit(900,000 USDT)                                   │\n│     Vault supplies funds to bZx strategy (recommend → \"bZx\")    │\n│     → Attacker receives yUSDT shares                            │\n└────────────────────────┬─────────────────────────────────────────┘\n                         │\n                         ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  ⑤ Call bZxiUSDC.mint() → acquire large amount of bZxiUSDC     │\n│     amount = yUSDT.balanceAave() * bZxiUSDC.tokenPrice()        │\n│              / 1e18 * 114 / 100  (14% extra)                    │\n│     bZxiUSDC.transfer(yUSDT_vault, mintAmount)                  │\n│     ← ❌ Donate bZxiUSDC directly to yUSDT vault (donation attack) │\n└────────────────────────┬─────────────────────────────────────────┘\n                         │ yUSDT.balanceAave() spikes\n                         │ → getPricePerFullShare() spikes\n                         ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  ⑥ Call yUSDT.withdraw(calculated_shares)                        │\n│     withdraw amount = (balanceAave + balance) * 1e18            │\n│       "
+ ],
+ "code_after": [
+  "// ✅ Correct code (after fix)\naddress public bzxiToken = 0x14094949152EDDbFcd073717200DA82fEd8dC960; // bZxiUSDT ← for USDT\n\nfunction balanceAave() public view returns (uint256) {\n    // ✅ USDT vault must reference the bZxiUSDT contract price\n    return IbZxiUSDT(bzxiToken).balanceOf(address(this))\n           * IbZxiUSDT(bzxiToken).tokenPrice()\n           / 1e18;\n}",
+  "// ✅ Fix: USDT vault must use the bZxiUSDT address\n// bZxiUSDC (incorrect): 0xF013406A0B1d544238083DF0B93ad0d2cBE0f65f\n// bZxiUSDT (correct):   0x14094949152EDDbFcd073717200DA82fEd8dC960\n\naddress public bzxiToken = 0x14094949152EDDbFcd073717200DA82fEd8dC960; // ✅ bZxiUSDT\n\nfunction balanceAave() public view returns (uint256) {\n    // ✅ USDT vault → reference bZxiUSDT token balance and price\n    return IbZxiUSDT(bzxiToken).balanceOf(address(this))\n           * IbZxiUSDT(bzxiToken).tokenPrice()\n           / 1e18;\n}"
+ ],
+ "steps": [
+  "② Swap DAI → USDT and USDC → USDT via Curve Y Pool",
+  "exchange_underlying(0→2, 5M DAI) +",
+  "exchange_underlying(1→2, 3M USDC)",
+  "→ AaveV1 USDT utilization drops sharply",
+  "→ Aave USDT APR falls",
+  "→ iEarnAPRWithPool.recommend(USDT) → selects \"bZx\"",
+  "Vault supplies funds to bZx strategy (recommend → \"bZx\")",
+  "→ Attacker receives yUSDT shares",
+  "⑤ Call bZxiUSDC.mint() → acquire large amount of bZxiUSDC",
+  "→ getPricePerFullShare() spikes",
+  "→ Withdraw full position at inflated PricePerShare",
+  "→ Receive far more assets than the deposited 900K USDT",
+  "Swap via Curve Y Pool: yUSDT → DAI, USDC, TUSD"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// Excerpted core attack flow with English comments\n\ncontract ContractTest is Test {\n    // ① Flash loan size constants\n    uint256 internal constant FLASHLOAN_DAI_AMOUNT  = 5_000_000 * 1e18;  // 5M DAI\n    uint256 internal constant FLASHLOAN_USDC_AMOUNT = 5_000_000 * 1e6;   // 5M USDC\n    uint256 internal constant FLASHLOAN_USDT_AMOUNT = 2_000_000 * 1e6;   // 2M USDT\n    uint256 internal constant YUSDT_DEPOSIT_USDT_AMOUNT = 900_000 * 1e6; // USDT to deposit into yUSDT\n\n    // ② Core contract references\n    IBalancerVault balancer = IBalancerVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);\n    IyToken yUSDT = IyToken(0x83f798e925BcD4017Eb265844FDDAbb448f1707D); // ← vulnerable vault\n    IbZxiUSDC bZxiUSDC = IbZxiUSDC(0xF013"
+ ]
+}

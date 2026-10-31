@@ -1,0 +1,40 @@
+{
+ "id": "2026__2026-02-14_SOFToken_BusinessLogic_BSC",
+ "source_file": "2026/2026-02-14_SOFToken_BusinessLogic_BSC.md",
+ "title": "SOF Token — Business Logic Vulnerability Analysis Based on Burn Logic Flaw",
+ "date": "2026-02-14",
+ "protocol": "SOF Token",
+ "chain": "BSC",
+ "loss_raw": "~$225,936 BSC-USD (net profit basis)",
+ "loss_usd": 225936.0,
+ "root_cause": "Burn fee exemption on transfers to mining contract — flash loan drains LP reserve",
+ "attack_tx": "0xcb5b...68f8 (block 81,140,062)",
+ "vulnerable_contract": "SOF Token: 0x465d...b312",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: transfers to the mining contract are unconditionally exempt from burn fee\n// This allows large amounts of SOF to be moved to the mining contract without burning from the LP pool\naddress public miningContract;  // mining contract address\n\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    require(from != address(0), \"ERC20: transfer from zero address\");\n    require(to != address(0), \"ERC20: transfer to zero address\");\n\n    // ❌ Core flaw: if to is miningContract, burnFee is forced to 0\n    // This was designed for the scenario where normal users deposit tokens to participate in mining,\n    // but can be abused by attackers as a channel to remove large amounts of SOF from the LP without burning\n    uint256 burnFee = _burnFeeRate;\n    if (to == miningContract || from == miningContract) {\n        burnFee = 0;  // ❌ Full exemption for all transfers involving mining contract\n    }\n\n    if (burnFee > 0) {\n        // Burn SOF from LP pool (normal path)\n        uint256 burnAmount = amount * burnFee / 10000;\n        _burnFromPair(burnAmount);\n        amount -= burnAmount;\n    }\n\n    super._transfer(from, to, amount);\n}\n\n// Function that burns SOF from the LP pool\nfunction _burnFromPair(uint256 burnAmount) private {\n    address pair = IFactory(factory).getPair(address(this), BSCUSD);\n    if (balanceOf(pair) > burnAmount) {\n        _burn(pair, burnAmount);       // Remove SOF from LP pool\n        IUniswapV2Pair(pair).sync();   // Update pair reserves\n    }\n}",
+  "// ❌ Vulnerability: mining reward claim function only validates balance, no anomaly detection for ratios\nfunction claimMiningReward() external {\n    uint256 reward = pendingReward[msg.sender];\n    require(reward > 0, \"No reward\");\n\n    pendingReward[msg.sender] = 0;\n    // ❌ Fee exemption on mining contract → user transfers (miningContract == from)\n    // This is itself intended behavior, but there is no mechanism to block\n    // the flash loan attack sequence that immediately follows a claim with an LP transfer\n    IERC20(sofToken).transfer(msg.sender, reward);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix 1: Restrict mining contract exemption to unidirectional (mining contract → user)\n// Normal fees apply to transfers in the user → mining contract direction\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    require(from != address(0), \"ERC20: transfer from zero address\");\n    require(to != address(0), \"ERC20: transfer to zero address\");\n\n    // ✅ Fix: only exempt transfers outgoing from the mining contract\n    // (no fee when paying out mining rewards)\n    uint256 burnFee = _burnFeeRate;\n    if (from == miningContract) {\n        burnFee = 0;  // ✅ Exempt reward payout direction only\n    }\n    // Remove to == miningContract exemption → normal fees apply on external deposits\n\n    if (burnFee > 0) {\n        uint256 burnAmount = amount * burnFee / 10000;\n        _burnFromPair(burnAmount);\n        amount -= burnAmount;\n    }\n\n    super._transfer(from, to, amount);\n}",
+  "// ✅ Fix: apply lockup period to prevent immediate selling after claim\nmapping(address => uint256) public lastClaimBlock;\n\nfunction claimMiningReward() external {\n    uint256 reward = pendingReward[msg.sender];\n    require(reward > 0, \"No reward\");\n    // ✅ Claim only allowed after minimum block wait (prevents flash loan single-tx attack)\n    require(block.number >= lastClaimBlock[msg.sender] + CLAIM_COOLDOWN_BLOCKS,\n            \"Claim cooldown active\");\n\n    pendingReward[msg.sender] = 0;\n    lastClaimBlock[msg.sender] = block.number;\n    IERC20(sofToken).transfer(msg.sender, reward);\n}"
+ ],
+ "steps": [
+  "→ Receive 875 SOF tokens",
+  "→ Enter flashLoanCallback()",
+  "313,000,000 BSC-USD → ~1,000,000 SOF swap",
+  "→ _transfer() executes",
+  "→ to == miningContract → burnFee = 0 (exempted!)",
+  "→ No SOF burned from LP pool",
+  "→ LP pool: SOF remains at 787, BSC-USD 313M remains",
+  "→ By AMM price formula: 787 SOF ≈ 313,000,000 BSC-USD",
+  "→ Full BSC-USD extraction complete",
+  "BSC-USD → PancakeSwap flash loan repayment"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────┐\n│  Attacker EOA                                            │\n│  Deploy and execute attack contract                      │\n└────────────────────────┬────────────────────────────────┘\n                         │\n                         ▼\n┌─────────────────────────────────────────────────────────┐\n│  [Step 1] Preparation — Claim Mining Reward              │\n│  miningContract.claimMiningReward()                      │\n│  → Receive 875 SOF tokens                               │\n│  (Verify attack conditions and receive face value)       │\n└────────────────────────┬────────────────────────────────┘\n                         │\n                         ▼\n┌─────────────────────────────────────────────────────────┐\n│  [Step 2] Execute Flash L",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @Analysis Reference: CertiK Incident Analysis, 2026-02-27\n// @Attack Tx: https://bscscan.com/tx/0xcb5b22d86819b84ef1b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7\n// @Vulnerability Summary: Burn fee exemption on transfers to miningContract — LP reserve drain\n\nimport \"forge-std/Test.sol\";\n\n// SOF Token interface (BNB Chain)\ninterface ISOF {\n    function transfer(address to, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n    function approve(address spender, uint256 amount) external returns (bool);\n}\n\n// Mining contract interface\ninterface IMining {\n    function claimMiningReward() external;\n}\n\n// PancakeSwap V2 pair interface\ninterface IPancakePair {\n    fun"
+ ]
+}

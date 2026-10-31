@@ -1,0 +1,38 @@
+{
+ "id": "2025__2025-09-02_Bunni_BusinessLogic_ETH",
+ "source_file": "2025/2025-09-02_Bunni_BusinessLogic_ETH.md",
+ "title": "Bunni v2 — Uniswap v4 Hook Share Accounting Business Logic Flaw",
+ "date": "2025-09-02",
+ "protocol": "Bunni v2",
+ "chain": "Ethereum Mainnet + Unichain",
+ "loss_raw": "~$8,300,000",
+ "loss_usd": 8300000.0,
+ "root_cause": "Business Logic Flaw — incorrect state update ordering in the Bunni hook allowed share accounting manipulation; internal state was finalized after external token transfers, creating an exploitable inconsistency window",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [
+  "// Fixed: apply checks-effects-interactions — update state before external calls\nfunction afterAddLiquidity(\n    address sender,\n    PoolKey calldata key,\n    IPoolManager.ModifyLiquidityParams calldata params,\n    BalanceDelta delta,\n    BalanceDelta feesAccrued,\n    bytes calldata hookData\n) external override onlyPoolManager nonReentrant returns (bytes4, BalanceDelta) {\n\n    // ✅ Fix: update internal share accounting FIRST (effects before interactions)\n    _updateShareAccounting(key, params.liquidityDelta);\n\n    // ✅ Then perform external token settlement\n    _settleOrTake(key.currency0, delta.amount0());\n    _settleOrTake(key.currency1, delta.amount1());\n\n    return (Hooks.AFTER_ADD_LIQUIDITY_FLAG, toBalanceDelta(0, 0));\n}",
+  "// Fixed: add nonReentrant + effects-before-interactions\nfunction afterRemoveLiquidity(\n    address sender,\n    PoolKey calldata key,\n    IPoolManager.ModifyLiquidityParams calldata params,\n    BalanceDelta delta,\n    BalanceDelta feesAccrued,\n    bytes calldata hookData\n) external override onlyPoolManager nonReentrant returns (bytes4, BalanceDelta) {\n    // ✅ Burn shares first\n    _burnShareAccounting(key, params.liquidityDelta);\n    // ✅ Then transfer tokens\n    _settleOrTake(key.currency0, delta.amount0());\n    _settleOrTake(key.currency1, delta.amount1());\n    return (Hooks.AFTER_REMOVE_LIQUIDITY_FLAG, toBalanceDelta(0, 0));\n}"
+ ],
+ "steps": [
+  "Step 1: Add Liquidity",
+  "Hook: _settleOrTake executes → tokens transferred externally",
+  "Step 2: Exploit Stale Share State Window",
+  "Step 3: Remove Liquidity at Inflated Value",
+  "Step 4: Repeat Across Multiple Pools",
+  "Step 5: Funds Extracted",
+  "_settleOrTake() → external token transfer executes",
+  "_updateShareAccounting() → NOT YET RUN (stale state)",
+  "Attacker shares → inflated token entitlement computed",
+  "Withdraw at inflated ratio → excess tokens received",
+  "▶ Repeat on Ethereum pools + Unichain pools → ~$8.3M drained"
+ ],
+ "other_code": [
+  "// Bunni Hook — afterAddLiquidity (simplified, vulnerable)\nfunction afterAddLiquidity(\n    address sender,\n    PoolKey calldata key,\n    IPoolManager.ModifyLiquidityParams calldata params,\n    BalanceDelta delta,\n    BalanceDelta feesAccrued,\n    bytes calldata hookData\n) external override onlyPoolManager returns (bytes4, BalanceDelta) {\n\n    // Step 1: Settle token balances with the PoolManager (external interaction)\n    _settleOrTake(key.currency0, delta.amount0());\n    _settleOrTake(key.currency1, delta.amount1());\n\n    // BUG: share accounting updated AFTER external interaction\n    // Between the external call above and this update, share state is stale.\n    // An attacker can observe or trigger a second operation that reads the\n    // pre-update share price and receives excess tokens ",
+  "// Vulnerable: no reentrancy protection on afterRemoveLiquidity\nfunction afterRemoveLiquidity(\n    address sender,\n    PoolKey calldata key,\n    IPoolManager.ModifyLiquidityParams calldata params,\n    BalanceDelta delta,\n    BalanceDelta feesAccrued,\n    bytes calldata hookData\n) external override onlyPoolManager returns (bytes4, BalanceDelta) {\n    // No nonReentrant modifier\n    // External calls inside _settleOrTake can trigger re-entry before\n    // share burn is recorded\n    _settleOrTake(key.currency0, delta.amount0());\n    _settleOrTake(key.currency1, delta.amount1());\n    _burnShareAccounting(key, params.liquidityDelta); // ← share burn after transfer\n    return (Hooks.AFTER_REMOVE_LIQUIDITY_FLAG, toBalanceDelta(0, 0));\n}"
+ ]
+}

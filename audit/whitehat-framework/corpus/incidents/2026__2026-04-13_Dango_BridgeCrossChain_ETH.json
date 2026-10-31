@@ -1,0 +1,26 @@
+{
+ "id": "2026__2026-04-13_Dango_BridgeCrossChain_ETH",
+ "source_file": "2026/2026-04-13_Dango_BridgeCrossChain_ETH.md",
+ "title": "Dango — Insurance Fund Donation Logic Flaw (Perps Contract, ~$410K USDC)",
+ "date": "2026-04-13",
+ "protocol": "Dango",
+ "chain": "T.E.A.M Blockchain",
+ "loss_raw": "~$410,010 USDC bridged to Ethereum; additional ~$1.49M held on-chain by bridge rate limits",
+ "loss_usd": 410010.0,
+ "root_cause": "Donation logic flaw in Dango's perpetuals insurance fund contract — the donation function failed to validate the amount credited, allowing an attacker to extract more USDC than deposited",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "bridge-crosschain"
+ ],
+ "code_before": [
+  "// VULNERABLE — Dango perps insurance fund (reconstructed from post-mortem)\ncontract InsuranceFund {\n    mapping(address => uint256) public shares;\n    uint256 public totalShares;\n    IERC20 public usdc;\n\n    // ❌ donate() credits shares before verifying actual transfer amount\n    function donate(uint256 amount) external {\n        uint256 sharesBefore = totalShares;\n\n        // ❌ shares minted relative to declared `amount`, not actual tokens received\n        uint256 newShares = (sharesBefore == 0)\n            ? amount\n            : (amount * totalShares) / usdc.balanceOf(address(this));\n\n        shares[msg.sender] += newShares;\n        totalShares += newShares;\n\n        // Transfer executed after share calculation — attacker can manipulate\n        // balanceOf snapshot or pass an inflated `amount`\n        usdc.transferFrom(msg.sender, address(this), amount);\n    }\n\n    function withdraw(uint256 shareAmount) external {\n        uint256 usdcOut = (shareAmount * usdc.balanceOf(address(this))) / totalShares;\n        shares[msg.sender] -= shareAmount;\n        totalShares -= shareAmount;\n        usdc.transfer(msg.sender, usdcOut);\n    }\n}"
+ ],
+ "code_after": [
+  "// FIXED — measure actual tokens received, not the declared amount\nfunction donate(uint256 amount) external {\n    uint256 balanceBefore = usdc.balanceOf(address(this));\n    usdc.transferFrom(msg.sender, address(this), amount);\n    uint256 received = usdc.balanceOf(address(this)) - balanceBefore; // ✅ actual received\n\n    uint256 newShares = (totalShares == 0)\n        ? received\n        : (received * totalShares) / balanceBefore; // ✅ use pre-transfer balance\n\n    shares[msg.sender] += newShares;\n    totalShares += newShares;\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker (on T.E.A.M Blockchain)\n  │\n  ├─[Step 1] Call InsuranceFund.donate() with crafted parameters\n  │           Donation logic flaw credits more shares than tokens deposited\n  │\n  ├─[Step 2] Call InsuranceFund.withdraw() to redeem inflated shares for USDC\n  │           Extract ~$1.9M USDC total from the insurance fund\n  │\n  ├─[Step 3 — bridge rate limiter fires at ~$1.49M on-chain]\n  │           Hyperlane bridge halts further outflow\n  │\n  ├─[Bridge Exit Tx 1 — 0x06c2c3... on ETH]\n  │   Hyperlane Mailbox.process() releases ~99,999.9 USDC to attacker on Ethereum\n  │\n  ├─[Bridge Exit Tx 2 — 0x7c846e... on ETH]\n  │   Releases additional ~9,999.9 USDC to attacker on Ethereum\n  │   Total bridged to ETH: ~$410,010 USDC\n  │\n  └─[White-hat Resolution]\n      White-hat contacts attacker and nego"
+ ]
+}

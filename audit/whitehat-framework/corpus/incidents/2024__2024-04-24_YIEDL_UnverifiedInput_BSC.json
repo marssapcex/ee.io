@@ -1,0 +1,43 @@
+{
+ "id": "2024__2024-04-24_YIEDL_UnverifiedInput_BSC",
+ "source_file": "2024/2024-04-24_YIEDL_UnverifiedInput_BSC.md",
+ "title": "YIEDL (SportVault) — Unverified User Input Analysis",
+ "date": "2024-04-24",
+ "protocol": "YIEDL",
+ "chain": "BSC",
+ "loss_raw": "~$150,000 (some reports: ~$300,000)",
+ "loss_usd": 150000.0,
+ "root_cause": "Unvalidated `dataList` parameter in `redeem()` — attacker injected arbitrary swap commands to drain Vault assets",
+ "attack_tx": "0x49ca...c2ec",
+ "vulnerable_contract": "0x4eDd...62a4",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — SportVault.redeem() function\nfunction redeem(\n    uint256 sharesToRedeem,    // ❌ Allows 0 — executable without burning shares\n    address receivingAsset,    // Token to receive (attacker-specified)\n    uint256 minTokensToReceive,\n    bytes[] calldata dataList, // ❌ Core: external input is never validated\n    bool useDiscount\n) external returns (uint256 tokensToReturn) {\n\n    // ❌ If sharesToRedeem is 0, no shares are burned\n    if (sharesToRedeem > 0) {\n        _burn(msg.sender, sharesToRedeem);\n    }\n\n    // Execute swap commands from dataList for each asset held by the Vault\n    for (uint256 i = 0; i < assetList.length; i++) {\n        if (dataList[i].length == 0) continue;\n\n        // ❌ dataList[i] is forwarded to the 1inch Router as-is\n        // If the attacker sets receiveTo=attacker_address in dataList[i],\n        // Vault funds are sent directly to the attacker\n        (bool success, ) = oneInchRouter.call(dataList[i]);\n        require(success, \"swap failed\");\n    }\n\n    return tokensToReturn;\n}",
+  "// ❌ Vulnerable: does not block zero-share redemption\n// This allows the attacker to call 20 times within the same transaction\nif (sharesToRedeem > 0) {\n    _burn(msg.sender, sharesToRedeem);\n}\n// If sharesToRedeem == 0, only the swap logic executes with no share burn",
+  "Step 1: Construct dataList\n  The attacker crafts 3 unoswapTo calldata entries:\n  - dataList[0]: USDC → attacker address (2,331,516... wei)\n  - dataList[1]: BTCB → attacker address (16,071,737... wei)\n  - dataList[2]: BETH → attacker address (256,895,663... wei)\n  - dataList[3~10]: empty bytes (no other assets)\n\nStep 2: Call SportVault.redeem() 20 times\n  Each call:\n  - sharesToRedeem = 0    ← ❌ no share burn\n  - receivingAsset = BUSD ← withdrawal asset (actual swap target is specified in dataList)\n  - dataList = attacker-crafted calldata\n\nStep 3: Each call triggers Vault to invoke the 1inch Router\n  SportVault → 1inch Router.unoswapTo(receiveTo=attacker, USDC, amount, ...)\n  1inch Router → swaps USDC/BTCB/BETH and transfers to attacker address\n\nStep 4: 20 iterations accumulate losses"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — two critical validations added\nfunction redeem(\n    uint256 sharesToRedeem,\n    address receivingAsset,\n    uint256 minTokensToReceive,\n    bytes[] calldata dataList,\n    bool useDiscount\n) external returns (uint256 tokensToReturn) {\n\n    // ✅ 1. sharesToRedeem must be greater than 0\n    require(sharesToRedeem > 0, \"SportVault: zero shares\");\n    require(balanceOf(msg.sender) >= sharesToRedeem, \"SportVault: insufficient shares\");\n\n    _burn(msg.sender, sharesToRedeem);\n\n    for (uint256 i = 0; i < assetList.length; i++) {\n        if (dataList[i].length == 0) continue;\n\n        // ✅ 2. Decode the recipient (receiveTo) address from dataList[i]\n        //    and verify it matches msg.sender\n        address receiveTo = _decodeRecipient(dataList[i]);\n        require(\n            receiveTo == msg.sender,\n            \"SportVault: swap recipient must be caller\"\n        );\n\n        (bool success, ) = oneInchRouter.call(dataList[i]);\n        require(success, \"swap failed\");\n    }\n\n    return tokensToReturn;\n}\n\n// ✅ Helper to extract the receiveTo address from 1inch unoswapTo calldata\nfunction _decodeRecipient(bytes calldata data) internal pure returns (address) {\n    // unoswapTo(address receiveTo, address srcToken, uint256 amount, uint256 minReturn, uint256[] pools)\n    // selector(4 bytes) + receiveTo(32 bytes)\n    require(data.length >= 36, \"SportVault: invalid calldata\");\n    address receiveTo;\n    assembly {\n        receiveTo := calldataload(add(data.offset, 4))\n    }\n    return receiveTo;\n}",
+  "// ✅ Fixed: enforce sharesToRedeem > 0 + verify caller's share balance\nrequire(sharesToRedeem > 0, \"SportVault: must redeem non-zero shares\");\n_burn(msg.sender, sharesToRedeem); // unconditionally burns after require passes"
+ ],
+ "steps": [
+  "Step 1: Construct dataList",
+  "- dataList[0]: USDC → attacker address (2,331,516... wei)",
+  "- dataList[1]: BTCB → attacker address (16,071,737... wei)",
+  "- dataList[2]: BETH → attacker address (256,895,663... wei)",
+  "Step 2: Call SportVault.redeem() 20 times",
+  "Step 3: Each call triggers Vault to invoke the 1inch Router",
+  "SportVault → 1inch Router.unoswapTo(receiveTo=attacker, USDC, amount, ...)",
+  "1inch Router → swaps USDC/BTCB/BETH and transfers to attacker address",
+  "Step 4: 20 iterations accumulate losses",
+  "❌ sharesToRedeem == 0 → passes without burning shares",
+  "❌ no dataList validation → forwarded as-is to 1inch Router",
+  "USDC + BTCB + BETH → received as BNB",
+  "20 iterations × per-call profit = total ~$150,000 drained"
+ ],
+ "other_code": [
+  "[Attack Tx: 0x49ca5e...c2ec]\n\nEach iteration (20 times):\n  1. SportVault.redeem(0, BUSD, 0, dataList, false) called\n  2. SportVault → 1inch Router: unoswapTo(Attacker, USDC, amount, 0, pools)\n     Transfer(from=SportVault, to=Attacker, value=USDC_amount)\n  3. SportVault → 1inch Router: unoswapTo(Attacker, BTCB, amount, 0, pools)\n     Transfer(from=SportVault, to=Attacker, value=BTCB_amount)\n  4. SportVault → 1inch Router: unoswapTo(Attacker, BETH, amount, 0, pools)\n     Transfer(from=SportVault, to=Attacker, value=BETH_amount)\n  \n  [After each swap: SportVault balance decreases, attacker balance increases]\n\nFinal:\n  After 20 cumulative iterations, attacker's BNB/USDC/BTCB/BETH balance increases"
+ ]
+}

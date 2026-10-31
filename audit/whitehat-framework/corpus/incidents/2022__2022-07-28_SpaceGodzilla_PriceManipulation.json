@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-07-28_SpaceGodzilla_PriceManipulation",
+ "source_file": "2022/2022-07-28_SpaceGodzilla_PriceManipulation.md",
+ "title": "SpaceGodzilla — Liquidity Swap Price Manipulation Attack Analysis",
+ "date": "2022-07-28",
+ "protocol": "SpaceGodzilla Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~25,378 BUSD",
+ "loss_usd": null,
+ "root_cause": "`swapTokensForOther()` uses `amountOutMin=0`, accepting the AMM spot price as-is — allowing swaps to execute at any price when reserves are manipulated (no slippage protection)",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable internal swap function — operates solely on the current pool price\nfunction swapTokensForOther(uint256 tokenAmount) private {\n    address[] memory path = new address[](2);\n    path[0] = address(this);\n    path[1] = USDT;\n\n    //",
+  "❌ No slippage protection — uses manipulated price as-is\n    uniswapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        tokenAmount,\n        0,           //",
+  "❌ amountOutMin = 0 → accepts any price\n        path,\n        address(this),\n        block.timestamp\n    );\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern — TWAP oracle + slippage protection\nfunction swapTokensForOther(uint256 tokenAmount) private {\n    uint256 twapPrice = getTWAPPrice(); // Time-weighted average price\n    uint256 minOut = tokenAmount * twapPrice * 95 / 100; // Allow 5% slippage\n    // ...\n    uniswapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        tokenAmount,\n        minOut, //",
+  "✅ Minimum output amount set\n        path,\n        address(this),\n        block.timestamp\n    );\n}"
+ ],
+ "steps": [
+  "[7] Second swap → realize net USDT profit",
+  "[8] Repay flash loans → 25,378 BUSD net profit"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Borrow ~2.95M USDT from 16 flash loan pools\n    │\n    ├─[2] Call swapTokensForOther()\n    │       └─ Buy SpaceGodzilla tokens (begin pool price manipulation)\n    │\n    ├─[3] Transfer large amount of USDT directly to LP pool (excluding 100k)\n    │       └─ Drastically distort SpaceGodzilla/USDT ratio\n    │\n    ├─[4] Execute first swap\n    │       └─ Obtain ~73.7 trillion SpaceGodzilla at distorted price\n    │\n    ├─[5] Call swapAndLiquifyStepv1()\n    │       └─ Trigger token's internal liquidity mechanism\n    │\n    ├─[6] Transfer accumulated SpaceGodzilla to LP pool\n    │\n    ├─[7] Second swap → realize net USDT profit\n    │\n    └─[8] Repay flash loans → 25,378 BUSD net profit",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ISpaceGodzilla {\n    function swapTokensForOther(uint256 tokenAmount) external;\n    function swapAndLiquifyStepv1() external;\n}\n\ninterface IERC20 {\n    function balanceOf(address) external view returns (uint256);\n    function transfer(address, uint256) external returns (bool);\n    function approve(address, uint256) external returns (bool);\n}\n\ninterface IUni_Pair_V2 {\n    function getReserves() external view returns (uint112, uint112, uint32);\n    function swap(uint256, uint256, address, bytes calldata) external;\n}\n\ncontract SpaceGodzillaExploit is Test {\n    ISpaceGodzilla sgToken = ISpaceGodzilla(0x2287C04a15bb11ad1358BA5702C1C95E2D13a5E0);\n    IUni_Pair_V2 pair = IUni_Pair_V2(0x8AfF4e"
+ ]
+}

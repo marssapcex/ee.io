@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-02-09_dForce_ReadOnlyReentrancy_ARB",
+ "source_file": "2023/2023-02-09_dForce_ReadOnlyReentrancy_ARB.md",
+ "title": "dForce — Curve Read-Only Reentrancy Attack Analysis",
+ "date": "2023-02-09",
+ "protocol": "dForce",
+ "chain": "Arbitrum",
+ "loss_raw": "~$3,650,000",
+ "loss_usd": 3650000.0,
+ "root_cause": "Stale `virtual_price` used during Curve wstETH/ETH pool ETH callback (read-only reentrancy)",
+ "attack_tx": "0x5db5c240...",
+ "vulnerable_contract": "dForce iWSTETHCRVGAUGE",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable internal behavior of Curve Pool's remove_liquidity (pseudocode)\nfunction remove_liquidity(uint256 token_amount, uint256[2] memory min_amounts)\n    external\n    returns (uint256[2] memory amounts)\n{\n    // Step 1: Calculate ETH/wstETH amounts to return\n    amounts[0] = token_amount * self.balances[0] / self.token.totalSupply();\n    amounts[1] = token_amount * self.balances[1] / self.token.totalSupply();\n\n    // ❌ State update (balances decrease) occurs AFTER ETH transfer\n    //    → When ETH is sent, the recipient's fallback() executes at a point\n    //      where self.balances has not yet been updated, so virtual_price()\n    //      returns an inflated value\n\n    // Step 2: ETH transfer (external callback occurs here!)\n    raw_call(msg.sender, b\"\", value=amounts[0])  // ← callback fires here\n\n    // Step 3: State update (only executes after the callback)\n    self.balances[0] -= amounts[0]\n    self.balances[1] -= amounts[1]\n    self.token.burnFrom(msg.sender, token_amount)\n}\n\n// ❌ virtual_price() is a view function, so reentrancy guard cannot be applied\nfunction virtual_price() external view returns (uint256):\n    // Calculates value per LP token based on current balances\n    // During remove_liquidity callback, balances have not yet been updated,\n    // so an inflated value is returned\n    return self.get_virtual_price()",
+  "// ❌ Vulnerable dForce price oracle (inferred code)\ncontract PriceOracleV2 {\n    ICurvePool public curvePool;\n\n    function getUnderlyingPrice(address _asset) external returns (uint256) {\n        if (_asset == address(VWSTETHCRVGAUGE)) {\n            // ❌ Directly calls Curve's virtual_price() without reentrancy protection\n            //    → If this function is called during a Curve ETH callback,\n            //      collateral value based on inflated virtual_price is returned\n            uint256 virtualPrice = curvePool.get_virtual_price();\n            return virtualPrice * wstETHPrice / 1e18;\n        }\n        // ...\n    }\n}",
+  "Step 14: Call remove_liquidity → ETH callback fires (reentrancy triggered)\n───────────────────────────────────────────────────────────────────────────\n  ContractTest.executeOperation()\n       │\n       ▼\n  curvePool.remove_liquidity(63,438,591...)  ← ❌ ETH callback fires here!\n       │\n       │  [Curve internal state not yet updated]\n       │  [virtual_price() = inflated value]\n       │\n       ▼\n  ContractTest.fallback() executes  ← ETH receive callback\n       │\n       ├─▶ PriceOracle.getUnderlyingPrice() → returns inflated price ❌\n       │\n       ├─▶ dForce.liquidateBorrow(borrower, 560,525,526...)\n       │        └▶ Collateral over-valued based on inflated virtual_price\n       │           → Liquidate attacker's Borrower position (acquire excess collateral)\n       │\n       └─▶ dForce.liquidateBorrow(victimAddress2, 300,037,034...)\n                └▶ Liquidate another victim's position as well\n                   → Acquire additional VWSTETHCRVGAUGE tokens"
+ ],
+ "code_after": [
+  "// ✅ Fix: Add read-only reentrancy protection to Curve pool\n// (Curve subsequently patched with a reentrancy lock)\nuint256 private locked = 1;\n\nmodifier nonreentrant():\n    assert locked == 1  // ✅ Check reentrancy lock\n    locked = 2\n    _\n    locked = 1\n\n// ✅ Revert view functions when in reentrant state\nfunction virtual_price() external view returns (uint256):\n    assert self.locked == 1  // ✅ Revert if currently reentrant\n    return self.get_virtual_price()",
+  "// ✅ Fixed dForce price oracle\ncontract PriceOracleV2 {\n    ICurvePool public curvePool;\n\n    function getUnderlyingPrice(address _asset) external returns (uint256) {\n        if (_asset == address(VWSTETHCRVGAUGE)) {\n            // ✅ Check Curve pool's reentrancy lock state first\n            require(curvePool.locked() == 1, \"Curve pool is in reentrant state\");\n\n            uint256 virtualPrice = curvePool.get_virtual_price();\n            return virtualPrice * wstETHPrice / 1e18;\n        }\n    }\n}"
+ ],
+ "steps": [
+  "Balancer flash loan → WETH (full balance)",
+  "▶ AaveV3 flash loan → WETH (full balance)",
+  "▶ Radiant flash loan → WETH",
+  "▶ UniswapV3 flash loan → WETH",
+  "▶ SushiSwap SLP1 flash loan → WETH",
+  "▶ SushiSwap SLP2 flash loan → WETH",
+  "▶ SushiSwap SLP3 flash loan → WETH",
+  "▶ Zyber flash loan → WETH",
+  "▶ SwapFlashLoan → WETH",
+  "Step 10: Add liquidity to Curve pool",
+  "ETH (WETH unwrap) → Curve wstETH/ETH pool add_liquidity",
+  "→ Receive wstETHCRV LP tokens",
+  "wstETHCRV → Stake into WSTETHCRVGAUGE",
+  "Transfer USX → ContractTest",
+  "Step 14: Call remove_liquidity → ETH callback fires (reentrancy triggered)",
+  "▶ PriceOracle.getUnderlyingPrice() → returns inflated price ❌",
+  "→ Liquidate attacker's Borrower position (acquire excess collateral)",
+  "→ Acquire additional VWSTETHCRVGAUGE tokens",
+  "VWSTETHCRVGAUGE.redeem() → receive wstETHCRV-gauge",
+  "WSTETHCRVGAUGE.withdraw() → receive wstETHCRV LP tokens"
+ ],
+ "other_code": [
+  "Steps 1–9: Acquire large-scale WETH via nested flash loans\n──────────────────────────────────────────────────────────\n  Balancer flash loan    → WETH (full balance)\n    └▶ AaveV3 flash loan → WETH (full balance)\n         └▶ Radiant flash loan → WETH\n              └▶ UniswapV3 flash loan → WETH\n                   └▶ SushiSwap SLP1 flash loan → WETH\n                        └▶ SushiSwap SLP2 flash loan → WETH\n                             └▶ SushiSwap SLP3 flash loan → WETH\n                                  └▶ Zyber flash loan → WETH\n                                       └▶ SwapFlashLoan → WETH\n                                            └▶ [Attack execution ↓]",
+  "Step 10: Add liquidity to Curve pool\n─────────────────────────────────────\n  ETH (WETH unwrap) → Curve wstETH/ETH pool add_liquidity\n  → Receive wstETHCRV LP tokens"
+ ]
+}

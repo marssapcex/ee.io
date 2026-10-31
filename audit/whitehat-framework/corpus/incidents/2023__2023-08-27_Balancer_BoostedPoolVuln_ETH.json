@@ -1,0 +1,48 @@
+{
+ "id": "2023__2023-08-27_Balancer_BoostedPoolVuln_ETH",
+ "source_file": "2023/2023-08-27_Balancer_BoostedPoolVuln_ETH.md",
+ "title": "Balancer — Boosted Pool Vulnerability Analysis",
+ "date": "2023-08-27",
+ "protocol": "Balancer",
+ "chain": "Ethereum",
+ "loss_raw": "~$979,000",
+ "loss_usd": 979000.0,
+ "root_cause": "BPT (Balancer Pool Token) exchange rate manipulation via precision loss in the Boosted Pool (Linear Pool)",
+ "attack_tx": "0x2a02...c2d",
+ "vulnerable_contract": "0x9210...3d0 (bb-a-USDC Boosted Pool)",
+ "classes": [
+  "business-logic",
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — bb-a-USDC Linear Pool exchange rate calculation\n// Always uses round-down in scaling operations\nfunction _calcRate() internal view returns (uint256) {\n    uint256 totalSupply = _getVirtualSupply();   // Circulating supply\n    uint256 totalBalance = _getTotalBalance();    // Total USDC + aUSDC balance (scaled)\n\n    // ❌ Issue: virtualSupply can be reduced to near-zero without fees in balanced state\n    // ❌ Issue: round-down allows burning small amounts of BPT and receiving 0 USDC\n    // → virtualSupply decreases → rate spikes\n    return totalBalance.divDown(totalSupply);\n}\n\n// ❌ Vulnerable swap logic: 0 USDC withdrawal due to precision loss\nfunction _calcOutGivenIn(uint256 bptAmountIn) internal view returns (uint256 amountOut) {\n    uint256 rate = _calcRate();\n    // Round-down: if bptAmountIn is small, amountOut becomes 0\n    amountOut = bptAmountIn.mulDown(rate);  // ❌ very small value * rate → precision loss → returns 0\n    // → BPT is burned but nothing is paid out\n    // → virtualSupply decreases + total assets unchanged → rate rises\n}",
+  "// ❌ Batch swap: allows intermediate negative balances\n// Attacker \"borrows\" the entire virtualSupply as BPT, burns it, then re-mints to repay\nfunction batchSwap(\n    SwapKind kind,\n    BatchSwapStep[] memory swaps,\n    address[] memory assets,\n    FundManagement memory funds,\n    int256[] memory limits,\n    uint256 deadline\n) external returns (int256[] memory assetDeltas) {\n    // ❌ Allows negative deltas in intermediate steps\n    // BPT is burned first within the batch, then re-minted at the final step to repay\n    for (uint256 i = 0; i < swaps.length; i++) {\n        _processSwap(swaps[i], assets, assetDeltas);\n        // Negative delta check is only performed at the end of the batch → supply can hit 0 mid-batch\n    }\n    _settleDeltas(assets, assetDeltas, limits, funds);\n}",
+  "❌ Precision loss → receive 0 USDC               │\n│          → virtualSupply ≈ 0 → rate spikes 30~50× ↑↑↑    │\n│                           ↓                               │\n│  Step 2: bb-a-USDC 1e18 → bb-a-DAI  (update price cache) │\n│                           ↓                               │\n│  Step 3: bb-a-USDC 7,300 → bb-a-DAI"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — round-up applied during upscaling\nfunction _calcOutGivenIn(uint256 bptAmountIn) internal view returns (uint256 amountOut) {\n    uint256 rate = _calcRate();\n    // ✅ Round-up: at least 1 unit must always be paid out\n    amountOut = bptAmountIn.mulUp(rate);   // round-up prevents precision loss\n    require(amountOut > 0, \"output amount cannot be zero\");\n}\n\n// ✅ Added: exchange rate manipulation detection\nfunction _validateRate(uint256 newRate) internal view {\n    uint256 currentRate = _getStoredRate();\n    // Block the trade if the rate changes abruptly beyond the threshold\n    require(newRate <= currentRate * MAX_RATE_INCREASE / 1e18, \"rate spike detected\");\n}",
+  "✅ Profit realized! │\n│  Step 4: bb-a-USDC 14,000 → bb-a-USDT"
+ ],
+ "steps": [
+  "**Step 1**: Aave flash loan → acquire 300,000 USDC",
+  "**Step 2**: Drain all aUSDC from the bb-a-USDC pool → create pool imbalance",
+  "**Step 3**: Converge virtualSupply to 0 via batch swap → trigger precision loss",
+  "**Step 4**: Swap inflated bb-a-USDC for bb-a-DAI and bb-a-USDT → realize illicit profit",
+  "aUSDC balance: all → 0",
+  "Step 0: bb-a-USDC → USDC (burn large amount of BPT)",
+  "Step 1: bb-a-USDC → USDC (burn 775B BPT)",
+  "❌ Precision loss → receive 0 USDC",
+  "→ virtualSupply ≈ 0 → rate spikes 30~50× ↑↑↑",
+  "Step 2: bb-a-USDC 1e18 → bb-a-DAI (update price cache)",
+  "Step 3: bb-a-USDC 7,300 → bb-a-DAI ✅ Profit realized!",
+  "Step 4: bb-a-USDC 14,000 → bb-a-USDT ✅ Profit realized!",
+  "Step 5: bb-a-USDC 20B → USDC (virtualSupply → 0 reset)",
+  "Step 6: USDC 150,000 → bb-a-USDC (repay batch debt)",
+  "[Phase 3] Convert bb-tokens → stablecoins",
+  "bb-a-DAI → DAI (bbaDAIPool)",
+  "bb-a-USDC → USDC (targetPool)",
+  "bb-a-USDT → USDT (bbaUSDTPool)",
+  "DAI → USDC (Uniswap V2 Router)"
+ ],
+ "other_code": []
+}

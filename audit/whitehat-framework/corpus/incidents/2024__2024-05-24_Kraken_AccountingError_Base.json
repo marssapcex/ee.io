@@ -1,0 +1,38 @@
+{
+ "id": "2024__2024-05-24_Kraken_AccountingError_Base",
+ "source_file": "2024/2024-05-24_Kraken_AccountingError_Base.md",
+ "title": "Kraken — Accounting Error Vulnerability Analysis",
+ "date": "2024-05-24",
+ "protocol": "Kraken",
+ "chain": "Base",
+ "loss_raw": "~$3,000,000 (Kraken operational funds)",
+ "loss_usd": 3000000.0,
+ "root_cause": "Failure to distinguish internal transfer status in deposit transactions — immediate credit on main transaction success without detecting internal revert",
+ "attack_tx": "Multiple on-chain evidence — Base, BNB Chain, Arbitrum, Optimism",
+ "vulnerable_contract": "Kraken deposit processing backend (off-chain accounting system)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "# ❌ Vulnerable deposit processing logic (pseudocode — estimated actual implementation)\ndef process_deposit(tx_hash: str, user_account: str, amount: int):\n    tx_receipt = get_transaction_receipt(tx_hash)\n    \n    # ❌ Only checks outer transaction status — does not validate inner sub-transaction status\n    if tx_receipt.status == 1:  # Outer transaction success\n        # Immediately credit account balance (process as deposit complete)\n        credit_account(user_account, amount)\n        # ❌ Problem: even if the internal deposit transfer reverted,\n        #    deposit is processed as long as the outer transaction succeeded",
+  "// ❌ Revert attack contract — appears to deposit but actual transfer reverts\n// Deployed on Base chain 2024-05-24 (0x45...CeA9)\ncontract RevertDepositAttack {\n    address immutable exchange;       // Kraken deposit address\n    IERC20 immutable token;           // Deposit token\n    \n    // Function signature hash: 0xa04a4c3b (not publicly disclosed)\n    function executeRevertDeposit(uint256 amount) external {\n        // ❌ Step 1: Outer transaction executes successfully\n        //    Kraken monitoring system detects this transaction as a \"deposit\"\n        \n        // Call that induces an internal revert\n        try token.transfer(exchange, amount) {\n            // ❌ Force revert inside the transfer call\n            // Appears to Kraken as a successful transfer, but tokens are not actually sent\n        } catch {\n            // Catch the revert so the outer transaction completes normally\n        }\n        \n        // ❌ Result: tx.status = 1 (success), actual balance change = none\n    }\n}",
+  "❌ Processed as        │\n│      deposit complete    │\n└────────────┬────────────┘\n             │\n             │ 4. User account balance increases\n             │    (Credited without actual deposit)\n             ▼\n┌─────────────────────────┐\n│   Attacker Account       │\n│   Balance                │\n│   +$X phantom credit     │\n└────────────┬────────────┘\n             │\n             │ 5. Immediate withdrawal request\n             │    (Phantom balance → real cryptocurrency)\n             ▼\n┌─────────────────────────┐\n│   Kraken Withdrawal      │\n│   Processing             │\n│"
+ ],
+ "code_after": [
+  "# ✅ Fixed deposit processing logic\ndef process_deposit(tx_hash: str, user_account: str, amount: int):\n    tx_receipt = get_transaction_receipt(tx_hash)\n    \n    # ✅ Check outer transaction status\n    if tx_receipt.status != 1:\n        return  # Ignore failed transaction\n    \n    # ✅ Validate internal Transfer event logs\n    deposit_events = filter_transfer_events(\n        tx_receipt.logs,\n        to_address=KRAKEN_DEPOSIT_ADDRESS,\n        token=expected_token\n    )\n    \n    # ✅ Verify that actual deposit events exist and amounts match\n    if not deposit_events or sum(e.amount for e in deposit_events) < amount:\n        reject_deposit(tx_hash, \"No deposit event or amount mismatch\")\n        return\n    \n    # ✅ Additional validation for contract revert\n    internal_calls = get_internal_transactions(tx_hash)\n    reverted_calls = [c for c in internal_calls if c.status == 0]\n    if any(is_deposit_related(c) for c in reverted_calls):\n        reject_deposit(tx_hash, \"Internal deposit sub-call revert detected\")\n        return\n    \n    credit_account(user_account, amount)",
+  "✅ Approved normally   │\n│   Actual funds withdrawn │\n└────────────┬────────────┘\n             │\n             │ 6. Real funds transferred to attacker's wallet\n             ▼\n  [Attacker Wallet]\n  ~$3,000,000 received\n  (ETH, USDT, XMR, etc.)"
+ ],
+ "steps": [
+  "1. Call revert attack contract (Base chain)",
+  "2. Call token.transfer()",
+  "3. Outer TX completes as success (status=1)",
+  "TX status=1 detected →",
+  "4. User account balance increases",
+  "5. Immediate withdrawal request",
+  "(Phantom balance → real cryptocurrency)",
+  "6. Real funds transferred to attacker's wallet"
+ ],
+ "other_code": [
+  "// Core pattern of revert attack (estimated reconstruction)\n// The same function signature 0xa04a4c3b was used in attacks against multiple exchanges\n\ncontract DepositRevertAttack {\n    // Step 1: Configure exchange deposit address and token\n    address public immutable TARGET_EXCHANGE;\n    IERC20 public immutable DEPOSIT_TOKEN;\n    \n    constructor(address _exchange, address _token) {\n        TARGET_EXCHANGE = _exchange;\n        DEPOSIT_TOKEN = IERC20(_token);\n    }\n    \n    // Step 2: Execute attack function (signature 0xa04a4c3b)\n    function triggerFakeDeposit(uint256 amount) external {\n        // Appears to be a normal deposit transaction on the surface\n        // Internally structured to deceive exchange monitoring\n        // without actually transferring tokens\n        \n        // Me"
+ ]
+}

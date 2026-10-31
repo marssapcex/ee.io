@@ -1,0 +1,22 @@
+{
+ "id": "2023__2023-09-12_CoinEx_HotWalletDrain_Multi",
+ "source_file": "2023/2023-09-12_CoinEx_HotWalletDrain_Multi.md",
+ "title": "CoinEx Exchange — Hot Wallet Private Key Compromise Analysis",
+ "date": "2023-09-12",
+ "protocol": "CoinEx Exchange",
+ "chain": "Multiple",
+ "loss_raw": "~$70,000,000 (ETH, TRX, BNB, BTC, SOL, and other assets drained from exchange hot wallets; initial PeckShield estimate ~$54M; full cross-chain accounting by Benzinga/Lazarus attribution analysis ~$70M)",
+ "loss_usd": 70000000.0,
+ "root_cause": "CoinEx hot wallet private keys were compromised, allowing the attacker to drain all major hot wallets simultaneously across 9+ chains. The attack pattern, fund routing, and on-chain fingerprints matched Lazarus Group methodology confirmed in FBI/blockchain intelligence analysis.",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Lazarus Group (DPRK)\n    │\n    ├─[Pre-exploit] Obtain CoinEx hot wallet private keys\n    │       (method: phishing, insider threat, or infrastructure breach)\n    │\n    ├─[2023-09-12] Simultaneous multi-chain drain:\n    │       Ethereum: ~$19M (ETH, USDT, LINK, others)\n    │       Tron: ~$11M (TRX, USDT-TRC20)\n    │       Binance Smart Chain (BSC): ~$6.4M (BNB, USDT-BEP20)\n    │       Bitcoin: ~$6M (BTC)\n    │       Solana: ~$2.5M (SOL)\n    │       Xpla, Kadena, others: remaining amounts\n    │       Total: ~$70M\n    │\n    ├─[Laundering] Funds routed through:\n    │       - Swap to ETH/BTC on DEXs\n    │       - Chain-hopping via decentralized bridges\n    │       - Mixing and coin-join transactions\n    │       - Linked to previously-identified Lazarus wallets\n    │\n    ├─[CoinEx response] Susp"
+ ]
+}

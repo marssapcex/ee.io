@@ -1,0 +1,24 @@
+{
+ "id": "2023__2023-11-10_Poloniex_HotWalletDrain_Multi",
+ "source_file": "2023/2023-11-10_Poloniex_HotWalletDrain_Multi.md",
+ "title": "Poloniex Exchange — Hot Wallet Private Key Compromise Analysis",
+ "date": "2023-11-10",
+ "protocol": "Poloniex Exchange",
+ "chain": "Multiple",
+ "loss_raw": "~$126,000,000 (ETH, TRX, BTC, and various ERC-20 tokens drained from exchange hot wallets)",
+ "loss_usd": 126000000.0,
+ "root_cause": "Poloniex's hot wallet private keys were compromised, likely through insider access, phishing, or infrastructure breach. The attacker drained all major hot wallets across Ethereum, Tron, and Bitcoin simultaneously",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "- Chain-hopping (ETH → BTC → TRX)"
+ ],
+ "other_code": [
+  "Attacker (suspected Lazarus Group)\n    │\n    ├─[Pre-exploit] Obtain Poloniex hot wallet private keys\n    │       (method unconfirmed: phishing, insider, infrastructure breach)\n    │\n    ├─[2023-11-10] Simultaneous multi-chain drain:\n    │       Ethereum side: ~$56M (ETH, USDT, USDC, SHIB, other ERC-20s)\n    │       Tron side: ~$48M (TRX, USDT-TRC20, other TRC tokens)\n    │       Bitcoin side: ~$22M (BTC)\n    │       Total: ~$126M\n    │\n    ├─[Laundering] Funds routed through:\n    │       - Chain-hopping (ETH → BTC → TRX)\n    │       - Mixing services\n    │       - Decentralized exchanges for token swaps\n    │\n    ├─[Justin Sun response] Offers 5% bounty (~$5M) for return\n    │       Poloniex suspends withdrawals; investigators engaged\n    │\n    └─[FBI attribution] November 2023: FBI attrib"
+ ]
+}

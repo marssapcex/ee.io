@@ -1,0 +1,33 @@
+{
+ "id": "2025__2025-07-01_FPC_TokenPriceManipulation",
+ "source_file": "2025/2025-07-01_FPC_TokenPriceManipulation.md",
+ "title": "FPC Token — Flash Loan Price Manipulation Analysis",
+ "date": "2025-07-01",
+ "protocol": "FPC Token",
+ "chain": "BSC",
+ "loss_raw": "~4,700,000 USDT",
+ "loss_usd": null,
+ "root_cause": "FPC token's internal `getPrice()` function relies on manipulable instantaneous PancakeSwap pool reserves",
+ "attack_tx": "0x3a9dd216",
+ "vulnerable_contract": "0xb192d4a737430aa61cea4ce9bfb6432f7d42592f",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: token internal logic calculates price using PancakeSwap pool ratio\ncontract FPC {\n    IPancakePair public pair; // USDT/FPC pool\n\n    function getPrice() public view returns (uint256) {\n        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();\n        // Instantaneous reserves — manipulable via flash loan\n        return (uint256(reserve0) * 1e18) / uint256(reserve1);\n    }\n\n    function rewardOrProcess() external {\n        uint256 price = getPrice(); // Uses manipulated price\n        uint256 reward = calculateReward(price);\n        token.transfer(msg.sender, reward); // Excess reward paid out\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Use TWAP or an external oracle\nfunction getPrice() public view returns (uint256) {\n    return twapOracle.consult(address(pair), 1e18); // 30-minute TWAP\n}"
+ ],
+ "steps": [
+  "1 ▶ PancakeSwap V3 Pool: flash(23,020,000 USDT)",
+  "2 ▶ PancakeRouter: USDT → FPC large buy",
+  "3 ▶ FPC Contract: calls price-dependent function with manipulated price",
+  "4 ▶ PancakeRouter: FPC → USDT sell",
+  "5 ▶ PancakeSwap V3 Pool: flash loan repaid + ~4.7M USDT profit"
+ ],
+ "other_code": [
+  "// File: future/token.sol\nfunction setRewardPoolAddress(address _rewardPoolAddress) external onlyOwner {\n        require(_rewardPoolAddress != address(0), \"Invalid address\");\n        rewardPoolAddress = _rewardPoolAddress;\n    }\n\n// ... (lines 94-99 omitted) ...\n\n    function setLpBurnEnabled(bool _lpBurnEnabled) external onlyOwner {\n        lpBurnEnabled = _lpBurnEnabled;\n    }\n    function setMaxBuyRate(uint _maxBuyRate) external onlyOwner {\n        require(_maxBuyRate > 0 && _maxBuyRate <= 1000, \"Invalid rate\");\n        maxBuyRate = _maxBuyRate;\n    }\n    function open() external onlyOwner {\n        require(startBlock == 0, \"Already opened\");\n        startBlock = block.number;\n    }\n    function close() external onlyOwner {\n        require(startBlock > 0, \"Not opened yet\");\n        star",
+  "Attacker\n  │\n  ├─1─▶ PancakeSwap V3 Pool: flash(23,020,000 USDT)\n  │         [pancakeV3FlashCallback callback]\n  │\n  ├─2─▶ PancakeRouter: USDT → FPC large buy\n  │         └─ FPC price spikes (pool ratio distorted)\n  │\n  ├─3─▶ FPC Contract: calls price-dependent function with manipulated price\n  │         └─ Receives excess rewards/payouts\n  │\n  ├─4─▶ PancakeRouter: FPC → USDT sell\n  │         └─ Profit realized\n  │\n  └─5─▶ PancakeSwap V3 Pool: flash loan repaid + ~4.7M USDT profit"
+ ]
+}

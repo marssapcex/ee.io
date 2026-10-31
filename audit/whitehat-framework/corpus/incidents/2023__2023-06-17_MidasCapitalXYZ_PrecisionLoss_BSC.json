@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-06-17_MidasCapitalXYZ_PrecisionLoss_BSC",
+ "source_file": "2023/2023-06-17_MidasCapitalXYZ_PrecisionLoss_BSC.md",
+ "title": "MidasCapital XYZ (BSC) — ERC4626 Inflation + Precision Loss Analysis",
+ "date": "2023-06-17",
+ "protocol": "Midas Capital XYZ",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~$600,000 (ANKR, ankrBNB, HAY/BUSD LP assets drained)",
+ "loss_usd": 600000.0,
+ "root_cause": "Empty Market + direct donation to ERC4626 Vault inflating exchangeRate → precision loss allows large LP redemption with fractional cTokens",
+ "attack_tx": "0x4a304ff0...c3a6",
+ "vulnerable_contract": "0xF8527Dc5...b25cB (fsAMM-HAY/BUSD cToken)",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — exchangeRateStored() in Compound V2 fork\nfunction exchangeRateStoredInternal() internal view returns (MathError, uint) {\n    uint _totalSupply = totalSupply;\n    if (_totalSupply == 0) {\n        // When market is empty: return initial exchangeRate\n        return (MathError.NO_ERROR, initialExchangeRateMantissa);\n    } else {\n        // ❌ Vulnerable point: totalCash can be directly manipulated externally\n        // Direct donation to ERC4626 Vault increases totalCash (totalSupply unchanged)\n        uint totalCash = getCashPrior();  // Actual token balance held (manipulable)\n        uint cashPlusBorrowsMinusReserves;\n        MathError mathErr;\n        (mathErr, cashPlusBorrowsMinusReserves) = addThenSubUInt(\n            totalCash, totalBorrows, totalReserves + totalFuseFees + totalAdminFees\n        );\n        // exchangeRate = (totalCash + borrows - reserves) / totalSupply\n        // After attack: totalCash surges to 519,134 LP, totalSupply is only 1001 wei\n        // → exchangeRate = ~519,134e18 / 1001 ≈ 5.18e35 (rises further via ERC4626 conversion)\n        return (mathErr, cashPlusBorrowsMinusReserves / _totalSupply);\n    }\n}",
+  "// ❌ Vulnerable code — cToken quantity calculation inside redeemFresh()\nfunction redeemFresh(address payable redeemer, uint redeemTokensIn, uint redeemAmountIn) internal returns (uint) {\n    // redeemAmountIn = amount of underlying tokens to redeem\n    // When calculating redeemTokensIn:\n    //   redeemTokens = redeemAmountIn / exchangeRate\n    //   = 519,134e18 / (259,307,483,413,976,717,546,872 * 1e15)\n    //   ≈ 1.998 → truncate → 1 (wei)\n    // ❌ LP equivalent to 1.998 wei cTokens can be redeemed by paying only 1 wei\n    Exp memory exchangeRate = Exp({mantissa: exchangeRateStoredInternal()});\n    (mathErr, redeemTokens) = divScalarByExpTruncate(redeemAmountIn, exchangeRate);\n    // divScalarByExpTruncate: floors the result → rounding favors attacker\n}",
+  "Attacker EOA\n  0x4b92...\n      │\n      ▼\n ┌──────────────────────┐\n │  Attack Contract     │\n │  0xC40119C7...       │\n │  MidasXYZExploit     │\n └──────────┬───────────┘\n            │ 1. PancakeSwap V2 flash loan\n            ▼\n ┌──────────────────────┐     ┌──────────────────────┐\n │ ankrBNB_ANKRV2       │────▶│  3,743,005 ANKR      │\n │ PancakeSwap V2 Pool  │     │  received by attack   │\n └──────────────────────┘     └──────────┬───────────┘\n                                          │ 2. Algebra V3 flash loan\n                                          ▼\n                              ┌──────────────────────┐\n                              │ ankrBNB_ANKRV3       │\n                              │ Algebra V3 Pool      │\n                              │ +30,751,081 ANKR     │\n                              └──────────┬───────────┘\n                                          │ (inside Borrower contract)\n                                          ▼\n ┌──────────────────────────────────────────────────────┐\n │  3. Empty Market Setup                               │\n │  HAY/BUSD LP 21,184 → fsAMM_HAY_BUSD.mint()         │\n │  → Receives 105,923 cTokens                          │\n │  fsAMM_HAY_BUSD.redeem(104,922)                     │\n │  → totalSupply = only 1001 wei remaining             │\n └──────────────────────────────┬───────────────────────┘\n                                 │\n                                 ▼\n ┌──────────────────────────────────────────────────────┐\n │  4. exchangeRate Inflation (Core)                    │\n │  HAY_BUSDT_Vault.deposit(21,184 LP → fsAMM_HAY_BUSD) │\n │  totalCash ↑↑  /  totalSupply = 1001 wei (fixed)    │\n │  exchangeRate: 2e17 → 2.593e38 (1.3×10²¹ x rise)   │\n └──────────────────────────────┬───────────────────────┘\n                                 │\n                                 ▼\n ┌──────────────────────────────────────────────────────┐\n │  5. Collateral Supply + Borrowing                    │\n │  34M ANKR → fANKR market supply (collateral)         │\n │  fankrBNB: borrow 1,148 ankrBNB ✓                   │\n │  fHAY: borrow 25,296 HAY ✓                          │\n └──────────────────────────────┬───────────────────────┘\n                                 │\n                                 ▼\n ┌──────────────────────────────────────────────────────┐\n │  6. Second Donation → Further exchangeRate Increase  │\n │  ankrBNB → WBNB → BUSD 260,151                      │\n │  HAY 225K + BUSD 251K → LP 238,641 additional donate │\n │  exchangeRate: → 2.593e38 (final value)              │\n └──────────────────────────────┬───────────────────────┘\n                                 │\n                                 ▼\n ┌──────────────────────────────────────────────────────┐\n │  7. Precision Loss Exploitation                      │\n │  redeemUnderlying(519,134 LP)                       │\n │  Required cTokens = 519,134e18 / 2.593e38           │\n │             = 1.998 wei → truncate → 1 wei           │\n │  ❌ 1 wei cToken ($0) drains 519,134"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — exchangeRate upper bound + donation attack defense\nfunction exchangeRateStoredInternal() internal view returns (MathError, uint) {\n    uint _totalSupply = totalSupply;\n    if (_totalSupply == 0) {\n        return (MathError.NO_ERROR, initialExchangeRateMantissa);\n    } else {\n        uint totalCash = getCashPrior();\n        // ✅ Fix 1: Validate exchangeRate change upper bound\n        // Set maximum allowed multiplier relative to previous exchangeRate (e.g., 2x)\n        uint currentRate = totalCash / _totalSupply;\n        require(\n            currentRate <= lastExchangeRate * MAX_EXCHANGE_RATE_MULTIPLIER,\n            \"ExchangeRate manipulation detected\"\n        );\n        // ...\n    }\n}\n\n// ✅ Fix 2: Lock minimum liquidity on mint() (Empty Market prevention)\nuint internal constant MINIMUM_LIQUIDITY = 1000; // Lock minimum 1000 wei\nfunction mint(uint mintAmount) external returns (uint) {\n    // On first mint, permanently lock MINIMUM_LIQUIDITY to address(0)\n    if (totalSupply == 0) {\n        _mint(address(0), MINIMUM_LIQUIDITY);\n        mintAmount -= MINIMUM_LIQUIDITY;\n    }\n    // ...\n}",
+  "// ✅ Fixed code — change rounding direction to favor the protocol\nfunction redeemFresh(...) internal returns (uint) {\n    Exp memory exchangeRate = Exp({mantissa: exchangeRateStoredInternal()});\n    // ✅ Use ceiling (round up) instead of truncate: user must pay more cTokens\n    (mathErr, redeemTokens) = divScalarByExpCeil(redeemAmountIn, exchangeRate);\n    // 1.998 → ceil → 2 (wei): 2 wei cTokens required to redeem\n}"
+ ],
+ "steps": [
+  "Step 1: Dual Flash Loan Acquisition",
+  "→ Receives flash loan of 3,743,005 ANKR tokens",
+  "→ Receives additional flash loan of 30,751,081 ANKR tokens",
+  "Step 2: cToken Market Preparation (Empty Market Setup)",
+  "→ Receives 21,184.7314 LP tokens",
+  "→ Receives 105,923 cTokens",
+  "→ Redeems 104,922 cTokens, retains only 1001 wei",
+  "Step 3: exchangeRate Inflation (Core Attack)",
+  "totalCash: 0 → increases by 21,184 LP",
+  "exchangeRate: 2e17 → ~2.12e34 (skyrockets)",
+  "Step 4: ANKR Collateral Supply + Borrowing",
+  "- Supply 34,494,086 ANKR → fANKR market (as collateral)",
+  "Step 5: Additional Large HAY/BUSD LP Acquisition + Second Donation",
+  "Swap 1,032 ankrBNB → WBNB",
+  "Swap WBNB → 260,151 BUSDT",
+  "HAY 225,296 + BUSDT 251,989 → 238,641.8 LP tokens acquired",
+  "HAY_BUSDT_Vault.deposit(238,641 LP) → donate to fsAMM_HAY_BUSD",
+  "exchangeRate: ~2.12e34 → 2.593e38 (surges again)",
+  "Step 6: Precision Loss Exploitation — Large LP Redemption with Fractional cTokens",
+  "→ Required cTokens = 519,134e18 / exchangeRate"
+ ],
+ "other_code": [
+  "Step 1: Dual Flash Loan Acquisition\n   PancakeSwap V2 (ankrBNB_ANKRV2)\n   ──────────────────────────────────────\n   Attack contract calls swap()\n   → Receives flash loan of 3,743,005 ANKR tokens\n\n   Algebra Pool V3 (ankrBNB_ANKRV3)\n   ──────────────────────────────────────\n   Forwards ANKR to Borrower contract, then\n   → Receives additional flash loan of 30,751,081 ANKR tokens\n\nStep 2: cToken Market Preparation (Empty Market Setup)\n   HAY 20,000 + BUSDT 22,369 converted to HAY/BUSD LP\n   → Receives 21,184.7314 LP tokens\n   fsAMM_HAY_BUSD.mint(21,184 LP)\n   → Receives 105,923 cTokens\n   fsAMM_HAY_BUSD.redeem(105,923 - 1001)\n   → Redeems 104,922 cTokens, retains only 1001 wei\n   (totalSupply = 1001 wei)\n\nStep 3: exchangeRate Inflation (Core Attack)\n   Donate 21,184.7314 HAY/BUSD LP tokens\n  ",
+  "① ANKR: ankrBNB_ANKRV2 → AttackC  (3,743,005 ANKR flash loan)\n② ANKR: ankrBNB_ANKRV3 → Borrower (30,751,081 ANKR flash loan)\n③ HAY/BUSD LP: 0x0 → AttackC      (21,184 LP mint)\n④ HAY/BUSD LP: AttackC → Vault    (1st donation — exchangeRate inflation)\n⑤ fANKR(cToken): 0x13ae... → Borrower (ANKR collateral supply)\n⑥ ankrBNB: fankrBNB → Borrower    (1,148 ankrBNB borrow)\n⑦ HAY: fHAY → Borrower            (25,296 HAY borrow)\n⑧ WBNB: Algebra → AttackC         (ankrBNB swap)\n⑨ BUSD: PancakeV3 → AttackC       (WBNB→BUSD 260,151 swap)\n⑩ HAY/BUSD LP: 0x0 → AttackC      (238,641 LP mint — 2nd donation)\n⑪ HAY/BUSD LP: 0x02706... → AttackC (519,134 LP redemption ← core precision loss)\n⑫ ANKR: AttackC → ankrBNB_ANKRV3  (30,836,384 ANKR repaid)\n⑬ ANKR: AttackC → ankrBNB_ANKRV2  (3,752,737 ANKR repaid)"
+ ]
+}

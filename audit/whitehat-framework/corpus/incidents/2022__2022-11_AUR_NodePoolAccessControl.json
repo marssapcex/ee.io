@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-11_AUR_NodePoolAccessControl",
+ "source_file": "2022/2022-11_AUR_NodePoolAccessControl.md",
+ "title": "AUR — Missing Access Control on changeNodePrice()/changeRewardPerNode() Attack Analysis",
+ "date": "2022-11-01",
+ "protocol": "Aurum Node Pool",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "`changeNodePrice()` and `changeRewardPerNode()` lack access control, allowing anyone to manipulate node price and reward rate",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable AurumNodePool - no access control on parameter modification functions\ncontract AurumNodePool {\n    uint256 public nodePrice;       // Node creation cost\n    uint256 public rewardPerNode;   // Daily reward per node\n\n    //",
+  "❌ Anyone can change node price\n    function changeNodePrice(uint256 newPrice) external {\n        nodePrice = newPrice;\n    }\n\n    //",
+  "❌ Anyone can change reward rate\n    function changeRewardPerNode(uint256 newReward) external {\n        rewardPerNode = newReward;\n    }\n\n    function createNode() external {\n        AUR.transferFrom(msg.sender, address(this), nodePrice);\n        nodes[msg.sender].push(Node({\n            createdAt: block.timestamp,\n            lastClaim: block.timestamp\n        }));\n    }\n\n    function claimNodeReward() external {\n        uint256 totalReward = 0;\n        for (uint i = 0; i < nodes[msg.sender].length; i++) {\n            uint256 elapsed = block.timestamp - nodes[msg.sender][i].lastClaim;\n            // Manipulated rewardPerNode × elapsed time\n            totalReward += elapsed * rewardPerNode / 1 days;\n            nodes[msg.sender][i].lastClaim = block.timestamp;\n        }\n        AUR.transfer(msg.sender, totalReward);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - onlyOwner applied\ncontract SafeAurumNodePool is Ownable {\n    uint256 public nodePrice;\n    uint256 public rewardPerNode;\n\n    function changeNodePrice(uint256 newPrice) external onlyOwner {\n        require(newPrice > 0, \"Invalid price\");\n        nodePrice = newPrice;\n    }\n\n    function changeRewardPerNode(uint256 newReward) external onlyOwner {\n        //",
+  "✅ Maximum reward rate cap set\n        require(newReward <= MAX_REWARD_PER_NODE, \"Exceeds max reward\");\n        rewardPerNode = newReward;\n    }\n}"
+ ],
+ "steps": [
+  "[1] 0.01 BNB → AUR swap (PancakeSwap)",
+  "→ Minimize node creation cost",
+  "→ Set reward rate hundreds of millions of times higher than normal",
+  "[7] AUR → BNB reverse swap"
+ ],
+ "other_code": []
+}

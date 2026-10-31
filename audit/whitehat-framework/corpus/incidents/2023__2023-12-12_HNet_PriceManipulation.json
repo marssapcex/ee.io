@@ -1,0 +1,25 @@
+{
+ "id": "2023__2023-12-12_HNet_PriceManipulation",
+ "source_file": "2023/2023-12-12_HNet_PriceManipulation.md",
+ "title": "HNet Price Manipulation Vulnerability Analysis (December 2023)",
+ "date": "2023-12-12",
+ "protocol": "HNet",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "▶ Force-update reserves → price distortion"
+ ],
+ "other_code": [
+  "interface IHNetTOWBNB {\n    // sync() publicly exposed — force-updates reserves\n    function sync() external;\n}\n\n// Price calculation is reserve-based\nfunction getPrice() external view returns (uint256) {\n    (uint112 r0, uint112 r1,) = pair.getReserves();\n    // After sync(), computed using manipulated reserves\n    return uint256(r1) * 1e18 / uint256(r0);\n}",
+  "// TWAP-based price to prevent manipulation\nfunction getPrice() external view returns (uint256) {\n    return twapOracle.consult(hnetToken, 1e18);\n}"
+ ]
+}

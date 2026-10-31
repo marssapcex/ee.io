@@ -1,0 +1,47 @@
+{
+ "id": "2024__2024-07-16_LIFI_DiamondFacetArbitraryCall_ETH",
+ "source_file": "2024/2024-07-16_LIFI_DiamondFacetArbitraryCall_ETH.md",
+ "title": "LI.FI — Diamond Facet Arbitrary Call Vulnerability Analysis",
+ "date": "2024-07-16",
+ "protocol": "LI.FI",
+ "chain": "Ethereum Mainnet + Arbitrum",
+ "loss_raw": "~$11,600,000 (USDT 6,335,900 + USDC 3,191,900 + DAI 169,500 etc.)",
+ "loss_usd": 11600000.0,
+ "root_cause": "The newly deployed `GasZipFacet.depositToGasZipERC20()` allowed arbitrary external calls without whitelist validation, enabling token theft from users via `transferFrom()`",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ GasZipFacet.sol (vulnerable version v1.0.0) — deployed: 2024-07-11\n// Vulnerable address: 0xf28A352377663cA134bd27B582b1a9A4dad7e534\n\ncontract GasZipFacet is ILiFi, ReentrancyGuard {\n    // ❌ Does not inherit SwapperV2 → no whitelist validation\n    // (other facets inherit both 'SwapperV2, Validatable')\n\n    function depositToGasZipERC20(\n        LibSwap.SwapData calldata _swapData,  // ❌ fully user-controlled\n        uint256 _destinationChains,\n        address _recipient\n    ) external {\n        // ❌ No whitelist validation on callTo address\n        // ❌ No function selector validation on callData\n        // ❌ No validity check on sendingAssetId\n\n        // Calls LibSwap.swap() directly → passes arbitrary callData to arbitrary contract\n        LibSwap.swap(bytes32(0), _swapData);\n\n        // Sends native token to Gas.zip router (this part is normal)\n        gasZipRouter.deposit{value: address(this).balance}(\n            _destinationChains,\n            _recipient\n        );\n    }\n}",
+  "❌ target contract to call (arbitrarily configurable)\n        address approveTo;     // approve target\n        address sendingAssetId;\n        address receivingAssetId;\n        uint256 fromAmount;\n        bytes callData;        //",
+  "❌ low-level call data (arbitrarily configurable)\n        bool requiresDeposit;\n    }\n\n    function swap(bytes32 transactionId, SwapData calldata _swap) internal {\n        //"
+ ],
+ "code_after": [
+  "✅ Checks whether target is a contract (minimal validation)\n        if (!LibAsset.isContract(_swap.callTo)) revert InvalidContract();\n\n        // If sendingAssetId is ERC20, approves approveTo\n        if (!LibAsset.isNativeAsset(_swap.sendingAssetId)) {\n            LibAsset.maxApproveERC20(\n                IERC20(_swap.sendingAssetId),\n                _swap.approveTo,\n                _swap.fromAmount\n            );\n            // ⚠️ At the time of the approve() call, the attacker forcibly sends\n            //    1 wei to LiFiDiamond via a Help contract\n            //    (satisfying the balance condition)\n        }\n\n        //",
+  "// ✅ SwapperV2.sol (helper properly inherited by other facets)\nabstract contract SwapperV2 {\n    // ✅ DEX whitelist validation\n    function _executeSwaps(\n        ILiFi.BridgeData memory _bridgeData,\n        LibSwap.SwapData[] calldata _swapData,\n        address payable _leftoverReceiver\n    ) internal returns (uint256 finalAmountReceived) {\n        for (uint256 i = 0; i < _swapData.length;) {\n            // ✅ Verifies callTo is on the whitelist\n            LibAllowList.validateContractData(\n                _swapData[i].callTo,\n                _swapData[i].callData\n            );\n            // ✅ Whitelist validation on approveTo as well\n            if (_swapData[i].approveTo != address(0)) {\n                LibAllowList.validateContractData(\n                    _swapData[i].approveTo,\n                    bytes(\"\")\n                );\n            }\n            LibSwap.swap(_bridgeData.transactionId, _swapData[i]);\n            unchecked { ++i; }\n        }\n    }\n}\n\n// ✅ Fixed GasZipFacet (v2.0.0 and later)\ncontract GasZipFacet is ILiFi, ReentrancyGuard, SwapperV2, Validatable {\n    // ✅ depositToGasZipERC20 function completely removed\n    // ✅ ERC20 handling is only possible via swapAndStartBridgeTokensViaGasZip\n    //    (whitelist validation automatically applied through SwapperV2 inheritance)\n\n    function swapAndStartBridgeTokensViaGasZip(\n        ILiFi.BridgeData memory _bridgeData,\n        LibSwap.SwapData[] calldata _swapData,  // ✅ array, with validation\n        IGasZip.GasZipData calldata _gasZipData\n    )\n        external\n        payable\n        nonReentrant\n        refundExcessNative(payable(msg.sender))\n        containsSourceSwaps(_bridgeData)        // ✅ validated via modifier\n        doesNotContainDestinationCalls(_bridgeData)\n    {\n        // ✅ Last swap output must be native asset\n        if (!LibAsset.isNativeAsset(_swapData[_swapData.length - 1].receivingAssetId))\n            revert InvalidCallData();\n\n        // ✅ SwapperV2 whitelist validation perfo"
+ ],
+ "steps": [
+  "1. call attack()",
+  "2. Deploy new Money contract",
+  "3. Construct manipulated SwapData:",
+  "4. call depositToGasZipERC20()",
+  "5. Enter LibSwap.swap()",
+  "- isContract(callTo=USDT) → true ✓",
+  "6. Call Money.approve() (approve to approveTo)",
+  "7. Deploy Help contract",
+  "8. Help.sendto() force-",
+  "→ bypasses balance check",
+  "9. Execute callTo.call(callData)",
+  "= USDT.call(transferFrom(victim→attacker))",
+  "10. transferFrom(",
+  "→ Leverages the infinite approval",
+  "11. Repeat same pattern (10+ Txs total)",
+  "(USDT + USDC + DAI → converted to ETH → Tornado Cash)",
+  "Money laundering | Converted to ETH via Uniswap/Hop Protocol → Tornado Cash"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo -- Total Lost : ~10M USD\n// TX : https://app.blocksec.com/explorer/tx/eth/0xd82fe84...3873\n// Attacker : https://etherscan.io/address/0x8b3cb6bf...dcf3\n// Attack Contract : https://etherscan.io/address/0x986aca5f...c240\n\nlibrary LibSwap {\n    struct SwapData {\n        address callTo;          // target contract to call\n        address approveTo;       // approve target\n        address sendingAssetId;  // sending token (uses fake Money contract)\n        address receivingAssetId;\n        uint256 fromAmount;\n        bytes callData;          // ← key: arbitrary calldata injection point\n        bool requiresDeposit;\n    }\n}\n\ninterface LiFiDiamond {\n    function depositToGasZipERC20(\n        LibSwap.SwapData calldata _s"
+ ]
+}

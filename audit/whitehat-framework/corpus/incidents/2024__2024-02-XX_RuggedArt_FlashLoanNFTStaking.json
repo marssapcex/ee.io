@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-02-XX_RuggedArt_FlashLoanNFTStaking",
+ "source_file": "2024/2024-02-XX_RuggedArt_FlashLoanNFTStaking.md",
+ "title": "RuggedArt — Flash Loan-Based NFT Staking Reward Theft Analysis",
+ "date": "2024-02-01",
+ "protocol": "RuggedArt",
+ "chain": "Ethereum",
+ "loss_raw": "~5 ETH",
+ "loss_usd": null,
+ "root_cause": "`claimReward()` and `targetedPurchase()` functions rely on instantaneous token balances with no holding period validation, allowing reward theft via temporary large-scale holdings alone",
+ "attack_tx": null,
+ "vulnerable_contract": "RuggedMarket 0xfe380fe1",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: claimReward/targetedPurchase unprotected in flash loan context\ninterface IRUGGEDPROXY {\n    function claimReward(address to) external;\n    function targetedPurchase(\n        address collection,\n        uint256 tokenId,\n        bytes calldata routerCommands,\n        bytes[] calldata routerInputs\n    ) external payable;\n    function stake(uint256 tokenId) external;\n    function unstake(uint256 tokenId) external;\n}\n\n// claimReward() calculates rewards based on staking time\n// Staking large amounts via flash loan allows weight manipulation\n\n//",
+  "// File: RuggedMarket.sol\n    function claimReward() external nonReentrant returns (uint256) {  // ❌ Vulnerability\n        updatePool();\n        Staker storage staker = stakers[msg.sender];\n        uint256 pendingReward = (staker.amountStaked * accRewardPerShare) /\n            1e12 -\n            staker.rewardDebt;\n        if (pendingReward > 0) {\n            ruggedToken.transfer(msg.sender, pendingReward);\n            staker.rewardDebt =\n                (staker.amountStaked * accRewardPerShare) /\n                1e12;\n            emit RewardClaimed(msg.sender, pendingReward);\n        }\n        return pendingReward;\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: flash loan detection + staking cooldown\nmapping(address => uint256) public lastStakeBlock;\n\nfunction stake(uint256 tokenId) external {\n    require(block.number > lastStakeBlock[msg.sender] + COOLDOWN, \"cooldown\");\n    lastStakeBlock[msg.sender] = block.number;\n    // ... staking logic\n}\n\nfunction claimReward(address to) external {\n    require(\n        block.number > lastStakeBlock[to] + MIN_STAKE_DURATION,\n        \"stake too recent\"\n    );\n    // ... reward distribution\n}"
+ ],
+ "steps": [
+  "→ [1] Uniswap V3 flash: flash loan RUGGED worth 22 ETH",
+  "→ [2] Call claimReward() → receive staking rewards",
+  "→ [3] targetedPurchase() — purchase specific NFT IDs",
+  "→ [4] Stake tokens via fallback function",
+  "→ [5] Liquidate position in uniswapV3SwapCallback()",
+  "→ [6] Repay flash loan (including fee)",
+  "→ [7] ~5 ETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Uniswap V3 flash: flash loan RUGGED worth 22 ETH\n  │\n  ├─→ [2] Call claimReward() → receive staking rewards\n  │\n  ├─→ [3] targetedPurchase() — purchase specific NFT IDs\n  │         └─ Purchase hardcoded token IDs sequentially\n  │\n  ├─→ [4] Stake tokens via fallback function\n  │\n  ├─→ [5] Liquidate position in uniswapV3SwapCallback()\n  │\n  ├─→ [6] Repay flash loan (including fee)\n  │\n  └─→ [7] ~5 ETH profit",
+  "interface IRUGGEDUNIV3POOL {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n    function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data) external returns (int256, int256);\n}\n\ninterface IRUGGEDPROXY {\n    function claimReward(address to) external;\n    function targetedPurchase(address collection, uint256 tokenId, bytes calldata routerCommands, bytes[] calldata routerInputs) external payable;\n    function stake(uint256 tokenId) external;\n    function unstake(uint256 tokenId) external;\n}\n\ncontract AttackContract {\n    IRUGGEDUNIV3POOL constant pool   = IRUGGEDUNIV3POOL(0x99147452078fa5C6642D3E5F7efD51113A9527a5);\n    IRUGGEDPROXY     constant proxy  = IRUGGEDPROXY(0x2648f55"
+ ]
+}

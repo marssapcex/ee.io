@@ -1,0 +1,42 @@
+{
+ "id": "2023__2023-04-09_SushiSwap_RouteProcessor_ETH",
+ "source_file": "2023/2023-04-09_SushiSwap_RouteProcessor_ETH.md",
+ "title": "SushiSwap — RouteProcessor2 Arbitrary Call Vulnerability Analysis",
+ "date": "2023-04-09",
+ "protocol": "SushiSwap",
+ "chain": "Ethereum",
+ "loss_raw": "$3,300,000 (~800 WETH in a single transaction)",
+ "loss_usd": 3300000.0,
+ "root_cause": "Unvalidated external call in RouteProcessor2 `processRoute()` allows theft of approved tokens",
+ "attack_tx": "0x04b1...bc32",
+ "vulnerable_contract": "RouteProcessor2",
+ "classes": [
+  "approval-abuse",
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code (inferred RouteProcessor2 implementation)\nfunction processRoute(\n    address tokenIn,\n    uint256 amountIn,\n    address tokenOut,\n    uint256 amountOutMin,\n    address to,\n    bytes memory route\n) external payable returns (uint256 amountOut) {\n    // Parse route bytes and execute each step\n    uint256 offset = 0;\n    uint8 commandCode = uint8(route[offset++]);\n    \n    if (commandCode == 1) { // ERC20 token handling\n        address tokenAddress = address(bytes20(route[offset:offset+20]));\n        offset += 20;\n        uint8 numPools = uint8(route[offset++]);\n        \n        for (uint8 i = 0; i < numPools; i++) {\n            uint16 share = uint16(bytes2(route[offset:offset+2]));\n            offset += 2;\n            uint8 poolType = uint8(route[offset++]);\n            \n            if (poolType == 1) { // UniswapV3 type\n                address pool = address(bytes20(route[offset:offset+20]));\n                offset += 20;\n                // ❌ No validation that pool address is a real UniV3 pool!\n                // ❌ No whitelist check!\n                \n                bool zeroForOne = uint8(route[offset++]) == 1;\n                address recipient = address(bytes20(route[offset:offset+20]));\n                offset += 20;\n                \n                // ❌ Calls swap() on an arbitrary address — attacker contract can execute!\n                IUniswapV3Pool(pool).swap(\n                    recipient,\n                    zeroForOne,\n                    int256(amountIn),\n                    zeroForOne ? MIN_SQRT_RATIO + 1 : MAX_SQRT_RATIO - 1,\n                    abi.encode(tokenAddress, msg.sender) // payer = msg.sender\n                );\n            }\n        }\n    }\n}",
+  "// ❌ Vulnerable uniswapV3SwapCallback (inferred RouteProcessor2 implementation)\nfunction uniswapV3SwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data\n) external {\n    // ❌ Does not verify that msg.sender is the pool we actually called!\n    // ❌ No validation that this was invoked from an in-progress swap!\n    \n    (address tokenIn, address payer) = abi.decode(data, (address, address));\n    // ❌ payer is read directly from calldata — attacker can specify any address!\n    \n    uint256 amountToPay = amount0Delta > 0 ? uint256(amount0Delta) : uint256(amount1Delta);\n    \n    // ❌ Transfers tokens from the victim (payer) to RouteProcessor2 itself\n    // Succeeds because the victim has already approved RouteProcessor2!\n    IERC20(tokenIn).transferFrom(payer, msg.sender, amountToPay);\n}",
+  "Step 1: Assemble malicious route bytes\n┌─────────────────────────────────────────────┐\n│  commandCode = 0x01 (ERC20 token)           │\n│  tokenAddress = LINK (0x5149...6CA)         │\n│  numPools = 1                               │\n│  share = 0                                  │\n│  poolType = 0x01 (UniswapV3 type)           │\n│  pool = attacker contract address ← ❌ key! │\n│  zeroForOne = 0                             │\n│  recipient = address(0)                     │\n└─────────────────────────────────────────────┘\n         │\n         ▼\nStep 2: Call processRoute()\n┌─────────────────────────────────────────────┐\n│  Attacker calls RouteProcessor2.processRoute()│\n│  (tokenIn=ETH, amountIn=0)                  │\n│  route = malicious bytes passed in          │\n└─────────────────────────────────────────────┘\n         │\n         ▼\nStep 3: RouteProcessor2 calls attacker's swap()\n┌─────────────────────────────────────────────┐\n│  RouteProcessor2 parses route               │\n│  → pool address = attacker contract         │\n│  → calls IUniswapV3Pool(attacker).swap(...) │\n│  ← Executes without pool validation!        │\n└─────────────────────────────────────────────┘\n         │\n         ▼\nStep 4: Attacker's swap() calls back into callback\n┌─────────────────────────────────────────────┐\n│  Attacker contract's swap() executes        │\n│  → Assembles malicious calldata:            │\n│    tokenIn  = WETH                          │\n│    payer    = victim address (arbitrary!)   │\n│  → Calls RouteProcessor2.uniswapV3SwapCallback()│\n│    (amount0Delta=100 WETH, data=malicious)  │\n└─────────────────────────────────────────────┘\n         │\n         ▼\nStep 5: Drain tokens from victim's wallet\n┌─────────────────────────────────────────────┐\n│  RouteProcessor2 processes callback:        │\n│  tokenIn = WETH, payer = victim             │\n│  → Executes WETH.transferFrom(victim,       │\n│                   msg.sender, 100 WETH)     │\n│  ← Victim had approved RouteProcessor2,     │\n│     transfer succeeds!                      │\n└─────────────────────────────────────────────┘\n         │\n         ▼\nResult: Attacker gains 100 WETH"
+ ],
+ "code_after": [
+  "// ✅ Fixed processRoute — pool whitelist validation added\nmapping(address => bool) public approvedPools;\n\nfunction processRoute(\n    address tokenIn,\n    uint256 amountIn,\n    address tokenOut,\n    uint256 amountOutMin,\n    address to,\n    bytes memory route\n) external payable returns (uint256 amountOut) {\n    // ...\n    if (poolType == 1) {\n        address pool = address(bytes20(route[offset:offset+20]));\n        offset += 20;\n        \n        // ✅ Only allow registered pools\n        require(approvedPools[pool], \"RouteProcessor: pool not approved\");\n        \n        IUniswapV3Pool(pool).swap(/* ... */);\n    }\n}\n\n// ✅ Fixed callback — can only be called from the pool of an in-progress swap\naddress private _currentPool; // Address of the currently swapping pool\n\nfunction uniswapV3SwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data\n) external {\n    // ✅ Must be called only from the approved pool currently in progress\n    require(msg.sender == _currentPool, \"RouteProcessor: invalid callback caller\");\n    require(approvedPools[msg.sender], \"RouteProcessor: callback from unknown pool\");\n    \n    (address tokenIn, address payer) = abi.decode(data, (address, address));\n    uint256 amountToPay = amount0Delta > 0 ? uint256(amount0Delta) : uint256(amount1Delta);\n    \n    IERC20(tokenIn).transferFrom(payer, msg.sender, amountToPay);\n}",
+  "// ✅ Fix 1: Only allow whitelisted pools\nmapping(address => bool) public approvedPools;\n\nmodifier onlyApprovedPool(address pool) {\n    // Only allow registered UniswapV3/Trident pools\n    require(approvedPools[pool], \"RouteProcessor: unapproved pool\");\n    _;\n}"
+ ],
+ "steps": [
+  "Step 1: Assemble malicious route bytes",
+  "Step 2: Call processRoute()",
+  "Step 3: RouteProcessor2 calls attacker's swap()",
+  "→ pool address = attacker contract",
+  "→ calls IUniswapV3Pool(attacker).swap(...)",
+  "Step 4: Attacker's swap() calls back into callback",
+  "→ Assembles malicious calldata:",
+  "→ Calls RouteProcessor2.uniswapV3SwapCallback()",
+  "Step 5: Drain tokens from victim's wallet",
+  "→ Executes WETH.transferFrom(victim,",
+  "Parse route → poolType=1"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// References:\n// https://twitter.com/peckshield/status/1644907207530774530\n// Attack Tx: 0x04b166...bc32\n\ncontract SushiExp is Test, IUniswapV3Pool {\n    IERC20 WETH = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n    IERC20 LINK = IERC20(0x514910771AF9Ca656af840dff83E8264EcF986CA);\n    \n    // Victim wallet that had approved RouteProcessor2 in the actual attack\n    address victim = 0x31d3243CfB54B34Fc9C73e1CB1137124bD6B13E1;\n    \n    // Vulnerable RouteProcessor2 contract\n    IRouteProcessor2 processor = IRouteProcessor2(0x044b75f554b886A065b9567891e45c79542d7357);\n\n    function setUp() public {\n        // Fork to the block just before the attack (17,007,841)\n        cheats.createSelectFork(\"mainnet\", 17_007_841);\n   "
+ ]
+}

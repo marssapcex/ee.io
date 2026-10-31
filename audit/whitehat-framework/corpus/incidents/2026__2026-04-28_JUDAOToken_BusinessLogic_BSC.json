@@ -1,0 +1,28 @@
+{
+ "id": "2026__2026-04-28_JUDAOToken_BusinessLogic_BSC",
+ "source_file": "2026/2026-04-28_JUDAOToken_BusinessLogic_BSC.md",
+ "title": "JUDAO Token — Reflection Fee Exploit on BSC",
+ "date": "2026-04-28",
+ "protocol": "JUDAO Token",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~$228K",
+ "loss_usd": 228.0,
+ "root_cause": "Business Logic Flaw — deflationary/reflection token fee distribution logic combined with LP pair interaction creates exploitable arbitrage",
+ "attack_tx": "0x956e38b8...65bd",
+ "vulnerable_contract": "0x5D7b61e91cB59E90f7fAE8d0FE2e73976161592F (JUDAO Token)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1. Attacker takes a flash loan of BNB/BUSD.",
+  "2. Attacker buys a large quantity of JUDAO tokens from the PancakeSwap LP pair, paying the buy tax and triggering fee redistribution to all holders.",
+  "3. Because the attacker holds a disproportionately large token balance at the moment of redistribution, they receive an outsized share of the reflected fee — effectively increasing their token balance beyond the net cost of the buy.",
+  "4. Attacker sells the inflated token balance back to the LP pair. The LP pair's reserve has not been corrected by a `sync()`, so the price impact is less than expected, and the attacker profits.",
+  "5. Attacker repays the flash loan and keeps the ~$228K difference."
+ ],
+ "other_code": [
+  "// VULNERABLE — reflection fee handling with LP pair interaction flaw\nfunction _transfer(address from, address to, uint256 amount) internal {\n    uint256 fee = amount * taxRate / 100;\n    uint256 netAmount = amount - fee;\n\n    _balances[from] -= amount;\n    _balances[to] += netAmount;\n\n    // BUG: fee is redistributed to all holders proportionally,\n    // but the LP pair's virtual balance used by the AMM is not updated.\n    // Attacker accumulates a large token balance, receives an outsized\n    // share of redistributed fees, then sells — the LP pair's reserve\n    // accounting diverges from actual balances, enabling profit.\n    _distributeFee(fee);\n}\n\nfunction _distributeFee(uint256 fee) internal {\n    // Redistributes fee proportionally to all token holders by adjusting\n    // the global"
+ ]
+}

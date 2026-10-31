@@ -1,0 +1,35 @@
+{
+ "id": "2022__2022-09_ZoomproFinance_FakePairManipulation",
+ "source_file": "2022/2022-09_ZoomproFinance_FakePairManipulation.md",
+ "title": "ZoomproFinance — Fake USDT Pair Injection Price Manipulation Attack Analysis",
+ "date": "2022-09-01",
+ "protocol": "Zoompro Finance",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "The protocol trusted a fake USDT/ZOOM pair as a price oracle, using it as the pricing reference for `buy()`/`sell()`",
+ "attack_tx": "0xe176bd9cfefd40dc03508e91d856bd1fe72ffc1e9260cd63502db68962b4de1a",
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable Swap Contract - uses fake pair as price oracle\ncontract ZoomSwap {\n    // Reads ZOOM price from fake FakeUSDT/ZOOM pair\n    IUniPair public priceOracle; // = FakeUSDT/ZOOM pair (0x1c7ecBfc...)\n\n    function getZoomPrice() public view returns (uint256) {\n        //",
+  "❌ Uses spot price from a manipulable pair\n        (uint112 r0, uint112 r1, ) = priceOracle.getReserves();\n        // r0 = FakeUSDT reserve, r1 = ZOOM reserve\n        return uint256(r0) * 1e18 / uint256(r1);\n    }\n\n    function buy(uint256 usdtAmount) external {\n        uint256 price = getZoomPrice(); //",
+  "❌ Manipulated price\n        uint256 zoomOut = usdtAmount * 1e18 / price;\n        // When price is low (due to large FakeUSDT injection), zoomOut becomes very large\n        ZOOM.transfer(msg.sender, zoomOut);\n        USDT.transferFrom(msg.sender, address(this), usdtAmount);\n    }\n\n    function sell(uint256 zoomAmount) external {\n        uint256 price = getZoomPrice();\n        uint256 usdtOut = zoomAmount * price / 1e18;\n        ZOOM.transferFrom(msg.sender, address(this), zoomAmount);\n        USDT.transfer(msg.sender, usdtOut);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - use a trusted external oracle\ncontract SafeZoomSwap {\n    AggregatorV3Interface public chainlinkFeed;\n\n    function getZoomPrice() public view returns (uint256) {\n        //",
+  "✅ Uses an external oracle such as Chainlink\n        (, int256 price, , uint256 updatedAt, ) = chainlinkFeed.latestRoundData();\n        require(block.timestamp - updatedAt <= 3600, \"Stale\");\n        return uint256(price);\n    }\n}"
+ ],
+ "steps": [
+  "swap.buy(1000 USDT) → receive ZOOM",
+  "❌ No access control → large-scale fake USDT injection",
+  "r0(FakeUSDT) spikes → ZOOM price crashes",
+  "(FakeUSDT per ZOOM → very low value)",
+  "[5] swap.buy(largeUSDT) → buy large amount of ZOOM at manipulated price",
+  "→ obtain large amount of ZOOM for small amount of USDT",
+  "[6] swap.sell(allZOOM) → sell ZOOM at normal or inflated price"
+ ],
+ "other_code": []
+}

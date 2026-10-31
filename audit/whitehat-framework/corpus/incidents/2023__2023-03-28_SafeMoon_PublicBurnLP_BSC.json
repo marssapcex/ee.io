@@ -1,0 +1,45 @@
+{
+ "id": "2023__2023-03-28_SafeMoon_PublicBurnLP_BSC",
+ "source_file": "2023/2023-03-28_SafeMoon_PublicBurnLP_BSC.md",
+ "title": "SafeMoon — LP Token Burn Attack via Public burn() Function Analysis",
+ "date": "2023-03-28",
+ "protocol": "SafeMoon",
+ "chain": "BSC",
+ "loss_raw": "$8,900,000",
+ "loss_usd": 8900000.0,
+ "root_cause": "Public `burn()` function with no access control allows direct burning of LP pool balance, enabling price manipulation",
+ "attack_tx": "0x48e52a12...",
+ "vulnerable_contract": "0x4298...fcB5",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: anyone can burn tokens from any address\n// No access control modifier such as onlyOwner or onlyBridge\nfunction burn(address from, uint256 amount) external {\n    // Burns balance of arbitrary address without caller validation\n    _burn(from, amount);\n}\n\nfunction _burn(address account, uint256 amount) internal {\n    require(account != address(0), \"ERC20: burn from the zero address\");\n    _balances[account] -= amount;  // ❌ Balance decremented\n    _totalSupply -= amount;         // ❌ Total supply decremented\n    emit Transfer(account, address(0), amount);\n}",
+  "// The LP pool's internal reserve does not immediately reflect actual balance changes\n// After burn(), the actual balanceOf(pair) is reduced,\n// but pair's internal reserve0/reserve1 still holds the previous values\n\n// ❌ Attacker directly calls sync() to force reserve update\ninterface IUniswapV2Pair {\n    function sync() external; // ← publicly callable by anyone\n}\n\n// sync() internals (UniswapV2 standard)\nfunction sync() external lock {\n    _update(\n        IERC20(token0).balanceOf(address(this)), // reduced value after burn\n        IERC20(token1).balanceOf(address(this)),\n        reserve0,\n        reserve1\n    );\n}",
+  "// ❌ Anyone can mint to an arbitrary address up to bridgeBurnAddress's balance\nfunction mint(address user, uint256 amount) external {\n    // No authorization check — callable by anyone\n    _mint(user, amount);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: only authorized parties can call burn()\nmodifier onlyAuthorized() {\n    require(\n        msg.sender == owner() ||\n        msg.sender == bridgeContract ||\n        msg.sender == burnManager,\n        \"SafeMoon: caller is not authorized\"\n    );\n    _;\n}\n\n// ✅ Safe burn function with access control applied\nfunction burn(address from, uint256 amount) external onlyAuthorized {\n    _burn(from, amount);\n}",
+  "✅ Attacker final profit: ~27,463 WBNB\n         (approximately $8,900,000)"
+ ],
+ "steps": [
+  "Step 1: Request PancakeSwap flash loan",
+  "Step 2: Receive pancakeCall callback → execute doBurnHack",
+  "2-1: Swap WBNB → SFM (input 1,000 WBNB)",
+  "2-2: Call burn(LP address, LP balance - 1 billion) → mass-burn SFM in LP",
+  "2-3: Call burn(SFM contract, SFM balance) → burn contract balance",
+  "2-4: Call sync() → update LP reserves",
+  "2-5: Reverse swap SFM → WBNB (at extremely favorable rate)",
+  "Step 3: Repay flash loan (1,000 WBNB + 0.3% fee)",
+  "Step 4: Realize profit (~27,463 WBNB received)",
+  "WBNB → SFM swap (SafeSwapTradeRouter)",
+  "❌ No access control → burns entire",
+  "SFM reserve ↓↓ → WBNB/SFM price",
+  "Reverse swap SFM → WBNB",
+  "WBNB-rich LP → receive massive WBNB",
+  "1000 WBNB * 10030 / 10000)"
+ ],
+ "other_code": [
+  "Step 1: Request PancakeSwap flash loan\nStep 2: Receive pancakeCall callback → execute doBurnHack\n  2-1: Swap WBNB → SFM (input 1,000 WBNB)\n  2-2: Call burn(LP address, LP balance - 1 billion) → mass-burn SFM in LP\n  2-3: Call burn(SFM contract, SFM balance) → burn contract balance\n  2-4: Call sync() → update LP reserves\n  2-5: Reverse swap SFM → WBNB (at extremely favorable rate)\nStep 3: Repay flash loan (1,000 WBNB + 0.3% fee)\nStep 4: Realize profit (~27,463 WBNB received)"
+ ]
+}

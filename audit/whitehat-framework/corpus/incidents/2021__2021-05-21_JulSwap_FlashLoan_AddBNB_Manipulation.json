@@ -1,0 +1,38 @@
+{
+ "id": "2021__2021-05-21_JulSwap_FlashLoan_AddBNB_Manipulation",
+ "source_file": "2021/2021-05-21_JulSwap_FlashLoan_AddBNB_Manipulation.md",
+ "title": "JulSwap — Flash Swap addBNB() Protocol Manipulation Analysis",
+ "date": "2021-05-21",
+ "protocol": "JulSwap",
+ "chain": "BSC",
+ "loss_raw": "~$1,500,000",
+ "loss_usd": 1500000.0,
+ "root_cause": "`addBNB()` references the current contract BNB balance (spot) when calculating JUL mint amount, allowing mint manipulation via large BNB inflows",
+ "attack_tx": "0x1751...77a (block 7,785,587)",
+ "vulnerable_contract": "0x32dffc3fe8e3ef3571bf8a72c0d0015c5373f41d (JulSwap)",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ JulProtocolV2\n// When addBNB() processes flash-loan-scale BNB inflows,\n// the internal JUL/BNB ratio calculation becomes distorted\n\ninterface IJulProtocolV2 {\n    // Deposit BNB and receive JUL\n    // Internal reserve-based calculation is manipulated by large BNB inflows\n    function addBNB() external payable;\n}\n\n// Vulnerability: addBNB() internally calculates JUL mint amount\n// using the current contract BNB balance → manipulable by injecting\n// large amounts of BNB via flash loan\nfunction addBNB() external payable {\n    uint256 bnbAmount = msg.value;\n    // ❌ JUL mint amount calculated based on current BNB balance (spot-based)\n    uint256 julOut = calculateJulOut(bnbAmount, address(this).balance);\n    // julOut becomes abnormally large with flash loan BNB\n    JUL.mint(msg.sender, julOut);\n}",
+  "// ❌ Root Cause: addBNB() references the current contract BNB balance (spot) when calculating JUL mint amount — mint manipulation possible via large BNB inflows\n    function transferFrom(address arg0, address arg1, uint256 arg2) external {}  // 0x23b872dd  // ❌ Unauthorized transferFrom"
+ ],
+ "code_after": [
+  "// ✅ Use time-weighted reserve + limit inflow per single transaction\nuint256 public constant MAX_BNB_PER_TX = 100 ether;\n\nfunction addBNB() external payable nonReentrant {\n    require(msg.value <= MAX_BNB_PER_TX, \"JulProtocol: too much BNB per tx\");\n\n    // Use checkpoint reserve instead of current balance\n    uint256 julOut = calculateJulOutTWAP(msg.value);\n    JUL.mint(msg.sender, julOut);\n\n    emit BNBAdded(msg.sender, msg.value, julOut);\n}",
+  "// ✅ Cap addBNB() per-transaction limit\n// ✅ Use TWAP or checkpoint reserve for JUL mint calculation\n\nuint256 public constant MAX_BNB_PER_TX = 10 ether; // max 10 BNB/tx\nuint256 public lastReserveUpdate;\nuint256 public reserveBNB;\n\nfunction addBNB() external payable nonReentrant {\n    require(msg.value > 0 && msg.value <= MAX_BNB_PER_TX, \"JulProtocol: invalid amount\");\n\n    // Use reserve from last update (checkpoint, not spot)\n    uint256 effectiveBNB = reserveBNB;\n    uint256 julOut = (msg.value * JUL_PER_BNB_BASE) / effectiveBNB;\n\n    // Update reserve\n    reserveBNB = address(this).balance;\n    lastReserveUpdate = block.timestamp;\n\n    JUL.mint(msg.sender, julOut);\n}"
+ ],
+ "steps": [
+  "Step 1: Flash swap 70 trillion JUL from BSCSwap pair",
+  "Step 2: Convert borrowed JUL → BNB",
+  "Step 3: JulProtocolV2.addBNB{value: 515 ether}()",
+  "→ Manipulate JUL mint amount via large BNB inflow",
+  "→ Receive excess JUL",
+  "Step 4: Sell received JUL back to BNB",
+  "Step 5: BNB → Buy back JUL (for flash swap repayment)",
+  "Repay flash swap principal + fee → Realize profit"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────┐\n│ Step 1: Flash swap 70 trillion JUL from BSCSwap pair    │\n│ BSCswapPair.swap(70_000_000_000_000e18, 0, this, data)  │\n│ BSCswapCall() callback executed                         │\n└─────────────────────┬───────────────────────────────────┘\n                      │ BSCswapCall() callback\n┌─────────────────────▼───────────────────────────────────┐\n│ Step 2: Convert borrowed JUL → BNB                      │\n│ router.swapExactTokensForETH(julAmount, 0, [JUL, BNB])  │\n│ ~515 BNB obtained                                       │\n└─────────────────────┬───────────────────────────────────┘\n                      │\n┌─────────────────────▼───────────────────────────────────┐\n│ Step 3: JulProtocolV2.addBNB{value: 515 ether}()        │\n│ @ 0x32d",
+  "// BSCswapCall() — Flash swap callback (BSC fork block 7,785,586)\nfunction BSCswapCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    // 1. Convert borrowed JUL → BNB (obtain 515 BNB)\n    // router.swapExactTokensForETH(\n    //     JUL.balanceOf(address(this)), 0, [JUL, WBNB], address(this), deadline\n    // )\n\n    // 2. Call JulProtocolV2.addBNB() — over-mint JUL with 515 BNB\n    // JulProtocolV2(0x32dffc3fe8e3ef3571bf8a72c0d0015c5373f41d)\n    //     .addBNB{value: 515 ether}()\n\n    // 3. Sell received JUL back to BNB\n    // router.swapExactTokensForETH(julBalance, 0, [JUL, WBNB], ...)\n\n    // 4. BNB → Buy back JUL (prepare for flash swap repayment)\n    // router.swapExactETHForTokens{value: repayBNB}(0, [WBNB, JUL], pair, deadline)\n\n    // 5. Repay f"
+ ]
+}

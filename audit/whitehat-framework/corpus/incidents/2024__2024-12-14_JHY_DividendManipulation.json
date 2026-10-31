@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-12-14_JHY_DividendManipulation",
+ "source_file": "2024/2024-12-14_JHY_DividendManipulation.md",
+ "title": "JHY — Dividend Manipulation Flash Loan Vulnerability Analysis",
+ "date": "2024-12-14",
+ "protocol": "JHY Token",
+ "chain": "BSC",
+ "loss_raw": "~11,000 USD",
+ "loss_usd": null,
+ "root_cause": "The DIVIDEND_JHYLP contract calculates dividends based on the current LP balance without snapshotting the JHY LP balance, allowing overclaiming of dividends by manipulating LP balance within a single block",
+ "attack_tx": "0xb6a9055e",
+ "vulnerable_contract": "0x40Cd735D",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ DIVIDEND_JHYLP: dividend calculation based on current LP balance\ncontract DividendJHYLP {\n    function claimDividend(address user) external {\n        //",
+  "❌ dividend calculated from LP balance at current block\n        uint256 lpBalance = IERC20(JHY_LP).balanceOf(user);\n        uint256 dividend = lpBalance * dividendPerLP / 1e18;\n        //",
+  "❌ flash loan temporarily inflates LP balance → overclaimed dividends\n        IERC20(USDT).transfer(user, dividend);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix:\n// Snapshot-based dividend calculation (record balance at a specific block)\n// Or require LP lock at time of claim (minimum N blocks)"
+ ],
+ "steps": [
+  "[1] ▶ Deploy AttackContract1 → Deploy AttackContract2",
+  "Swap USDT → JHY (acquire LP)",
+  "[5] ▶ Sell JHY → USDT"
+ ],
+ "other_code": []
+}

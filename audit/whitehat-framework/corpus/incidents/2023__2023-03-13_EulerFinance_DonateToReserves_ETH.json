@@ -1,0 +1,45 @@
+{
+ "id": "2023__2023-03-13_EulerFinance_DonateToReserves_ETH",
+ "source_file": "2023/2023-03-13_EulerFinance_DonateToReserves_ETH.md",
+ "title": "Euler Finance — donateToReserves Donation Attack Analysis",
+ "date": "2023-03-13",
+ "protocol": "Euler Finance",
+ "chain": "Ethereum",
+ "loss_raw": "$197,000,000 gross stolen; ~$177M returned by attacker between Mar 25–Apr 3, 2023; net protocol loss ~$20M",
+ "loss_usd": 197000000.0,
+ "root_cause": "Unlimited debt creation without collateral via donateToReserves + mint combination, followed by self-liquidation to realize profit",
+ "attack_tx": "0xc310...111d",
+ "vulnerable_contract": null,
+ "classes": [
+  "donation-inflation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — Euler Finance EToken.sol (reconstructed)\nfunction donateToReserves(uint256 subAccountId, uint256 amount) external nonReentrant {\n    // Compute sub-account address\n    address account = getSubAccount(msg.sender, subAccountId);\n\n    // Burn amount from internal balance\n    uint256 amountInternal = underlyingAmountToBalance(amount);\n    balances[account] -= amountInternal;   // ❌ Burns user's eTokens\n    reserveBalance += amountInternal;       // ❌ Adds to reserve\n\n    // ❌ Critical flaw: position health factor is NOT validated after donation\n    // Even though collateral decreased — potentially worsening the debt/collateral ratio — no check is performed\n    // Missing call to checkLiquidity(account)!\n\n    emit Donation(account, amount);\n}",
+  "// ❌ Potentially vulnerable code — mint() internally performs deposit + borrow simultaneously\nfunction mint(uint256 subAccountId, uint256 amount) external nonReentrant {\n    address account = getSubAccount(msg.sender, subAccountId);\n\n    // Simultaneously mints eTokens (collateral) and dTokens (debt) — leverage effect\n    // Mint amount in eTokens (increases collateral)\n    balances[account] += underlyingAmountToBalance(amount);\n\n    // Mint amount in dTokens (increases debt)\n    dToken.balances[account] += amount;\n\n    // Health check is performed, but it can pass even after 10x leverage\n    // ❌ The health check can be bypassed when combined with donateToReserves\n    checkLiquidity(account);\n}",
+  "// ❌ Vulnerable code — no check for liquidator == violator\nfunction liquidate(\n    address violator,\n    address underlying,\n    address collateral,\n    uint256 repay,\n    uint256 minYield\n) external nonReentrant {\n    // ❌ liquidator (msg.sender) can be the same entity as violator\n    // In practice they are different contracts, but controlled by the same attacker\n    LiquidationOpportunity memory liqOpp = checkLiquidation(msg.sender, violator, underlying, collateral);\n\n    // Liquidator acquires violator's eTokens at a discount\n    // ❌ A colluding liquidator can monopolize the profit\n    _transfer(collateral, violator, msg.sender, liqOpp.yield);\n    _repayDebt(underlying, violator, repay);\n\n    emit Liquidation(msg.sender, violator, repay, liqOpp.yield);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — health check must be performed after donation\nfunction donateToReserves(uint256 subAccountId, uint256 amount) external nonReentrant {\n    address account = getSubAccount(msg.sender, subAccountId);\n\n    uint256 amountInternal = underlyingAmountToBalance(amount);\n    balances[account] -= amountInternal;\n    reserveBalance += amountInternal;\n\n    // ✅ Position solvency must be validated after donation\n    // Since collateral decreased, health factor may drop below 1 if debt exists\n    checkLiquidity(account);  // reverts if health factor < 1\n\n    emit Donation(account, amount);\n}",
+  "// ✅ Fix direction — add maximum leverage multiplier cap to mint\nfunction mint(uint256 subAccountId, uint256 amount) external nonReentrant {\n    address account = getSubAccount(msg.sender, subAccountId);\n\n    // ✅ Verify health factor exceeds safe threshold (e.g. 1.2) after minting\n    // ✅ Cap maximum leverage multiplier within a single transaction\n    require(amount <= getMaxMintable(account), \"Exceeds max leverage\");\n\n    balances[account] += underlyingAmountToBalance(amount);\n    dToken.balances[account] += amount;\n    checkLiquidity(account);\n}"
+ ],
+ "steps": [
+  "1. **Flash loan**: Borrow 30,000,000 DAI from Aave V2 (0.09% fee)",
+  "2. **Fund transfer**: Send 30,000,000 DAI to the Iviolator contract",
+  "3. **Initial deposit**: `eDAI.deposit(0, 20,000,000 DAI)` → deposit 20,000,000 DAI, receive ~19,568,000 eDAI",
+  "4. **First leverage mint**: `eDAI.mint(0, 200,000,000)` → create additional ~195,680,000 eDAI + 200,000,000 dDAI",
+  "5. **Partial debt repayment**: `dDAI.repay(0, 10,000,000 DAI)` → burn 10,000,000 dDAI (10,000,000 DAI remaining)",
+  "6. **Second leverage mint**: `eDAI.mint(0, 200,000,000)` → create additional ~195,680,000 eDAI + 200,000,000 dDAI",
+  "7. **Donation attack**: `eDAI.donateToReserves(0, 100,000,000 eDAI)` → burn collateral, trigger health factor < 1",
+  "8. **Self-liquidation**: `Iliquidator` calls `Euler.liquidate(violator, DAI, DAI, repay, yield)`",
+  "9. **Withdrawal**: `eDAI.withdraw(0, DAI.balanceOf(Euler_Protocol))` → withdraw ~38,900,000 DAI",
+  "10. **Flash loan repayment**: Repay 30,027,000 DAI (principal + fee)",
+  "11. **Net profit**: ~8,900,000 DAI (per single transaction; actual attack involved multiple Txs)",
+  "1. Deploy Iviolator contract",
+  "2. Deploy Iliquidator contract",
+  "3. Transfer 30M DAI → Iviolator",
+  "▶ Euler: burns 100M eDAI → reserve increases",
+  "→ Iviolator position: liquidatable",
+  "[Step 9] Transfer DAI → ContractTest"
+ ],
+ "other_code": []
+}

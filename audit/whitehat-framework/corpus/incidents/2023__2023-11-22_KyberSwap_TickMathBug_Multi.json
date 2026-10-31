@@ -1,0 +1,48 @@
+{
+ "id": "2023__2023-11-22_KyberSwap_TickMathBug_Multi",
+ "source_file": "2023/2023-11-22_KyberSwap_TickMathBug_Multi.md",
+ "title": "KyberSwap — Concentrated Liquidity Tick Math Bug Analysis",
+ "date": "2023-11-22",
+ "protocol": "KyberSwap Elastic",
+ "chain": "Optimism, Arbitrum, Ethereum, Polygon, B",
+ "loss_raw": "$46,000,000 (total damage ~$54.7M, net loss ~$46M after recovery)",
+ "loss_usd": 46000000.0,
+ "root_cause": "Double liquidity counting bug at tick boundaries caused by incorrect rounding direction in the `estimateIncrementalLiquidity` function",
+ "attack_tx": "`0x485e08dc2b6a4b3aeadcb89c3d18a37666dc7d9424961a2091d6b3696792f0f3` (Optimism)",
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// SwapMath.sol — estimateIncrementalLiquidity()\n// ❌ Vulnerable: floors deltaL, causing nextSqrtP to exceed the tick boundary\n\nfunction estimateIncrementalLiquidity(\n    uint256 absDelta,\n    uint256 liquidity,\n    uint160 currentSqrtP,\n    uint256 feeInFeeUnits,\n    bool isExactInput,\n    bool isToken0\n) internal pure returns (uint256 deltaL) {\n    // ...\n    // Intent: use mulDivCeil → ceil deltaL → floor nextSqrtP (prevent boundary overshoot)\n    // Actual: use mulDivFloor → floor deltaL → ceil nextSqrtP → boundary overshoot allowed\n    deltaL = FullMath.mulDivFloor(liquidity, feeInFeeUnits, ...); // ❌ incorrect rounding\n}",
+  "// Pool.sol — tick crossing condition check inside swap()\n// ❌ Vulnerable: tick crossing determined solely by sqrtP comparison — condition fails due to rounding error\n\nif (swapData.sqrtP != swapData.nextSqrtP) {\n    // If this condition is false, _updateLiquidityAndCrossTick() is not called\n    // → liquidity state is not updated, causing double-counting on the next swap\n}",
+  "Attacker\n  │\n  ├─[1] Flash Loan ─────────────────────────────────────────────────────┐\n  │       Borrow 2,000 WETH from AAVE                                   │\n  │                                                                     │\n  ├─[2] Initial Swap (Positioning)                                      │\n  │       Swap 6.8496 WETH → frxETH                                     │\n  │       Purpose: Move currentSqrtP into a zero-liquidity interval     │\n  │       (tick range: region with no existing liquidity providers)     │\n  │                                                                     │\n  ├─[3] Add/Remove Liquidity (State Manipulation)                       │\n  │       Add liquidity at tick range [110909, 111310]                  │\n  │       Then remove some liquidity                                    │\n  │       Purpose: Precisely control pool state (nextTick == currentTick condition) │\n  │                                                                     │\n  ├─[4] Key Manipulation Swap (1 wei undershot)                         │\n  │       Swap 387.17 WETH → 0.005789 frxETH                           │\n  │       Set swap amount to exactly (tick boundary amount - 1 wei)    │\n  │                                                                     │\n  │       ┌─────────────────────────────────────────────────────────┐  │\n  │       │  Inside computeSwapStep():                               │  │\n  │       │  • calcReachAmount → compute amount to boundary (ceil)   │  │\n  │       │  • swap amount < boundary amount → \"no tick cross\" ruling │  │\n  │       │  • estimateIncrementalLiquidity → floor deltaL ❌         │  │\n  │       │  • calcFinalPrice → nextSqrtP slightly exceeds tick boundary │\n  │       │  • Condition: sqrtP != nextSqrtP → FALSE (actually exceeded) │\n  │       │  • _updateLiquidityAndCrossTick not called ← state mismatch │\n  │       └─────────────────────────────────────────────────────────┘  │\n  │                                                                     │\n  │       Result: currentSqrtP > sqrtP of tick 111310                  │\n  │               but pool state records no tick crossing               │\n  │               (baseL still includes liquidity from tick 111310 interval) │\n  │                                                                     │\n  ├─[5] Reverse Swap (Double-Count Trigger)                             │\n  │       Swap 0.005868 frxETH → ~396.2 WETH reverse swap              │\n  │                                                                     │\n  │       ┌─────────────────────────────────────────────────────────┐  │\n  │       │  Reverse computeSwapStep() called twice:                 │  │\n  │       │                                                          │  │\n  │       │  1st call: Move from currentSqrtP toward tick 111310    │  │\n  │       │    → _updateLiquidityAndCrossTick called (normal)        │  │\n  │       │    → Add tick 111310 interval liquidity to baseL         │  │\n  │       │    "
+ ],
+ "code_after": [
+  "// ✅ Fix: Change mulDivFloor → mulDivCeil\n\nfunction estimateIncrementalLiquidity(\n    uint256 absDelta,\n    uint256 liquidity,\n    uint160 currentSqrtP,\n    uint256 feeInFeeUnits,\n    bool isExactInput,\n    bool isToken0\n) internal pure returns (uint256 deltaL) {\n    // ✅ Ceiling calculation overestimates deltaL → underestimates nextSqrtP → prevents tick boundary overshoot\n    deltaL = FullMath.mulDivCeil(liquidity, feeInFeeUnits, ...); // ✅ fixed\n}",
+  "// ✅ Double-verify tick crossing using tick index in addition to sqrtP comparison\n\nfunction _computeSwapStep(...) {\n    // ... existing logic ...\n\n    // ✅ Added: explicit check whether nextSqrtP exceeds tick boundary\n    if (nextSqrtP >= nextTick.sqrtP && !willCrossTick) {\n        revert InconsistentTickState(); // or force-process tick crossing\n    }\n}"
+ ],
+ "steps": [
+  "Swap 6.8496 WETH → frxETH",
+  "Swap 387.17 WETH → 0.005789 frxETH",
+  "- calcReachAmount → compute amount to boundary (ceil)",
+  "- swap amount < boundary amount → \"no tick cross\" ruling",
+  "- estimateIncrementalLiquidity → floor deltaL ❌",
+  "- calcFinalPrice → nextSqrtP slightly exceeds tick boundary",
+  "- Condition: sqrtP != nextSqrtP → FALSE (actually exceeded)",
+  "- _updateLiquidityAndCrossTick not called ← state mismatch",
+  "Swap 0.005868 frxETH → ~396.2 WETH reverse swap",
+  "→ _updateLiquidityAndCrossTick called (normal)",
+  "→ Add tick 111310 interval liquidity to baseL",
+  "→ _updateLiquidityAndCrossTick called again ← double count!",
+  "→ Same liquidity added to baseL again (2× state)",
+  "Result: baseL is 2× actual → output tokens calculated at 2×",
+  "→ Repeated across multiple pools for total ~$48.7M drained",
+  "→ Zone A liquidity added to baseL twice",
+  "→ Swap output calculated at 2× → excess withdrawal"
+ ],
+ "other_code": [
+  "SwapMath.computeSwapStep()\n  ├── calcReachAmount()         // Calculates token amount needed to reach tick boundary (includes baseL + deltaL)\n  ├── estimateIncrementalLiquidity()  // Calculates additional liquidity (deltaL) from accumulated fees ← vulnerability\n  └── calcFinalPrice()          // Calculates the final nextSqrtP",
+  "Pool._updateLiquidityAndCrossTick()\n  └── Called on tick boundary crossing — performs baseL update"
+ ]
+}

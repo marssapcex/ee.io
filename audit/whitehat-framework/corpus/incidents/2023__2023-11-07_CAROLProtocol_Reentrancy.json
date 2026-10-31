@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-11-07_CAROLProtocol_Reentrancy",
+ "source_file": "2023/2023-11-07_CAROLProtocol_Reentrancy.md",
+ "title": "CAROLProtocol Reentrancy Attack Incident Analysis",
+ "date": "2023-11-07",
+ "protocol": "CAROLProtocol",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ CAROLProtocol.buy{value: 0.03 ether}(address(this), 0)",
+  "2 ▶ CAROLProtocol.stake{value: 0.039 ether}(0)",
+  "3 ▶ SynapseETHPools.flashLoan(WETH, max)",
+  "4 ▶ BalancerVault.flashLoan(WETH, max) (nested)",
+  "5 ▶ Kokonut.flashLoan(WETH, max) (nested)",
+  "6 ▶ WETH_USDbCV3.flash(WETH, max) (nested)",
+  "7 ▶ WETH_USDbCV2.swap (nested flash swap)",
+  "8 ▶ WETH → CAROL swap",
+  "9 ▶ CAROLProtocol.sell(sellAmount) - reentrancy triggered",
+  "sell() → swapExactTokensForETH → receive() callback",
+  "10 ▶ Sequential repayment of quadruple flash loans + ~$53,000 profit realized"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: receive() reentrancy during ETH transfer inside sell()\ncontract CAROLProtocol {\n    uint256 public ethReserved;\n\n    function sell(uint256 tokensAmount) external {\n        // ETH return calculation\n        uint256 ethAmount = calculateEth(tokensAmount, ethReserved);\n\n        // Vulnerable: swapExactTokensForETH call → ETH transfer → receive() triggered\n        // ethReserved can be manipulated inside receive()\n        router.swapExactTokensForETH(tokensAmount, 0, path, address(this), block.timestamp);\n\n        // State update occurs after ETH transfer (CEI violation)\n        ethReserved -= ethAmount;\n    }\n\n    // receive() exploited as a reentrancy callback\n    receive() external payable {\n        // Attacker's receive() calls CAROLToWETH\n    }\n}",
+  "// Root cause: Quadruple Flash Loan + sell() Reentrancy (Chained Flash Loan + sell() Reentrancy)\n// Source code unverified — based on bytecode analysis"
+ ]
+}

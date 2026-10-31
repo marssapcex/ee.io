@@ -1,0 +1,36 @@
+{
+ "id": "2021__2021-02-04_Yearn_yDAI_CurvePoolImbalance",
+ "source_file": "2021/2021-02-04_Yearn_yDAI_CurvePoolImbalance.md",
+ "title": "Yearn Finance yDAI — Curve 3Pool Imbalance Manipulation Vulnerability Analysis",
+ "date": "2021-02-04",
+ "protocol": "Yearn Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$11,000,000",
+ "loss_usd": 11000000.0,
+ "root_cause": "yVault calculates prices based on Curve 3Pool's current balances, allowing price distortion when pool imbalance is manipulated",
+ "attack_tx": "0x59faab5a",
+ "vulnerable_contract": "0xACd43E627e64355f1861cEC6d3a6688B31a6F952 (yVDAI)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// ❌ Price calculated using Curve pool's current spot balances (manipulable)\nfunction earn() public {\n    uint256 _bal = available();\n    token.safeTransfer(controller, _bal);\n    IController(controller).earn(address(token), _bal);\n    // Internally calls Curve 3Pool's get_virtual_price() or\n    // calc_withdraw_one_coin() — depends on current pool state\n}\n\n// Vulnerable price query from Curve 3Pool\nfunction get_virtual_price() external view returns (uint256) {\n    // Calculated as D / total_supply — manipulable when pool is imbalanced\n    uint256 D = get_D(xp(), amp);\n    uint256 token_supply = CurveToken(lp_token).totalSupply();\n    return D * PRECISION / token_supply;\n}",
+  "// ❌ Root cause: yVault calculates prices based on Curve 3Pool's current balances, allowing price distortion when pool imbalance is manipulated\n    function deposit(uint _amount) public {\n        uint _pool = balance();\n        uint _before = token.balanceOf(address(this));  // ❌ Direct reference to current balance — manipulable\n        token.safeTransferFrom(msg.sender, address(this), _amount);\n        uint _after = token.balanceOf(address(this));\n        _amount = _after.sub(_before); // Additional check for deflationary tokens\n        uint shares = 0;\n        if (totalSupply() == 0) {\n            shares = _amount;\n        } else {\n            shares = (_amount.mul(totalSupply())).div(_pool);\n        }\n        _mint(msg.sender, shares);\n    }"
+ ],
+ "code_after": [
+  "// ✅ Use TWAP or time-weighted price, detect sharp changes within a single block\nfunction earn() public {\n    // Check pool imbalance ratio\n    uint256[3] memory balances = ICurve3Pool(curve).get_balances();\n    uint256 totalBal = balances[0] + balances[1] * 1e12 + balances[2] * 1e12;\n    for (uint i = 0; i < 3; i++) {\n        uint256 normalized = i == 0 ? balances[i] : balances[i] * 1e12;\n        // Abnormal state if a single asset exceeds 80% of total\n        require(normalized * 100 / totalBal < 80, \"Pool imbalanced\");\n    }\n    uint256 _bal = available();\n    token.safeTransfer(controller, _bal);\n    IController(controller).earn(address(token), _bal);\n}",
+  "// ✅ Validate pool imbalance state when earn() is called\n// ✅ Enforce minimum block interval between deposit and withdrawal (withdraw delay)\n\nmapping(address => uint256) public lastDepositBlock;\n\nfunction withdraw(uint256 _shares) public {\n    // Allow withdrawal only after at least 1 block (flash loan prevention)\n    require(\n        block.number > lastDepositBlock[msg.sender],\n        \"Vault: cannot deposit and withdraw in same block\"\n    );\n    // ... existing withdrawal logic\n}\n\nfunction deposit(uint256 _amount) public {\n    lastDepositBlock[msg.sender] = block.number;\n    // ... existing deposit logic\n}"
+ ],
+ "steps": [
+  "Step 1: Obtain DAI/USDC/USDT via large-scale flash loan",
+  "Step 2: Call Curve 3Pool.remove_liquidity_imbalance()",
+  "Withdraw only USDT in skewed manner → create extreme pool imbalance",
+  "Step 3: Call yVDAI.deposit() → yVDAI.earn()",
+  "Step 4: Re-add liquidity to 3Pool (restore balance)",
+  "Step 5: Withdraw full yVDAI balance — excess withdrawal at distorted price"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────┐\n│ Step 1: Obtain DAI/USDC/USDT via large-scale flash loan   │\n│ dYdX / Aave flash loan                                    │\n└─────────────────────┬────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 2: Call Curve 3Pool.remove_liquidity_imbalance()     │\n│ Withdraw only USDT in skewed manner → create extreme pool imbalance │\n└─────────────────────┬────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 3: Call yVDAI.deposit() → yVDAI.earn()               │\n│ 0xACd43E627e64355f1861cEC6d3a6688B31a6F952               │\n│ Update vault internal state with distorted prices         │\n└───",
+  "// testExploit() core logic excerpt\nfunction testExploit() public {\n    // 1. Large-scale flash loan (DAI, USDT, etc.)\n    // dydx.flashLoan(...)\n\n    // 2. Create Curve 3Pool imbalance\n    // curve3Pool.remove_liquidity_imbalance(\n    //     [0, 0, large_usdt_amount],  // Withdraw USDT only\n    //     max_burn_amount\n    // );\n\n    // 3. Deposit into yVDAI then trigger earn()\n    // yVDAI.deposit(dai_amount);   // 0xACd43E627e64355f1861cEC6d3a6688B31a6F952\n    // yVDAI.earn();                // Yield calculation under distorted state\n\n    // 4. Restore pool balance\n    // curve3Pool.add_liquidity([large_usdt, 0, 0], 0);\n\n    // 5. Withdraw full yVDAI balance to realize excess profit\n    // yVDAI.withdraw(yVDAI.balanceOf(address(this)));\n}"
+ ]
+}

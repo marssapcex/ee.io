@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-04-XX_SumerMoney_RepayBorrowBehalfReentrancy",
+ "source_file": "2024/2024-04-XX_SumerMoney_RepayBorrowBehalfReentrancy.md",
+ "title": "Sumer Money — repayBorrowBehalf Reentrancy Vulnerability Analysis",
+ "date": "2024-04-01",
+ "protocol": "Sumer Money",
+ "chain": "Base",
+ "loss_raw": "~$350,000",
+ "loss_usd": 350000.0,
+ "root_cause": "When calling `repayBorrowBehalf{value: borrowAmount + 1}()`, the `receive()` fallback is reentered during the ETH refund process, executing additional borrow/repay cycles to drain cbETH and USDC reserves",
+ "attack_tx": null,
+ "vulnerable_contract": "0x23811c17",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: reentrancy possible during ETH refund in repayBorrowBehalf\ncontract CEther {\n    function repayBorrowBehalf(address borrower) external payable {\n        uint256 repayAmount = borrowAmount[borrower];\n        require(msg.value >= repayAmount, \"insufficient\");\n\n        // Process loan repayment\n        borrowAmount[borrower] = 0;\n        totalBorrows -= repayAmount;\n\n        // Refund excess ETH ← reentrancy point!\n        if (msg.value > repayAmount) {\n            // CEI pattern violation: external call before state update\n            (bool ok,) = msg.sender.call{value: msg.value - repayAmount}(\"\");\n            // ↑ msg.sender.receive() executes reentrancy\n            require(ok);\n        }\n    }\n}\n\n//",
+  "// File: CEther.sol\n  function repayBorrowBehalf(address borrower) external payable {\n    uint256 received = msg.value;\n    uint256 borrows = CEther(payable(this)).borrowBalanceCurrent(borrower);\n    if (received > borrows) {  // ❌ Vulnerability\n      // payable(msg.sender).transfer(received - borrows);\n      (bool success, ) = msg.sender.call{value: received - borrows}('');\n      require(success, 'Address: unable to send value, recipient may have reverted');\n    }\n    (uint256 err, ) = repayBorrowBehalfInternal(borrower, borrows);\n    requireNoError(err, 'repayBorrowBehalf failed');\n  }"
+ ],
+ "code_after": [
+  "✅ Safe code: ReentrancyGuard + CEI pattern\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\nfunction repayBorrowBehalf(address borrower) external payable nonReentrant {\n    uint256 repayAmount = borrowAmount[borrower];\n    require(msg.value >= repayAmount, \"insufficient\");\n\n    // Update state first (Effects)\n    borrowAmount[borrower] = 0;\n    totalBorrows -= repayAmount;\n    uint256 excess = msg.value - repayAmount;\n\n    // External call last (Interactions)\n    if (excess > 0) {\n        (bool ok,) = msg.sender.call{value: excess}(\"\");\n        require(ok);\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Balancer flash loan: 150 WETH + 645,000 USDC",
+  "→ [2] sdrETH.mint(150 WETH) → obtain sdrETH",
+  "→ [3] Deploy Helper contract + transfer USDC",
+  "→ [4] Helper: sdrUSDC.mint() + sdrETH.borrow()",
+  "→ [5] Helper: repayBorrowBehalf{value: borrow + 1}()",
+  "Refund of 1 wei excess → Helper.receive() reentrancy",
+  "→ [6] receive() reentrancy:",
+  "→ [7] Withdraw sdrcbETH + sdrUSDC balances",
+  "→ [8] Repay Balancer flash loan",
+  "→ [9] ~$350K cbETH + USDC drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Balancer flash loan: 150 WETH + 645,000 USDC\n  │\n  ├─→ [2] sdrETH.mint(150 WETH) → obtain sdrETH\n  │\n  ├─→ [3] Deploy Helper contract + transfer USDC\n  │\n  ├─→ [4] Helper: sdrUSDC.mint() + sdrETH.borrow()\n  │\n  ├─→ [5] Helper: repayBorrowBehalf{value: borrow + 1}()\n  │         └─ Refund of 1 wei excess → Helper.receive() reentrancy\n  │\n  ├─→ [6] receive() reentrancy:\n  │         ├─ sdrcbETH.borrow() additional borrow\n  │         └─ sdrUSDC.borrow() additional borrow\n  │\n  ├─→ [7] Withdraw sdrcbETH + sdrUSDC balances\n  │\n  ├─→ [8] Repay Balancer flash loan\n  │\n  └─→ [9] ~$350K cbETH + USDC drained",
+  "interface ICErc20 {\n    function mint(uint256 mintAmount) external returns (uint256);\n    function borrow(uint256 borrowAmount) external returns (uint256);\n    function repayBorrowBehalf(address borrower) external payable returns (uint256);\n    function redeemUnderlying(uint256 redeemAmount) external returns (uint256);\n    function exchangeRateCurrent() external returns (uint256);\n}\n\ninterface IBalancerVault {\n    function flashLoan(address recipient, address[] memory tokens, uint256[] memory amounts, bytes memory userData) external;\n}\n\ncontract Helper {\n    ICErc20 constant sdrETH  = ICErc20(0x7b5969bB51fa3B002579D7ee41A454AC691716DC);\n    ICErc20 constant sdrUSDC = ICErc20(0x142017b52c99d3dFe55E49d79Df0bAF7F4478c0c);\n    ICErc20 constant sdrcbETH = ICErc20(0x6345aF6dA3EBd9DF468e37B473128"
+ ]
+}

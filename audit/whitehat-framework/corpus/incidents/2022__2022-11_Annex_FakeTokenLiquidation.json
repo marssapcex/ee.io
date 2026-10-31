@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-11_Annex_FakeTokenLiquidation",
+ "source_file": "2022/2022-11_Annex_FakeTokenLiquidation.md",
+ "title": "Annex — Fake ERC20 Token + liquidateBorrow() Attack Analysis",
+ "date": "2022-11-01",
+ "protocol": "Annex Finance",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "Attacker-deployed fake ERC20 token used as collateral to drain real assets via `liquidateBorrow()`",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern - missing collateral token whitelist validation\ncontract AnnexComptroller {\n    //",
+  "❌ Allows arbitrary tokens as collateral\n    // Only markets pre-registered by admin should be permitted,\n    // but a bypass path exists\n    function enterMarkets(address[] calldata cTokens) external returns (uint256[] memory) {\n        // Does not verify whether each item in cTokens is actually a safe asset\n        for (uint i = 0; i < cTokens.length; i++) {\n            Market storage market = markets[cTokens[i]];\n            //",
+  "❌ market.isListed check is bypassable or missing\n            accountAssets[msg.sender].push(cTokens[i]);\n        }\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - whitelist-based market validation\ncontract SafeAnnexComptroller {\n    mapping(address => Market) public markets;\n\n    function enterMarkets(address[] calldata cTokens) external returns (uint256[] memory) {\n        for (uint i = 0; i < cTokens.length; i++) {\n            Market storage market = markets[cTokens[i]];\n            //",
+  "✅ Only markets explicitly registered by admin are permitted\n            require(market.isListed, \"Market not listed\");\n            //"
+ ],
+ "steps": [
+  "[4] Call pair swap() → trigger Liquidator callback"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Deploy fake ERC20 token (MyERC20)\n    │       Arbitrary supply, attacker holds entire balance\n    │\n    ├─[2] Flash loan 8 WBNB from DODO\n    │       Enter DPPFlashLoanCall() callback\n    │\n    ├─[3] Add PancakeSwap liquidity with MyERC20 + WBNB\n    │       Receive LP tokens\n    │\n    ├─[4] Call pair swap() → trigger Liquidator callback\n    │       Execute Liquidator contract logic\n    │       Drain real WBNB\n    │\n    ├─[5] Remove liquidity (burn LP)\n    │       Recover MyERC20 + WBNB\n    │\n    ├─[6] Repay DODO flash loan (8 WBNB)\n    │\n    └─[7] Net profit: WBNB (amount unconfirmed)",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\n// Fake ERC20 token deployed by the attacker\ncontract MyERC20 {\n    string public name     = \"Fake Token\";\n    string public symbol   = \"FAKE\";\n    uint8  public decimals = 18;\n    uint256 public totalSupply;\n    mapping(address => uint256) public balanceOf;\n    mapping(address => mapping(address => uint256)) public allowance;\n\n    constructor(uint256 _supply) {\n        totalSupply = _supply;\n        balanceOf[msg.sender] = _supply;\n    }\n\n    function transfer(address to, uint256 amount) external returns (bool) {\n        balanceOf[msg.sender] -= amount;\n        balanceOf[to] += amount;\n        return true;\n    }\n\n    function transferFrom(address from, address to, uint256 amount) external return"
+ ]
+}

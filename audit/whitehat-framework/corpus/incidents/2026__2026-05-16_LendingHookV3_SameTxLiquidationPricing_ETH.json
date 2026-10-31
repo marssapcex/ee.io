@@ -1,0 +1,30 @@
+{
+ "id": "2026__2026-05-16_LendingHookV3_SameTxLiquidationPricing_ETH",
+ "source_file": "2026/2026-05-16_LendingHookV3_SameTxLiquidationPricing_ETH.md",
+ "title": "LendingHookV3 — Same-Tx Liquidation Pricing Manipulation Analysis",
+ "date": "2026-05-16",
+ "protocol": "LendingHookV3",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "Small (2.2 WETH flash loan + sato token collateral differential; exact profit not disclosed)",
+ "loss_usd": null,
+ "root_cause": "Liquidation pricing in the Uniswap V4 hook reads a same-tx manipulable sato token spot price from two V4 pools. Attacker borrowed 2.2 WETH via Aave V3, swapped 5,300 sato tokens across both pools to move the price, then liquidated 6,035.25 sato tokens from the victim position at the distorted price.",
+ "attack_tx": "0xec9c1a3c...e79",
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable liquidation pricing (reconstructed)\nfunction liquidate(\n    address borrower,\n    address collateralToken,\n    uint256 debtAmount\n) external {\n    require(_isLiquidatable(borrower), \"Position healthy\");\n\n    // ❌ Spot price from AMM — same-tx manipulable\n    uint256 collateralPrice = _getSpotPrice(collateralToken);\n\n    // ❌ Price depression → collateralToSeize inflates inversely\n    uint256 collateralToSeize = (debtAmount * LIQUIDATION_BONUS) / collateralPrice;\n\n    debtToken.transferFrom(msg.sender, address(this), debtAmount);\n    collateralToken.transfer(msg.sender, collateralToSeize); // excess seizure\n}\n\nfunction _getSpotPrice(address token) internal view returns (uint256) {\n    // ❌ Uniswap V3 slot0 or V2 getReserves — manipulable in same block\n    (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();\n    return _sqrtPriceToPrice(sqrtPriceX96);\n}"
+ ],
+ "code_after": [
+  "// ✅ TWAP-based pricing — manipulation resistant\nfunction _getOraclePrice(address token) internal view returns (uint256) {\n    uint32[] memory secondsAgo = new uint32[](2);\n    secondsAgo[0] = 1800; // 30-minute TWAP\n    secondsAgo[1] = 0;\n    (int56[] memory tickCumulatives,) = IUniswapV3Pool(pool).observe(secondsAgo);\n    int56 avgTick = (tickCumulatives[1] - tickCumulatives[0]) / 1800;\n    return TickMath.getSqrtRatioAtTick(int24(avgTick));\n}\n\n// ✅ Or: Chainlink with staleness check\nfunction _getOraclePrice(address token) internal view returns (uint256) {\n    (, int256 price,, uint256 updatedAt,) =\n        AggregatorV3Interface(priceFeeds[token]).latestRoundData();\n    require(block.timestamp - updatedAt <= MAX_STALENESS, \"Stale price\");\n    require(price > 0, \"Invalid price\");\n    return uint256(price);\n}"
+ ],
+ "steps": [
+  "- e.g., sell large amount of `collateralToken` → pool price drops",
+  "- `collateralToSeize` computed at manipulated (depressed) price → value inflated"
+ ],
+ "other_code": [
+  "collateralToSeize = debtRepaid × LIQUIDATION_BONUS / collateralPrice",
+  "// Replace _getSpotPrice() call in liquidate() with:\nuint256 collateralPrice = _getTWAPPrice(collateralToken); // 30-min minimum"
+ ]
+}

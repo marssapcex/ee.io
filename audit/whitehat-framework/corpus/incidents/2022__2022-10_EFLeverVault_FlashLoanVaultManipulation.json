@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-10_EFLeverVault_FlashLoanVaultManipulation",
+ "source_file": "2022/2022-10_EFLeverVault_FlashLoanVaultManipulation.md",
+ "title": "EFLever Vault — Balancer Flash Loan Vault Balance Manipulation Attack Analysis",
+ "date": "2022-10-01",
+ "protocol": "EFLever Vault",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~750 ETH",
+ "loss_usd": null,
+ "root_cause": "The share calculation in `deposit()`/`withdraw()` directly references `address(this).balance`, allowing share value manipulation if ETH is forcibly sent or deposited from an external source (no internal accounting variable used)",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable EFLever Vault - ETH balance-based share calculation\ncontract EFLeverVault {\n    uint256 public totalShares;\n    mapping(address => uint256) public shares;\n\n    function deposit() external payable {\n        //",
+  "❌ Share calculation uses current ETH balance (including flash loan)\n        uint256 vaultBalance = address(this).balance - msg.value; // balance before deposit\n        uint256 newShares;\n        if (totalShares == 0 || vaultBalance == 0) {\n            newShares = msg.value;\n        } else {\n            //",
+  "❌ vaultBalance is manipulated via flash loan\n            newShares = msg.value * totalShares / vaultBalance;\n        }\n        shares[msg.sender] += newShares;\n        totalShares += newShares;\n    }\n\n    function withdraw(uint256 shareAmount) external {\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - use internal accounting variable\ncontract SafeEFLeverVault {\n    uint256 public totalShares;\n    uint256 public totalAssets; // ← internal variable unaffected by flash loans\n    mapping(address => uint256) public shares;\n\n    function deposit() external payable {\n        uint256 newShares;\n        if (totalShares == 0) {\n            newShares = msg.value;\n        } else {\n            //",
+  "✅ Use internal accounting variable instead of address(this).balance\n            newShares = msg.value * totalShares / totalAssets;\n        }\n        totalAssets += msg.value; //"
+ ],
+ "steps": [
+  "[3] Unwrap 1,000 WETH → ETH",
+  "→ Unit value of attacker's shares plummets",
+  "→ ETH redemption value of attacker's held shares spikes",
+  "❌ Based on manipulated balance → far more than deposited"
+ ],
+ "other_code": []
+}

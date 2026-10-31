@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-08-28_Leetswap_FeeManipulation",
+ "source_file": "2023/2023-08-28_Leetswap_FeeManipulation.md",
+ "title": "Leetswap Fee Manipulation Incident Analysis",
+ "date": "2023-08-28",
+ "protocol": "Leetswap",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "// File: LeetSwapV2Pair.sol\n    function _transferFeesSupportingTaxTokens(address token, uint256 amount)  // ❌\n\n// ...\n\n    function _update0(uint256 amount) internal {\n        uint256 _protocolFeesShare = ILeetSwapV2Factory(factory)\n            .protocolFeesShare();\n        address _protocolFeesRecipient = ILeetSwapV2Factory(factory)\n            .protocolFeesRecipient();\n        uint256 _protocolFeesAmount = (amount * _protocolFeesShare) / 10000;\n        amount = _transferFeesSupportingTaxTokens(  // ❌\n            token0,\n            amount - _protocolFeesAmount\n        );\n        if (_protocolFeesAmount > 0)\n            _safeTransfer(token0, _protocolFeesRecipient, _protocolFeesAmount);\n        uint256 _ratio = (amount * 1e18) / totalSupply;\n        if (_ratio > 0) {\n            index0 += _ratio;\n        }\n        emit Fees(msg.sender, amount, 0);\n    }\n\n// ...\n\n    function _update1(uint256 amount) internal {\n        uint256 _protocolFeesShare = ILeetSwapV2Factory(factory)\n            .protocolFeesShare();\n        address _protocolFeesRecipient = ILeetSwapV2Factory(factory)\n            .protocolFeesRecipient();\n        uint256 _protocolFeesAmount = (amount * _protocolFeesShare) / 10000;\n        amount = _transferFeesSupportingTaxTokens(  // ❌\n            token1,\n            amount - _protocolFeesAmount\n        );\n        if (_protocolFeesAmount > 0)\n            _safeTransfer(token1, _protocolFeesRecipient, _protocolFeesAmount);\n        uint256 _ratio = (amount * 1e18) / totalSupply;\n        if (_ratio > 0) {\n            index1 += _ratio;\n        }\n        emit Fees(msg.sender, 0, amount);\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Router.swapExactTokensForTokensSupportingFeeOnTransferTokens()",
+  "WETH → axlUSDC swap",
+  "2 ▶ LeetSwapPair._transferFeesSupportingTaxTokens() called",
+  "3 ▶ LeetSwapPair.sync()",
+  "→ Manipulates WETH/axlUSDC exchange rate",
+  "4 ▶ Router.swapExactTokensForTokensSupportingFeeOnTransferTokens()",
+  "axlUSDC → WETH reverse swap",
+  "5 ▶ ~$630,000 profit realized"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: balance dependency in tax token fee handling\ncontract LeetSwapPair {\n    // Vulnerable: calculates actual fee from balance difference before/after transfer\n    function _transferFeesSupportingTaxTokens(\n        address token,\n        address to,\n        uint256 amount\n    ) internal returns (uint256 actualAmount) {\n        uint256 balanceBefore = IERC20(token).balanceOf(to);\n        IERC20(token).transfer(to, amount);\n        // Actual received amount = post-transfer balance - pre-transfer balance\n        // Vulnerable: additional manipulation possible when recipient is a contract\n        actualAmount = IERC20(token).balanceOf(to) - balanceBefore;\n    }\n\n    function swap(\n        uint256 amount0Out,\n        uint256 amount1Out,\n        address to,\n        bytes calld",
+  "Attacker [0x705f736145bb9d4a4a186f4595907b60815085c3]\n  │\n  ├─1─▶ Router.swapExactTokensForTokensSupportingFeeOnTransferTokens()\n  │      WETH → axlUSDC swap\n  │      [WETH: 0x4200000000000000000000000000000000000006]\n  │      [axlUSDC: 0xEB466342C4d449BC9f53A865D5Cb90586f405215]\n  │\n  ├─2─▶ LeetSwapPair._transferFeesSupportingTaxTokens() called\n  │      [LeetSwapPair: 0x94dac4a3ce998143aa119c05460731da80ad90cf]\n  │      axlUSDC fee processing — triggers reserve/balance discrepancy\n  │\n  ├─3─▶ LeetSwapPair.sync()\n  │      Force-updates reserves to current balances\n  │      → Manipulates WETH/axlUSDC exchange rate\n  │\n  ├─4─▶ Router.swapExactTokensForTokensSupportingFeeOnTransferTokens()\n  │      axlUSDC → WETH reverse swap\n  │      Receives more WETH at the manipulated rate\n  │\n  └─5─▶ ~$6"
+ ]
+}

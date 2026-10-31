@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-07-01_ApeDAO_FlashLoanPriceManipulation",
+ "source_file": "2023/2023-07-01_ApeDAO_FlashLoanPriceManipulation.md",
+ "title": "ApeDAO Flash Loan Price Manipulation Incident Analysis",
+ "date": "2023-07-01",
+ "protocol": "ApeDAO",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ DPPOracle1.flashLoan() [0xFeAFe253802b77456B4627F8c2306a9CeBb5d681]",
+  "2 ▶ DPPOracle2.flashLoan() [0x9ad32e3054268B849b84a8dBcC7c8f7c52E4e69A]",
+  "3 ▶ Uni_Router_V2.swapExactTokensForTokens() → BUSDT→APEDAO",
+  "4 ▶ Pair.skim() [0xee2a9D05B943C1F33f3920C750Ac88F74D0220c3] → token extraction",
+  "5 ▶ APEDAO→BUSDT swap, then repay flash loan"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: no price validation in flash loan callback\nfunction DPPFlashLoanCall(address sender, uint256 baseAmount, uint256 quoteAmount, bytes calldata data) external {\n    // Vulnerable: no caller validation, reentrancy possible\n    if (msg.sender == address(DPPOracle1)) {\n        DPPOracle2.flashLoan(0, IERC20(BUSDT).balanceOf(address(DPPOracle2)) * 99 / 100, address(this), data);\n    }\n    // ... chained flash loans continue\n}",
+  "// Root cause: Flash Loan + Price Manipulation\n// Source code unverified — based on bytecode analysis"
+ ]
+}

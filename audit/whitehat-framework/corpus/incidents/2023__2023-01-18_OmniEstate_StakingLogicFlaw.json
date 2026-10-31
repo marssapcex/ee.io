@@ -1,0 +1,38 @@
+{
+ "id": "2023__2023-01-18_OmniEstate_StakingLogicFlaw",
+ "source_file": "2023/2023-01-18_OmniEstate_StakingLogicFlaw.md",
+ "title": "OmniEstate — Staking Lock Period Bypass Vulnerability Analysis",
+ "date": "2023-01-18",
+ "protocol": "OmniEstate",
+ "chain": "BSC",
+ "loss_raw": "Unknown (~thousands USD)",
+ "loss_usd": null,
+ "root_cause": "Passing `end_date=0` to `invest()` allows immediate withdrawal with no lock period",
+ "attack_tx": null,
+ "vulnerable_contract": "0x6f40A3d0...",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no end_date validation\ninterface OmniStakingPool {\n    function invest(uint256 end_date, uint256 qty_ort) external;\n    function withdrawAndClaim(uint256 lockId) external;\n}\n\n// invest() internals (estimated)\nfunction invest(uint256 end_date, uint256 qty_ort) external {\n    //",
+  "❌ No check for end_date == 0\n    //",
+  "❌ No validation that end_date is in the future relative to current block\n    StakingInfo memory info = StakingInfo({\n        amount: qty_ort,\n        endDate: end_date,  // 0 is stored as-is\n        claimed: false\n    });\n    userStakings[msg.sender].push(info);\n    // Rewards calculated/granted immediately\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix\nfunction invest(uint256 end_date, uint256 qty_ort) external {\n    require(end_date > block.timestamp, \"Invalid end date\");  //",
+  "✅ Validation added\n    require(end_date <= block.timestamp + MAX_LOCK_PERIOD, \"Lock too long\");\n    // ...\n}"
+ ],
+ "steps": [
+  "1 ▶ Swap small amount of WBNB for ORT tokens (1 BNB)",
+  "2 ▶ OmniStakingPool.invest(end_date=0, qty_ort=1)",
+  "end_date=0 → no lock period (validation missing)",
+  "→ creates a staking position that is immediately withdrawable",
+  "3 ▶ getUserStaking(attacker) → obtain lockId",
+  "4 ▶ OmniStakingPool.withdrawAndClaim(lockId)",
+  "5 ▶ Swap ORT → WBNB → realize profit"
+ ],
+ "other_code": [
+  "// Root cause: passing `end_date=0` to `invest()` allows immediate withdrawal with no lock period\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ Swap small amount of WBNB for ORT tokens (1 BNB)\n  │\n  ├─2─▶ OmniStakingPool.invest(end_date=0, qty_ort=1)\n  │       end_date=0 → no lock period (validation missing)\n  │       → creates a staking position that is immediately withdrawable\n  │\n  ├─3─▶ getUserStaking(attacker) → obtain lockId\n  │\n  ├─4─▶ OmniStakingPool.withdrawAndClaim(lockId)\n  │       Immediately withdraw principal + rewards\n  │       (should normally only be possible after lock period expires)\n  │\n  └─5─▶ Swap ORT → WBNB → realize profit"
+ ]
+}

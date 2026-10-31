@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-08-28_GSS_FlashLoanSkimSync",
+ "source_file": "2023/2023-08-28_GSS_FlashLoanSkimSync.md",
+ "title": "GSS Flash Loan Skim/Sync Manipulation Incident Analysis",
+ "date": "2023-08-28",
+ "protocol": "GSS",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ IDPPOracle.flashLoan() - DODO Flash Loan",
+  "2 ▶ swap(USDT → GSS)",
+  "Purchase GSS tokens → transfer tax increases pair balance",
+  "3 ▶ GSS.transfer(USDT-GSS Pool, amount)",
+  "→ pair balance > reserves (discrepancy created)",
+  "4 ▶ GSS-USDT Pool.skim(address(this))",
+  "5 ▶ GSS-USDT Pool.sync()",
+  "Update reserves to current balances → GSS price manipulated",
+  "6 ▶ swap(GSS → USDT)",
+  "7 ▶ USDT.transfer(DODO) - Flash loan repayment"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: tax token skim/sync vulnerability\ncontract GSSToken is ERC20 {\n    uint256 public constant TAX_RATE = 300; // 3%\n    address public pair;\n\n    function _transfer(address from, address to, uint256 amount) internal override {\n        uint256 tax = amount * TAX_RATE / 10000;\n        // Tax is sent directly to the pair address\n        super._transfer(from, pair, tax);\n        super._transfer(from, to, amount - tax);\n    }\n}\n\n// Vulnerable functions in Uniswap V2 Pair\ncontract UniswapV2Pair {\n    // skim: transfers balance exceeding reserves to the specified address\n    function skim(address to) external {\n        address _token0 = token0;\n        address _token1 = token1;\n        _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)) - reserve0);\n        _sa",
+  "// Root cause: Flash Loan + Skim/Sync Manipulation\n// Source code unverified — based on bytecode analysis"
+ ]
+}

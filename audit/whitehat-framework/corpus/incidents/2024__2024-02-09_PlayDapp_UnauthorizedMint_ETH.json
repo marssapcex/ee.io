@@ -1,0 +1,22 @@
+{
+ "id": "2024__2024-02-09_PlayDapp_UnauthorizedMint_ETH",
+ "source_file": "2024/2024-02-09_PlayDapp_UnauthorizedMint_ETH.md",
+ "title": "PlayDapp — Unauthorized Minter Privilege Mint Analysis",
+ "date": "2024-02-09",
+ "protocol": "PlayDapp",
+ "chain": "Ethereum",
+ "loss_raw": "~$290,000,000 (nominal minting value); ~$32,000,000 (estimated realized losses from actual token sales/liquidity impact)",
+ "loss_usd": 290000000.0,
+ "root_cause": "The private key controlling the `minter` role on the PLA token contract was compromised. The attacker added themselves as an authorized minter and then minted 200 million PLA (Feb 9) and 1.59 billion PLA (Feb 12) without authorization.",
+ "attack_tx": null,
+ "vulnerable_contract": "PlayDapp PLA ERC-20 token contract (minter role access control)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Attacker\n    │\n    ├─[Pre-exploit] Obtain PlayDapp minter private key\n    │       (method: phishing, infrastructure breach, or insider)\n    │\n    ├─[2024-02-09] Phase 1 mint:\n    │       Call addMinter(attacker_address) using compromised minter key\n    │       Mint 200,000,000 PLA to attacker address\n    │       Nominal value: ~$36.5M\n    │       PlayDapp detects; suspends deposits; offers $1M bounty\n    │\n    ├─[No response to bounty offer]\n    │\n    ├─[2024-02-12] Phase 2 mint:\n    │       Mint 1,590,000,000 PLA (1.59 billion) to attacker address\n    │       Nominal value: ~$253.9M at pre-crash price\n    │       Total nominal: ~$290M\n    │\n    ├─[PlayDapp response]\n    │       Pauses PLA token contract\n    │       Announces migration from PLA to PDA token (new contract)\n    │       Coord"
+ ]
+}

@@ -1,0 +1,37 @@
+{
+ "id": "2023__2023-07-01_Bao_ExchangeRateManipulation",
+ "source_file": "2023/2023-07-01_Bao_ExchangeRateManipulation.md",
+ "title": "Bao Finance Exchange Rate Manipulation Incident Analysis",
+ "date": "2023-07-01",
+ "protocol": "Bao",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// File: CToken.sol\n    function exchangeRateStored() public view returns (uint);  // ❌\n\n// ...\n\n     * @dev This function does not accrue interest before calculating the exchange rate  // ❌\n\n// ...\n\n    function exchangeRateStored() public view returns (uint) {  // ❌\n        (MathError err, uint result) = exchangeRateStoredInternal();  // ❌\n        require(err == MathError.NO_ERROR, \"exchangeRateStored: exchangeRateStoredInternal failed\");  // ❌\n        return result;\n    }\n\n// ...\n\n     * @dev This function does not accrue interest before calculating the exchange rate  // ❌\n\n// ...\n\n    function exchangeRateStoredInternal() internal view returns (MathError, uint) {  // ❌\n        uint _totalSupply = totalSupply;\n        if (_totalSupply == 0) {\n            /*\n             * If there are no tokens minted:\n             *  exchangeRate = initialExchangeRate  // ❌\n             */\n            return (MathError.NO_ERROR, initialExchangeRateMantissa);  // ❌\n        } else {\n            /*\n             * Otherwise:\n             *  exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply  // ❌\n             */\n            uint totalCash = getCashPrior();\n            uint cashPlusBorrowsMinusReserves;\n            Exp memory exchangeRate;  // ❌\n            MathError mathErr;\n\n            (mathErr, cashPlusBorrowsMinusReserves) = addThenSubUInt(totalCash, totalBorrows, totalReserves);\n            if (mathErr != MathError.NO_ERROR) {\n                return (mathErr, 0);\n            }\n\n            (mathErr, exchangeRate) = getExp(cashPlusBorrowsMinusReserves, _totalSupply);  // ❌\n            if (mathErr != MathError.NO_ERROR) {\n                return (mathErr, 0);\n            }\n\n            return (MathError.NO_ERROR, exchangeRate.mantissa);  // ❌\n        }\n    }",
+  "// File: CErc20Delegator.sol\n     * @param initialExchangeRateMantissa_ The initial exchange rate, scaled by 1e18  // ❌\n\n// ...\n\n                uint initialExchangeRateMantissa_,  // ❌\n\n// ...\n\n                                                            initialExchangeRateMantissa_,  // ❌\n\n// ...\n\n     * @dev This function does not accrue interest before calculating the exchange rate  // ❌\n\n// ...\n\n    function exchangeRateStored() public view returns (uint) {  // ❌\n        bytes memory data = delegateToViewImplementation(abi.encodeWithSignature(\"exchangeRateStored()\"));  // ❌\n        return abi.decode(data, (uint));\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Aave V2.flashLoan() [0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9]",
+  "2 ▶ Deposit USDC/DAI into Aave V2",
+  "3 ▶ Balancer.joinPool() → receive bSTBL shares",
+  "4 ▶ Mint bSTBL → bdbSTBL",
+  "5 ▶ Donation attack: directly transfer bSTBL to inflate exchange rate",
+  "6 ▶ Borrow ETH from bdbaoETH using inflated collateral",
+  "7 ▶ Repay inflated bdbSTBL position",
+  "8 ▶ Balancer → swap baoETH → WETH",
+  "9 ▶ Uniswap V3: convert WETH → USDC/DAI",
+  "10 ▶ Repay Aave flash loan + realize profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: exchange rate calculated from raw balance\nfunction exchangeRate() public view returns (uint256) {\n    uint256 totalSupply = totalSupply();\n    if (totalSupply == 0) return initialRate;\n\n    // Vulnerable: totalAssets includes directly transferred tokens\n    uint256 totalAssets = IERC20(underlying).balanceOf(address(this));\n    return totalAssets * 1e18 / totalSupply;  // manipulable\n}\n\nfunction borrow(uint256 amount) external {\n    uint256 collateral = balanceOf(msg.sender) * exchangeRate() / 1e18;\n    require(collateral >= amount * collateralFactor, \"Insufficient collateral\");\n    // Inflated exchangeRate() allows excessive borrowing\n    _transfer(underlying, msg.sender, amount);\n}",
+  "// File: ErrorReporter.sol\n    function failOpaque(Error err, FailureInfo info, uint opaqueError) internal returns (uint) {\n        emit Failure(uint(err), uint(info), opaqueError);\n\n        return uint(err);\n    }"
+ ]
+}

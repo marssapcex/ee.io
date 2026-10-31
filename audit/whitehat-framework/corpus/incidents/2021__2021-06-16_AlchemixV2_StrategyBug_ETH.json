@@ -1,0 +1,26 @@
+{
+ "id": "2021__2021-06-16_AlchemixV2_StrategyBug_ETH",
+ "source_file": "2021/2021-06-16_AlchemixV2_StrategyBug_ETH.md",
+ "title": "Alchemix V2 — alETH Vault Strategy Yield Calculation Bug Analysis",
+ "date": "2021-06-16",
+ "protocol": "Alchemix V2",
+ "chain": "Ethereum",
+ "loss_raw": "~$6,500,000 (~2,200 ETH over-distributed to users via yield calculation bug; ~$4.8M voluntarily returned by users)",
+ "loss_usd": 6500000.0,
+ "root_cause": "Incorrect yield distribution calculation in the alETH vault's TransmuterB strategy. The contract over-credited yield to user debt repayment positions, allowing users to claim more collateral than the protocol had actually earned from the underlying Yearn ETH vault.",
+ "attack_tx": null,
+ "vulnerable_contract": "Alchemix V2 alETH vault TransmuterB strategy contract (Ethereum mainnet)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable (illustrative pseudocode — exact source unavailable)\nfunction distributeYield(uint256 harvested) internal {\n    // BUG: totalWeight is stale or incorrectly computed,\n    // causing the per-unit allocation to be inflated.\n    uint256 perUnit = harvested * PRECISION / totalWeight;\n\n    for (uint256 i = 0; i < depositors.length; i++) {\n        // Each depositor's credited yield is larger than their fair share.\n        // Summed across all depositors, total credits > harvested.\n        uint256 credit = depositorWeight[i] * perUnit / PRECISION;\n        userDebtCredit[depositors[i]] += credit;\n    }\n\n    // buffer is decremented by `harvested`, but userDebtCredit totals\n    // across all users may exceed `harvested` due to precision or\n    // weight accounting error — the invariant is broken.\n    buffer -= harvested;\n}",
+  "// ❌ Vulnerable claim path (illustrative pseudocode)\nfunction claim() external {\n    uint256 claimable = userDebtCredit[msg.sender];\n    require(claimable > 0, \"Nothing to claim\");\n\n    // Over-credited userDebtCredit allows withdrawal\n    // exceeding what the protocol actually earned.\n    userDebtCredit[msg.sender] = 0;\n    (bool ok,) = msg.sender.call{value: claimable}(\"\");\n    require(ok, \"Transfer failed\");\n}"
+ ],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Total yield credited to user debt positions\n    == Total yield actually harvested from the underlying Yearn ETH strategy",
+  "┌─────────────────────────────────────────────────────────────┐\n│ Normal Operation                                            │\n│ Users deposit ETH → Yearn earns yield → TransmuterB        │\n│ credits yield to user debt → users call claim()            │\n└─────────────────────┬───────────────────────────────────────┘\n                      │\n┌─────────────────────▼───────────────────────────────────────┐\n│ Bug Active (TransmuterB yield distribution error)           │\n│ Over-credited yield causes userDebtCredit to exceed         │\n│ actual harvested ETH in the buffer                          │\n└─────────────────────┬───────────────────────────────────────┘\n                      │\n┌─────────────────────▼───────────────────────────────────────┐\n│ Users call claim() in good faith                "
+ ]
+}

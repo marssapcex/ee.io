@@ -1,0 +1,23 @@
+{
+ "id": "2023__2023-12-19_Channels_CompoundFork",
+ "source_file": "2023/2023-12-19_Channels_CompoundFork.md",
+ "title": "Channels Compound Fork Vulnerability Analysis (December 2023)",
+ "date": "2023-12-19",
+ "protocol": "Channels",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "// Compound fork - cToken exchange rate calculation\nfunction exchangeRateStoredInternal() internal view returns (uint256) {\n    if (totalSupply == 0) {\n        return initialExchangeRate; // initial value\n    }\n    // actual balance / total supply = exchange rate\n    // numerator can be manipulated via direct transfer\n    uint256 totalCash = getCash();\n    return (totalCash + totalBorrows - totalReserves) * 1e18 / totalSupply;\n}",
+  "// Lock minimum liquidity to prevent empty market attacks\nuint256 constant MINIMUM_LIQUIDITY = 1000;\n\nfunction mint(uint256 mintAmount) external returns (uint256) {\n    // First minter locks minimum liquidity\n    if (totalSupply == 0) {\n        _mint(address(0), MINIMUM_LIQUIDITY);\n    }\n    // ...\n}"
+ ]
+}

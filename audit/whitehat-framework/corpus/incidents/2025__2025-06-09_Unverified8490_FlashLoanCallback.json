@@ -1,0 +1,30 @@
+{
+ "id": "2025__2025-06-09_Unverified8490_FlashLoanCallback",
+ "source_file": "2025/2025-06-09_Unverified8490_FlashLoanCallback.md",
+ "title": "Unverified Contract (8490) — Flash Callback Validation Absence Analysis",
+ "date": "2025-06-09",
+ "protocol": "Unverified Contract",
+ "chain": "BSC",
+ "loss_raw": "48,300 USD",
+ "loss_usd": null,
+ "root_cause": "The `pancakeV3FlashCallback` function executes internal asset transfers without validating the caller (`msg.sender`)",
+ "attack_tx": "0x9191153c...",
+ "vulnerable_contract": "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable pancakeV3FlashCallback: no caller validation\ncontract TransparentUpgradeableProxy {\n    // or inside the implementation contract\n\n    function pancakeV3FlashCallback(\n        uint256 /*amount0*/,\n        uint256 /*amount1*/,\n        bytes calldata /*data*/\n    ) external {\n        //",
+  "❌ No check that msg.sender is an actual PancakeSwap V3 pool\n        //",
+  "❌ Anyone can call this callback directly\n\n        // Internal approve execution\n        Token.approve(SmartRouter, LARGE_AMOUNT); //"
+ ],
+ "code_after": [
+  "✅ Correct code\nfunction pancakeV3FlashCallback(\n    uint256 amount0,\n    uint256 amount1,\n    bytes calldata data\n) external {\n    //",
+  "✅ Validate against the actual PancakeSwap V3 pool address\n    address expectedPool = IPancakeV3Factory(factory).getPool(token0, token1, fee);\n    require(msg.sender == expectedPool, \"Not authorized pool\");\n    // Execute only the flash loan repayment logic\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "// File: draft-IERC1822.sol\n// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts (last updated v4.5.0) (interfaces/draft-IERC1822.sol)\n\npragma solidity ^0.8.0;\n\n/**\n * @dev ERC1822: Universal Upgradeable Proxy Standard (UUPS) documents a method for upgradeability through a simplified\n * proxy whose upgrades are fully controlled by the current implementation.\n */\ninterface IERC1822Proxiable {\n    /**\n     * @dev Returns the storage slot that the proxiable contract assumes is being used to store the implementation\n     * address.\n     *\n     * IMPORTANT: A proxy pointing at a proxiable contract should not be considered proxiable itself, because this risks\n     * bricking a proxy that upgrades to it, by delegating to itself until out of gas. Thus it is critical that this\n     * function ",
+  "contract AttackerC {\n    function attack() public {\n        // [1] Execute PancakeV3 flash loan (from actual V3 pool)\n        IPancakeV3Pool_Local(PancakeV3Pool).flash(\n            address(this),\n            FLASH_AMOUNT, // token0 (or token1)\n            0,\n            \"\" // data\n        );\n    }\n\n    function pancakeV3FlashCallback(\n        uint256 /*amount0*/,\n        uint256 /*amount1*/,\n        bytes calldata /*data*/\n    ) external {\n        // [2] Trigger the approve function on the vulnerable contract\n        // Configure TransparentUpgradeableProxy to trust SmartRouter\n        {\n            (bool ok,) = TransparentUpgradeableProxy.call(\n                abi.encodeWithSignature(\n                    \"approve(address,uint256)\",\n                    SmartRouter,\n                    type"
+ ]
+}

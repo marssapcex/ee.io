@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-09-26_FireBirdPair_Reentrancy",
+ "source_file": "2023/2023-09-26_FireBirdPair_Reentrancy.md",
+ "title": "FireBird Finance — AMM Reentrancy Analysis",
+ "date": "2023-09-26",
+ "protocol": "FireBird Finance",
+ "chain": "Polygon",
+ "loss_raw": "~8536 MATIC",
+ "loss_usd": null,
+ "root_cause": "Reentrancy vulnerability in FireBird AMM Pair contract during swap",
+ "attack_tx": "0x96d80c609f7a39b4...",
+ "vulnerable_contract": "0x5e9cd0861f927ade...",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: reentrancy possible via swap callback\nfunction swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external {\n    if (data.length > 0) IFireBirdCallee(to).fireBirdCall(msg.sender, amount0Out, amount1Out, data);\n    uint256 balance0 = IERC20(token0).balanceOf(address(this));\n    uint256 balance1 = IERC20(token1).balanceOf(address(this));\n    _update(balance0, balance1); //",
+  "❌ Update after callback → reentrancy vulnerability\n}\n//",
+  "// File: FireBirdPair.sol\ninterface IFireBirdFactory {  // ❌\n    event PairCreated(address indexed token0, address indexed token1, address pair, uint32 tokenWeight0, uint32 swapFee, uint);\n    function feeTo() external view returns (address);\n    function formula() external view returns (address);\n    function protocolFee() external view returns (uint);\n    function feeToSetter() external view returns (address);\n\n    function getPair(address tokenA, address tokenB, uint32 tokenWeightA, uint32 swapFee) external view returns (address pair);\n    function allPairs(uint) external view returns (address pair);\n    function isPair(address) external view returns (bool);\n    function allPairsLength() external view returns (uint);\n\n    function createPair(address tokenA, address tokenB, uint32 tokenWeightA, uint32 swapFee) external returns (address pair);\n    function getWeightsAndSwapFee(address pair) external view returns (uint32 tokenWeight0, uint32 tokenWeight1, uint32 swapFee);\n\n    function setFeeTo(address) external;\n    function setFeeToSetter(address) external;\n    function setProtocolFee(uint) external;\n}\n\n// ...\n\n    function initialize(address _token0, address _token1, uint32 _tokenWeight0, uint32 _swapFee) external {\n        require(msg.sender == factory, 'FLP: FORBIDDEN');\n        // sufficient check\n        token0 = _token0;\n        token1 = _token1;\n        tokenWeight0 = _tokenWeight0;\n        swapFee = _swapFee;\n        formula = IFireBirdFactory(factory).formula();  // ❌\n    }\n\n// ...\n\n    function _mintFee(uint112 _reserve0, uint112 _reserve1) private returns (bool feeOn) {\n        address feeTo = IFireBirdFactory(factory).feeTo();  // ❌\n        uint112 protocolFee = uint112(IFireBirdFactory(factory).protocolFee());  // ❌\n        feeOn = feeTo != address(0);\n        (uint112 _collectedFee0, uint112 _collectedFee1) = getCollectedFees();\n        if (protocolFee > 0 && feeOn && (_collectedFee0 > 0 || _collectedFee1 > 0)) {\n            uint32 _tokenWeight0 = tokenWeight0;\n            uint liquidity = IFireBirdFormula(formula).mintLiquidityFee(  // ❌\n                totalSupply, _reserve0, _reserve1,\n                _tokenWeight0, 100 - _tokenWeight0,\n                _collectedFee0 / protocolFee, _collectedFee1 / protocolFee\n            );\n            if (liquidity > 0) _mint(feeTo, liquidity);\n        }\n        if (_collectedFee0 > 0) collectedFee0 = 0;\n        if (_collectedFee1 > 0) collectedFee1 = 0;\n    }\n\n// ...\n\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external lock {\n        require(amount0Out > 0 || amount1Out > 0, 'FLP: INSUFFICIENT_OUTPUT_AMOUNT');\n        uint112 _reserve0 = reserve0; // gas savings\n        uint112 _reserve1 = reserve1; // gas savings\n        require(amount0Out < _reserve0 && amount1Out < _reserve1, 'FLP: INSUFFICIENT_LIQUIDITY');\n\n        uint balance0;\n        uint balance1;\n        { // scope for _token{0,1}, avoids stack too deep errors\n        address _token0 = toke"
+ ],
+ "code_after": [
+  "✅ Fix: add lock modifier"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  ├─① Call swap() (with callback data)\n  ├─② Reenter via fireBirdCall() callback\n  │       └─ Exploit stale (not-yet-updated) reserve state\n  └─③ Double withdrawal + ~8536 MATIC",
+  "function fireBirdCall(address sender, uint amount0, uint amount1, bytes calldata data) external {\n    // Reenter while reserves have not yet been updated\n    IFireBirdPair(pair).swap(amount0, 0, address(this), \"\");\n}"
+ ]
+}

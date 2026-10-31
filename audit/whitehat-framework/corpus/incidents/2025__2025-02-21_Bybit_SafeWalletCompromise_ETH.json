@@ -1,0 +1,32 @@
+{
+ "id": "2025__2025-02-21_Bybit_SafeWalletCompromise_ETH",
+ "source_file": "2025/2025-02-21_Bybit_SafeWalletCompromise_ETH.md",
+ "title": "Bybit — Safe{Wallet} Frontend Compromise & $1.5B ETH Theft Analysis",
+ "date": "2025-02-21",
+ "protocol": "Bybit Exchange",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$1,500,000,000 (~401,346 ETH)",
+ "loss_usd": 1500000000.0,
+ "root_cause": "Lazarus Group compromised Safe{Wallet} signing infrastructure — malicious JavaScript injected into the signing interface swapped the Safe's implementation contract address during transaction signing, giving attackers full control of the multisig",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "pragma solidity ^0.5.3;\n\n/// @title Proxy - Generic proxy contract allows to execute all transactions\n///        applying the code of a master contract.\ncontract Proxy {\n\n    // masterCopy always needs to be first declared variable, to ensure that\n    // it is at the same location in the contracts to which calls are delegated.\n    address internal masterCopy; // ❌ slot 0 — whoever writes this controls the proxy\n\n    constructor(address _masterCopy) public {\n        require(_masterCopy != address(0), \"Invalid master copy address provided\");\n        masterCopy = _masterCopy;\n    }\n\n    function () external payable {\n        assembly {\n            let masterCopy := and(sload(0), 0xffffffffffffffffffffffffffffffffffffffff)\n            // ❌ If sload(0) is overwritten (via execTransaction → delegatecall), this\n            //    address changes to whatever the attacker's contract wrote there.\n            if eq(calldataload(0), 0xa619486e00000000000000000000000000000000000000000000000000000000) {\n                mstore(0, masterCopy)\n                return(0, 0x20)\n            }\n            calldatacopy(0, 0, calldatasize())\n            let success := delegatecall(gas, masterCopy, 0, calldatasize(), 0, 0) // ❌ unconditional delegatecall\n            returndatacopy(0, 0, returndatasize())\n            if eq(success, 0) { revert(0, returndatasize()) }\n            return(0, returndatasize())\n        }\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Mitigation — not a code change but a process change:\n// Hardware signers must independently decode and display raw calldata.\n// Any transaction that touches `masterCopy` (slot 0) should trigger\n// mandatory review against a known-good implementation address.\n//\n// On-chain monitoring: alert if execTransaction calldata contains\n// the upgradeTo(address) selector (0x3659cfe6) on the Safe singleton."
+ ],
+ "steps": [
+  "[4] 3-of-N signers approve → transaction submitted on-chain",
+  "Safe implementation → replaced with attacker contract",
+  "→ 401,346 ETH swept to attacker address",
+  "→ Tornado Cash, cross-chain bridges"
+ ],
+ "other_code": [
+  "[1] Attacker compromises Safe{Wallet} developer machine\n        ↓ Injects malicious JS into app.safe.global signing flow\n\n[2] Bybit signers review \"normal ETH transfer\" in UI\n        ↓ Actual calldata = delegatecall to change implementation address\n        \n[3] All 3 required signers approve the transaction\n        (UI shows: ETH transfer to known address)\n        (On-chain: upgradeTo(maliciousImplementation))\n\n[4] Safe proxy now delegates to attacker-controlled contract\n        ↓ Attacker calls sweepFunds()\n        \n[5] 401,346 ETH drained in a single transaction",
+  "Lazarus Group\n  │\n  ├─[1] Compromise Safe{Wallet} developer via spear-phishing\n  │       Inject malicious JS into app.safe.global\n  │\n  ├─[2] Wait for Bybit routine transaction\n  │       Intercept signing session\n  │\n  ├─[3] Present falsified UI to Bybit signers\n  │       UI shows: \"Transfer 10 ETH to address X\"\n  │       Actual calldata: upgradeTo(0x96221423...) [malicious contract]\n  │\n  ├─[4] 3-of-N signers approve → transaction submitted on-chain\n  │       Safe implementation → replaced with attacker contract\n  │\n  ├─[5] Attacker calls drain function via new implementation\n  │       → 401,346 ETH swept to attacker address\n  │\n  └─[6] ETH laundered through multiple hops\n          → Tornado Cash, cross-chain bridges\n          Net theft: ~$1,500,000,000"
+ ]
+}

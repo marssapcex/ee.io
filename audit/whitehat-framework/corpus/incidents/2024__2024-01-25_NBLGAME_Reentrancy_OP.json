@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-01-25_NBLGAME_Reentrancy_OP",
+ "source_file": "2024/2024-01-25_NBLGAME_Reentrancy_OP.md",
+ "title": "NBLGAME — NFT Staking Reentrancy Attack Analysis",
+ "date": "2024-01-25",
+ "protocol": "NBLGAME",
+ "chain": "Optimism",
+ "loss_raw": "~$180,435 (USDT $164,967 + WETH $15,467)",
+ "loss_usd": 180435.0,
+ "root_cause": "Missing `nonReentrant` on `withdrawNft()` — reentrancy via ERC721 callback",
+ "attack_tx": "0xf4fc...2328",
+ "vulnerable_contract": "0x5499...4D91",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ No nonReentrant modifier — reentrancy possible via ERC721 callback\nfunction withdrawNft(uint256 _index) external {\n    StakeInfo storage info = stakeInfos[msg.sender][_index];\n    require(info.nftTokenId != 0, \"Slot is empty\");\n\n    uint256 tokenId = info.nftTokenId;\n\n    // ❌ External call before state reset (CEI pattern violation)\n    // NBL token reward or deposit refund\n    uint256 nblAmount = info.nblAmount;\n    NBL.transfer(msg.sender, nblAmount);   // ❌ External call 1 before state change\n\n    // ❌ safeTransferFrom triggers onERC721Received() callback\n    // At this point stakeInfos has not yet been cleared\n    NBF.safeTransferFrom(address(this), msg.sender, tokenId); // ❌ Callback reentrancy point\n\n    // Even though NBL was already sent above during reentrancy, this code has not yet executed\n    info.nftTokenId = 0;   // Too late — only runs after reentrancy\n    info.nblAmount = 0;    // Too late\n}"
+ ],
+ "code_after": [
+  "// ✅ nonReentrant modifier applied\n// ✅ CEI (Checks-Effects-Interactions) pattern followed\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\nfunction withdrawNft(uint256 _index) external nonReentrant {\n    StakeInfo storage info = stakeInfos[msg.sender][_index];\n    require(info.nftTokenId != 0, \"Slot is empty\");\n\n    uint256 tokenId = info.nftTokenId;\n    uint256 nblAmount = info.nblAmount;\n\n    // ✅ Effects first: reset state before external calls\n    info.nftTokenId = 0;\n    info.nblAmount = 0;\n\n    // ✅ Interactions last: external calls after state changes are complete\n    NBL.transfer(msg.sender, nblAmount);\n    NBF.safeTransferFrom(address(this), msg.sender, tokenId);\n}",
+  "// ✅ Fix 1: Add nonReentrant (inherit OpenZeppelin ReentrancyGuard)\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\ncontract NblNftStake is ReentrancyGuard {\n\n    // ✅ Add nonReentrant to withdrawNft\n    function withdrawNft(uint256 _index) external nonReentrant {\n        StakeInfo storage info = stakeInfos[msg.sender][_index];\n        require(info.nftTokenId != 0, \"Empty slot\");\n\n        uint256 tokenId = info.nftTokenId;\n        uint256 nblAmount = info.nblAmount;\n\n        // ✅ Fix 2: CEI pattern — Effects first\n        info.nftTokenId = 0;\n        info.nblAmount = 0;\n\n        // ✅ Interactions last\n        if (nblAmount > 0) {\n            NBL.transfer(msg.sender, nblAmount);\n        }\n        // ✅ Consider using transferFrom instead of safeTransferFrom\n        // (transferFrom has no callback, eliminating the reentrancy vector)\n        NBF.transferFrom(address(this), msg.sender, tokenId);\n    }\n}"
+ ],
+ "steps": [
+  "① Transfer NFT #737 (mainContract → helperContract)",
+  "[reenter = true → first reentry]",
+  "NBF.transferFrom(self → NblNftStake, NFT #737)",
+  "⑨ Reentry: stakeInfo still valid → withdraw NBL again",
+  "Repay flash loan (returnAmount + fee0 → NBL_USDT Pool)",
+  "Swap NBL → USDT (90% of balance, Uniswap V3)",
+  "Swap NBL → WETH (remainder, Uniswap V3)"
+ ],
+ "other_code": [
+  "// Attacker deposits NBL borrowed via flash loan into slot 0\n// When withdrawNft() is called afterward, nblAmount is sufficiently funded\nfunction depositNbl(uint256 _index, uint256 _amount) external {\n    StakeInfo storage info = stakeInfos[msg.sender][_index];\n    require(info.nftTokenId != 0, \"NFT must be deposited first\");\n    NBL.transferFrom(msg.sender, address(this), _amount);\n    info.nblAmount += _amount;  // This value remains intact during reentrancy\n}",
+  "┌─────────────────────────────────────────────────────────────┐\n│  Attacker EOA: 0x1FD0...ef12                                 │\n│  Helper Attack Contract: 0xfc3b...ba4c                       │\n└──────────────────────┬──────────────────────────────────────┘\n                       │ ① Transfer NFT #737 (mainContract → helperContract)\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│  NBL_USDT Uniswap V3 Pool: 0xfAF0...3613                    │\n│  flash(helperContract, NBL.balanceOf(NblNftStake), 0, \"\")   │\n└──────────────────────┬──────────────────────────────────────┘\n                       │ ② Flash loan: borrow entire NBL balance of NblNftStake\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│  uniswapV3Fla"
+ ]
+}

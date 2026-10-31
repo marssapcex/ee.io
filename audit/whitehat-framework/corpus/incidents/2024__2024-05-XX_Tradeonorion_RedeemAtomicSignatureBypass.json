@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-05-XX_Tradeonorion_RedeemAtomicSignatureBypass",
+ "source_file": "2024/2024-05-XX_Tradeonorion_RedeemAtomicSignatureBypass.md",
+ "title": "Tradeonorion — redeemAtomic Signature Verification Bypass Analysis",
+ "date": "2024-05-01",
+ "protocol": "Tradeonorion",
+ "chain": "BSC",
+ "loss_raw": "~$645,000",
+ "loss_usd": 645000.0,
+ "root_cause": "A flaw in the signature verification logic of `redeemAtomic()` allowed attacker-controlled signatures to be accepted as valid, enabling the combined use of `depositAssetTo()` + `redeemAtomic()` to drain BUSDT, ORN, XRP, and BNB",
+ "attack_tx": null,
+ "vulnerable_contract": "0xe9d1D2a2",
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: redeemAtomic signature verification flaw\ncontract OrionExchange {\n    function redeemAtomic(\n        LibAtomic.AtomicSwap memory swap,\n        bytes memory secretHash,\n        bytes memory signature\n    ) external {\n        // Signer verification — flawed\n        // Manipulated data signed with the attacker's own key can be accepted as valid\n        address signer = recoverSigner(swap, signature);\n        // Insufficient signer validation allows processing with an attacker-controlled address\n        require(isRegistered(signer), \"not registered\");\n\n        // Transfer victim's assets\n        _transfer(swap.sender, swap.receiver, swap.asset, swap.amount);\n    }\n}\n\n//",
+  "// File: Tradeonorion_decompiled.sol\ncontract Tradeonorion {\ncontract Tradeonorion {\n    address public owner;\n\n\n    // Selector: 0x3659cfe6\n    // Alternative: upgradeTo_790AA3D()\n    function upgradeTo(address p0) external {}  // ❌ Vulnerability\n\n    // Selector: 0x4f1ef286\n    // Alternative: upgradeToAndCall_23573451()\n    function upgradeToAndCall(address p0, bytes memory p1) external {}\n\n    // Selector: 0x5c60da1b\n    function implementation() external {}\n\n    // Selector: 0x8f283970\n    // Alternative: changeAdmin_277BB5030()\n    function changeAdmin(address p0) external {}\n\n    // Selector: 0xf851a440\n    function admin() external {}\n\n    // Selector: 0x68616e67\n    function unknown_68616e67() external {}\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: strict signature verification\nfunction redeemAtomic(LibAtomic.AtomicSwap memory swap, bytes memory secretHash, bytes memory sig) external {\n    bytes32 swapHash = hashSwap(swap);\n    address signer = ECDSA.recover(swapHash, sig);\n    require(signer == swap.sender, \"signer mismatch\");\n    require(block.timestamp <= swap.expiry, \"swap expired\");\n    require(!usedHashes[swapHash], \"already redeemed\");\n    usedHashes[swapHash] = true;\n    _transfer(swap.sender, swap.receiver, swap.asset, swap.amount);\n}"
+ ],
+ "steps": [
+  "→ [1] Alice: depositAssetTo(BUSDT) + depositAssetTo(ORN)",
+  "→ [2] Alice: lockStake()",
+  "→ [3] V3 Flash Loan: borrow additional BUSDT",
+  "→ [4] redeemAtomic(manipulated order, attacker signature) — repeated",
+  "Signature verification flaw → attacker signature passes",
+  "Victim assets → transferred to attacker",
+  "→ [5] requestReleaseStake() → reclaim stake",
+  "→ [6] withdrawTo(BUSDT/ORN/BNB/XRP)",
+  "→ [7] Repay V3 flash loan",
+  "→ [8] ~$645K drained"
+ ],
+ "other_code": [
+  "Attacker (acting as both Alice and Attacker)\n  │\n  ├─→ [1] Alice: depositAssetTo(BUSDT) + depositAssetTo(ORN)\n  │         └─ Victim assets deposited into the contract\n  │\n  ├─→ [2] Alice: lockStake()\n  │\n  ├─→ [3] V3 Flash Loan: borrow additional BUSDT\n  │\n  ├─→ [4] redeemAtomic(manipulated order, attacker signature) — repeated\n  │         └─ Signature verification flaw → attacker signature passes\n  │         └─ Victim assets → transferred to attacker\n  │\n  ├─→ [5] requestReleaseStake() → reclaim stake\n  │\n  ├─→ [6] withdrawTo(BUSDT/ORN/BNB/XRP)\n  │\n  ├─→ [7] Repay V3 flash loan\n  │\n  └─→ [8] ~$645K drained",
+  "interface IOrionExchange {\n    struct AtomicSwap {\n        address sender;\n        address receiver;\n        address asset;\n        uint256 amount;\n        uint256 expiry;\n        bytes32 secretHash;\n    }\n\n    function depositAssetTo(address asset, uint256 amount, address to) external;\n    function redeemAtomic(AtomicSwap memory swap, bytes memory secretHash, bytes memory sig) external;\n    function lockStake() external;\n    function requestReleaseStake() external;\n    function withdrawTo(address asset, uint256 amount, address to) external;\n    function getLiabilities(address user) external view returns (uint256);\n    function getBalances(address user) external view returns (uint256);\n}\n\ncontract AttackContract {\n    IOrionExchange constant orion = IOrionExchange(0xe9d1D2a27458378Dd6C6F0b"
+ ]
+}

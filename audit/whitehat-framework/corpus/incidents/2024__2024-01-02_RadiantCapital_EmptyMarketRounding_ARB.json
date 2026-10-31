@@ -1,0 +1,51 @@
+{
+ "id": "2024__2024-01-02_RadiantCapital_EmptyMarketRounding_ARB",
+ "source_file": "2024/2024-01-02_RadiantCapital_EmptyMarketRounding_ARB.md",
+ "title": "Radiant Capital — Empty USDC Market Rounding Error Attack Analysis",
+ "date": "2024-01-02",
+ "protocol": "Radiant Capital",
+ "chain": "Arbitrum",
+ "loss_raw": "~$4,500,000",
+ "loss_usd": 4500000.0,
+ "root_cause": "Manipulation of `liquidityIndex` to an extreme value by exploiting `rayDiv` rounding errors in the newly deployed, empty USDC market",
+ "attack_tx": "0x1ce7...c7b",
+ "vulnerable_contract": "0xF4B1...59E1 (Radiant LendingPool)",
+ "classes": [
+  "donation-inflation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — rounding error amplified in empty market\nuint256 internal constant RAY = 1e27;\nuint256 internal constant HALF_RAY = 0.5e27;\n\nfunction rayDiv(uint256 a, uint256 b) internal pure returns (uint256) {\n    // When b is very small (newly empty market), the +HALF_RAY rounding\n    // bumps the result up by 1 RAY per call.\n    // Errors accumulate with repeated flash loans.\n    return (a * RAY + HALF_RAY) / b;\n    // ❌ When b is small, the index increases by +1 RAY per call\n}",
+  "// ❌ Vulnerable liquidityIndex update (estimated ReserveLogic.sol)\nfunction updateState(DataTypes.ReserveData storage reserve, ...) internal {\n    uint256 previousLiquidityIndex = reserve.liquidityIndex;\n    uint256 currentLiquidityRate = reserve.currentLiquidityRate;\n    \n    // rayDiv is called when reflecting flash loan fees\n    // In an empty market, rounding errors accumulate and cause the index to explode\n    uint256 cumulatedLiquidityInterest = MathUtils.calculateLinearInterest(\n        currentLiquidityRate, \n        reserve.lastUpdateTimestamp\n    );\n    \n    // ❌ Rounding error occurs in this multiply + divide operation\n    reserve.liquidityIndex = cumulatedLiquidityInterest.rayMul(previousLiquidityIndex);\n    // After 151 iterations in an empty market, liquidityIndex → extremely large value\n}",
+  "// ❌ Vulnerable flash loan state update\nfunction flashLoan(\n    address receiverAddress,\n    address[] calldata assets,\n    uint256[] calldata amounts,\n    ...\n) external {\n    // ❌ liquidityIndex updated after flash loan completes\n    // rayDiv rounding errors accumulate in empty market where totalLiquidity ≈ 0\n    _reserves[asset].updateState(reserveCache);\n    // After 151 iterations, liquidityIndex exceeds normal bounds\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix 1: Enforce minimum deposit for new markets\nfunction initReserve(address asset, ...) external {\n    // Require minimum deposit (same principle as first depositor attack prevention)\n    require(MINIMUM_INITIAL_LIQUIDITY > 0, \"Empty market not allowed\");\n    // Protocol deposits the minimum amount itself before activating the market\n    _deposit(asset, MINIMUM_INITIAL_LIQUIDITY, address(this), 0);\n}\n\n// ✅ Fix 2: Limit index updates during flash loans\nfunction flashLoan(...) external {\n    uint256 indexBefore = reserve.liquidityIndex;\n    // ... flash loan execution ...\n    // ✅ Cap the index change within a single transaction\n    require(\n        reserve.liquidityIndex <= indexBefore * MAX_INDEX_MULTIPLIER,\n        \"Index manipulation detected\"\n    );\n}",
+  "// ✅ Protocol deposits minimum amount directly when activating a market\nuint256 constant MINIMUM_INITIAL_SUPPLY = 1000; // e.g. 0.001 USDC (dust amount)\n\nfunction initReserveWithMinLiquidity(\n    address asset,\n    address aTokenAddress,\n    ...\n) external onlyPoolConfigurator {\n    // Existing initialization logic\n    _initReserve(asset, aTokenAddress, ...);\n    \n    // ✅ Deposit minimum liquidity (prevents First Depositor attack)\n    IERC20(asset).safeTransferFrom(\n        msg.sender, \n        address(this), \n        MINIMUM_INITIAL_SUPPLY\n    );\n    _deposit(asset, MINIMUM_INITIAL_SUPPLY, address(this), 0);\n}"
+ ],
+ "steps": [
+  "1. Request **3,000,000 USDC** flash loan from Aave V3 Pool",
+  "2. Enter `executeOperation` callback",
+  "3. Deposit **2,000,000 USDC** into Radiant USDC market → receive rUSDCn",
+  "4. Repeatedly borrow/repay **2,000,000 USDC** via Radiant's internal flash loan (151 times)",
+  "5. Recalculate collateral value based on manipulated `liquidityIndex`",
+  "6. Borrow **~90.69 WETH** from Radiant (exceeding actual collateral value)",
+  "7. Transfer rUSDCn balance to `HelperExploit` contract",
+  "8. Repeatedly call `HelperExploit.siphonFundsFromPool()`:",
+  "- Deposit USDC → rUSDCn balance exceeds actual value due to rounding errors",
+  "- Immediately withdraw → repeat to extract remaining USDC from pool",
+  "9. HelperExploit returns **~2,815,400 USDC** to attack contract",
+  "10. Swap 2 WETH via Uniswap V3 WETH/USDC pool (sell USDC)",
+  "11. Reverse-swap 3,232.56 USDC",
+  "12. Repay Aave flash loan: **3,001,500 USDC** (principal 3M + fee 1,500)",
+  "13. Net profit: **~$4,500,000 (USDC + WETH equivalent)**",
+  "2,000,000 USDC → rUSDCn",
+  "flashLoan(2M USDC) → executeOperation callback",
+  "Transfer rUSDCn balance → withdraw(rUSDCn-1)",
+  "Result: liquidityIndex → extreme value",
+  "deposit(2×amount) → receive rUSDCn"
+ ],
+ "other_code": [
+  "Attacker EOA (0x826d...dE6D)\n        │\n        ▼\n┌───────────────────────────────┐\n│  [1] Aave V3 Flash Loan       │\n│      3,000,000 USDC           │\n└───────────────┬───────────────┘\n                │ executeOperation callback\n                ▼\n┌───────────────────────────────┐\n│  [2] Deposit to Radiant USDC  │\n│      2,000,000 USDC → rUSDCn  │\n└───────────────┬───────────────┘\n                │\n                ▼\n┌───────────────────────────────────────────────────────┐\n│  [3] Radiant Internal Flash Loan Loop (×151)           │\n│                                                        │\n│  ┌─────────────────────────────────────────────────┐  │\n│  │  flashLoan(2M USDC) → executeOperation callback │  │\n│  │  └─ Transfer rUSDCn balance → withdraw(rUSDCn-1)│  │\n│  │     ↑ rayDiv rounding erro",
+  "[Log 0-1]   Aave V3 Pool → Attack contract: 3,000,000 USDC transferred (flash loan)\n[Log 2-3]   Attack contract → rUSDCn: 2,000,000 USDC deposited (Radiant deposit)\n[Log 4-397] Radiant flash loan 151 iterations:\n               - USDC: rUSDCn ↔ Attack contract (2,000,000 USDC round-trip)\n               - Each cycle: deposit 2,000,000 → withdraw 1,999,999 or 2,001,800 (rounding error visible)\n[Log 398]   rWETH → Attack contract: 90.69 WETH (Radiant borrow)\n[Log 399-820] HelperExploit repeated deposit/withdraw:\n               - 271,800 → 407,700 USDC alternating (index-distorted drain)\n[Log 821]   HelperExploit → Attack contract: 2,815,400 USDC returned\n[Log 822]   Attack contract → Uniswap V3: 2 WETH (swap)\n[Log 825]   Uniswap V3 → Attack contract: 1.3647 WETH returned\n[Log 826]   Attack con"
+ ]
+}

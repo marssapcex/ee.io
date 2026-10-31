@@ -1,0 +1,38 @@
+{
+ "id": "2022__2022-05-08_FortressLoans_OraclePriceGovernanceAttack",
+ "source_file": "2022/2022-05-08_FortressLoans_OraclePriceGovernanceAttack.md",
+ "title": "Fortress Loans — Governance + Oracle Manipulation Compound Attack Analysis",
+ "date": "2022-05-08",
+ "protocol": "Fortress Loans",
+ "chain": "BSC",
+ "loss_raw": "~$3,000,000 (1,048 ETH + 400,000 DAI)",
+ "loss_usd": 3000000.0,
+ "root_cause": "A governance proposal replaced the Chain oracle's price submitter with the attacker's contract, then drained all 13 lending markets using a manipulated fFTS collateral price",
+ "attack_tx": null,
+ "vulnerable_contract": "GovernorAlpha 0xE79ecdB7fEDD413E697F083982BAC29e93d86b2E",
+ "classes": [
+  "governance"
+ ],
+ "code_before": [
+  "❌ Vulnerable governance + oracle combination (pseudocode)\n\n// Chain oracle: price submitter can be changed via governance\ncontract Chain {\n    address public submitter;  //",
+  "❌ Can be changed via governance proposal\n\n    function setSubmitter(address _submitter) external onlyGovernance {\n        submitter = _submitter;\n    }\n\n    function submit(uint256 price) external {\n        require(msg.sender == submitter, \"not submitter\");\n        //",
+  "❌ No validity check on submitted price\n        latestPrice = price;\n    }\n}\n\n// GovernorAlpha: low-quorum governance similar to Beanstalk\ncontract GovernorAlpha {\n    uint256 public proposalThreshold = 100_000 * 1e18; // 100,000 FTS\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract ChainFixed {\n    //",
+  "✅ Price deviation limit enforced\n    function submit(uint256 price) external {\n        require(msg.sender == submitter, \"not submitter\");\n        uint256 lastPrice = latestPrice;\n        //"
+ ],
+ "steps": [
+  "→ Chain.submitter = attacker_contract",
+  "FortressPriceOracle.getUnderlyingPrice(fFTS) → manipulated price",
+  "fFTS.mint(100 FTS) → inflated collateral value",
+  "→ Full liquidity drained",
+  "BorrowerOperations.openTrove() → Mint ARTHUSD",
+  "IVyper.exchange_underlying() → Stablecoin swap",
+  "All assets → swapped to USDT"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[Preparation]\n    │   Acquire 100 ether FTS tokens + 3.02M MAHA\n    │\n    ├─[Phase 1: Governance Manipulation]\n    │   GovernorAlpha.propose(11):\n    │       Content: Chain.setSubmitter(attacker_contract)\n    │   GovernorAlpha.castVote(11, true)\n    │   GovernorAlpha.queue(11)\n    │   GovernorAlpha.execute(11)\n    │       → Chain.submitter = attacker_contract\n    │\n    ├─[Phase 2: Oracle Manipulation]\n    │   Chain.submit(1,000,000x price)\n    │       FortressPriceOracle.getUnderlyingPrice(fFTS) → manipulated price\n    │\n    ├─[Phase 3: Collateral + Borrowing]\n    │   Cointroller.enterMarkets([fFTS])\n    │   fFTS.mint(100 FTS) → inflated collateral value\n    │   borrow() from each of 13 fToken markets:\n    │       fBNB, fETH, fBTC, fUSDT, fUSDC, fDAI ...\n    │       → ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IGovernorAlpha {\n    function propose(\n        address[] memory targets, uint256[] memory values,\n        string[] memory signatures, bytes[] memory calldatas,\n        string memory description\n    ) external returns (uint256);\n    function castVote(uint256 proposalId, bool support) external;\n    function queue(uint256 proposalId) external;\n    function execute(uint256 proposalId) external payable;\n}\n\ninterface IChain {\n    function submit(uint256 price) external;\n}\n\ninterface IFBep20Delegator {\n    function mint(uint256 mintAmount) external returns (uint256);\n    function borrow(uint256 borrowAmount) external returns (uint256);\n    function getCash() external view returns (uint256);\n}\n\n"
+ ]
+}

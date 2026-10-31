@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-09-06_NXUSD_FlashLoanOracleManipulation",
+ "source_file": "2022/2022-09-06_NXUSD_FlashLoanOracleManipulation.md",
+ "title": "NXUSD (Nereus Finance) — Flash Loan Oracle Manipulation Attack Analysis",
+ "date": "2022-09-06",
+ "protocol": "Nereus Finance",
+ "chain": "Avalanche",
+ "loss_raw": "~$371,406 USDC extracted (attacker profit); ~998,000 NXUSD minted as bad debt against $508K collateral; net bad debt to protocol: ~$500K NXUSD",
+ "loss_usd": 371406.0,
+ "root_cause": "`updateExchangeRate()` + `cook()` use a manipulable AMM spot price as the oracle",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable updateExchangeRate() - uses AMM spot price\ncontract CauldronV2 {\n    function updateExchangeRate() public returns (bool updated, uint256 rate) {\n        //",
+  "❌ Calculates spot price using getReserves() from the Uniswap V2 pair\n        // During a large flash loan purchase, reserves are temporarily distorted\n        (uint112 reserve0, uint112 reserve1, ) = wavaxUsdcPair.getReserves();\n        rate = uint256(reserve1) * 1e18 / uint256(reserve0); // USDC per WAVAX\n        exchangeRate = rate;\n        updated = true;\n    }\n\n    //",
+  "❌ cook() immediately uses updateExchangeRate() result for collateral valuation\n    function cook(\n        uint8[] calldata actions,\n        uint256[] calldata values,\n        bytes[] calldata datas\n    ) external payable {\n        for (uint i = 0; i < actions.length; i++) {\n            if (actions[i] == ACTION_UPDATE_EXCHANGE_RATE) {\n                updateExchangeRate(); //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - use TWAP oracle\nfunction updateExchangeRate() public returns (bool updated, uint256 rate) {\n    //",
+  "✅ Use Time-Weighted Average Price (TWAP) to prevent short-term manipulation\n    rate = IChainlinkAggregator(chainlinkFeed).latestAnswer();\n    // Or Uniswap V3 TWAP\n    rate = IUniswapV3Pool(wavaxUsdcPool).observe(secondsAgo);\n}"
+ ],
+ "steps": [
+  "[2] Swap large amount of USDC → WAVAX (Uniswap V2)",
+  "[5] Convert 998,000 NXUSD → Curve → USDC",
+  "[6] Reverse swap USDC → WAVAX (price normalization)"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ILendingPool {\n    function flashLoan(\n        address receiver,\n        address[] calldata assets,\n        uint256[] calldata amounts,\n        uint256[] calldata modes,\n        address onBehalfOf,\n        bytes calldata params,\n        uint16 referralCode\n    ) external;\n}\n\ninterface ICauldronV2 {\n    function updateExchangeRate() external returns (bool, uint256);\n    function cook(\n        uint8[] calldata actions,\n        uint256[] calldata values,\n        bytes[] calldata datas\n    ) external payable returns (uint256, uint256);\n}\n\ninterface IDegenBox {\n    function deposit(address token, address from, address to, uint256 amount, uint256 share)\n        external returns (uint256, uint"
+ ]
+}

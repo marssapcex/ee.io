@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-12-10_Lodestar_GLP_PriceManipulation",
+ "source_file": "2022/2022-12-10_Lodestar_GLP_PriceManipulation.md",
+ "title": "Lodestar Finance — GLP donate() Price Manipulation Attack Analysis",
+ "date": "2022-12-10",
+ "protocol": "Lodestar Finance",
+ "chain": "Arbitrum",
+ "loss_raw": "~$6,500,000 (attacker net profit; platform total loss ~$6.9M per CertiK, QuillAudits, EigenPhi)",
+ "loss_usd": 6500000.0,
+ "root_cause": "Donating sGLP directly into the plvGLP vault via the GLP `donate()` function inflates the plvGLP price, enabling an attacker to borrow all assets from Lodestar using the manipulated collateral",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable plvGLP Vault — price manipulation possible via donate()\ncontract PlvGLPVault {\n    IERC20 public sGLP;\n    uint256 public totalAssets; // sGLP balance\n\n    //",
+  "❌ Anyone can donate sGLP directly into the vault\n    // → totalAssets increases → plvGLP price rises\n    function donate(uint256 amount) external {\n        sGLP.transferFrom(msg.sender, address(this), amount);\n        totalAssets += amount;  //",
+  "❌ price can be manipulated externally\n    }\n\n    // plvGLP price = totalAssets / totalSupply\n    function pricePerShare() external view returns (uint256) {\n        return totalAssets * 1e18 / totalSupply();\n    }\n}\n\n// Lodestar lplvGLP — collateral valuation based on plvGLP price\ncontract LplvGLP {\n    IPlvGLPVault public plvGLPVault;\n\n    function getUnderlyingPrice() external view returns (uint256) {\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern — disable donate() or defend against price manipulation\ncontract SafePlvGLPVault {\n    //",
+  "✅ Remove donate() or restrict to onlyOwner\n    function donate(uint256 amount) external onlyOwner {\n        // Only protocol operators can donate\n        sGLP.transferFrom(msg.sender, address(this), amount);\n        totalAssets += amount;\n    }\n\n    //"
+ ],
+ "steps": [
+  "→ totalAssets spikes → plvGLP price skyrockets",
+  "Uniswap V2 → V3 → Radiant → Aave"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IGlpDepositor {\n    function donate(uint256 amount) external;\n}\n\ninterface IGMXReward {\n    function mintAndStakeGlp(\n        address token, uint256 amount, uint256 minUsdg, uint256 minGlp\n    ) external returns (uint256);\n}\n\ninterface ICErc20 {\n    function mint(uint256 mintAmount) external returns (uint256);\n    function borrow(uint256 borrowAmount) external returns (uint256);\n    function redeem(uint256 redeemTokens) external returns (uint256);\n    function balanceOf(address) external view returns (uint256);\n}\n\ninterface IUnitroller {\n    function enterMarkets(address[] calldata) external returns (uint256[] memory);\n}\n\ninterface IAaveFlashloan {\n    function flashLoan(\n        addres"
+ ]
+}

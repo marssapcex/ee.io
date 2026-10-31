@@ -1,0 +1,52 @@
+{
+ "id": "2023__2023-08-18_ExactlyProtocol_PeripheralAccessControl_OP",
+ "source_file": "2023/2023-08-18_ExactlyProtocol_PeripheralAccessControl_OP.md",
+ "title": "Exactly Protocol — Peripheral Contract Access Control Vulnerability Analysis",
+ "date": "2023-08-18",
+ "protocol": "Exactly Protocol",
+ "chain": "Optimism",
+ "loss_raw": "~$7,300,000 (4,323.6 ETH; confirmed by The Block, Olympix, Neptune Mutual — no significant recovery occurred; the $12.85M early estimate was revised down to $7.3M in official post-mortem)",
+ "loss_usd": 7300000.0,
+ "root_cause": "DebtManager `leverage()` — permit signature bypass and arbitrary `_msgSender` impersonation via a fake market contract",
+ "attack_tx": "0x3d63...20e",
+ "vulnerable_contract": "0x675d...1060 (DebtManager Proxy)",
+ "classes": [
+  "access-control",
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable permit modifier (DebtManager.sol)\nmodifier permit(ERC20 token, Permit calldata p) {\n    // Problem: `token` is an arbitrary contract passed by the caller — no validation\n    // FakeMarket.permit() performs no signature check, so anyone can pass\n    IERC20PermitUpgradeable(address(token)).safePermit(\n        p.account, address(this), p.value, p.deadline, p.v, p.r, p.s\n    );\n    {\n        address sender = _msgSender;\n        // If _msgSender is empty, set it to p.account (victim address)\n        if (sender == address(0)) _msgSender = p.account; // ❌ Impersonates victim after bypassing signature\n        else assert(p.account == sender);\n    }\n    _;\n    assert(_msgSender == address(0));\n    // Check remaining allowance — already too late\n    if (token.allowance(p.account, address(this)) >\n        p.value.mulWadDown(MAX_ALLOWANCE_SURPLUS)) {\n        revert AllowanceSurplus();\n    }\n}",
+  "// ❌ Vulnerable leverage() — arbitrary market and permit allow _msgSender impersonation\nfunction leverage(\n    Market market,          // ❌ Accepts fake FakeMarket address\n    uint256 deposit,\n    uint256 ratio,\n    uint256 borrowAssets,\n    Permit calldata marketPermit  // ❌ v=0, r=0, s=0 — passes without a signature\n) external permit(market, marketPermit) msgSender {\n    // permit modifier sets _msgSender = marketPermit.account (victim)\n    // When market.deposit() is called, FakeMarket.deposit() executes\n    // Inside FakeMarket.deposit(), _msgSender is the victim, so\n    // crossDeleverage() can be executed on behalf of the victim\n    noTransferLeverage(market, deposit, ratio, borrowAssets);\n}",
+  "// ❌ FakeMarket.permit() deployed by the attacker — performs zero signature validation\nfunction permit(\n    address owner,\n    address spender,\n    uint256 value,\n    uint256 deadline,\n    uint8 v,      // ❌ Passes even if v=0\n    bytes32 r,    // ❌ Passes even if r=0\n    bytes32 s     // ❌ Passes even if s=0\n) public {\n    _useNonce(owner); // Only consumes nonce, no ecrecover signature check — ❌\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed permit modifier — only whitelisted markets allowed\nmodifier permit(ERC20 token, Permit calldata p) {\n    // ✅ Fix: Verify the market is approved by DebtManager\n    require(auditor.isMarketListed(Market(address(token))), \"invalid market\");\n    IERC20PermitUpgradeable(address(token)).safePermit(\n        p.account, address(this), p.value, p.deadline, p.v, p.r, p.s\n    );\n    {\n        address sender = _msgSender;\n        if (sender == address(0)) _msgSender = p.account;\n        else assert(p.account == sender);\n    }\n    _;\n    assert(_msgSender == address(0));\n    if (token.allowance(p.account, address(this)) >\n        p.value.mulWadDown(MAX_ALLOWANCE_SURPLUS)) {\n        revert AllowanceSurplus();\n    }\n}",
+  "// ✅ Fixed leverage() — market whitelist validation\nfunction leverage(\n    Market market,\n    uint256 deposit,\n    uint256 ratio,\n    uint256 borrowAssets,\n    Permit calldata marketPermit\n) external permit(market, marketPermit) msgSender {\n    // ✅ auditor.isMarketListed() validation performed inside permit modifier\n    noTransferLeverage(market, deposit, ratio, borrowAssets);\n}"
+ ],
+ "steps": [
+  "1. leverage(FakeMarket[i], 0, 0, 0, Permit{account: victim[i], v:0, r:0, s:0})",
+  "2. permit modifier: calls FakeMarket[i].permit(victim, ...)",
+  "3. Only consumes nonce with no signature check → passes ✓",
+  "→ _msgSender = victim[i] is set",
+  "4. market.deposit(0, sender) → calls FakeMarket[i].deposit()",
+  "5. Calculates victim[i]'s available collateral (availableCollateralAmount)",
+  "6. Supplies only FakeToken to FakeToken-USDC Uni-V3 pool",
+  "7. DebtManager.crossDeleverage(exaUSDC, FakeMarket, ...)",
+  "→ executes in victim[i]'s name because _msgSender = victim[i]",
+  "8. Withdraws victim's exaUSDC collateral",
+  "→ Balancer flash loan → Uni-V3 swap",
+  "→ Victim's USDC → replaced with FakeToken",
+  "9. Remove Uni-V3 liquidity → recover USDC",
+  "10. UNIV3NFTManager.collect() → sends recovered USDC to attacker (Owner)",
+  "11. Deposit 90% of USDC balance into exaUSDC (acquire shares)",
+  "12. Repeat 6 times:",
+  "→ Fixed-maturity loan reduces backupEarnings",
+  "→ Immediate repayment — further reduces backupEarnings",
+  "13. exaUSDC.redeem() → redeem all deposited shares",
+  "14. Sequentially for each of 8 victims:"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  │  1. leverage(FakeMarket[i], 0, 0, 0, Permit{account: victim[i], v:0, r:0, s:0})\n  ▼\nDebtManager.leverage()\n  │\n  │  2. permit modifier: calls FakeMarket[i].permit(victim, ...)\n  ▼\nFakeMarket.permit()\n  │\n  │  3. Only consumes nonce with no signature check → passes ✓\n  │     → _msgSender = victim[i] is set\n  ▼\nDebtManager internal\n  │\n  │  4. market.deposit(0, sender) → calls FakeMarket[i].deposit()\n  ▼\nFakeMarket.deposit()\n  │\n  │  5. Calculates victim[i]'s available collateral (availableCollateralAmount)\n  │\n  │  6. Supplies only FakeToken to FakeToken-USDC Uni-V3 pool\n  │     (sets price so USDC trades 1:1 with FakeToken)\n  │\n  │  7. DebtManager.crossDeleverage(exaUSDC, FakeMarket, ...)\n  │     → executes in victim[i]'s name because _msgSender = victim[i]\n  ▼\nDebtManager",
+  "Attacker\n  │\n  │  11. Deposit 90% of USDC balance into exaUSDC (acquire shares)\n  ▼\nexaUSDC.deposit()\n  │\n  │  12. Repeat 6 times:\n  │      exaUSDC.borrowAtMaturity(maturity[i], ...)\n  │      → Fixed-maturity loan reduces backupEarnings\n  │      exaUSDC.repayAtMaturity(maturity[i], ...)\n  │      → Immediate repayment — further reduces backupEarnings\n  ▼\nEffect: exaUSDC.convertToAssets() ratio decreases\n  │\n  │  13. exaUSDC.redeem() → redeem all deposited shares\n  ▼\nResult: Victim's exaUSDC collateral value falls below debt\n        (liquidatable state)"
+ ]
+}

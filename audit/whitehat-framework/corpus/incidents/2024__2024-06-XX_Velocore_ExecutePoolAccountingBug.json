@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-06-XX_Velocore_ExecutePoolAccountingBug",
+ "source_file": "2024/2024-06-XX_Velocore_ExecutePoolAccountingBug.md",
+ "title": "Velocore — velocore__execute() Repeated Call Pool Accounting Bug Analysis",
+ "date": "2024-06-01",
+ "protocol": "Velocore",
+ "chain": "Linea",
+ "loss_raw": "~$6,880,000",
+ "loss_usd": 6880000.0,
+ "root_cause": "Calling `velocore__execute()` 3 times with the same parameters causes cumulative errors in the pool's internal balance accounting, allowing withdrawal of more USDC.e than actually held",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: repeated calls to velocore__execute cause duplicate state application\ncontract ConstantProductPool {\n    uint256 internal reserve0;\n    uint256 internal reserve1;\n    uint256 internal totalVLP;\n\n    function velocore__execute(\n        address[] calldata tokens,\n        int128[] calldata amounts,\n        bytes calldata data\n    ) external returns (int128[] memory deltaAmounts) {\n        // No duplicate call prevention\n        // When amounts are identical, state changes accumulate redundantly\n        for (uint i = 0; i < tokens.length; i++) {\n            if (amounts[i] > 0) {\n                reserve0 += uint128(amounts[i]); // ← Accumulates 3x on 3 calls\n            } else {\n                reserve1 += uint128(-amounts[i]);\n            }\n        }\n        // delta calculation based on totalVLP — reflects manipulated reserves\n        deltaAmounts = calculateDelta(reserve0, reserve1, totalVLP);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code\nfunction velocore__execute(...) external nonReentrant returns (...) {\n    // Snapshot balances before and after the call\n    uint256 balanceBefore = IERC20(tokens[0]).balanceOf(address(this));\n    // State update\n    _updateReserves(tokens, amounts);\n    uint256 balanceAfter = IERC20(tokens[0]).balanceOf(address(this));\n    // Verify actual balance matches internal accounting\n    require(balanceAfter == reserve0, \"accounting mismatch\");\n}"
+ ],
+ "steps": [
+  "→ [1] Query total VLP supply",
+  "→ [2] velocore__execute(tokens, amounts, data) × 3 calls",
+  "Same parameters repeated → internal reserve accumulates 3x",
+  "→ [3] Query manipulated pool balances",
+  "→ [4] SwapFacet.execute() — 4 sequential operations:",
+  "→ [5] ~$6.88M USDC.e drained"
+ ],
+ "other_code": [
+  "// File: Decompiled_0xe2c67A9B.sol\ncontract DecompiledStub_0xe2c67A9B {\ncontract DecompiledStub_0xe2c67A9B {\n\n}",
+  "// File: Stub_0x1d0188c4.sol\ncontract Stub_0x1d0188 {\ncontract Stub_0x1d0188 {\n    // Unverified contract - source not available\n}"
+ ]
+}

@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-12-10_UnknownProtocol_AccessControl_BSC",
+ "source_file": "2024/2024-12-10_UnknownProtocol_AccessControl_BSC.md",
+ "title": "Unknown Protocol — Missing Access Control on swapTokenU Unauthorized Call Analysis",
+ "date": "2024-12-10",
+ "protocol": "Unknown",
+ "chain": "BSC",
+ "loss_raw": "$640,000 (estimated — denominated in USDT)",
+ "loss_usd": 640000.0,
+ "root_cause": "Missing access control (`onlyOwner`) on `swapTokenU()` — anyone can call it to swap protocol assets to an arbitrary address",
+ "attack_tx": "Unconfirmed (truncated hash — full tx not verified)",
+ "vulnerable_contract": "Unknown BSC Protocol (Staking/Pledge Contract)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: public visibility, no access control modifier\n// Anyone can call this to transfer contract-held tokens to an arbitrary address (_target)\nfunction swapTokenU(uint256 amount, address _target) public {\n    // Unlimited approve for internal tokens to be used by PancakeRouter\n    IERC20(_token).approve(address(_swapRouter), type(uint256).max);\n\n    // Swap path: protocol token → USDT\n    address[] memory path = new address[](2);\n    path[0] = _token;   // Protocol token (e.g., MFT)\n    path[1] = _USDT;    // BSC USDT (0x55d3...7955)\n\n    // ❌ No slippage protection (minAmountOut = 0)\n    // ❌ No _target validation — attacker address is accepted\n    _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        amount,           // Swap amount specified by attacker\n        0,                // Minimum received = 0 (unlimited slippage)\n        path,\n        _target,          // Sent directly to attacker's address\n        block.timestamp\n    );\n}",
+  "// ❌ minAmountOut = 0: unlimited slippage allowed\n_swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n    amount,\n    0,  // No minimum received — sandwich attack possible\n    path,\n    _target,\n    block.timestamp\n);",
+  "Attacker EOA (0x71de...A1D6)\n        │\n        │ [Step 1] IERC20(MFT).balanceOf(pledge) query\n        │          → amount = contract's full MFT balance\n        │\n        │ [Step 2] pledge.swapTokenU(amount, attacker)\n        │          ← No access control: callable by anyone ❌\n        ▼\n┌──────────────────────────────────────────────┐\n│   Vulnerable Contract (Pledge / Unknown)      │\n│   0x061944...952e1                           │\n│                                              │\n│   function swapTokenU(amount, _target) public │\n│   {                                          │\n│     MFT.approve(router, MAX)                 │\n│     router.swapExact...(amount, 0, path,     │\n│                         _target, ...)        │\n│   }  ← _target = attacker address ❌        │\n└──────────────────────────────────────────────┘\n        │\n        │ [Step 3] PancakeSwap Router call\n        │          MFT → USDT swap\n        │          USDT recipient: attacker address\n        ▼\n┌──────────────────────────────────────────────┐\n│   PancakeSwap V2 Router                      │\n│   0x10ED43C718714eb63d5aA57B78B54704E256024E │\n│                                              │\n│   Swap executed in MFT/USDT LP Pool          │\n│   → USDT transferred to: attacker (0x71de...A1D6) │\n└──────────────────────────────────────────────┘\n        │\n        │ [Step 4] Attacker receives USDT\n        ▼\n  Attacker final profit: ~$640,000 worth of USDT"
+ ],
+ "code_after": [
+  "// ✅ Fix Method 1: Add onlyOwner modifier\n// Only the contract owner can call this\nfunction swapTokenU(uint256 amount, address _target) public onlyOwner {\n    // Allow only trusted addresses as _target\n    require(_target == owner() || _trustedRecipients[_target], \"Unauthorized recipient\");\n\n    IERC20(_token).approve(address(_swapRouter), amount); // Approve only the necessary amount\n    address[] memory path = new address[](2);\n    path[0] = _token;\n    path[1] = _USDT;\n\n    // ✅ Slippage protection: calculate and apply minimum received amount\n    uint256 minOut = _getMinAmountOut(amount, path);\n    _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        amount,\n        minOut, // Enforce minimum received amount\n        path,\n        _target,\n        block.timestamp\n    );\n}\n\n// ✅ Fix Method 2: Function separation with role-based access control (recommended)\n// Using OpenZeppelin AccessControl\nbytes32 public constant OPERATOR_ROLE = keccak256(\"OPERATOR_ROLE\");\n\nfunction swapTokenU(uint256 amount, address _target) public onlyRole(OPERATOR_ROLE) {\n    require(amount <= IERC20(_token).balanceOf(address(this)), \"Exceeds balance\");\n    require(_target != address(0), \"Invalid recipient\");\n    // ... swap logic\n}",
+  "// ✅ Slippage protection applied\nuint256[] memory amountsOut = _swapRouter.getAmountsOut(amount, path);\nuint256 minOut = amountsOut[amountsOut.length - 1] * 95 / 100; // Allow 5% slippage\n_swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n    amount,\n    minOut, // Enforce minimum received amount\n    path,\n    _target,\n    block.timestamp\n);"
+ ],
+ "steps": [
+  "1. **[Step 1] Balance Query**: Check the MFT token balance of the vulnerable contract (Pledge/Unknown)",
+  "2. **[Step 2] Call swapTokenU**: Call with the full balance as `amount` and the attacker's address as `_target`",
+  "3. **[Step 3] Internal Swap Execution**: Contract executes MFT → USDT swap on PancakeSwap; USDT is sent directly to the attacker's address",
+  "4. **[Step 4] Profit Realization**: Attacker's wallet receives USDT",
+  "→ amount = contract's full MFT balance",
+  "MFT → USDT swap",
+  "→ USDT transferred to: attacker (0x71de...A1D6)"
+ ],
+ "other_code": [
+  "# 1. Query basic transaction information (Foundry cast)\nRPC_URL=\"https://bsc-mainnet.public.blastapi.io\"\ncast tx 0x<FULL_ATTACK_TX_HASH> --rpc-url $RPC_URL\n\n# 2. Validate attacker address\n# Confirm from: matches attacker EOA (0x71decbfc8be353c560...)\n\n# 3. Extract Transfer events from event logs\ncast receipt --json 0x<FULL_ATTACK_TX_HASH> --rpc-url $RPC_URL | \\\n  python3 -c \"import json,sys; logs=json.load(sys.stdin)['logs']; \\\n  [print(l['topics'], l['data']) for l in logs if l['topics'][0]=='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef']\"\n\n# 4. Query state at block immediately before attack\nATTACK_BLOCK=<block_number>\ncast call 0x061944c0f3c2d7DABafB50813Efb05c4e0c952e1 \\\n  \"balanceOf(address)(uint256)\" 0x061944c0f3c2d7DABafB50813Efb05c4e0c952e1 \\\n  --rpc-url $RPC_U"
+ ]
+}

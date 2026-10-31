@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-01-10_HORS_InsufficientInputValidation",
+ "source_file": "2025/2025-01-10_HORS_InsufficientInputValidation.md",
+ "title": "HORS Token — LP Drain via Missing Input Validation Analysis",
+ "date": "2025-01-10",
+ "protocol": "HORS Token",
+ "chain": "BSC",
+ "loss_raw": "~14.8 WBNB",
+ "loss_usd": null,
+ "root_cause": "Missing input validation on function selectors in the vulnerable contract allowed LP token theft via a fake router",
+ "attack_tx": "0xc857...fed7 (2025-01-08 14:04 UTC)",
+ "vulnerable_contract": "0x6f3390c6...",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: allows execution of arbitrary selectors\nfunction executeWithRouter(address router, bytes calldata data) external {\n    // No validation on router address or data selector\n    // Attacker can inject a fake router and arbitrary calldata\n    (bool success,) = router.call(data);\n    require(success, \"Call failed\");\n}\n\n//",
+  "// Reconstructed from HORS_exp.sol PoC — NOT verified source\n\n// ❌ Function 0xf78283c7: accepts an external router address and executes token operations against it without validation\nfunction executeWithRouter(address router, bytes calldata data) external {\n    // ❌ No check that `router` is a legitimate whitelisted address\n    // ❌ No check on the function selector within `data`\n    IERC20(lpToken).approve(router, type(uint256).max); // ❌ approves LP tokens to an arbitrary address\n    (bool success,) = router.call(data);                // ❌ executes arbitrary calldata against the caller-supplied router\n    require(success, \"Call failed\");\n    // Result: attacker's fake router calls transferFrom(HORS_contract, attacker, lpBalance),\n    //         draining all LP tokens held by this contract.\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: allowed router list + selector whitelist\nmapping(address => bool) public allowedRouters;\nmapping(bytes4 => bool) public allowedSelectors;\n\nfunction executeWithRouter(address router, bytes calldata data) external onlyOwner {\n    require(allowedRouters[router], \"Router not allowed\");\n    bytes4 selector = bytes4(data[:4]);\n    require(allowedSelectors[selector], \"Selector not allowed\");\n    (bool success,) = router.call(data);\n    require(success, \"Call failed\");\n}",
+  "// ✅ Fix: restrict callers and validate the router address\nmapping(address => bool) public allowedRouters;\n\nfunction executeWithRouter(address router, bytes calldata data) external onlyOwner {\n    require(allowedRouters[router], \"Router not whitelisted\");\n    bytes4 sel = bytes4(data[:4]);\n    require(sel == IRouter.addLiquidity.selector || sel == IRouter.removeLiquidity.selector, \"Selector not allowed\");\n    (bool success,) = router.call(data);\n    require(success, \"Call failed\");\n}"
+ ],
+ "steps": [
+  "→ [1] Obtain flash loan from PancakeSwap V3",
+  "→ [2] Call executeWithRouter() on vulnerable contract",
+  "→ [3] Vulnerable contract → executes delegatecall/call to fake router",
+  "→ [4] Remove PancakeSwap liquidity using LP tokens",
+  "→ [5] Swap HORS → WBNB",
+  "→ [6] Repay flash loan",
+  "→ [7] ~14.8 WBNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Obtain flash loan from PancakeSwap V3\n  │\n  ├─→ [2] Call executeWithRouter() on vulnerable contract\n  │         ├─ router: attacker's fake router address\n  │         └─ data: LP token transfer selector + attacker address\n  │\n  ├─→ [3] Vulnerable contract → executes delegatecall/call to fake router\n  │         └─ LP tokens transferred to attacker\n  │\n  ├─→ [4] Remove PancakeSwap liquidity using LP tokens\n  │         └─ Receive WBNB + HORS tokens\n  │\n  ├─→ [5] Swap HORS → WBNB\n  │\n  ├─→ [6] Repay flash loan\n  │\n  └─→ [7] ~14.8 WBNB profit",
+  "// Full PoC not obtained — reconstructed from summary\n\ncontract HORSAttacker {\n    address constant VULNERABLE = 0x6f3390c6C200e9bE81b32110CE191a293dc0eaba;\n    address constant CAKE_LP = /* CakeLP address */;\n\n    // Acts as fake router\n    address fakeRouter;\n\n    function attack() external {\n        // [1] PancakeSwap V3 flash loan\n        IPancakeV3Pool(pancakePool).flash(\n            address(this), 0, flashAmount, \"\"\n        );\n    }\n\n    function pancakeV3FlashCallback(...) external {\n        // [2] Call vulnerable contract with unvalidated selector\n        // Induces LP token transfer to the attacker\n        bytes memory maliciousData = abi.encodeWithSelector(\n            IERC20.transfer.selector,\n            address(this),\n            IERC20(CAKE_LP).balanceOf(VULNERABLE)\n        )"
+ ]
+}

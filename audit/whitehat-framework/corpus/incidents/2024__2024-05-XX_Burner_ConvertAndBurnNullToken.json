@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-05-XX_Burner_ConvertAndBurnNullToken",
+ "source_file": "2024/2024-05-XX_Burner_ConvertAndBurnNullToken.md",
+ "title": "Burner — convertAndBurn() Null Token Address Handling Flaw Analysis",
+ "date": "2024-05-01",
+ "protocol": "Burner",
+ "chain": "Ethereum",
+ "loss_raw": "~1.7 ETH",
+ "loss_usd": null,
+ "root_cause": "The `convertAndBurn(address[] calldata tokens)` function accepts `address(0)` as a token address, causing ETH/token balance calculation errors during null address processing, which enabled PNT price manipulation followed by profit extraction",
+ "attack_tx": null,
+ "vulnerable_contract": "Burner 0x4d4d05e1",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: convertAndBurn allows address(0)\ncontract Burner {\n    function convertAndBurn(address[] calldata tokens) external {\n        for (uint i = 0; i < tokens.length; i++) {\n            address token = tokens[i];\n            if (token == address(0)) {\n                // ETH handling — balance calculation error\n                uint256 ethBal = address(this).balance;\n                // ← ETH conversion can be distorted under manipulated state\n                _burnETH(ethBal);\n            } else {\n                uint256 tokenBal = IERC20(token).balanceOf(address(this));\n                _convertAndBurn(token, tokenBal);\n            }\n        }\n    }\n}\n\n//",
+  "// File: Burner.sol\n    function convertAndBurn(address [] calldata tokens) external {  // ❌ Vulnerability\n        for (uint i = 0; i < tokens.length; i++) {\n            _convert(tokens[i]);\n        }\n        burn();\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: explicitly block null addresses\nfunction convertAndBurn(address[] calldata tokens) external {\n    for (uint i = 0; i < tokens.length; i++) {\n        require(tokens[i] != address(0), \"null token address\");\n        uint256 tokenBal = IERC20(tokens[i]).balanceOf(address(this));\n        if (tokenBal > 0) {\n            _convertAndBurn(tokens[i], tokenBal);\n        }\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Acquire 70 ETH + convert ETH → WETH",
+  "→ [2] Swap WETH → PNT (Uniswap V2)",
+  "→ [3] Call convertAndBurn([address(0), ...])",
+  "→ [4] Swap PNT → WETH in reverse (at manipulated price)",
+  "→ [5] ~1.7 ETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Acquire 70 ETH + convert ETH → WETH\n  │\n  ├─→ [2] Swap WETH → PNT (Uniswap V2)\n  │         └─ PNT price increases\n  │\n  ├─→ [3] Call convertAndBurn([address(0), ...])\n  │         └─ Internal calculation distorted during null address processing\n  │         └─ Contract ETH balance processed incorrectly\n  │\n  ├─→ [4] Swap PNT → WETH in reverse (at manipulated price)\n  │\n  └─→ [5] ~1.7 ETH profit",
+  "interface IBurner {\n    function convertAndBurn(address[] calldata tokens) external;\n}\n\ninterface IUniswapV2Router {\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        uint256 amountIn, uint256 amountOutMin,\n        address[] calldata path, address to, uint256 deadline\n    ) external;\n    function swapExactETHForTokensSupportingFeeOnTransferTokens(\n        uint256 amountOutMin,\n        address[] calldata path, address to, uint256 deadline\n    ) external payable;\n}\n\ncontract AttackContract {\n    IBurner  constant burner  = IBurner(0x4d4d05e1205e3A412ae1469C99e0d954113aa76F);\n    IUniswapV2Router constant router = IUniswapV2Router(/* Uniswap V2 Router */);\n    IERC20   constant PNT    = IERC20(0x89Ab32156e46F46D02ade3FEcbe5Fc4243B9AAeD);\n    IERC20   constant WETH   "
+ ]
+}

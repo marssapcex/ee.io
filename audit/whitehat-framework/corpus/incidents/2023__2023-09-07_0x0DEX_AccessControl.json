@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-09-07_0x0DEX_AccessControl",
+ "source_file": "2023/2023-09-07_0x0DEX_AccessControl.md",
+ "title": "0x0 DEX — Access Control Vulnerability Analysis",
+ "date": "2023-09-07",
+ "protocol": "0x0 DEX",
+ "chain": "Ethereum",
+ "loss_raw": "~$61K",
+ "loss_usd": 61.0,
+ "root_cause": "Certain swap functions allowed funds to be sent to arbitrary addresses without validating the recipient address",
+ "attack_tx": "0x00b375f8e90fc54c...",
+ "vulnerable_contract": "0x29d2bcf0d70f95ce...",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: arbitrary recipient can be specified\nfunction swap(address tokenIn, uint256 amountIn, address recipient) external {\n    //",
+  "❌ No check that recipient is msg.sender\n    IERC20(tokenOut).transfer(recipient, amountOut);\n}\n//",
+  "// Intercept victim's swap\ndex.swap(\n    address(USDC),\n    victimAmount,\n    address(this) // ❌ Attacker address receives the funds\n);"
+ ],
+ "code_after": [
+  "✅ Fix\nfunction swap(address tokenIn, uint256 amountIn) external {\n    IERC20(tokenOut).transfer(msg.sender, amountOut); //",
+  "✅ Transfer only to caller\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: certain swap functions allow funds to be sent to arbitrary addresses without recipient validation\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Identify victim account\n  ├─② Call swap(token, amount, attackerAddress)\n  │       └─ Victim's swap output is sent to attacker\n  └─③ ~$61K profit"
+ ]
+}

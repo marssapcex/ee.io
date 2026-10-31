@@ -1,0 +1,28 @@
+{
+ "id": "2023__2023-11-13_grok_FlashLoan",
+ "source_file": "2023/2023-11-13_grok_FlashLoan.md",
+ "title": "Grok Token — Flash Loan Attack Analysis",
+ "date": "2023-11-13",
+ "protocol": "Grok Token",
+ "chain": "Ethereum",
+ "loss_raw": "~26 ETH",
+ "loss_usd": null,
+ "root_cause": "Liquidity manipulation vulnerability in the xAI Grok meme token",
+ "attack_tx": "0x3e9bcee951cdad84...",
+ "vulnerable_contract": "0x8390a1da07e376ef...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: auto-liquidity is based on spot price\nfunction swapAndAddLiquidity() private {\n    uint256 half = tokensForLiquidity / 2;\n    uint256 ethAmount = swapTokensForEth(half); // swap at current price\n    //",
+  "❌ liquidity added at manipulated price\n    addLiquidity(half, ethAmount);\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: add liquidity based on TWAP"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: liquidity manipulation vulnerability in the xAI Grok meme token\n// Source code unverified — analysis based on bytecode",
+  "Attacker\n  ├─① Flash loan to borrow large amount of Grok tokens\n  ├─② Trigger auto-liquidity addition mechanism\n  ③ Liquidity added at manipulated price\n  └─④ Extract ~26 ETH via LP tokens"
+ ]
+}

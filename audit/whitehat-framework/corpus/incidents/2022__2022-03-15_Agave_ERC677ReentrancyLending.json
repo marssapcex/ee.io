@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-03-15_Agave_ERC677ReentrancyLending",
+ "source_file": "2022/2022-03-15_Agave_ERC677ReentrancyLending.md",
+ "title": "Agave Finance — ERC677 Callback Reentrancy Loan Drain Analysis",
+ "date": "2022-03-15",
+ "protocol": "Agave Finance",
+ "chain": "Gnosis Chain",
+ "loss_raw": "~$5,500,000 (WETH, LINK, USDC, GNO, WBTC, WXDAI)",
+ "loss_usd": 5500000.0,
+ "root_cause": "Reentrancy via the `onTokenTransfer` callback of Gnosis Chain bridge tokens (ERC677), enabling additional borrows before the health factor is updated",
+ "attack_tx": null,
+ "vulnerable_contract": "Agave Lending Pool 0x207E9def17B4bd1045F5Af2C651c081F9FDb0842",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable Agave LendingPool (Aave V2 fork, pseudocode)\nfunction liquidationCall(\n    address collateralAsset,\n    address debtAsset,\n    address user,\n    uint256 debtToCover,\n    bool receiveAToken\n) external {\n    // Collateral calculation and processing\n    uint256 collateralAmount = _calculateCollateral(user, collateralAsset, debtToCover);\n\n    //",
+  "❌ aToken burn — triggers ERC677 callback\n    // At this point, the user's health factor has not yet been updated\n    IAToken(collateralAToken).burn(\n        user,\n        msg.sender,      // ← tokens sent to liquidator (attacker)\n        collateralAmount,\n        reserve.liquidityIndex\n    );\n\n    //",
+  "❌ borrow() can be called from within the ERC677 onTokenTransfer callback\n    // healthFactor has not yet been reflected at this point\n\n    // Debt processing (after callback)\n    _updateState(debtAsset, debtToCover);\n    // ← health factor is updated only here\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern (with ReentrancyGuard)\nfunction liquidationCall(...) external nonReentrant {\n    // ... same logic but reentrancy is blocked\n}",
+  "// ✅ Fix: add nonReentrant to liquidationCall (and borrow/withdraw)\nfunction liquidationCall(...) external override nonReentrant returns (uint256, string memory) {\n    // same logic — reentrancy guard prevents onTokenTransfer re-entry\n}"
+ ],
+ "steps": [
+  "Deposit WETH → Borrow LINK (health factor > 1)",
+  "Interest accrues → health factor < 1"
+ ],
+ "other_code": [
+  "Attacker Contract\n    │\n    ├─[1] _initHF(): Initialize position\n    │       Deposit WETH → Borrow LINK (health factor > 1)\n    │\n    ├─[2] vm.warp(+1 hour): Time elapsed\n    │       Interest accrues → health factor < 1\n    │\n    ├─[3] _flashWETH(): Execute flash loan\n    │       Borrow ~2,728 WETH from Uniswap\n    │\n    ├─[4] liquidationCall(WETH, LINK, attacker, MAX, false)\n    │       Trigger liquidation\n    │       ↓\n    │   aWETH.burn() executes\n    │       ↓ ERC677 onTokenTransfer callback fires\n    │           │\n    │           ├─ borrowTokens() reenters\n    │           │       Borrow all of USDC, GNO, LINK, WBTC, WXDAI\n    │           │       (possible because health factor not yet updated)\n    │           │\n    │           └─ callback returns\n    │\n    ├─[5] aWETH withdraw(): With",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ILendingPool {\n    function deposit(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;\n    function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf) external;\n    function liquidationCall(address collateral, address debt, address user, uint256 debtToCover, bool receiveAToken) external;\n    function withdraw(address asset, uint256 amount, address to) external returns (uint256);\n}\n\ncontract AgaveExploit is Test {\n    ILendingPool lendingPool =\n        ILendingPool(0x5E15d5E33d318dCEd84Bfe3F4EACe07909bE6d9c);\n\n    IERC20 WETH  = IERC20(0x6A023CCd1ff6F2045C3309768eAd9E68F978f6e1);\n    IERC20 LINK  = IERC20"
+ ]
+}

@@ -1,0 +1,31 @@
+{
+ "id": "2023__2023-05-xx_LFI_DelegatecallRewardLoop",
+ "source_file": "2023/2023-05-xx_LFI_DelegatecallRewardLoop.md",
+ "title": "LFI / VLFI Exploit — Unsafe delegatecall in claimRewards() Loops 200 Times",
+ "date": "2023-01-01",
+ "protocol": "LFI",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "proxy-storage"
+ ],
+ "code_before": [
+  "// File: ERC1967Upgrade.sol\nimport \"../../utils/Address.sol\";  // ❌\n\n// ...\n\n * @custom:oz-upgrades-unsafe-allow delegatecall  // ❌\n\n// ...\n\n     * @dev Storage slot with the address of the current implementation.  // ❌\n\n// ...\n\n    event Upgraded(address indexed implementation);  // ❌\n\n// ...\n\n     * @dev Returns the current implementation address.  // ❌",
+  "// File: TransparentUpgradeableProxy.sol\n    function implementation() external ifAdmin returns (address implementation_) {  // ❌\n        implementation_ = _implementation();\n    }\n\n// ...\n\n    function changeAdmin(address newAdmin) external virtual ifAdmin {  // ❌\n        _changeAdmin(newAdmin);\n    }\n\n// ...\n\n    function upgradeTo(address newImplementation) external ifAdmin {  // ❌\n        _upgradeToAndCall(newImplementation, bytes(\"\"), false);\n    }\n\n// ...\n\n    function upgradeToAndCall(address newImplementation, bytes calldata data) external payable ifAdmin {  // ❌\n        _upgradeToAndCall(newImplementation, data, true);\n    }\n\n// ...\n\n    function _admin() internal view virtual returns (address) {  // ❌\n        return _getAdmin();\n    }",
+  "// File: Proxy.sol\n     * @dev This is a virtual function that should be overriden so it returns the address to which the fallback function  // ❌\n\n// ...\n\n    function _implementation() internal view virtual returns (address);  // ❌\n\n// ...\n\n     * This function does not return to its internall call site, it will return directly to the external caller.  // ❌\n\n// ...\n\n     * @dev Fallback function that delegates calls to the address returned by `_implementation()`. Will run if no other  // ❌\n\n// ...\n\n     * @dev Fallback function that delegates calls to the address returned by `_implementation()`. Will run if call data  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → stake LFI on behalf of Claimer contract",
+  "// → delegatecall to VLFI.claimRewards(address(this))",
+  "// → claims rewards in VLFI context"
+ ],
+ "other_code": [
+  "// 1. Allocate 86,000 LFI to test contract\n// 2. LFI.approve(address(VLFI), 86_000e18)\n// 3. VLFI.stake(address(claimer), 86_000e18)\n//    → stake LFI on behalf of Claimer contract\n// 4. for (uint i = 0; i < 200; i++) {\n//       claimer.delegate()\n//       → delegatecall to VLFI.claimRewards(address(this))\n//       → claims rewards in VLFI context\n//       newClaimer = new Claimer(address(VLFI))\n//       claimer = newClaimer\n//    }\n// 5. Collect all harvested LFI rewards",
+  "interface IVLFI is IERC20 {\n    function claimRewards(address to) external;\n    function stake(address onBehalfOf, uint256 amount) external;\n}"
+ ]
+}

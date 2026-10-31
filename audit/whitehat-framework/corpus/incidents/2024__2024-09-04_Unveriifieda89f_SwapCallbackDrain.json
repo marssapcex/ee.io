@@ -1,0 +1,29 @@
+{
+ "id": "2024__2024-09-04_Unveriifieda89f_SwapCallbackDrain",
+ "source_file": "2024/2024-09-04_Unveriifieda89f_SwapCallbackDrain.md",
+ "title": "Unverified 0xa89f — uniswapV3SwapCallback Unauthorized Call Vulnerability Analysis",
+ "date": "2024-09-04",
+ "protocol": "Unverified Contract 0xa89f",
+ "chain": "Ethereum",
+ "loss_raw": "~1,500 USD",
+ "loss_usd": null,
+ "root_cause": "No caller validation in uniswapV3SwapCallback — authentication bypassed via a fake contract returning WETH from token0()",
+ "attack_tx": "0x83c71a83",
+ "vulnerable_contract": "0xb3094734",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable uniswapV3SwapCallback: flawed msg.sender and token0 validation\ncontract Vulnerable0xa89f {\n    function uniswapV3SwapCallback(\n        int256 amount0Delta,\n        int256 amount1Delta,\n        bytes calldata data\n    ) external {\n        //",
+  "❌ Does not verify that msg.sender is a legitimate UniswapV3 pool\n        // or only checks msg.sender.token0() without verifying factory registration\n        address token = IPool(msg.sender).token0();  //",
+  "❌ Attacker can control the return value\n        IERC20(token).transfer(/* to attacker */);\n    }\n}\n\n// Attacker's fake contract:\ncontract AttackerC {\n    function token0() external pure returns (address) {\n        return weth;  // ← Manipulated to return WETH\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix:\n// address pool = IUniswapV3Factory(FACTORY).getPool(token0, token1, fee);\n// require(msg.sender == pool, \"caller is not pool\");"
+ ],
+ "steps": [
+  "token0() → implemented to return WETH",
+  "❌ msg.sender(=AttackerC).token0() == WETH → authentication passes"
+ ],
+ "other_code": []
+}

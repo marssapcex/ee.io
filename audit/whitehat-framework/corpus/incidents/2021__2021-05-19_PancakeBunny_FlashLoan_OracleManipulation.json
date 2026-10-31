@@ -1,0 +1,37 @@
+{
+ "id": "2021__2021-05-19_PancakeBunny_FlashLoan_OracleManipulation",
+ "source_file": "2021/2021-05-19_PancakeBunny_FlashLoan_OracleManipulation.md",
+ "title": "PancakeBunny — Flash Loan Oracle Manipulation BUNNY Inflation Analysis",
+ "date": "2021-05-19",
+ "protocol": "PancakeBunny",
+ "chain": "BSC",
+ "loss_raw": "~$45,000,000",
+ "loss_usd": 45000000.0,
+ "root_cause": "`mintFor()` uses the AMM spot price of the WBNB-USDT V1 pool as an oracle when calculating BUNNY reward amounts — manipulable within a single block via large swaps",
+ "attack_tx": "0x897c...979 (block 7,556,391)",
+ "vulnerable_contract": "PancakeBunny BunnyMinterV2 / WBNB-USDT Vault",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ BunnyMinterV2 — BUNNY reward calculation using spot price\nfunction mintFor(address flip, uint _withdrawalFee, uint _performanceFee, address to, uint)\n    external override onlyMinter\n{\n    uint feeSum = _performanceFee.add(_withdrawalFee);\n    IBEP20(flip).safeTransferFrom(msg.sender, address(this), feeSum);\n\n    uint bunnyBNBValue = tokenToBunnyBNB(feeSum, flip);\n    // tokenToBunnyBNB() references PancakeSwap V1 spot price\n    // → bunnyBNBValue spikes when V1 pool is manipulated via flash loan\n    uint mintBunny = safeBunnyMintAmount(bunnyBNBValue);\n    // mintBunny becomes an abnormally large value, causing excessive minting\n    if (mintBunny > 0) {\n        _mint(mintBunny, to);\n    }\n}",
+  "// RECONSTRUCTED — not verified source\n// BunnyMinterV2.mintFor() — BUNNY reward calculation using AMM spot price\n\nfunction mintFor(\n    address flip,           // LP token (e.g., WBNB-USDT)\n    uint _withdrawalFee,\n    uint _performanceFee,\n    address to,\n    uint\n) external onlyMinter {\n    uint feeSum = _performanceFee.add(_withdrawalFee);\n    IBEP20(flip).safeTransferFrom(msg.sender, address(this), feeSum);\n\n    uint bunnyBNBValue = tokenToBunnyBNB(feeSum, flip); // ❌ calls PancakeSwap V1 reserves() directly — spot price\n    // When WBNB-USDT V1 pool is manipulated by dumping ~15,000 WBNB via flash loan,\n    // the spot ratio collapses and bunnyBNBValue is computed from the distorted price,\n    // causing mintBunny to be orders of magnitude larger than intended.\n    uint mintBunny = safeBunnyMintAmount(bunnyBNBValue); // ❌ no upper bound on minted amount\n    if (mintBunny > 0) {\n        _mint(mintBunny, to); // ❌ mints unbounded BUNNY at distorted spot price\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Using TWAP oracle — single-block price manipulation not possible\nfunction mintFor(address flip, uint _withdrawalFee, uint _performanceFee, address to, uint)\n    external override onlyMinter\n{\n    uint feeSum = _performanceFee.add(_withdrawalFee);\n    IBEP20(flip).safeTransferFrom(msg.sender, address(this), feeSum);\n\n    // Use TWAP price (minimum 30-minute observation window)\n    uint bunnyBNBValue = tokenToBunnyBNBTWAP(feeSum, flip);\n    uint mintBunny = safeBunnyMintAmount(bunnyBNBValue);\n    if (mintBunny > 0) {\n        _mint(mintBunny, to);\n    }\n}",
+  "// ✅ Fix: replace spot price with a TWAP oracle (minimum 30-minute window)\nfunction mintFor(address flip, uint _withdrawalFee, uint _performanceFee, address to, uint) external onlyMinter {\n    uint feeSum = _performanceFee.add(_withdrawalFee);\n    IBEP20(flip).safeTransferFrom(msg.sender, address(this), feeSum);\n    uint bunnyBNBValue = tokenToBunnyBNBTWAP(feeSum, flip); // ✅ time-weighted price — single-block manipulation impossible\n    uint mintBunny = safeBunnyMintAmount(bunnyBNBValue);\n    require(mintBunny <= MAX_BUNNY_MINT_PER_TX, \"mint limit\"); // ✅ cap per transaction\n    if (mintBunny > 0) {\n        _mint(mintBunny, to);\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: Deposit 1 BNB → Join WBNB-USDT Vault (qualify for",
+  "Step 2-8: 7 nested flash loans (multiple PancakeSwap pairs)",
+  "Step 9: Flash loan ~2.96M USDT from FortubeBank",
+  "Step 10: Dump ~15,000 WBNB into WBNB-USDT V1 pool",
+  "→ BNB price crashes for BUNNY reward calculation",
+  "Step 11: Call flip.getReward()",
+  "Step 12: Sell excessively minted BUNNY → WBNB, repay flash"
+ ],
+ "other_code": [
+  "┌────────────────────────────────────────────────────────────────┐\n│ Step 1: Deposit 1 BNB → Join WBNB-USDT Vault (qualify for     │\n│         reward receipt)                                        │\n└─────────────────────┬──────────────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────────────┐\n│ Step 2-8: 7 nested flash loans (multiple PancakeSwap pairs)    │\n│ Accumulate large amount of WBNB via pancakeCall() chain        │\n└─────────────────────┬──────────────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────────────┐\n│ Step 9: Flash loan ~2.96M USDT from FortubeBank                │\n│ Execute attack inside executeOperation() callback              │\n└───────────────",
+  "// exploit() — core price manipulation\nfunction exploit() internal {\n    // Artificially add LP tokens to WBNB-USDT V2 pair (reserve inflation)\n    // wbnbUsdtPair.transfer(wbnbUsdtPair, lpAmount);\n\n    // Dump ~15,000 WBNB into WBNB-USDT V1 pool → BNB price crashes\n    // router.swapExactTokensForTokens(15000e18, 0, [WBNB, USDT], ...)\n\n    // Call getReward() from Vault — BUNNY calculated at distorted price\n    // bunnyVault.getReward();\n    // → BunnyMinterV2.mintFor() mints millions of BUNNY\n\n    // Sell BUNNY → WBNB to realize profit\n    // router.swapExactTokensForTokens(bunny_balance, 0, [BUNNY, WBNB], ...)\n}"
+ ]
+}

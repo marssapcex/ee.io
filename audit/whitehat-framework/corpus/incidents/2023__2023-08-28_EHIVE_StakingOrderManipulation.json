@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-08-28_EHIVE_StakingOrderManipulation",
+ "source_file": "2023/2023-08-28_EHIVE_StakingOrderManipulation.md",
+ "title": "EHIVE Staking Order Manipulation Incident Analysis",
+ "date": "2023-08-28",
+ "protocol": "EHIVE",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "// File: main.sol\n    function isStaking(address stakerAddr, uint256 validator) public view returns (bool) {  // ❌\n        return _stakers[stakerAddr][validator].staker == stakerAddr;\n    }\n\n// ...\n\n    function stake(uint256 stakeAmount, uint256 validator) external isStakingEnabled {  // ❌\n        require(totalSupply() <= maxSupply, \"There are no more rewards left to be claimed.\");\n\n        // Check user is registered as staker\n        if (isStaking(msg.sender, validator)) {  // ❌\n            _stakers[msg.sender][validator].staked += stakeAmount;\n            _stakers[msg.sender][validator].earned += _userEarned(msg.sender, validator);\n            _stakers[msg.sender][validator].start = block.timestamp;\n        } else {\n            _stakers[msg.sender][validator] = Staker(msg.sender, block.timestamp, stakeAmount, 0);\n        }\n\n        validators[validator].staked += stakeAmount;\n        totalStaked += stakeAmount;\n        _burn(msg.sender, stakeAmount);\n    }\n\n// ...\n\n    function claim(uint256 validator) external isStakingEnabled {  // ❌\n        require(isStaking(msg.sender, validator), \"You are not staking!?\");  // ❌\n        require(totalSupply() <= maxSupply, \"There are no more rewards left to be claimed.\");\n\n        uint256 reward = userEarned(msg.sender, validator);\n\n        _claimHistory[msg.sender].dates.push(block.timestamp);\n        _claimHistory[msg.sender].amounts.push(reward);\n        totalClaimed += reward;\n\n        _mint(msg.sender, reward);\n\n        _stakers[msg.sender][validator].start = block.timestamp;\n        _stakers[msg.sender][validator].earned = 0;\n    }\n\n// ...\n\n    function unstake(uint256 validator) external {\n        require(isStaking(msg.sender, validator), \"You are not staking!?\");  // ❌\n\n        uint256 reward = userEarned(msg.sender, validator);\n\n        if (totalSupply().add(reward) < maxSupply && stakingEnabled) {  // ❌\n            _claimHistory[msg.sender].dates.push(block.timestamp);\n            _claimHistory[msg.sender].amounts.push(reward);\n            totalClaimed += reward;\n\n            _mint(msg.sender, _stakers[msg.sender][validator].staked.add(reward));\n        } else {\n            _mint(msg.sender, _stakers[msg.sender][validator].staked);\n        }\n\n        validators[validator].staked -= _stakers[msg.sender][validator].staked;\n        totalStaked -= _stakers[msg.sender][validator].staked;\n\n        delete _stakers[msg.sender][validator];\n    }\n\n// ...\n\n    function setStakingState(bool onoff) external teamOROwner {  // ❌\n        stakingEnabled = onoff;  // ❌\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Deploy 28 UnstakeContracts and call stake(0) with small amounts",
+  "2 ▶ vm.warp(block.timestamp + 38 days)",
+  "3 ▶ WETH.approve(AaveFlashloan, amount)",
+  "4 ▶ AaveFlashloan.flashLoanSimple(WETH, amount)",
+  "5 ▶ executeOperation() callback:",
+  "a) WETHToEHIVE() - swap WETH → EHIVE",
+  "→ collect accumulated rewards",
+  "d) EHIVEToWETH() - reverse swap EHIVE → WETH",
+  "6 ▶ Repay Aave flash loan + realize ~$15,000 profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: order dependency in staking reward calculation\ncontract EHIVEStaking {\n    mapping(address => uint256) public stakedAmount;\n    mapping(address => uint256) public stakeTimestamp;\n    uint256 public totalStaked;\n    uint256 public rewardPool;\n\n    // Vulnerable: reward calculated based on total staked amount at staking time\n    function stake(uint256 amount) external {\n        stakedAmount[msg.sender] += amount;\n        stakeTimestamp[msg.sender] = block.timestamp;\n        totalStaked += amount;\n        EHIVE.transferFrom(msg.sender, address(this), amount);\n    }\n\n    // Vulnerable: disproportionate reward obtained by immediately unstaking after large stake\n    function unstake(uint256 amount) external returns (uint256 reward) {\n        // reward = (staked amount / to",
+  "Attacker [0x0195448a9c4adeaf27002c6051c949f3c3234bb5]\n  │\n  ├─1─▶ Deploy 28 UnstakeContracts and call stake(0) with small amounts\n  │      Each contract: IUnstake.stake(0)\n  │      [Preparation phase]\n  │\n  ├─2─▶ vm.warp(block.timestamp + 38 days)\n  │      Simulate 38 days elapsed (reward accumulation)\n  │\n  ├─3─▶ WETH.approve(AaveFlashloan, amount)\n  │      [WETH: 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2]\n  │\n  ├─4─▶ AaveFlashloan.flashLoanSimple(WETH, amount)\n  │      Borrow large amount of WETH via Aave V3 flash loan\n  │\n  ├─5─▶ executeOperation() callback:\n  │      a) WETHToEHIVE() - swap WETH → EHIVE\n  │      b) EHIVE.transfer(UnstakeContracts) - distribute\n  │      c) IUnstake.unstake() × 27 - unstake from each contract\n  │         → collect accumulated rewards\n  │      d) EHIVEToW"
+ ]
+}

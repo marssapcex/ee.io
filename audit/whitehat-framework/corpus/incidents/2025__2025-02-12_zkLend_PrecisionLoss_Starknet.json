@@ -1,0 +1,33 @@
+{
+ "id": "2025__2025-02-12_zkLend_PrecisionLoss_Starknet",
+ "source_file": "2025/2025-02-12_zkLend_PrecisionLoss_Starknet.md",
+ "title": "zkLend — Precision Loss / Share Inflation Attack on Starknet Money Market",
+ "date": "2025-02-12",
+ "protocol": "zkLend",
+ "chain": "Starknet",
+ "loss_raw": "~$9,500,000",
+ "loss_usd": 9500000.0,
+ "root_cause": "Precision loss in `safe_decimal_math::div()`: an attacker uses flash loans to inflate the `lending_accumulator` to `~4.069×10^45`, then exploits integer truncation so that withdrawing 1.5× the deposited amount still burns only 1 zToken — netting free wstETH on each cycle",
+ "attack_tx": "`0x0160a5841b3e99679691294d1f18904c557b28f7d5fe61577e75c8931f34a16f`",
+ "vulnerable_contract": "zkLend zToken lending pool",
+ "classes": [
+  "donation-inflation"
+ ],
+ "code_before": [],
+ "code_after": [
+  "// Mitigation: ceiling division for withdrawal burn calculation\n// If floor(amount / accumulator) underestimates the burn, use ceiling instead.\nfn div_ceil(a: felt252, b: felt252) -> felt252 {\n    // ceil(a * SCALE / b) = floor((a * SCALE + b - 1) / b)\n    (a * SCALE + b - 1) / b\n}\n\n// In withdraw(): use div_ceil so the attacker cannot get more than they deposited\nfn withdraw(ref self: ContractState, amount: felt252) {\n    let accumulator = IMarket(self.market.read()).get_lending_accumulator();\n    // ✅ ceiling division: 6.103e18 → ceil(1.5) = 2 zTokens burned\n    //    attacker deposited only 1 zToken, so this reverts → no profit\n    let ztokens_to_burn: felt252 = safe_decimal_math::div_ceil(amount, accumulator);\n    assert(ztokens_to_burn != 0, 'ZKLEND: INVALID_BURN');\n    self._burn(get_caller_address(), ztokens_to_burn);\n    // ...\n}\n\n// Additional mitigation: block accumulator manipulation\n// Add a maximum accumulator increase per block to prevent flash-loan amplification:\nfn settle_extra_reserve_balance(ref self: ContractState) {\n    let new_accumulator = /* ... */;\n    let current = self.lending_accumulator.read();\n    // ✅ cap: accumulator cannot more than double in one transaction\n    let max_accumulator = current * 2;\n    assert(new_accumulator <= max_accumulator, 'ZKLEND: ACCUMULATOR_SPIKE');\n    self.lending_accumulator.write(new_accumulator);\n}"
+ ],
+ "steps": [
+  "→ lending_accumulator = 1e27 (initial ray)",
+  "→ receive 1 zToken (1:1 ratio)",
+  "Example step: accumulator 1e27 → 702e27 (702× amplification in one tx)",
+  "→ zTokens minted = floor(amount * 1e27 / 4.069e45)",
+  "→ zTokens to burn = floor(amount * 1e27 / 4.069e45)",
+  "→ Receive 6.103e18 wstETH while burning only 1 zToken",
+  "[5] Repeat step [4] ~61 times → total wstETH stolen ≈ 61 wstETH (~$9.5M)"
+ ],
+ "other_code": [
+  "// src/libraries/safe_decimal_math.cairo — ANALYZED/RECONSTRUCTED\n// ⚠️ Not verbatim source — reconstructed from post-mortem descriptions\n// Language: Cairo 1.0 (Starknet)\n//\n// SCALE = 10^27 (ray-scaled fixed-point, same convention as Aave v2)\n\nfn div(a: felt252, b: felt252) -> felt252 {\n    // Computes: floor(a * SCALE / b)\n    // BUG: when `b` (the lending_accumulator) is extremely large,\n    //      this can return a value LARGER than `a` itself — violating\n    //      the invariant \"scaling down should not exceed the original.\"\n    //\n    // Example with manipulated accumulator:\n    //   a = 6103946859077466029  (withdrawal amount in wei)\n    //   b = 4069297906051644020000000000000000000000000000  (manipulated accumulator)\n    //   result = floor(6103946859077466029 * 1e27 / 4.069e45",
+  "// src/market/internal.cairo — ANALYZED/RECONSTRUCTED\n// ⚠️ Not verbatim source — reconstructed from post-mortem descriptions\n\n// Called after a flash loan is repaid. Updates the global lending accumulator.\nfn settle_extra_reserve_balance(ref self: ContractState) {\n    let reserve_balance = IERC20(self.underlying).balance_of(this_contract());\n    let total_debt = self.total_raw_debt.read() * self.borrow_accumulator.read() / SCALE;\n    let treasury_amount = self.pending_treasury_amount.read();\n    let ztoken_supply = self.z_token_supply.read();\n\n    // BUG: When ztoken_supply == 1 (attacker is sole depositor) and\n    //      reserve_balance is large (due to flash loan repayment overpayment),\n    //      the new accumulator = (reserve_balance + total_debt - treasury_amount)\n    //           "
+ ]
+}

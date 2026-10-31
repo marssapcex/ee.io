@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-03-XX_Prisma_FlashLoanTroveZap",
+ "source_file": "2024/2024-03-XX_Prisma_FlashLoanTroveZap.md",
+ "title": "Prisma Finance — MigrateTroveZap Flash Loan Trove Hijacking Analysis",
+ "date": "2024-03-01",
+ "protocol": "Prisma Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$11,000,000",
+ "loss_usd": 11000000.0,
+ "root_cause": "`MigrateTroveZap.onFlashLoan()` callback does not validate the caller (msg.sender), allowing arbitrary triggering of `setDelegateApproval()` to hijack Trove collateral",
+ "attack_tx": null,
+ "vulnerable_contract": "MigrateTroveZap 0xcc721810",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: onFlashLoan caller not validated\ninterface IERC3156FlashBorrower {\n    function onFlashLoan(\n        address initiator,\n        address token,\n        uint256 amount,\n        uint256 fee,\n        bytes calldata data  // ← arbitrary parameter injection possible\n    ) external returns (bytes32);\n}\n\n// MigrateTroveZap.onFlashLoan():\nfunction onFlashLoan(\n    address initiator,\n    address token,\n    uint256 amount,\n    uint256 fee,\n    bytes calldata data\n) external returns (bytes32) {\n    // No validation that msg.sender is a trusted flash loan provider\n    // No validation that initiator is the actual requester\n    (address troveManager, address collateral, ...) = abi.decode(data, (...));\n    // ← attacker injects arbitrary parameters via data\n    borrowerOps.openTrove(...);\n    borrowerOps.closeTrove(...);\n    return keccak256(\"ERC3156FlashBorrower.onFlashLoan\");\n}\n\n//",
+  "// File: MigrateTroveZap.sol\n    function onFlashLoan(\n        address,\n        address,\n        uint256 amount,\n        uint256 fee,\n        bytes calldata data\n    ) external returns (bytes32) {\n        require(msg.sender == address(debtToken), \"!DebtToken\");\n        (\n            address account,\n            address troveManagerFrom,\n            address troveManagerTo,\n            uint256 maxFeePercentage,\n            uint256 coll,\n            address upperHint,\n            address lowerHint\n        ) = abi.decode(data, (address, address, address, uint256, uint256, address, address));\n        uint256 toMint = amount + fee;\n        borrowerOps.closeTrove(troveManagerFrom, account);  // ❌ vulnerability\n        borrowerOps.openTrove(troveManagerTo, account, maxFeePercentage, coll, toMint, upperHint, lowerHint);\n        return _RETURN_VALUE;\n    }",
+  "// File: IBorrowerOperations.sol\n    function setDelegateApproval(address _delegate, bool _isApproved) external;  // ❌ vulnerability\n\n    function setMinNetDebt(uint256 _minNetDebt) external;\n\n    function withdrawColl(\n        address troveManager,\n        address account,\n        uint256 _collWithdrawal,\n        address _upperHint,\n        address _lowerHint\n    ) external;\n\n    function withdrawDebt(\n        address troveManager,\n        address account,\n        uint256 _maxFeePercentage,\n        uint256 _debtAmount,\n        address _upperHint,\n        address _lowerHint\n    ) external;\n\n    function checkRecoveryMode(uint256 TCR) external pure returns (bool);\n\n    function CCR() external view returns (uint256);\n\n    function DEBT_GAS_COMPENSATION() external view returns (uint256);\n\n    function DECIMAL_PRECISION() external view returns (uint256);\n\n    function PERCENT_DIVISOR() external view returns (uint256);\n\n    function PRISMA_CORE() external view returns (address);\n\n    function _100pct() external view returns (uint256);\n\n    function debtToken() external view returns (address);\n\n    function factory() external view returns (address);\n\n    function getCompositeDebt(uint256 _debt) external view returns (uint256);"
+ ],
+ "code_after": [
+  "✅ Safe code: validate caller and initiator\nfunction onFlashLoan(\n    address initiator,\n    address token,\n    uint256 amount,\n    uint256 fee,\n    bytes calldata data\n) external returns (bytes32) {\n    require(msg.sender == address(mkUSDLender), \"invalid lender\");\n    require(initiator == address(this), \"invalid initiator\");\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] Call MigrateTroveZap.onFlashLoan() directly (mkUSD)",
+  "→ [2] Flash loan wstETH from Balancer",
+  "→ [3] receiveFlashLoan():",
+  "→ [4] Second mkUSD flash loan",
+  "→ [5] closeTrove() — withdraw wstETH collateral (to attacker address)",
+  "→ [6] Repay all flash loans",
+  "→ [7] ~$11M wstETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Call MigrateTroveZap.onFlashLoan() directly (mkUSD)\n  │         └─ No caller validation\n  │\n  ├─→ [2] Flash loan wstETH from Balancer\n  │\n  ├─→ [3] receiveFlashLoan():\n  │         └─ BorrowerOps.setDelegateApproval(MigrateTroveZap, true)\n  │\n  ├─→ [4] Second mkUSD flash loan\n  │         └─ onFlashLoan(): openTrove(wstETH collateral)\n  │\n  ├─→ [5] closeTrove() — withdraw wstETH collateral (to attacker address)\n  │\n  ├─→ [6] Repay all flash loans\n  │\n  └─→ [7] ~$11M wstETH profit",
+  "interface IMKUSDLoan {\n    function flashLoan(address receiver, address token, uint256 amount, bytes calldata data) external returns (bool);\n}\n\ninterface IBorrowerOperations {\n    function setDelegateApproval(address delegate, bool isApproved) external;\n    function openTrove(address troveManager, address account, uint256 maxFeePercentage, uint256 collateralAmount, uint256 debtAmount, address upperHint, address lowerHint) external;\n    function closeTrove(address troveManager, address account) external;\n}\n\ncontract AttackContract {\n    IMKUSDLoan         constant mkUSDLoan  = IMKUSDLoan(address(0)/* mkUSD flash lender */);\n    IBorrowerOperations constant borrowerOps = IBorrowerOperations(0x72c590349535AD52e6953744cb2A36B409542719);\n    address            constant zapContract = 0xcc7218100"
+ ]
+}

@@ -1,0 +1,50 @@
+{
+ "id": "2024__2024-05-10_GalaxyFoxToken_AccessControl_ETH",
+ "source_file": "2024/2024-05-10_GalaxyFoxToken_AccessControl_ETH.md",
+ "title": "GalaxyFox Token (GFOX) — Missing Access Control Leading to Merkle Root Manipulation Analysis",
+ "date": "2024-05-10",
+ "protocol": "GalaxyFox Token",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~108.74 ETH (approx. $330,000) + copycat attacker drained an additional 2.32 ETH",
+ "loss_usd": 330000.0,
+ "root_cause": "Missing access control modifier on `setMerkleRoot()` — anyone could replace the Merkle root",
+ "attack_tx": "0x12fe...e6f7",
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// GfoxClaim contract (0x11a4a5733237082a6c08772927ce0a2b5f8a86b6)\n// Source unverified — reconstructed via PoC and function signature reverse engineering\n\ncontract GfoxClaim {\n    bytes32 public merkleRoot;   // Currently valid Merkle root\n    IERC20 public gfoxToken;     // GFOX token address\n    mapping(address => bool) public claimed;  // Whether claim has been completed\n\n    // ❌ Vulnerability: no onlyOwner modifier!\n    // Anyone can call this function to replace the Merkle root arbitrarily.\n    function setMerkleRoot(bytes32 _merkleRoot) external {\n        merkleRoot = _merkleRoot;  // ❌ Root replacement allowed without access control\n    }\n\n    // ❌ Vulnerability: verification can pass with a single leaf (empty proof array)\n    // If leaf == merkleRoot, verification succeeds even with an empty proof\n    function claim(\n        address to,\n        uint256 amount,\n        bytes32[] calldata proof\n    ) external {\n        require(!claimed[to], \"GfoxClaim: Already claimed\");\n\n        // Merkle proof verification — if proof array is empty, leaf must equal root to pass\n        bytes32 leaf = keccak256(abi.encodePacked(to, amount));\n        require(\n            MerkleProof.verify(proof, merkleRoot, leaf),\n            \"GfoxClaim: Invalid proof\"\n        );\n\n        claimed[to] = true;\n        // Transfer GFOX tokens to the claiming address\n        gfoxToken.transfer(to, amount);\n    }\n}",
+  "// OpenZeppelin MerkleProof.verify() internal behavior\n// When proof array is empty: computedHash == leaf (initial value)\n// Return condition: computedHash == root\n// Therefore if leaf == root, verify() == true even with an empty proof\n\n// Attacker's root computation logic (excerpted from PoC)\nfunction _merkleRoot(address to, uint256 amount) internal pure returns (bytes32) {\n    // ❌ A single leaf becomes the root itself — no proof path needed\n    return keccak256(abi.encodePacked(to, amount));\n}",
+  "┌─────────────────────────────────────────────────────────────────┐\n│  Attacker EOA                                                    │\n│  0xFcE19F8f823759b5867ef9a5055A376f20c5E454                     │\n└──────────────────────────┬──────────────────────────────────────┘\n                           │ Transaction submitted (block #19835925)\n                           ▼\n┌─────────────────────────────────────────────────────────────────┐\n│  Attack Contract (deployed)                                      │\n│  0x86C68d9e13d8d6a70b6423CEB2aEdB19b59F2AA5                     │\n│                                                                  │\n│  [Step 1] amount = query GFOX balance                            │\n│  [Step 2] root = keccak256(abi.encodePacked(self, amount))       │\n└──────────────────────────┬──────────────────────────────────────┘\n                           │\n          ┌────────────────┴────────────────┐\n          │ [Step 3]                        │ [Step 4]\n          │ setMerkleRoot(root)             │ claim(self, amount, [])\n          ▼                                 ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  GfoxClaim Contract (vulnerable)                                  │\n│  0x11a4a5733237082a6c08772927ce0a2b5f8a86b6                      │\n│                                                                   │\n│  ❌ setMerkleRoot(): no onlyOwner → root replacement succeeds     │\n│  ❌ claim(): verify([], root, leaf) — leaf==root → passes         │\n│                                                                   │\n│  → Transfer 1,335,339,824 GFOX tokens                            │\n└────────────────────────────────┬─────────────────────────────────┘\n                                 │ GFOX transfer\n                                 ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  Attack Contract                                                  │\n│                                                                   │\n│  [Step 5] GFOX approve(UniswapV2Router, MAX)                      │\n│  [Step 5] swapExactTokensForTokensSupportingFeeOnTransferTokens() │\n└────────────────────────────────┬─────────────────────────────────┘\n                                 │ GFOX → WETH swap\n                                 ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  UniswapV2 GFOX/WETH Pool                                        │\n│  0x92ee0df7f6b0674cabc9bfc64873786fa7be82d0                      │\n│                                                                   │\n│  Mass GFOX sell → 108.744 WETH withdrawn                         │\n└────────────────────────────────┬─────────────────────────────────┘\n                                 │ 108.744 WETH transferred\n                                 ▼\n┌──────────────────────────────────────────────────────────────────┐\n│  Attacker EOA (final recipient)                                   │\n│  0xFcE19F8f823759b5867ef9a5055A376f20c5"
+ ],
+ "code_after": [
+  "contract GfoxClaim is Ownable {\n    bytes32 public merkleRoot;\n    IERC20 public gfoxToken;\n    mapping(address => bool) public claimed;\n\n    // ✅ Fix: added onlyOwner modifier — only the contract owner can change the Merkle root\n    function setMerkleRoot(bytes32 _merkleRoot) external onlyOwner {\n        require(_merkleRoot != bytes32(0), \"GfoxClaim: invalid root\");  // ✅ Prevent empty root\n        bytes32 oldRoot = merkleRoot;\n        merkleRoot = _merkleRoot;\n        emit MerkleRootUpdated(oldRoot, _merkleRoot);  // ✅ Event logging\n    }\n\n    function claim(\n        address to,\n        uint256 amount,\n        bytes32[] calldata proof\n    ) external {\n        require(!claimed[to], \"GfoxClaim: Already claimed\");\n        require(proof.length > 0, \"GfoxClaim: Empty proof not allowed\");  // ✅ Block empty proof\n\n        bytes32 leaf = keccak256(abi.encodePacked(to, amount));\n        require(\n            MerkleProof.verify(proof, merkleRoot, leaf),\n            \"GfoxClaim: Invalid proof\"\n        );\n\n        claimed[to] = true;\n        gfoxToken.transfer(to, amount);\n    }\n}",
+  "// ✅ Enforce minimum proof length\nrequire(proof.length >= MIN_PROOF_DEPTH, \"Proof too short\");\n\n// ✅ Or construct merkleRoot with a sufficiently large tree\n// (policy to enforce minimum tree depth so a single leaf cannot become the root)"
+ ],
+ "steps": [
+  "Step 1: Determine the amount to claim",
+  "Step 2: Compute the malicious Merkle root",
+  "→ Single-leaf root generated from only the attacker's address and amount",
+  "Step 3: Call setMerkleRoot(root)",
+  "→ Succeeds immediately due to lack of access control",
+  "→ merkleRoot of the GfoxClaim contract is replaced",
+  "Step 4: Call claim(attackerAddress, amount, [])",
+  "→ proof = empty array (new bytes32[](0))",
+  "→ leaf == root, so MerkleProof.verify() == true",
+  "→ claimed[attacker] = true, GFOX transferred",
+  "Step 5: UniswapV2 swap (GFOX → WETH)",
+  "→ GFOX approve(UniswapV2Router, MAX)",
+  "→ swapExactTokensForTokensSupportingFeeOnTransferTokens()",
+  "→ Received 108.744 WETH",
+  "Step 6: Transfer WETH to attacker EOA",
+  "→ Final profit: 108.744 WETH (~$330,000)",
+  "❌ setMerkleRoot(): no onlyOwner → root replacement succeeds",
+  "❌ claim(): verify([], root, leaf) — leaf==root → passes",
+  "→ Transfer 1,335,339,824 GFOX tokens",
+  "GFOX → WETH swap"
+ ],
+ "other_code": [
+  "Step 1: Determine the amount to claim\n         amount = 1,335,339,824.3887 GFOX (full balance held by the contract)\n\nStep 2: Compute the malicious Merkle root\n         root = keccak256(abi.encodePacked(attackerAddress, amount))\n         → Single-leaf root generated from only the attacker's address and amount\n\nStep 3: Call setMerkleRoot(root)\n         → Succeeds immediately due to lack of access control\n         → merkleRoot of the GfoxClaim contract is replaced\n\nStep 4: Call claim(attackerAddress, amount, [])\n         → proof = empty array (new bytes32[](0))\n         → leaf == root, so MerkleProof.verify() == true\n         → claimed[attacker] = true, GFOX transferred\n\nStep 5: UniswapV2 swap (GFOX → WETH)\n         → GFOX approve(UniswapV2Router, MAX)\n         → swapExactTokensForTokensSuppo"
+ ]
+}

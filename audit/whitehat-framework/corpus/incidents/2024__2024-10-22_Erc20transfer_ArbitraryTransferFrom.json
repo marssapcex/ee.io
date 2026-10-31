@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-10-22_Erc20transfer_ArbitraryTransferFrom",
+ "source_file": "2024/2024-10-22_Erc20transfer_ArbitraryTransferFrom.md",
+ "title": "Erc20transfer — Analysis of Arbitrary Transfer via Missing Input Validation in erc20TransferFrom()",
+ "date": "2024-10-22",
+ "protocol": "Unverified Contract",
+ "chain": "Ethereum",
+ "loss_raw": "~14,773 USD",
+ "loss_usd": null,
+ "root_cause": "`erc20TransferFrom(address token, address to, address from, uint256 amount)` function allows token transfer from an arbitrary `from` address to `to` without caller validation",
+ "attack_tx": "0x7f2540af4a1f7b0172a46f5539ebf943dd5418422e4faa8150d3ae5337e92172",
+ "vulnerable_contract": "0x43Dc865E916914FD93540461FdE124484FBf8fAa",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: executes transferFrom from arbitrary from without caller validation\n// Vulnerable contract: 0x43Dc865E916914FD93540461FdE124484FBf8fAa\nfunction erc20TransferFrom(\n    address token,\n    address to,\n    address from,    //",
+  "❌ Anyone can specify an arbitrary from\n    uint256 amount\n) external {\n    //",
+  "❌ No check that msg.sender == from or has allowance\n    IERC20(token).transferFrom(from, to, amount);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fixed code: add sender validation\nfunction erc20TransferFrom(\n    address token,\n    address to,\n    address from,\n    uint256 amount\n) external {\n    //",
+  "✅ Only executes if from is msg.sender or msg.sender has sufficient allowance\n    require(\n        from == msg.sender ||\n        IERC20(token).allowance(from, msg.sender) >= amount,\n        \"Unauthorized\"\n    );\n    IERC20(token).transferFrom(from, to, amount);\n}"
+ ],
+ "steps": [
+  "► ❌ No validation → USDC.transferFrom(victim, attacker, ...) executes",
+  "► Victim's entire USDC → attacker"
+ ],
+ "other_code": []
+}

@@ -1,0 +1,39 @@
+{
+ "id": "2021__2021-06-21_ElevenFinance_EmergencyBurn_NoWithdraw",
+ "source_file": "2021/2021-06-21_ElevenFinance_EmergencyBurn_NoWithdraw.md",
+ "title": "Eleven Finance — emergencyBurn() LP Burn Without Withdrawal Vulnerability Analysis",
+ "date": "2021-06-21",
+ "protocol": "Eleven Finance",
+ "chain": "BSC",
+ "loss_raw": "~$4,500,000",
+ "loss_usd": 4500000.0,
+ "root_cause": "emergencyBurn() burns vault shares without withdrawing actual LP from MasterChef, enabling double-withdrawal of LP via a subsequent withdraw() call",
+ "attack_tx": "0x6450...789 (block 8,530,974)",
+ "vulnerable_contract": "0x27DD6E51BF715cFc0e2fe96Af26fC9DED89e4BE8 (Eleven Vault)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Eleven Vault @ 0x27DD6E51BF715cFc0e2fe96Af26fC9DED89e4BE8\nfunction emergencyBurn() external {\n    uint256 shares = balanceOf(msg.sender);\n    require(shares > 0, \"No shares\");\n\n    // Burns vault shares only — no LP withdrawal from MasterChef\n    _burn(msg.sender, shares);\n\n    // totalStaked is not updated either\n    // Actual LP balance in MasterChef remains unchanged\n    emit EmergencyBurn(msg.sender, shares);\n}\n\nfunction withdraw(uint256 _shares) external {\n    // Withdraws LP equivalent to _shares from MasterChef\n    uint256 lpAmount = _shares * balance() / totalSupply();\n    _burn(msg.sender, _shares);\n    IMasterChef(masterChef).withdraw(pid, lpAmount); // still withdrawable\n    lpToken.transfer(msg.sender, lpAmount);\n}",
+  "// ❌ Root cause: emergencyBurn() burns vault shares without withdrawing actual LP from MasterChef, enabling double-withdrawal via subsequent withdraw()\n    function emergencyBurn() external {}  // 0xd8d7f96f  // ❌ Vulnerable\n\n    function withdraw(uint256 arg0) external {}  // 0x2e1a7d4d  // ❌ Vulnerable"
+ ],
+ "code_after": [
+  "// ✅ emergencyBurn() also withdraws MasterChef LP together\nfunction emergencyBurn() external nonReentrant {\n    uint256 shares = balanceOf(msg.sender);\n    require(shares > 0, \"No shares\");\n\n    uint256 lpAmount = shares * balance() / totalSupply();\n\n    // 1. Burn shares (Effect)\n    _burn(msg.sender, shares);\n\n    // 2. Withdraw actual LP from MasterChef (Interaction)\n    IMasterChef(masterChef).withdraw(pid, lpAmount);\n\n    // 3. Transfer LP to user\n    lpToken.transfer(msg.sender, lpAmount);\n    emit EmergencyBurn(msg.sender, shares);\n}",
+  "// ✅ emergencyBurn() performs the same withdrawal logic as withdraw() before burning shares\n// ✅ Always sync with MasterChef on emergencyBurn/withdraw calls\n\nfunction emergencyBurn() external nonReentrant {\n    uint256 shares = balanceOf(msg.sender);\n    uint256 lpAmount = shares * balance() / totalSupply();\n\n    _burn(msg.sender, shares);                           // Effect\n    IMasterChef(masterChef).withdraw(pid, lpAmount);     // Interaction\n    lpToken.safeTransfer(msg.sender, lpAmount);\n}"
+ ],
+ "steps": [
+  "Step 1: ApeSwap flash loan — borrow ~953.8M BUSD",
+  "Step 2: Swap BUSD → NRV (PancakeSwap)",
+  "Step 3: Mint NRV LP then deposit() into Eleven Vault",
+  "→ Receive vault shares",
+  "Step 4: Call vault.emergencyBurn()",
+  "→ Shares burned only; MasterChef LP remains intact",
+  "Step 5: vault.withdraw(0) or re-withdraw with remaining shares",
+  "→ LP withdrawn again from MasterChef (double-withdrawal)",
+  "Step 6: Remove LP → Convert NRV → BUSD → Repay flash loan"
+ ],
+ "other_code": [
+  "┌───────────────────────────────────────────────────────────┐\n│ Step 1: ApeSwap flash loan — borrow ~953.8M BUSD          │\n└─────────────────────┬─────────────────────────────────────┘\n                      │\n┌─────────────────────▼─────────────────────────────────────┐\n│ Step 2: Swap BUSD → NRV (PancakeSwap)                     │\n│ NRV Token @ 0x42F6f551ae042cBe50C739158b4f0CAC0Edb9096   │\n└─────────────────────┬─────────────────────────────────────┘\n                      │\n┌─────────────────────▼─────────────────────────────────────┐\n│ Step 3: Mint NRV LP then deposit() into Eleven Vault      │\n│ Eleven Vault @ 0x27DD6E51BF715cFc0e2fe96Af26fC9DED89e4BE8│\n│ → Receive vault shares                                    │\n└─────────────────────┬─────────────────────────────────────┘\n          ",
+  "// Core attack sequence\nfunction exploit() internal {\n    // Swap BUSD → NRV\n    // router.swapExactTokensForTokens(busd, 0, [BUSD, NRV], ...)\n\n    // Mint NRV LP\n    // router.addLiquidity(NRV, BUSD, ...)\n\n    // Deposit LP into Eleven Vault\n    // elevenVault.deposit(lpBalance); // 0x27DD6E51BF715cFc0e2fe96Af26fC9DED89e4BE8\n\n    // emergencyBurn — burns shares only, MasterChef LP retained\n    elevenVault.emergencyBurn();\n\n    // withdraw — re-withdraw LP from MasterChef (double-withdrawal)\n    elevenVault.withdraw(elevenVault.balanceOf(address(this)));\n\n    // Remove LP → Convert NRV → BUSD\n    // router.removeLiquidity(...)\n    // router.swapExactTokensForTokens(nrv, 0, [NRV, BUSD], ...)\n}"
+ ]
+}

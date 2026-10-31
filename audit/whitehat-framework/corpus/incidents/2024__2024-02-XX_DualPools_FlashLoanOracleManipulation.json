@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-02-XX_DualPools_FlashLoanOracleManipulation",
+ "source_file": "2024/2024-02-XX_DualPools_FlashLoanOracleManipulation.md",
+ "title": "DualPools — Flash Loan-Based Venus Oracle Manipulation Analysis",
+ "date": "2024-02-01",
+ "protocol": "DualPools",
+ "chain": "BSC",
+ "loss_raw": "~$42,000",
+ "loss_usd": 42000.0,
+ "root_cause": "The Venus protocol collateral price oracle references AMM spot prices, enabling collateral value manipulation via large swaps within a single block to facilitate excessive borrowing",
+ "attack_tx": null,
+ "vulnerable_contract": "DualPools Liquidity Pool",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: allows immediate borrowing after large collateral deposit within the same TX\ninterface IVenusComptroller {\n    function enterMarkets(address[] calldata vTokens) external returns (uint256[] memory);\n    function getAccountLiquidity(address account) external view returns (uint256, uint256, uint256);\n}\n\ninterface IVToken {\n    function mint(uint256 mintAmount) external returns (uint256);\n    function borrow(uint256 borrowAmount) external returns (uint256);\n    function redeemUnderlying(uint256 redeemAmount) external returns (uint256);\n    function repayBorrow(uint256 repayAmount) external returns (uint256);\n}\n\n// In the flashLoan callback, immediate collateral deposit → borrowing is possible\n// If the oracle uses spot price, it can be manipulated\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: restricts large-scale mint+borrow within the same block\nfunction mint(uint256 mintAmount) external returns (uint256) {\n    require(\n        block.number > lastMintBlock[msg.sender] + MIN_BLOCKS,\n        \"too frequent\"\n    );\n    lastMintBlock[msg.sender] = block.number;\n    // ... mint logic\n}"
+ ],
+ "steps": [
+  "→ [1] Execute flash loan (borrow large amount of assets)",
+  "→ [2] Venus enterMarkets (enter collateral market)",
+  "→ [3] vToken.mint() (deposit large amount of collateral)",
+  "→ [4] Oracle price manipulation (based on spot price)",
+  "→ [5] vToken.borrow() (excessive borrowing)",
+  "→ [6] vToken.redeemUnderlying() (withdraw collateral)",
+  "→ [7] vToken.repayBorrow() (partial repayment)",
+  "→ [8] Repay flash loan + ~$42K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Execute flash loan (borrow large amount of assets)\n  │\n  ├─→ [2] Venus enterMarkets (enter collateral market)\n  │\n  ├─→ [3] vToken.mint() (deposit large amount of collateral)\n  │\n  ├─→ [4] Oracle price manipulation (based on spot price)\n  │\n  ├─→ [5] vToken.borrow() (excessive borrowing)\n  │\n  ├─→ [6] vToken.redeemUnderlying() (withdraw collateral)\n  │\n  ├─→ [7] vToken.repayBorrow() (partial repayment)\n  │\n  └─→ [8] Repay flash loan + ~$42K profit",
+  "interface IVenusComptroller {\n    function enterMarkets(address[] calldata vTokens) external returns (uint256[] memory);\n    function getAccountLiquidity(address) external view returns (uint256, uint256, uint256);\n}\n\ninterface IVToken {\n    function mint(uint256 mintAmount) external returns (uint256);\n    function borrow(uint256 borrowAmount) external returns (uint256);\n    function redeemUnderlying(uint256 redeemAmount) external returns (uint256);\n    function repayBorrow(uint256 repayAmount) external returns (uint256);\n}\n\ncontract AttackContract {\n    function flashLoanCallback(uint256 amount) external {\n        // [1] Enter Venus market\n        address[] memory markets = new address[](1);\n        markets[0] = address(vToken);\n        IVenusComptroller(comptroller).enterMarkets(markets);"
+ ]
+}

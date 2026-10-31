@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-02-15_USDs_CurvePoolManipulation",
+ "source_file": "2023/2023-02-15_USDs_CurvePoolManipulation.md",
+ "title": "USDs — Stablecoin Attack via Curve Pool Manipulation",
+ "date": "2023-02-15",
+ "protocol": "USDs",
+ "chain": "Arbitrum",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "Curve pool spot price used directly as oracle without TWAP, allowing price manipulation via large swaps within a single block",
+ "attack_tx": "Arbitrum Transaction",
+ "vulnerable_contract": "USDs Protocol",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Using Curve pool spot price as the USDs oracle\nfunction getUSPriceFromCurve() internal view returns (uint256) {\n    //",
+  "❌ Uses the current virtual_price of the Curve pool\n    uint256 virtualPrice = curvePool.get_virtual_price();\n    return virtualPrice;  // Can be altered via flash loan\n}\n\nfunction mintUSDs(uint256 collateralAmount) external {\n    uint256 collateralPrice = getUSPriceFromCurve();\n    //",
+  "❌ USDs mint amount determined using manipulated price\n    uint256 usdsAmount = collateralAmount * collateralPrice / BASE;\n    _mint(msg.sender, usdsAmount);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Use Chainlink oracle\nfunction mintUSDs(uint256 collateralAmount) external {\n    (, int256 price,,,) = chainlinkFeed.latestRoundData();\n    uint256 usdsAmount = collateralAmount * uint256(price) / BASE;\n    _mint(msg.sender, usdsAmount);\n}"
+ ],
+ "steps": [
+  "1 ▶ Flash Loan (borrow large amount of stablecoins)",
+  "2 ▶ Deposit large amount into Curve pool → alter virtual_price",
+  "3 ▶ Mint or redeem USDs favorably using manipulated price",
+  "4 ▶ Remove Curve liquidity",
+  "5 ▶ Repay flash loan → net profit"
+ ],
+ "other_code": [
+  "// Root cause: Curve pool spot price used directly as oracle without TWAP, allowing price manipulation via large swaps within a single block\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ Flash Loan (borrow large amount of stablecoins)\n  │\n  ├─2─▶ Deposit large amount into Curve pool → alter virtual_price\n  │       USDs collateral price becomes manipulated\n  │\n  ├─3─▶ Mint or redeem USDs favorably using manipulated price\n  │\n  ├─4─▶ Remove Curve liquidity\n  │\n  └─5─▶ Repay flash loan → net profit"
+ ]
+}

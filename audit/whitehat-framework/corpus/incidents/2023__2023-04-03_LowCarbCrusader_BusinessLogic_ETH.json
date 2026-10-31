@@ -1,0 +1,44 @@
+{
+ "id": "2023__2023-04-03_LowCarbCrusader_BusinessLogic_ETH",
+ "source_file": "2023/2023-04-03_LowCarbCrusader_BusinessLogic_ETH.md",
+ "title": "Low-Carb-Crusader — Business Logic Vulnerability Analysis",
+ "date": "2023-04-03",
+ "protocol": "LowCarbCrusader",
+ "chain": "Ethereum",
+ "loss_raw": "~$25,000,000 (stolen from 5 sandwich MEV bots)",
+ "loss_usd": 25000000.0,
+ "root_cause": "Business logic flaw in MEV-Boost relay — block body (bundle) exposed to proposer even when block header signature is invalid",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable logic — mev-boost-relay GetPayload handler (pseudocode)\nfunc (r *Relay) GetPayload(signedBlindedBlock *SignedBlindedBeaconBlock) (*ExecutionPayload, error) {\n    header := signedBlindedBlock.Message.Body.ExecutionPayloadHeader\n\n    // Signature validation\n    if err := r.verifySignature(signedBlindedBlock); err != nil {\n        return nil, err\n    }\n\n    // Attempt to publish block to beacon chain\n    err := r.publishBlock(signedBlindedBlock)\n    // ❌ Execution continues regardless of error (invalid block)\n    //    err is not checked — payload is returned unconditionally\n\n    payload, exists := r.blockStore.Get(header.BlockHash)\n    if !exists {\n        return nil, ErrMissingPayload\n    }\n\n    return payload, nil  // ❌ Block body exposed even on publish failure!\n}",
+  "❌ Vulnerable header validation — state_root / parent_root values not checked\nfunc (r *Relay) verifySignature(block *SignedBlindedBeaconBlock) error {\n    // Only checks the mathematical validity of the BLS signature itself\n    pubkey := r.knownValidators[block.Message.ProposerIndex]\n    if !bls.Verify(pubkey, block.Message, block.Signature) {\n        return ErrInvalidSignature\n    }\n    //",
+  "❌ Does not detect state_root == 0x00...0 or parent_root == 0x00...0\n    return nil\n}\n\n//"
+ ],
+ "code_after": [
+  "// ✅ Fixed logic\nfunc (r *Relay) GetPayload(signedBlindedBlock *SignedBlindedBeaconBlock) (*ExecutionPayload, error) {\n    header := signedBlindedBlock.Message.Body.ExecutionPayloadHeader\n\n    if err := r.verifySignature(signedBlindedBlock); err != nil {\n        return nil, err\n    }\n\n    // ✅ Return payload only if block publication succeeds\n    if err := r.publishBlock(signedBlindedBlock); err != nil {\n        // Do not return payload on publish failure — prevents bundle exposure\n        return nil, fmt.Errorf(\"block publication failed, payload withheld: %w\", err)\n    }\n\n    payload, exists := r.blockStore.Get(header.BlockHash)\n    if !exists {\n        return nil, ErrMissingPayload\n    }\n\n    return payload, nil\n}",
+  "✅ Fixed header validation\nfunc (r *Relay) verifySignature(block *SignedBlindedBeaconBlock) error {\n    pubkey := r.knownValidators[block.Message.ProposerIndex]\n    if !bls.Verify(pubkey, block.Message, block.Signature) {\n        return ErrInvalidSignature\n    }\n    //"
+ ],
+ "steps": [
+  "Step 1: Send honeypot transaction",
+  "Attacker EOA [small WETH→STG swap, ultra-low-liquidity V2 pool] ▶ public mempool",
+  "Step 2: Lure MEV sandwich bot",
+  "Step 3: Builder submits block to relay",
+  "Step 4: Attacker calls relay with tampered header (GetPayload)",
+  "Step 5: Relay's business logic flaw triggers",
+  "Relay: attempts block publication → beacon node rejects (invalid header)",
+  "Step 6: Construct and propose backrun block",
+  "→ reconstructs own block: [bot front-run Tx] + [attacker backrun Tx (absorbs bot assets)]",
+  "Step 7: Profit",
+  "(0.04 WETH→STG,",
+  "error ignored → block body returned",
+  "Legal Outcome | Brothers Anton & James Peraire-Bueno indicted (2024); jury deadlock in 2025 → mistrial"
+ ],
+ "other_code": [
+  "Step 1: Send honeypot transaction\n  Attacker EOA ──[small WETH→STG swap, ultra-low-liquidity V2 pool]──▶ public mempool\n\nStep 2: Lure MEV sandwich bot\n  Sandwich bot ──[constructs front-run bundle: large STG buy + victim Tx + backrun]──▶ builder0x69 (builder)\n\nStep 3: Builder submits block to relay\n  builder0x69 ──[block body + header]──▶ ultra sound relay\n\nStep 4: Attacker calls relay with tampered header (GetPayload)\n  Attacker validator ──[state_root=0x00, parent_root=0x00 header + valid BLS signature]──▶ relay\n\nStep 5: Relay's business logic flaw triggers\n  Relay: attempts block publication → beacon node rejects (invalid header)\n         ↓ (error ignored)\n  Relay ──[returns full block body]──▶ attacker validator\n         ※ Sandwich bot's private bundle exposed!\n\nStep 6: Construct and p",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n// Honeypot + backrun contract deployed by attacker (0xe73f1576...)\n// Actual address: https://etherscan.io/address/0xe73f1576af5573714404a2e3181f7336d3d978f9\n\ninterface IUniswapV2Pair {\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\ncontract LowCarbCrusaderAttack {\n    address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;\n    address constant STG  = 0xAf5191B0De278C7286d6C7CC6ab6BB8A73bA2Cd6;\n\n    // Step 1: Honeypot transaction — small swap on ultra-low-liquidity V2 pool\n    // Lures sandwich bot into constructing a large front-run bundle\n    function sendHoneypot(address v2Pool) external {\n        // 0.04 WETH → STG swap (pool liquidity: 0.005 WETH / 4.5 STG)\n       "
+ ]
+}

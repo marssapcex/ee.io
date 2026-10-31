@@ -1,0 +1,38 @@
+{
+ "id": "2023__2023-11-23_OKC_FlashLoanLPReward",
+ "source_file": "2023/2023-11-23_OKC_FlashLoanLPReward.md",
+ "title": "OKC Flash Loan LP Reward Manipulation Incident Analysis",
+ "date": "2023-11-23",
+ "protocol": "OKC",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// File: OKC_decompiled.sol\n    function processLPReward() external {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Nest 5x DODO flash loans (DPP1~5)",
+  "2 ▶ pancakeV3Pool.flash(2,500,000 USDT, 0, data)",
+  "3 ▶ swap() - USDT → OKC swap",
+  "4 ▶ mint() logic:",
+  "c. Deploy new AttackContract2() → auto-adds USDT + OKC as LP",
+  "d. Deploy second AttackContract2 → add LP",
+  "e. pancakePair_USDT_OKC.mint(address(this)) → acquire LP tokens",
+  "5 ▶ minerPool.call(abi.encodeWithSignature(\"processLPReward()\"))",
+  "6 ▶ attack_contract2.transfer_all(pancakePair, address(this))",
+  "7 ▶ pancakeRouter.removeLiquidity(OKC, USDT, lp, ...)",
+  "8 ▶ OKC → USDT reverse swap",
+  "9 ▶ Repay 5x flash loans sequentially + realize profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: reward calculation based on LP balance\ncontract MinerPool {\n    IERC20 public lpToken; // USDT/OKC PancakeSwap LP\n\n    // Vulnerable: only checks LP balance, no validation for add/remove within same block\n    function processLPReward() external {\n        uint256 lpBalance = lpToken.balanceOf(msg.sender);\n        // Reward proportional to LP balance\n        uint256 reward = calculateReward(lpBalance);\n        OKC.transfer(msg.sender, reward);\n    }\n}",
+  "Attacker\n  │\n  ├─1─▶ Nest 5x DODO flash loans (DPP1~5)\n  │      Each DPP: 0x81917eb96b..., 0xFeAFe253..., 0x26d0c625..., 0x6098A563..., 0x9ad32e30...\n  │\n  ├─2─▶ pancakeV3Pool.flash(2,500,000 USDT, 0, data)\n  │      [PancakeV3Pool: 0x4f3126d5DE26413AbDCF6948943FB9D0847d9818]\n  │      Acquire final USDT funds\n  │\n  ├─3─▶ swap() - USDT → OKC swap\n  │      [USDT/OKC Pair: 0x9CC7283d8F8b92654e6097acA2acB9655fD5ED96]\n  │\n  ├─4─▶ mint() logic:\n  │      a. Predict future contract address via RLP address calculation\n  │      b. Transfer small amount of OKC to predicted address (new_attack_contract1)\n  │      c. Deploy new AttackContract2() → auto-adds USDT + OKC as LP\n  │      d. Deploy second AttackContract2 → add LP\n  │      e. pancakePair_USDT_OKC.mint(address(this)) → acquire LP tokens\n  │    "
+ ]
+}

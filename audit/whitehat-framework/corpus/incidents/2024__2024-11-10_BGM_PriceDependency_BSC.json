@@ -1,0 +1,43 @@
+{
+ "id": "2024__2024-11-10_BGM_PriceDependency_BSC",
+ "source_file": "2024/2024-11-10_BGM_PriceDependency_BSC.md",
+ "title": "BGM Token — AMM Spot Price-Dependent Reward Manipulation Analysis",
+ "date": "2024-11-10",
+ "protocol": "BGM Token",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~$450,000 (large-scale BGM token theft)",
+ "loss_usd": 450000.0,
+ "root_cause": "AMM Spot price used directly as oracle for reward calculation (Vulnerable Price Dependency)",
+ "attack_tx": "0x8580...fd1",
+ "vulnerable_contract": "0x4264...b3c2 (BGM Token)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code: price calculated from real-time reserve ratio of PancakeSwap pool\nfunction getSwapRouterAmountsOut(uint256 _amount) private view returns (uint256) {\n    uint256 amountOut;\n    address[] memory path = new address[](2);\n    path[0] = address(this);   // BGM token\n    path[1] = USDT;            // Stablecoin\n    // ❌ _swapRouter.getAmountsOut returns the instant price based on pool reserves\n    // ❌ Manipulating reserves via flash loan immediately changes this value\n    // ❌ No time-weighted average (TWAP), no manipulation detection\n    uint256[] memory amounts = _swapRouter.getAmountsOut(_amount, path);\n    amountOut = amounts[1];\n    return amountOut;\n}",
+  "// ❌ Vulnerable code: reward amount calculated using manipulated Spot price\nfunction updateUserEarn(address user) private {\n    if(lastUpdateTime[user] == 0) {\n        lastUpdateTime[user] = block.timestamp;\n    }\n    uint256 elapsedTime = block.timestamp - lastUpdateTime[user];\n    uint256 elapsedCount = elapsedTime / earnInterval;\n    if(elapsedCount > 0) {\n        lastUpdateTime[user] += elapsedCount * earnInterval;\n        // ❌ Manipulated Spot price used directly in reward calculation\n        uint256 price = getSwapRouterAmountsOut(1e18);\n        // If price is spiked via flash loan, earnToken also spikes\n        uint256 earnToken = calcEarn(elapsedCount, _balances[user], price);\n        userEarn[user] += earnToken;\n        updateInvitorEarn(user, earnToken);\n        emit UpdateUserEarn(user, earnToken, elapsedCount, price, _balances[user]);\n    }\n}",
+  "// ❌ Vulnerable code: instant withdrawal of manipulated rewards, BGM deducted directly from pool\nfunction _withdraw(address _user) internal {\n    updateUserEarn(_user); // ❌ Reward recalculated here using manipulated price\n    uint256 earn = userEarn[_user];\n    uint256 invitorEarn = userInvitorEarn[_user];\n    if(earn > 0) {\n        userEarn[_user] = 0;\n        // ❌ BGM tokens withdrawn directly from usdtPair (LP pool)\n        _update(usdtPair, _user, earn);\n        userEarnInfos[_user].tolEarn += earn;\n    }\n    if(invitorEarn > 0) {\n        userInvitorEarn[_user] = 0;\n        _update(usdtPair, _user, invitorEarn);\n        userEarnInfos[_user].tolInvitorEarn += invitorEarn;\n    }\n    // ❌ sync() called after balance change — causes pool state inconsistency\n    IUniswapV2Pair iPair = IUniswapV2Pair(usdtPair);\n    iPair.sync();\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code: use Uniswap V3 TWAP or Chainlink\n// Method 1: Apply 30-minute TWAP\nfunction getTokenPriceTWAP(uint256 _amount) private view returns (uint256) {\n    // ✅ Time-weighted average price that cannot be manipulated by short-term flash loans\n    uint32[] memory secondsAgos = new uint32[](2);\n    secondsAgos[0] = 1800; // 30 minutes ago\n    secondsAgos[1] = 0;    // now\n    (int56[] memory tickCumulatives, ) = IUniswapV3Pool(bgmUsdtPool).observe(secondsAgos);\n    int56 tickDiff = tickCumulatives[1] - tickCumulatives[0];\n    int24 avgTick = int24(tickDiff / 1800);\n    return OracleLibrary.getQuoteAtTick(avgTick, uint128(_amount), address(this), USDT);\n}\n\n// Method 2: Use Chainlink price feed (recommended)\nfunction getTokenPriceChainlink(uint256 _amount) private view returns (uint256) {\n    // ✅ Off-chain aggregated price — immune to AMM manipulation\n    (, int256 price, , uint256 updatedAt, ) = priceFeed.latestRoundData();\n    require(block.timestamp - updatedAt < 3600, \"Price feed stale\"); // ✅ Staleness check\n    return uint256(price) * _amount / 1e8;\n}",
+  "// ✅ Fixed code: add price manipulation safeguards\nfunction updateUserEarn(address user) private {\n    if(lastUpdateTime[user] == 0) {\n        lastUpdateTime[user] = block.timestamp;\n    }\n    uint256 elapsedTime = block.timestamp - lastUpdateTime[user];\n    uint256 elapsedCount = elapsedTime / earnInterval;\n    if(elapsedCount > 0) {\n        lastUpdateTime[user] += elapsedCount * earnInterval;\n        // ✅ Use TWAP price\n        uint256 price = getTokenPriceTWAP(1e18);\n        // ✅ Detect abnormal price deviation (e.g., reject if more than 2x last recorded price)\n        require(price <= lastRecordedPrice * 200 / 100, \"Price manipulation detected\");\n        // ✅ Apply reward cap\n        uint256 earnToken = calcEarn(elapsedCount, _balances[user], price);\n        require(earnToken <= maxEarnPerInterval, \"Reward limit exceeded\");\n        userEarn[user] += earnToken;\n        updateInvitorEarn(user, earnToken);\n        emit UpdateUserEarn(user, earnToken, elapsedCount, price, _balances[user]);\n    }\n}"
+ ],
+ "steps": [
+  "1. Flash Loan Borrowing",
+  "2. PancakeSwap Pool Price Manipulation (BGM price spike)",
+  "3. Reward Calculation Manipulation",
+  "4. Reward Withdrawal (inflated BGM received)",
+  "→ Receive 320,653,620 + 671,576,831 BGM",
+  "5. BGM Sell + Flash Loan Repayment",
+  "Received BGM → swapped to USDT on PancakeSwap",
+  "1) flashLoan(~57.8M USDT)",
+  "2) Large-scale USDT → BGM purchase (price manipulation)",
+  "_update(usdtPair → attacker) ← BGM drained from LP pool",
+  "3) 671M+ BGM received",
+  "BGM → USDT sell"
+ ],
+ "other_code": [
+  "1. Flash Loan Borrowing\n   ┌─────────────────────────────────────────────────────┐\n   │  Attacker Contract (0x00c0...6180)                    │\n   │  └─► Flash Loan Provider 1 (0x4f31...40Eb)           │\n   │       └─► Borrow 14,582,856 USDT                     │\n   │  └─► Flash Loan Provider 2 (0x3669...2050)           │\n   │       └─► Borrow 43,262,367 USDT                     │\n   └─────────────────────────────────────────────────────┘\n                            │\n                            ▼\n2. PancakeSwap Pool Price Manipulation (BGM price spike)\n   ┌─────────────────────────────────────────────────────┐\n   │  ~57,845,223 USDT injected into BGM-USDT pool        │\n   │  (Large-scale BGM purchase)                          │\n   │                                                      │\n ",
+  "Attacker EOA\n(0x7824...595F)\n      │\n      │ tx: 0x8580...fd1\n      ▼\n┌─────────────────────┐\n│  Attack Contract     │\n│  0x00c0...6180      │\n└────────┬────────────┘\n         │ 1) flashLoan(~57.8M USDT)\n         ├──────────────────────────────────────────────┐\n         │                                              ▼\n         │                               ┌─────────────────────────┐\n         │                               │ Flash Loan Providers 1, 2 │\n         │                               │ 0x4f31...40Eb            │\n         │                               │ 0x3669...2050            │\n         │                               └─────────────────────────┘\n         │ 2) Large-scale USDT → BGM purchase (price manipulation)\n         ▼\n┌─────────────────────────────────┐\n│  PancakeSwap V2"
+ ]
+}

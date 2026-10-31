@@ -1,0 +1,31 @@
+{
+ "id": "2022__2022-02-02_Wormhole_SignatureVerificationBypass_ETH",
+ "source_file": "2022/2022-02-02_Wormhole_SignatureVerificationBypass_ETH.md",
+ "title": "Wormhole Bridge — Signature Verification Bypass / Fake VAA Mint Analysis",
+ "date": "2022-02-02",
+ "protocol": "Wormhole Bridge",
+ "chain": "Solana",
+ "loss_raw": "~$320,000,000 (120,000 wETH minted without ETH backing)",
+ "loss_usd": 320000000.0,
+ "root_cause": "The Solana bridge accepted a deprecated `secp256k1_program` instruction as a valid guardian signature verification substitute — an attacker-controlled sysvar was trusted, allowing a forged VAA (Verified Action Approval) to be accepted without real guardian signatures",
+ "attack_tx": null,
+ "vulnerable_contract": "Wormhole Solana Core Bridge (instruction deserialization)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "// PRE-PATCH (vulnerable) — as deployed on mainnet at time of exploit:\n// Source: Kudelski Security / Halborn / CertiK post-mortem analysis\npub fn verify_signatures(\n    ctx: &ExecutionContext,\n    accs: &mut VerifySignatures,\n    data: VerifySignaturesData,\n) -> Result<()> {\n    // ...\n    let secp_ix_index = (current_instruction - 1) as u8;\n\n    // ❌ VULNERABLE: load_instruction_at is DEPRECATED and does NOT validate\n    //    that accs.instruction_acc is the real Instructions sysvar account.\n    //    An attacker can pass any account they control as instruction_acc,\n    //    pre-populated with fake secp256k1 instruction data.\n    let secp_ix = solana_program::sysvar::instructions::load_instruction_at(\n        secp_ix_index as usize,\n        &accs.instruction_acc.try_borrow_mut_data()?,  // ❌ sysvar identity never checked\n    )?;\n\n    // ❌ The program_id check below runs on attacker-supplied data,\n    //    so an attacker crafts their fake account to contain a secp256k1 program_id.\n    if secp_ix.program_id != solana_program::secp256k1_program::id() {\n        return Err(InvalidSecpInstruction.into());\n    }\n\n    // ... signature parsing proceeds on forged data ...\n\n    // ❌ Guardian signatures marked as verified using forged secp instruction data\n    accs.signature_set.signatures[s.signer_index as usize] = true;\n\n    Ok(())\n}"
+ ],
+ "code_after": [
+  "// POST-PATCH (fixed) — actual code now in the live wormhole repository:\n// https://github.com/wormhole-foundation/wormhole/blob/main/solana/bridge/program/src/api/verify_signature.rs\npub fn verify_signatures(\n    ctx: &ExecutionContext,\n    accs: &mut VerifySignatures,\n    data: VerifySignaturesData,\n) -> Result<()> {\n    accs.guardian_set.verify_derivation(ctx.program_id, &(&*accs).into())?;\n\n    let current_instruction =\n        solana_program::sysvar::instructions::load_current_index_checked(&accs.instruction_acc)?;\n    if current_instruction == 0 {\n        return Err(InstructionAtWrongIndex.into());\n    }\n\n    let secp_ix_index = (current_instruction - 1) as u8;\n\n    // ✅ FIXED: load_instruction_at_checked validates that accs.instruction_acc\n    //    is the REAL Instructions sysvar — an attacker-controlled account is rejected.\n    let secp_ix = solana_program::sysvar::instructions::load_instruction_at_checked(\n        secp_ix_index as usize,\n        &accs.instruction_acc,   // ✅ account identity is now validated by the runtime\n    )\n    .map_err(|_| ProgramError::InvalidAccountData)?;\n\n    // ✅ Now this check is meaningful: the data truly came from the secp256k1 native program\n    if secp_ix.program_id != solana_program::secp256k1_program::id() {\n        return Err(InvalidSecpInstruction.into());\n    }\n\n    // ... remainder of parsing and signature recording unchanged ...\n    Ok(())\n}"
+ ],
+ "steps": [
+  "→ SignatureSet account marked as fully verified",
+  "→ Bridge mints 120,000 wETH on Solana (no ETH locked on Ethereum side)",
+  "→ Withdraw 93,750 real ETH from Ethereum bridge contract"
+ ],
+ "other_code": [
+  "// File: solana/bridge/program/src/api/verify_signature.rs\n// Language: Rust (Solana solitaire framework)\n\n#[derive(FromAccounts)]\npub struct VerifySignatures<'b> {\n    /// Payer for account creation\n    pub payer: Mut<Signer<Info<'b>>>,\n    /// Guardian set of the signatures\n    pub guardian_set: GuardianSet<'b, { AccountState::Initialized }>,\n    /// Signature Account\n    pub signature_set: Mut<Signer<SignatureSet<'b, { AccountState::MaybeInitialized }>>>,\n    /// Instruction reflection account (special sysvar)\n    pub instruction_acc: Info<'b>,  // ← caller-supplied; see vulnerability below\n}\n\n#[derive(Default, BorshSerialize, BorshDeserialize)]\npub struct VerifySignaturesData {\n    /// instruction indices of signers (-1 for missing)\n    pub signers: [i8; MAX_LEN_GUARDIAN_KEYS],\n}",
+  "Attacker (Solana)\n    │\n    ├─[1] Craft a transaction that calls Wormhole's verify_signatures\n    │       with a forged instruction_sysvar account the attacker controls\n    │       (deprecated code path accepted non-native sysvar)\n    │\n    ├─[2] Wormhole bridge accepts the forged VAA as guardian-approved\n    │       → SignatureSet account marked as fully verified\n    │\n    ├─[3] Call complete_wrapped() with the forged VAA\n    │       → Bridge mints 120,000 wETH on Solana (no ETH locked on Ethereum side)\n    │\n    ├─[4] Transfer 93,750 wETH back across the bridge to Ethereum\n    │       → Withdraw 93,750 real ETH from Ethereum bridge contract\n    │\n    ├─[5] Swap remaining ~26,250 wETH on Solana for USDC and SOL\n    │\n    └─[6] Total loss: ~$320M (120,000 ETH equivalent)"
+ ]
+}

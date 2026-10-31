@@ -1,0 +1,37 @@
+{
+ "id": "2023__2023-02-24_DYNA_StakingReentrancy",
+ "source_file": "2023/2023-02-24_DYNA_StakingReentrancy.md",
+ "title": "DYNA — Staking Reentrancy Attack Analysis",
+ "date": "2023-02-24",
+ "protocol": "DYNA",
+ "chain": "BSC",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "External token transfer before state update in `redeem()` enables reentrancy",
+ "attack_tx": "0x06bbe093...",
+ "vulnerable_contract": "DYNA Staking Contract",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable redeem function (CEI pattern violation)\ninterface IStakingDYNA {\n    function deposit(uint256 _stakeAmount) external;\n    function redeem(uint256 _redeemAmount) external;\n}\n\n// Estimated vulnerable implementation\nfunction redeem(uint256 _redeemAmount) external {\n    require(stakedBalance[msg.sender] >= _redeemAmount, \"Insufficient stake\");\n\n    //",
+  "❌ Token transfer before state update\n    IERC20(dynaToken).transfer(msg.sender, _redeemAmount);\n    // At this point, if msg.sender reenters, stakedBalance has not yet been decremented\n\n    stakedBalance[msg.sender] -= _redeemAmount;  //",
+  "❌ State update too late\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Apply CEI pattern\nfunction redeem(uint256 _redeemAmount) external {\n    require(stakedBalance[msg.sender] >= _redeemAmount, \"Insufficient stake\");\n\n    //",
+  "✅ Update state first\n    stakedBalance[msg.sender] -= _redeemAmount;\n\n    //"
+ ],
+ "steps": [
+  "1 ▶ deposit(amount) → set staking balance",
+  "2 ▶ call redeem(amount)",
+  "transfer DYNA token → to attacker contract",
+  "3 ▶ reenter via callback: call redeem(amount) again",
+  "stakedBalance not yet decremented → passes check again",
+  "4 ▶ swap acquired DYNA → WBNB → realize profit"
+ ],
+ "other_code": [
+  "// Root cause: External token transfer before state update in `redeem()` enables reentrancy\n// Source code unverified — based on bytecode analysis",
+  "Attacker Contract\n  │\n  ├─1─▶ deposit(amount) → set staking balance\n  │\n  ├─2─▶ call redeem(amount)\n  │       │\n  │       ├─ balance check: stakedBalance >= amount ✓\n  │       ├─ transfer DYNA token → to attacker contract\n  │       │   │\n  │       │   └─3─▶ reenter via callback: call redeem(amount) again\n  │       │           stakedBalance not yet decremented → passes check again\n  │       │           receive additional tokens\n  │       │\n  │       └─ decrement stakedBalance (already withdrawn multiple times)\n  │\n  └─4─▶ swap acquired DYNA → WBNB → realize profit"
+ ]
+}

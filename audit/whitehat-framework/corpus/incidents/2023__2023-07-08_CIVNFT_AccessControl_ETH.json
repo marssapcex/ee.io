@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-07-08_CIVNFT_AccessControl_ETH",
+ "source_file": "2023/2023-07-08_CIVNFT_AccessControl_ETH.md",
+ "title": "CIVNFT — Uniswap V3 Callback Access Control Vulnerability Analysis",
+ "date": "2023-07-08",
+ "protocol": "CIVNFT",
+ "chain": "Ethereum",
+ "loss_raw": "~$180,000 (89,789 CIV tokens)",
+ "loss_usd": 180000.0,
+ "root_cause": "Missing caller validation in `uniswapV3MintCallback` — a fake Uniswap V3 Pool triggers the callback to drain victim's approved tokens",
+ "attack_tx": "0x93a0...aceb",
+ "vulnerable_contract": "0xf169...0580",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — trusts the pool address without validation\nfunction openPosition(\n    address pool,          // ❌ Any contract can be designated as a Uniswap V3 Pool\n    bytes memory priceStr, // Price string (e.g., \"0.000059\")\n    int24 tick,            // Tick value (-97385)\n    uint256 amount0,       // CIV amount\n    uint256 amount1,       // WETH amount\n    bool flag              // Flag\n) external {\n    // ❌ No validation that pool was created by an actual Uniswap V3 Pool Factory!\n    // ❌ No validation that msg.sender is an authorized user!\n\n    IUniswapV3Pool(pool).mint(\n        address(this),   // Recipient (CIVNFT contract itself)\n        tick - 5,\n        tick + 5,\n        uint128(amount0),\n        abi.encode(...)  // Callback data (includes victim address)\n    );\n}",
+  "// ❌ Vulnerable code — does not validate the callback caller\nfunction uniswapV3MintCallback(\n    uint256 amount0Owed,   // Amount of CIV to supply (attacker-specified arbitrarily)\n    uint256 amount1Owed,   // Amount of WETH to supply\n    bytes calldata data    // Callback data (includes victim address)\n) external {\n    // ❌ No validation that msg.sender is an actual Uniswap V3 Pool!\n    // Anyone can call this callback directly to transfer tokens from an arbitrary address\n\n    (address payer, address recipient) = abi.decode(data, (address, address));\n\n    if (amount0Owed > 0) {\n        // ❌ No validation that payer actually consented to this transaction\n        CIV.transferFrom(payer, recipient, amount0Owed);\n    }\n    if (amount1Owed > 0) {\n        WETH.transferFrom(payer, recipient, amount1Owed);\n    }\n}",
+  "┌──────────────────────────────────────────────────────────────┐\n│  Attacker (0xbf9d...ff66)                                     │\n│  Deploys attack contract (implements fake Uniswap V3 Pool     │\n│  interface)                                                   │\n└────────────────────────┬─────────────────────────────────────┘\n                         │ ① call 0x7ca06d68(fakePool, ...)\n                         ▼\n┌──────────────────────────────────────────────────────────────┐\n│  CIVNFT Contract (0xf169...0580)                              │\n│  openPosition() — no Pool address validation ❌              │\n└────────────────────────┬─────────────────────────────────────┘\n                         │ ② fakePool.mint(recipient=CIVNFT, data=victim)\n                         ▼\n┌──────────────────────────────────────────────────────────────┐\n│  Fake Pool (attacker contract, 0x1ae3...25ec)                 │\n│  mint() callback received — immediately re-invokes           │\n└────────────────────────┬─────────────────────────────────────┘\n                         │ ③ call 0xd3487997(balanceOf(victim), 0, victim||victim)\n                         ▼\n┌──────────────────────────────────────────────────────────────┐\n│  CIVNFT Contract (0xf169...0580)                              │\n│  uniswapV3MintCallback() — no msg.sender validation ❌       │\n│  CIV.transferFrom(victim → attacker, 89,789 CIV)             │\n└────────────────────────┬─────────────────────────────────────┘\n                         │ ④ CIV transfer executed\n                         ▼\n┌──────────────────────────────────────────────────────────────┐\n│  Victim Wallet (0x512e...fFD)                                 │\n│  CIV balance: 89,789 CIV → 0                                 │\n│  (had previously granted approve to CIVNFT)                  │\n└──────────────────────────────────────────────────────────────┘\n                         │ ⑤ NFT Position #61 minted\n                         ▼\n┌──────────────────────────────────────────────────────────────┐\n│  Attacker Contract (0x1ae3...25ec)                            │\n│  Final gain: 89,789 CIV (~$180,000) + NFT Position #61       │\n└──────────────────────────────────────────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — verifies pool authenticity via Factory\naddress constant UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;\n\nfunction openPosition(\n    address pool,\n    bytes memory priceStr,\n    int24 tick,\n    uint256 amount0,\n    uint256 amount1,\n    bool flag\n) external onlyAuthorized {  // ✅ Only authorized callers permitted\n    // ✅ Verify it is a genuine Pool created by Uniswap V3 Factory\n    address token0 = IUniswapV3Pool(pool).token0();\n    address token1 = IUniswapV3Pool(pool).token1();\n    uint24 fee = IUniswapV3Pool(pool).fee();\n    address expectedPool = IUniswapV3Factory(UNISWAP_V3_FACTORY).getPool(token0, token1, fee);\n    require(pool == expectedPool, \"CIVNFT: invalid pool address\");\n\n    IUniswapV3Pool(pool).mint(...);\n}",
+  "// ✅ Fixed code — stores pool address and validates the callback caller\nmapping(bytes32 => address) private _activePool; // Tracks active pool per transaction\n\nfunction uniswapV3MintCallback(\n    uint256 amount0Owed,\n    uint256 amount1Owed,\n    bytes calldata data\n) external {\n    // ✅ Verify msg.sender is a registered trusted Pool\n    require(_isValidPool(msg.sender), \"CIVNFT: callback from unknown pool\");\n\n    (address payer, address recipient) = abi.decode(data, (address, address));\n\n    // ✅ payer must be the user registered through msg.sender (Pool)\n    require(payer == _authorizedPayer[msg.sender], \"CIVNFT: unauthorized payer\");\n\n    if (amount0Owed > 0) {\n        CIV.transferFrom(payer, recipient, amount0Owed);\n    }\n}\n\nfunction _isValidPool(address pool) internal view returns (bool) {\n    // Verify pool authenticity via Factory\n    // ...\n}"
+ ],
+ "steps": [
+  "1. **[Step 1]**: Attacker calls CIVNFT's public function `0x7ca06d68`",
+  "2. **[Step 2]**: CIVNFT calls `mint()` on the fake Pool",
+  "3. **[Step 3]**: The fake Pool's `mint()` callback executes",
+  "4. **[Step 4]**: CIVNFT's `uniswapV3MintCallback` executes",
+  "5. **[Step 5]**: Attack complete",
+  "CIV.transferFrom(victim → attacker, 89,789 CIV)",
+  "CIV balance: 89,789 CIV → 0"
+ ],
+ "other_code": []
+}

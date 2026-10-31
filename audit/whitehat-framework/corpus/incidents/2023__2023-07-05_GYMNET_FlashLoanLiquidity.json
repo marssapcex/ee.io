@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-07-05_GYMNET_FlashLoanLiquidity",
+ "source_file": "2023/2023-07-05_GYMNET_FlashLoanLiquidity.md",
+ "title": "GYMNET Flash Loan Liquidity Manipulation Incident Analysis",
+ "date": "2023-07-05",
+ "protocol": "GYMNET",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ PancakePair.swap() — obtain flash loan",
+  "2 ▶ Acquire GYMNET tokens",
+  "3 ▶ GymRouter.addLiquidityForUser() — repeated calls",
+  "4 ▶ Remove liquidity (manipulated positions)",
+  "5 ▶ Repay flash loan + realize profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: GymRouter liquidity function with no access control\ncontract GymRouter {\n    // Vulnerable: can be executed targeting arbitrary victim addresses\n    function addLiquidityForUser(\n        address user,   // Vulnerable: no caller validation\n        uint256 amount,\n        address token\n    ) external {\n        // Transfers tokens from user address without validation\n        IERC20(token).transferFrom(user, address(this), amount);\n        // Add liquidity\n        _addLiquidity(user, amount);\n    }\n\n    // If victims had previously granted infinite approval to the Router,\n    // an attacker can specify arbitrary victim addresses to drain their assets\n}",
+  "// Root cause: Flash Loan + Liquidity Manipulation\n// Source code unverified — based on bytecode analysis"
+ ]
+}

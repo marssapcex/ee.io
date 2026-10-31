@@ -1,0 +1,29 @@
+{
+ "id": "2025__2025-04-15_BTNFT_TransferAccessControl",
+ "source_file": "2025/2025-04-15_BTNFT_TransferAccessControl.md",
+ "title": "BTNFT — Reward Theft via Unauthorized NFT Transfer Analysis",
+ "date": "2025-04-15",
+ "protocol": "BTNFT",
+ "chain": "BSC",
+ "loss_raw": "19,025 BUSD",
+ "loss_usd": null,
+ "root_cause": "No access control on ERC721 transferFrom, allowing anyone to transfer another user's NFT to the contract",
+ "attack_tx": null,
+ "vulnerable_contract": "0x0FC91B6Fea2E7A827a8C99C91101ed36c638521B",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable transferFrom: no approval check\ncontract BTNFT is ERC721 {\n    function transferFrom(\n        address from,\n        address to,\n        uint256 tokenId\n    ) public override {\n        //",
+  "❌ Missing _isApprovedOrOwner(msg.sender, tokenId) check!\n        // Anyone can transfer any NFT\n\n        if (to == address(this)) {\n            // Sending NFT to itself triggers reward payout\n            _claimRewards(from, tokenId);\n        }\n        _transfer(from, to, tokenId);\n    }\n\n    function _claimRewards(address recipient, uint256 tokenId) internal {\n        uint256 reward = calculateReward(tokenId);\n        IERC20(BTT).transfer(recipient, reward); //",
+  "❌ Transfers to msg.sender\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code\nfunction transferFrom(address from, address to, uint256 tokenId)\n    public override {\n    require(\n        _isApprovedOrOwner(msg.sender, tokenId),\n        \"Not approved\" //",
+  "✅ Approval check\n    );\n    // ...\n}"
+ ],
+ "steps": [
+  "► _claimRewards() triggered → BTT tokens received"
+ ],
+ "other_code": []
+}

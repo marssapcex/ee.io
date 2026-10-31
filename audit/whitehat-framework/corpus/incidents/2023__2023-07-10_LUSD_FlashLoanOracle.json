@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-07-10_LUSD_FlashLoanOracle",
+ "source_file": "2023/2023-07-10_LUSD_FlashLoanOracle.md",
+ "title": "LUSD Flash Loan Oracle Manipulation Incident Analysis",
+ "date": "2023-07-10",
+ "protocol": "LUSD",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ DPPOracle1.flashLoan() [0x26d0c625e5F5D6de034495fbDe1F6e9377185618]",
+  "2 ▶ DPPOracle2.flashLoan() [0xFeAFe253802b77456B4627F8c2306a9CeBb5d681]",
+  "3 ▶ DPPOracle3.flashLoan() [0x9ad32e3054268B849b84a8dBcC7c8f7c52E4e69A]",
+  "4 ▶ DPP.flashLoan() [0x6098A5638d8D7e9Ed2f952d35B2b67c34EC6B476]",
+  "5 ▶ DPPAdvanced.flashLoan() [0x81917eb96b397dFb1C6000d28A5bc08c0f05fC1d]",
+  "→ Acquire large amount of BUSDT",
+  "6 ▶ pancakeCall() → Buy large amount of BTCB with BUSDT",
+  "7 ▶ takeFlashloan() → Call LOAN.mintLUSD()",
+  "8 ▶ Convert LUSD → BUSDT",
+  "9 ▶ Repay all flash loans + realize profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: real-time pool ratio-based oracle\ncontract LOAN {\n    LUSDPOOL public lusdPool;\n    IPancakePair public btcbUsdPair;\n\n    function mintLUSD(uint256 btcbAmount) external {\n        // Vulnerable: uses manipulable spot price\n        (uint112 reserve0, uint112 reserve1,) = btcbUsdPair.getReserves();\n        uint256 btcbPrice = uint256(reserve1) * 1e18 / uint256(reserve0);  // manipulable\n\n        // Mints excessive LUSD using inflated BTCB price\n        uint256 lusdAmount = btcbAmount * btcbPrice / 1e18;\n        lusdPool.mint(msg.sender, lusdAmount);\n    }\n}",
+  "// Root cause: Flash Loan + Oracle Manipulation\n// Source code unverified — based on bytecode analysis"
+ ]
+}

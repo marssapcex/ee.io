@@ -1,0 +1,40 @@
+{
+ "id": "2026__2026-03-10_MovieToken_MT_PendingBurnLP_BSC",
+ "source_file": "2026/2026-03-10_MovieToken_MT_PendingBurnLP_BSC.md",
+ "title": "Security Incident Analysis: Movie Token (MT) PendingBurn LP Burn Attack",
+ "date": "2026-03-10",
+ "protocol": "MovieToken",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "On PendingBurnExecuted:\n  _transfer(from = LP_Pool_Address,  ← ❌ Debits from pool's token balance\n            to   = 0x000...dEaD,\n            amount = pendingBurnAmount)",
+  "// ❌ Vulnerable: Burn directly from LP pool balance — breaks AMM k invariant\nfunction _executePendingBurn(address lpPool) internal {\n    uint256 burnAmount = pendingBurnAmount;\n    if (burnAmount == 0) return;\n    pendingBurnAmount = 0;\n\n    // Uses LP pool address as from → corrupts LP reserve integrity!\n    _transfer(lpPool, address(0xdead), burnAmount);\n    \n    emit PendingBurnExecuted(burnAmount);\n    emit DeflationStopped();\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix 1: Burn from contract's own balance\nfunction _executePendingBurn() internal {\n    uint256 burnAmount = pendingBurnAmount;\n    if (burnAmount == 0) return;\n    pendingBurnAmount = 0;\n    \n    // Burn only from tokens collected by the contract as fees\n    require(balanceOf(address(this)) >= burnAmount, \"Insufficient burn reserve\");\n    _transfer(address(this), address(0xdead), burnAmount);\n    \n    emit PendingBurnExecuted(burnAmount);\n}\n\n// ✅ Fix 2: Force sync() after LP burn (not recommended — still risky)\nfunction _executePendingBurnFromLP(address lpPool) internal {\n    uint256 burnAmount = pendingBurnAmount;\n    pendingBurnAmount = 0;\n    _transfer(lpPool, address(0xdead), burnAmount);\n    IPancakePair(lpPool).sync();  // Force AMM internal state update\n    emit PendingBurnExecuted(burnAmount);\n}"
+ ],
+ "steps": [
+  "[1] FlashLoan: Borrow 358,681 WBNB (flash pool → ATK)",
+  "[2] Small buy/sell (0.2 MT) → Trigger ReferralPending (x2)",
+  "[4] 1st Buy: 496.66 WBNB → LP → Receive 10,000,000 MT",
+  "[5] 1M MT → Transfer to MT contract",
+  "[6] 9M MT → Transfer to LP (sell)",
+  "→ Receive +397.33 WBNB",
+  "[7] 2nd Buy: 717.55 WBNB → LP → Receive 10,000,000 MT",
+  "k: 8.12e9 → 25.2M (322x decrease!)",
+  "MT price: 0.000178 → 0.0572 WBNB (322x surge!)",
+  "[11] 10,000,000 MT → LP sell",
+  "→ Receive +1,198.63 WBNB"
+ ],
+ "other_code": [
+  "Attacker EOA (0xDB09...)\n  │\n  └─▶ exploit(MT, PancakeRouter, LP_pool, ?) called\n        │\n        ├─[1] FlashLoan: Borrow 358,681 WBNB (flash pool → ATK)\n        │\n        ├─[2] Small buy/sell (0.2 MT) → Trigger ReferralPending (x2)\n        │      └─ Initialize referral state in token contract\n        │\n        ├─[3] Add small LP liquidity (Mint LP)\n        │\n        ├─[4] 1st Buy: 496.66 WBNB → LP → Receive 10,000,000 MT\n        │      LP state: MT=7,756,517, WBNB=880.93\n        │\n        ├─[5] 1M MT → Transfer to MT contract\n        │      └─ Contract distributes fees then moves to fee address\n        │\n        ├─[6] 9M MT → Transfer to LP (sell)\n        │      └─ PendingBurnRecorded(9,000,000 MT)\n        │      └─ FeesProcessed event\n        │      → Receive +397.33 WBNB\n        │\n    ",
+  "[Before burn]\n  LP.reserve_MT   = 6,756,517  (LP internal record)\n  IERC20(MT).balanceOf(LP) = 6,756,517  (actual balance)\n  k = 6,756,517 × 1,201 = 8.12e9\n\n[PendingBurnExecuted called]\n  MT._transfer(from=LP, to=0xDead, 6,735,517)\n  → IERC20(MT).balanceOf(LP) = 21,000  ← actual balance plummets!\n  → LP.reserve_MT still holds 6,756,517 (no Sync yet)\n\n[On next Swap/Sync]\n  LP.sync() called → reserve_MT = 21,000  \n  → new k = 21,000 × 1,201 = 25.2M  (322x decrease!)\n  → MT price surges 322x"
+ ]
+}

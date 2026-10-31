@@ -1,0 +1,31 @@
+{
+ "id": "2023__2023-09-05_QuantumWN_Staking",
+ "source_file": "2023/2023-09-05_QuantumWN_Staking.md",
+ "title": "QuantumWN — Staking Vulnerability Analysis",
+ "date": "2023-09-05",
+ "protocol": "QuantumWN",
+ "chain": "Ethereum",
+ "loss_raw": "~0.5 ETH",
+ "loss_usd": null,
+ "root_cause": "Double reward payout due to incorrect rebase flag handling in the unstake function",
+ "attack_tx": "0xa4659632a983b3bf...",
+ "vulnerable_contract": "0x154863eb71de4a34...",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: incorrect rebase flag handling\nfunction unstake(address to, uint256 amount, bool rebase) external {\n    if (rebase) {\n        // calculate rebase reward\n        uint256 rebaseReward = calculateRebaseReward();\n        amount += rebaseReward; //",
+  "❌ reward included in amount\n    }\n    //",
+  "❌ calling again with rebase=false pays out principal + separate reward twice\n    transfer(to, amount);\n    pendingRewards[msg.sender] = 0;\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: clear separation of state"
+ ],
+ "steps": [
+  "① Call unstake(to, amount, true) → withdraw with rebase reward included"
+ ],
+ "other_code": [
+  "// Root cause: double reward payout due to incorrect rebase flag handling in the unstake function\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Call unstake(to, amount, true) → withdraw with rebase reward included\n  ├─② Re-call unstake(to, amount, false) on the same position\n  └─③ Double payout + ~0.5 ETH"
+ ]
+}

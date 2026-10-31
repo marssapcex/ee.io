@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-07-31_WGPT_FlashLoanTokenBurn",
+ "source_file": "2023/2023-07-31_WGPT_FlashLoanTokenBurn.md",
+ "title": "WGPT Flash Loan Token Burn Incident Analysis",
+ "date": "2023-07-31",
+ "protocol": "WGPT",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Chained flash loans across DPPOracle1~5",
+  "→ Acquire large amount of BUSDT",
+  "2 ▶ Swap BUSDT → WGPT in bulk",
+  "3 ▶ Manipulate WGPT token supply",
+  "4 ▶ Reverse swap WGPT → BUSDT",
+  "5 ▶ Repay all flash loans + realize ~$80K USD profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: function allowing supply manipulation via external call\ninterface IWGPT {\n    // Vulnerable: function that can burn tokens from an arbitrary address\n    function burnFrom(address account, uint256 amount) external;\n    // Or: supply changes are immediately reflected in price\n}",
+  "// Root cause: flash loan + token supply manipulation\n// Source code unverified — based on bytecode analysis"
+ ]
+}

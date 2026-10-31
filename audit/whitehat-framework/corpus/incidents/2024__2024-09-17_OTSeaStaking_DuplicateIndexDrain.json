@@ -1,0 +1,33 @@
+{
+ "id": "2024__2024-09-17_OTSeaStaking_DuplicateIndexDrain",
+ "source_file": "2024/2024-09-17_OTSeaStaking_DuplicateIndexDrain.md",
+ "title": "OTSeaStaking — Duplicate Index claim/withdraw Reward Double-Claim Analysis",
+ "date": "2024-09-17",
+ "protocol": "OTSea Staking",
+ "chain": "Ethereum",
+ "loss_raw": "~26,000 USD",
+ "loss_usd": null,
+ "root_cause": "`claim()`/`withdraw()` allowed duplicate indexes in the input array, enabling repeated collection from the same staking position",
+ "attack_tx": "0x90b4fcf583444d44efb8625e6f253cfcb786d2f4eda7198bdab67a54108cd5f4",
+ "vulnerable_contract": "0xF2c8e860ca12Cde3F3195423eCf54427A4f30916",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: no duplicate index validation\nfunction claim(uint256[] calldata _indexes, address _receiver) external {\n    for (uint256 i = 0; i < _indexes.length; i++) {\n        uint256 idx = _indexes[i];\n        //",
+  "❌ Each entry is processed even if the same index appears multiple times\n        StakeInfo storage info = stakes[msg.sender][idx];\n        uint256 reward = _calculateReward(info);\n        info.lastClaimTime = block.timestamp;\n        IERC20(otseaToken).transfer(_receiver, reward);\n    }\n}\n\nfunction withdraw(uint256[] calldata _indexes, address _receiver) external {\n    for (uint256 i = 0; i < _indexes.length; i++) {\n        uint256 idx = _indexes[i];\n        //",
+  "❌ Duplicate indexes allow repeated withdrawal from the same position\n        StakeInfo storage info = stakes[msg.sender][idx];\n        uint256 amount = info.amount;\n        info.amount = 0;  // Only zeroed on the first pass; second pass sees 0 but still proceeds\n        IERC20(otseaToken).transfer(_receiver, amount);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: duplicate index validation added\nfunction claim(uint256[] calldata _indexes, address _receiver) external {\n    uint256[] memory sortedIndexes = _sort(_indexes);\n    for (uint256 i = 0; i < sortedIndexes.length; i++) {\n        if (i > 0) {\n            require(sortedIndexes[i] != sortedIndexes[i-1], \"Duplicate index\");  //",
+  "✅ Prevents duplicates\n        }\n        // ... claim logic\n    }\n}"
+ ],
+ "steps": [
+  "► Indexes 0–19 + new index → duplicate reward collection",
+  "► Indexes 0–19 + new index → duplicate withdrawal",
+  "► OTSea → ETH (Uniswap V2 Router)"
+ ],
+ "other_code": [
+  "Attacker (0x000000003704...)\n  │\n  ├─[1]─► Call OTSeaRevenueDistributor(0x34BCcF...).distribute()\n  │         └─► Staking reward distribution executed\n  │\n  ├─[2]─► Repeat loop (14x): indexes = [0,1,...,19, 20+i]\n  │         ├─► Call OTSeaStaking.claim(indexes, attackContract)\n  │         │     └─► Indexes 0–19 + new index → duplicate reward collection\n  │         └─► Call OTSeaStaking.withdraw(indexes, attackContract)\n  │               └─► Indexes 0–19 + new index → duplicate withdrawal\n  │\n  ├─[3]─► Additional loop (10x): indexes = [0, 34+i]\n  │         └─► Repeated collection with smaller arrays\n  │\n  ├─[4]─► Additional loop (22x): indexes = [20,...,42, 70, 43+i]\n  │         └─► Repeated collection from more positions\n  │\n  ├─[5]─► Approve and swap 6,000,000 OTSea tokens acquired\n  │   "
+ ]
+}

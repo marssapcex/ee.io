@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-11-23_Ak1111_UnprotectedLzReceive",
+ "source_file": "2024/2024-11-23_Ak1111_UnprotectedLzReceive.md",
+ "title": "AK1111 — LayerZero Cross-Chain Receive Function Access Control Vulnerability Analysis",
+ "date": "2024-11-23",
+ "protocol": "AK1111 Token",
+ "chain": "BSC",
+ "loss_raw": "~31,500 USD",
+ "loss_usd": null,
+ "root_cause": "No access control on nonblockingLzReceive1() — anyone can call it to mint AK1111 tokens without limit",
+ "attack_tx": "0xc29c98da",
+ "vulnerable_contract": "0xc3B1b45e",
+ "classes": [
+  "unprotected-callback"
+ ],
+ "code_before": [
+  "❌ AK1111 Token: no access control on LayerZero receive function\ncontract AK1111Token {\n    //",
+  "❌ No onlyEndpoint or onlyLzApp\n    //",
+  "❌ Anyone can specify arbitrary _srcChainId, _srcAddress, _nonce, _payload\n    function nonblockingLzReceive1(\n        uint16 _srcChainId,\n        address _srcAddress,\n        uint256 _nonce,\n        bytes memory _payload\n    ) external {\n        // Decodes _payload and mints tokens\n        //"
+ ],
+ "code_after": [
+  "✅ Fix:\n// modifier onlyEndpoint() {\n//     require(msg.sender == lzEndpoint, \"not endpoint\");\n//     _;\n// }\n// function nonblockingLzReceive1(...) external onlyEndpoint { ... }"
+ ],
+ "steps": [
+  "❌ No access control → freely mint AK1111 equal to LP balance",
+  "[3] ▶ Swap AK1111 → USDT (PancakeSwap)",
+  "swapExactTokensForTokens(AK1111 → USDT)"
+ ],
+ "other_code": []
+}

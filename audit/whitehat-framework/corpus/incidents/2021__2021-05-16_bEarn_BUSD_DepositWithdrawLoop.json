@@ -1,0 +1,37 @@
+{
+ "id": "2021__2021-05-16_bEarn_BUSD_DepositWithdrawLoop",
+ "source_file": "2021/2021-05-16_bEarn_BUSD_DepositWithdrawLoop.md",
+ "title": "bEarn Fi — Flash Loan-Based deposit/withdraw Loop Vulnerability Analysis",
+ "date": "2021-05-16",
+ "protocol": "bEarn Fi",
+ "chain": "BSC",
+ "loss_raw": "~$11,000,000",
+ "loss_usd": 11000000.0,
+ "root_cause": "Repeated deposit→emergencyWithdraw cycle on bVault pool 13 manipulates internal accounting to enable duplicate withdrawals",
+ "attack_tx": "0x603b...36c (block 7,457,125)",
+ "vulnerable_contract": "0xB390B07fcF76678089cb12d8E615d5Fe494b01Fb (bVault)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ bVault — accounting inconsistency on repeated emergencyWithdraw calls\n// CreamFi @ 0x2Bc4eb013DDee29D37920938B96d353171289B7C\n// bVault @ 0xB390B07fcF76678089cb12d8E615d5Fe494b01Fb\n\nfunction emergencyWithdraw(uint256 _pid) external {\n    PoolInfo storage pool = poolInfo[_pid];\n    UserInfo storage user = userInfo[_pid][msg.sender];\n\n    uint256 amount = user.amount;\n    user.amount = 0;\n    user.rewardDebt = 0;\n\n    // Transfers actual tokens without decrementing totalStaked\n    // On repeated calls, the same amount can be withdrawn multiple times\n    pool.lpToken.safeTransfer(address(msg.sender), amount);\n    emit EmergencyWithdraw(msg.sender, _pid, amount);\n}",
+  "// ❌ Root cause: repeated deposit→emergencyWithdraw cycle on bVault pool 13 manipulates internal accounting to enable duplicate withdrawals\n    function admin() external {}  // 0xf851a440"
+ ],
+ "code_after": [
+  "// ✅ Immediately update pool totalStaked after emergencyWithdraw\nfunction emergencyWithdraw(uint256 _pid) external nonReentrant {\n    PoolInfo storage pool = poolInfo[_pid];\n    UserInfo storage user = userInfo[_pid][msg.sender];\n\n    uint256 amount = user.amount;\n    // Clear state first (CEI)\n    user.amount = 0;\n    user.rewardDebt = 0;\n    pool.totalStaked -= amount; // also update totalStaked\n\n    // Transfer last\n    pool.lpToken.safeTransfer(address(msg.sender), amount);\n    emit EmergencyWithdraw(msg.sender, _pid, amount);\n}",
+  "// ✅ Enforce minimum block delay between deposit and withdraw\n// ✅ Apply nonReentrant to emergencyWithdraw + strictly follow CEI pattern\n\nmapping(address => mapping(uint256 => uint256)) public lastDepositBlock;\n\nfunction deposit(uint256 _pid, uint256 _amount) external nonReentrant {\n    lastDepositBlock[msg.sender][_pid] = block.number;\n    // ... deposit logic\n}\n\nfunction emergencyWithdraw(uint256 _pid) external nonReentrant {\n    require(\n        block.number > lastDepositBlock[msg.sender][_pid],\n        \"bVault: same block deposit-withdraw\"\n    );\n    // ... withdraw following CEI pattern\n}"
+ ],
+ "steps": [
+  "Step 1: CreamFi Flash Loan — borrow all available BUSD",
+  "Step 2: bVault.deposit(pid=13, busd_amount)",
+  "→ shares minted",
+  "Step 3: bVault.emergencyWithdraw(pid=13)",
+  "→ amount withdrawn without burning shares",
+  "→ internal accounting inconsistency introduced",
+  "Step 4: Repay flash loan principal + fee"
+ ],
+ "other_code": [
+  "┌────────────────────────────────────────────────────────────┐\n│ Step 1: CreamFi Flash Loan — borrow all available BUSD     │\n│ CreamFi @ 0x2Bc4eb013DDee29D37920938B96d353171289B7C      │\n└─────────────────────┬──────────────────────────────────────┘\n                      │ (repeated 10 times)\n┌─────────────────────▼──────────────────────────────────────┐\n│ Step 2: bVault.deposit(pid=13, busd_amount)               │\n│ bVault @ 0xB390B07fcF76678089cb12d8E615d5Fe494b01Fb      │\n│ → shares minted                                            │\n└─────────────────────┬──────────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────────┐\n│ Step 3: bVault.emergencyWithdraw(pid=13)                   │\n│ → amount withdrawn without burning shares",
+  "// 10-cycle loop inside CreamFi flash loan callback\nfunction flashCallback(address token, uint256 amount) external {\n    // Repeat deposit → emergencyWithdraw 10 times\n    for (uint i = 0; i < 10; i++) {\n        // Deposit BUSD into bVault pool 13\n        bVault.deposit(13, BUSD.balanceOf(address(this)));\n        // Immediately emergency withdraw — accounting errors accumulate\n        bVault.emergencyWithdraw(13);\n    }\n\n    // Repay flash loan to CreamFi\n    uint256 repayAmount = amount + fee;\n    BUSD.transfer(address(CreamFi), repayAmount);\n    // Transfer surplus BUSD to attacker wallet\n}"
+ ]
+}

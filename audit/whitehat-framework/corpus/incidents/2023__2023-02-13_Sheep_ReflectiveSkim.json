@@ -1,0 +1,37 @@
+{
+ "id": "2023__2023-02-13_Sheep_ReflectiveSkim",
+ "source_file": "2023/2023-02-13_Sheep_ReflectiveSkim.md",
+ "title": "Sheep Token — Reflective Token skim Attack Analysis",
+ "date": "2023-02-13",
+ "protocol": "Sheep Token",
+ "chain": "BSC",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "Exploitation of LP pair balance imbalance caused by reflective tax mechanism",
+ "attack_tx": "BSC Transaction",
+ "vulnerable_contract": "Sheep Token Contract",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Sheep reflective token pattern (same as BEVO/FDP)\nfunction _transfer(address sender, address recipient, uint256 amount) internal {\n    uint256 fee = amount * _taxFee / 100;\n    //",
+  "❌ When the tax is distributed via reflection, the LP pair balance increases\n    // However, the reserve is not updated\n    _reflectFee(fee);  // rTotal modified\n\n    _rOwned[sender] -= rAmount;\n    _rOwned[recipient] += rTransferAmount;\n    //",
+  "❌ LP pair's rOwned is unchanged, but the actual balance increases due to ratio change\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix\nfunction _reflectFee(uint256 rFee, uint256 tFee) private {\n    _rTotal -= rFee;\n    _tFeeTotal += tFee;\n    //",
+  "✅ Added LP pair sync() call\n    if (address(pancakePair) != address(0)) {\n        IPancakePair(pancakePair).sync();\n    }\n}"
+ ],
+ "steps": [
+  "1 ▶ PancakeSwap Flash Loan (borrow WBNB)",
+  "2 ▶ Swap WBNB → Sheep",
+  "Tax incurred → rTotal decreases → LP balance increases",
+  "3 ▶ Sheep-WBNB LP.skim(attacker)",
+  "4 ▶ Withdrawn Sheep → swap back to WBNB",
+  "5 ▶ Repay flash loan → net profit"
+ ],
+ "other_code": [
+  "// Root cause: Exploitation of LP pair balance imbalance caused by reflective tax mechanism\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ PancakeSwap Flash Loan (borrow WBNB)\n  │\n  ├─2─▶ Swap WBNB → Sheep\n  │       Tax incurred → rTotal decreases → LP balance increases\n  │       LP actual balance > reserve (imbalance)\n  │\n  ├─3─▶ Sheep-WBNB LP.skim(attacker)\n  │       Withdraw excess Sheep or WBNB\n  │\n  ├─4─▶ Withdrawn Sheep → swap back to WBNB\n  │\n  └─5─▶ Repay flash loan → net profit"
+ ]
+}

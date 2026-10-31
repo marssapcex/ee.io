@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-09-13_BNB48MEVBot_UnprotectedCallback",
+ "source_file": "2022/2022-09-13_BNB48MEVBot_UnprotectedCallback.md",
+ "title": "BNB48 MEV Bot — Unprotected pancakeCall() Callback Attack Analysis",
+ "date": "2022-09-13",
+ "protocol": "BNB48 MEV Bot",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~$140,000 (USDT, WBNB, BUSD, USDC drained)",
+ "loss_usd": 140000.0,
+ "root_cause": "The MEV Bot's `pancakeCall()` function does not validate the caller, allowing any arbitrary address to withdraw tokens",
+ "attack_tx": "0x6f64...85ee (block 21,297,406)",
+ "vulnerable_contract": null,
+ "classes": [
+  "unprotected-callback"
+ ],
+ "code_before": [
+  "❌ Vulnerable pancakeCall() - no caller validation\ncontract MEVBot {\n    function pancakeCall(\n        address sender,    //",
+  "❌ not validated\n        uint256 amount0,   // amount of token0 to drain (attacker-controlled)\n        uint256 amount1,   // amount of token1 to drain (attacker-controlled)\n        bytes calldata data //",
+  "❌ contains recipient address (attacker-controlled)\n    ) external {\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - caller and sender validation\ncontract MEVBot {\n    mapping(address => bool) public authorizedPairs;\n\n    function pancakeCall(\n        address sender,\n        uint256 amount0,\n        uint256 amount1,\n        bytes calldata data\n    ) external {\n        //",
+  "✅ verify that the caller is an authorized PancakeSwap pair\n        require(authorizedPairs[msg.sender], \"Unauthorized pair\");\n        //"
+ ],
+ "steps": [
+  "❌ no msg.sender validation → passes",
+  "→ transfers full USDT balance to attacker"
+ ],
+ "other_code": []
+}

@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-09-20_Kub_Split_StakingArbitrage",
+ "source_file": "2023/2023-09-20_Kub_Split_StakingArbitrage.md",
+ "title": "Kub Split Staking Arbitrage Incident Analysis",
+ "date": "2023-09-20",
+ "protocol": "Kub",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ BUSDT_KUB_LP.sync() - Normalize initial state",
+  "2 ▶ Quintuple DODO DPP Oracle Flash Loan",
+  "DPPOracle1.flashLoan() → DPPOracle2 → DPPAdvanced → DPPOracle3 → DPP",
+  "3 ▶ BUSDTToKUB() - Swap BUSDT → KUB",
+  "4 ▶ BUSDTToSplit() - Swap BUSDT → Split",
+  "5 ▶ StakingRewards1.stake() - Stake Split tokens",
+  "6 ▶ BUSDT_Split.skim(address(this)) - Extract surplus",
+  "7 ▶ Split.setPair(fakeUSDC_address) - Swap pair (no access control)",
+  "8 ▶ fakeUSDCToBUSDT() - Convert fakeUSDC → BUSDT",
+  "9 ▶ StakingRewards2.sell() - Sell staking rewards",
+  "10 ▶ Repay all flash loans + realize ~$78,000 profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: arbitrary pair can be set\ncontract SplitToken is ERC20 {\n    address public pair;\n\n    // Vulnerable: pair address can be changed without access control\n    function setPair(address _pair) external {\n        pair = _pair;\n    }\n\n    function _transfer(address from, address to, uint256 amount) internal override {\n        // Special handling for transfers to the pair\n        if (to == pair) {\n            // Staking reward distribution logic\n            StakingRewards.notifyRewardAmount(amount * 10 / 100);\n        }\n        super._transfer(from, to, amount);\n    }\n}",
+  "// Root cause: Flash Loan + Staking Arbitrage + Skim Manipulation\n// Source code unverified — analysis based on bytecode"
+ ]
+}

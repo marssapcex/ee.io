@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-09_ROI_OwnershipTakeover",
+ "source_file": "2022/2022-09_ROI_OwnershipTakeover.md",
+ "title": "ROI Token — Unauthorized Ownership Takeover and Reward System Manipulation Attack Analysis",
+ "date": "2022-09-01",
+ "protocol": "ROI Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "157.98 BNB (~$44,000)",
+ "loss_usd": 44000.0,
+ "root_cause": "No access control on `transferOwnership()` — anyone can seize ownership and manipulate token parameters",
+ "attack_tx": "0x0e14cb7eabeeb2a819c52f313c986a877c1fa19824e899d1b91875c11ba053b0",
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable transferOwnership() — no access control\ncontract ROIToken is Ownable {\n    //",
+  "❌ Ownable's standard transferOwnership has onlyOwner, but\n    // this implementation removes the protection via override\n    function transferOwnership(address newOwner) public override {\n        //",
+  "❌ No onlyOwner check — anyone can transfer ownership\n        _transferOwnership(newOwner);\n    }\n}\n\n// Functions available to the attacker after ownership takeover\ncontract ROIToken is Ownable {\n    function setTaxFeePercent(uint256 taxFee) external onlyOwner {\n        _taxFee = taxFee; // Can be set to 0%\n    }\n\n    function excludeFromReward(address account) external onlyOwner {\n        //"
+ ],
+ "code_after": [
+  "✅ Correct transferOwnership\nfunction transferOwnership(address newOwner) public override onlyOwner {\n    require(newOwner != address(0), \"Ownable: new owner is zero address\");\n    _transferOwnership(newOwner);\n}",
+  "// ✅ Fix: preserve onlyOwner when overriding\nfunction transferOwnership(address newOwner) public override onlyOwner {\n    require(newOwner != address(0), \"Ownable: new owner is the zero address\");\n    _transferOwnership(newOwner);\n}\n// Better: use OpenZeppelin Ownable2Step (transferOwnership + acceptOwnership) to prevent accidental/hostile transfers"
+ ],
+ "steps": [
+  "[1] 5 BNB → BUSD → ROI swap",
+  "❌ No access control → ownership takeover successful",
+  "Callback returns ROI to pair → 99% fee accumulates in pair",
+  "→ _rOwned recalculation → reward distortion",
+  "[8] Remaining ROI → BUSD → WBNB reverse swap"
+ ],
+ "other_code": []
+}

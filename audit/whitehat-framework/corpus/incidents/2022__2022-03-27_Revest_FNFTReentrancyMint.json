@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-03-27_Revest_FNFTReentrancyMint",
+ "source_file": "2022/2022-03-27_Revest_FNFTReentrancyMint.md",
+ "title": "Revest Finance — FNFT mintAddressLock Reentrancy Attack Analysis",
+ "date": "2022-03-27",
+ "protocol": "Revest Finance",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$2,000,000 (BLOCKS ~$1.7M dominant, ECO, LYXe, RENA)",
+ "loss_usd": 2000000.0,
+ "root_cause": "During `withdrawFNFT()` execution, an ERC1155 `onERC1155Received` callback is triggered; within this callback, `depositAdditionalToFNFT()` can be reentered to inflate FNFT balances at minimal cost",
+ "attack_tx": null,
+ "vulnerable_contract": "Revest 0x2320A28f52334d62622cc2EaFa15DE55F9987eD9",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable Revest.withdrawFNFT() (pseudocode)\ncontract Revest {\n\n    function withdrawFNFT(uint256 fnftId, uint256 quantity) external {\n        // Check whether unlock is possible\n        require(isUnlockable(fnftId), \"FNFT not unlockable\");\n\n        //",
+  "❌ ERC1155 burn: triggers onERC1155Received callback\n        // depositAdditionalToFNFT() can be reentered within this callback\n        IERC1155(fnftHandler).safeTransferFrom(\n            msg.sender,\n            address(this),\n            fnftId,\n            quantity,\n            \"\"\n        );\n\n        //",
+  "❌ Token transfer occurs after the callback\n        // Attacker can inflate balance in the callback and receive more tokens\n        uint256 amount = fnftRecord[fnftId].depositAmount * quantity;\n        IERC20(fnftRecord[fnftId].asset).transfer(msg.sender, amount);\n    }\n\n    function depositAdditionalToFNFT(\n        uint256 fnftId,\n        uint256 amount,\n        uint256 quantity\n    ) external {\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract RevestFixed {\n    bool private locked;\n    modifier nonReentrant() {\n        require(!locked);\n        locked = true;\n        _;\n        locked = false;\n    }\n\n    function withdrawFNFT(uint256 fnftId, uint256 quantity) external nonReentrant {\n        require(isUnlockable(fnftId));\n        //",
+  "✅ Update state first\n        uint256 amount = fnftRecord[fnftId].depositAmount * quantity;\n        fnftRecord[fnftId].depositAmount = 0;\n        // Then make external calls\n        IERC1155(fnftHandler).burn(msg.sender, fnftId, quantity);\n        IERC20(fnftRecord[fnftId].asset).transfer(msg.sender, amount);\n    }\n}"
+ ],
+ "steps": [
+  "Withdrawn amount = 360,001 × (original 1wei + injected amount) → large RENA received"
+ ],
+ "other_code": [
+  "Attacker Contract (implements onERC1155Received)\n    │\n    ├─[1] Flash loan: borrow 5e18 RENA\n    │\n    ├─[2] Call Revest.mintAddressLock()\n    │       FNFT #1: quantity=2, depositAmount=1e18 each (total 2e18)\n    │       FNFT #2: quantity=360,000, depositAmount=1 wei each\n    │\n    ├─[3] Call Revest.withdrawFNFT(fnft#2, 360,001)\n    │       ERC1155.safeTransferFrom() executes\n    │       ↓ onERC1155Received callback fires\n    │           │\n    │           └─ [Reentrant] depositAdditionalToFNFT(fnft#2, 1e18, ...)\n    │                   Injects 1e18 into fnft#2's depositAmount\n    │                   Callback returns\n    │\n    ├─[4] withdrawFNFT continues: withdraws tokens with inflated depositAmount\n    │       Withdrawn amount = 360,001 × (original 1wei + injected amount) → large RENA re",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IRevest {\n    function mintAddressLock(\n        address trigger,\n        bytes memory arguments,\n        address[] memory destinations,\n        uint256[] memory quantities,\n        IRevest.FNFTConfig memory fnftConfig\n    ) external payable returns (uint256);\n\n    function withdrawFNFT(uint256 fnftId, uint256 quantity) external;\n\n    function depositAdditionalToFNFT(\n        uint256 fnftId,\n        uint256 amount,\n        uint256 quantity\n    ) external returns (uint256);\n\n    struct FNFTConfig {\n        address asset;\n        address pipeToContract;\n        uint256 depositAmount;\n        uint256 depositMul;\n        uint256 split;\n        uint256 maturityExtension;\n        bool isMulti;\n"
+ ]
+}

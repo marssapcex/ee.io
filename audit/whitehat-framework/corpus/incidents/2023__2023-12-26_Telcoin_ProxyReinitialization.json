@@ -1,0 +1,23 @@
+{
+ "id": "2023__2023-12-26_Telcoin_ProxyReinitialization",
+ "source_file": "2023/2023-12-26_Telcoin_ProxyReinitialization.md",
+ "title": "Telcoin — CloneableProxy Re-initialization Vulnerability Analysis",
+ "date": "2023-12-26",
+ "protocol": "Telcoin",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "proxy-storage"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "interface ICloneableProxy {\n    // Initialization function — no re-entrancy protection\n    function initialize(address _logic, bytes memory data) external;\n}\n\ncontract CloneableProxy {\n    address public implementation;\n\n    // No initializer modifier\n    function initialize(address _logic, bytes memory data) external {\n        // Anyone can re-initialize\n        implementation = _logic; // Can be replaced with a malicious contract\n\n        if (data.length > 0) {\n            (bool success,) = _logic.delegatecall(data);\n            require(success, \"Init failed\");\n        }\n    }\n}",
+  "contract CloneableProxy is Initializable {\n    address public implementation;\n\n    function initialize(address _logic, bytes memory data)\n        external initializer {\n        // Can only be initialized once\n        implementation = _logic;\n\n        if (data.length > 0) {\n            (bool success,) = _logic.delegatecall(data);\n            require(success, \"Init failed\");\n        }\n    }\n}"
+ ]
+}

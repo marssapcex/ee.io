@@ -1,0 +1,37 @@
+{
+ "id": "2021__2021-12-21_NerveBridge_MetaSwap_PriceManipulation",
+ "source_file": "2021/2021-12-21_NerveBridge_MetaSwap_PriceManipulation.md",
+ "title": "Nerve Bridge — MetaSwap Liquidity Removal Price Manipulation Analysis",
+ "date": "2021-12-21",
+ "protocol": "Nerve Bridge",
+ "chain": "BSC",
+ "loss_raw": "~$80,000",
+ "loss_usd": 80000.0,
+ "root_cause": "`remove_liquidity_one_coin()` allowing `min_amount=0` and no restriction on repeated calls within the same block, causing accumulated pool imbalance through sequential MetaSwap + 3Pool interactions",
+ "attack_tx": "0xea95...f1d (block 12,653,565)",
+ "vulnerable_contract": "Nerve MetaSwap / Nerve 3Pool",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "function removeLiquidityOneToken(\n    uint256 tokenAmount,\n    uint8 tokenIndex,\n    uint256 minAmount,   // ❌ caller can pass 0 — no slippage protection enforced\n    uint256 deadline\n)\n    external\n    nonReentrant\n    whenNotPaused\n    deadlineCheck(deadline)\n    returns (uint256)\n{\n    return\n        swapStorage.removeLiquidityOneToken(\n            tokenAmount,\n            tokenIndex,\n            minAmount    // ❌ minAmount=0 accepted without revert — no floor check\n        );\n}",
+  "function swap(\n    uint8 tokenIndexFrom,\n    uint8 tokenIndexTo,\n    uint256 dx,\n    uint256 minDy,      // ❌ also accepts 0 — each swap shifts reserves with no slippage floor\n    uint256 deadline\n)\n    external\n    nonReentrant\n    whenNotPaused\n    deadlineCheck(deadline)\n    returns (uint256)\n{\n    return swapStorage.swap(tokenIndexFrom, tokenIndexTo, dx, minDy);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: enforce a nonzero minAmount floor\nfunction removeLiquidityOneToken(\n    uint256 tokenAmount,\n    uint8 tokenIndex,\n    uint256 minAmount,\n    uint256 deadline\n) external nonReentrant whenNotPaused deadlineCheck(deadline) returns (uint256) {\n    require(minAmount > 0, \"Swap: minAmount must be > 0\"); // ✅ prevent zero-slippage withdrawals\n    return swapStorage.removeLiquidityOneToken(tokenAmount, tokenIndex, minAmount);\n}",
+  "// ✅ Limit pool interactions within a single transaction in composite AMMs\n// ✅ Prohibit slippage parameter of 0\n\nfunction remove_liquidity_one_coin(\n    uint256 _token_amount,\n    int128 i,\n    uint256 _min_amount\n) external nonReentrant returns (uint256) {\n    // minAmount=0 means no slippage protection — prohibited\n    require(_min_amount > 0, \"Nerve3Pool: slippage protection required\");\n\n    uint256 dy = calc_withdraw_one_coin(_token_amount, i);\n    require(dy >= _min_amount, \"Nerve3Pool: slippage exceeded\");\n    // ...\n}"
+ ],
+ "steps": [
+  "Step 1: ForTube flash loan 50,000 BUSD",
+  "Step 2: Convert BUSD → fUSD on Ellipsis",
+  "Step 3: MetaSwap.swapUnderlying(fUSD → Nerve3LP)",
+  "→ BUSD ratio in 3Pool gradually decreases",
+  "→ fUSD/BUSD price imbalance accumulates",
+  "Step 4: Final conversion of remaining fUSD → BUSD",
+  "Step 5: Repay ForTube flash loan + realize profit"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────┐\n│ Step 1: ForTube flash loan 50,000 BUSD                       │\n│ executeOperation() callback executed                         │\n└─────────────────────┬────────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step 2: Convert BUSD → fUSD on Ellipsis                      │\n│ ellipsis.exchange(BUSD_IDX, fUSD_IDX, busd_amount, 0)       │\n└─────────────────────┬────────────────────────────────────────┘\n                      │ (repeated 7 times)\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step 3: MetaSwap.swapUnderlying(fUSD → Nerve3LP)            │\n│ + Nerve3Pool.remove_liquidity_one_coin(3LP, BUSD_IDX, 0)    │\n│ → BUSD ratio in 3Po",
+  "// executeOperation() — ForTube flash loan callback\nfunction executeOperation(\n    address token,\n    uint256 amount,\n    uint256 fee,\n    bytes calldata params\n) external override {\n    // Convert BUSD → fUSD (Ellipsis)\n    // IEllipsis(ellipsis).exchange(0, 1, busdAmount, 0)\n\n    // 7 iterations: price manipulation via MetaSwap + Nerve3Pool combination\n    for (uint i = 0; i < 7; i++) {\n        // fUSD → Nerve3LP (MetaSwap)\n        // IMetaSwap(metaSwap).swapUnderlying(fUSD_IDX, 3LP_IDX, fUSDAmount, 0, deadline)\n\n        // 3LP → BUSD (Nerve3Pool liquidity removal)\n        // INerve3Pool(nerve3pool).remove_liquidity_one_coin(3lpAmount, BUSD_IDX, 0)\n\n        // Re-convert BUSD → fUSD (Ellipsis + exploiting manipulated price)\n        // IEllipsis(ellipsis).exchange(0, 1, busdAmount, 0)\n   "
+ ]
+}

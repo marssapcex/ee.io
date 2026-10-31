@@ -1,0 +1,26 @@
+{
+ "id": "2026__2026-04-29_AftermathFinance_BusinessLogic_Sui",
+ "source_file": "2026/2026-04-29_AftermathFinance_BusinessLogic_Sui.md",
+ "title": "Aftermath Finance — Integer Underflow in Perp Fee Calculation Drains ~$1.14M",
+ "date": "2026-04-29",
+ "protocol": "Aftermath Finance",
+ "chain": "Sui",
+ "loss_raw": "~$1,140,000",
+ "loss_usd": 1140000.0,
+ "root_cause": "Integer Underflow / Business Logic Flaw — `integrator_taker_fees` calculation underflows to `≈ u256::MAX` when an integrator sets `max_taker_fee = 0`, causing the protocol to credit astronomically large fees to the attacker-controlled integrator account",
+ "attack_tx": "`4pGQdfFG96Ghqj1xqkaeeAgMQCpttivdkgSRUGc6wVD8`",
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "→ FilledTakerOrder: integrator_taker_fees ≈ u256::MAX",
+  "PaidIntegratorFees → credits ≈u256::MAX \"fees\" to integrator vault"
+ ],
+ "other_code": [
+  "// Aftermath perp clearing house — fee split logic (vulnerable, reconstructed)\n// Package: 0x21d001e8b07da2e3facb3e2d636bbaef43ba3c978bd84810368840b7d57c5068\n\n// taker_fees: total fee charged to the taker position (u64 in perp units)\n// integrator_rebate: fraction of taker fees given back to the integrator\n// max_integrator_fee: the integrator's configured maximum fee rate (0 in this attack)\n\nfun compute_integrator_fees(\n    taker_fees: u64,\n    integrator_config: &IntegratorConfig,\n): u256 {\n    // BUG: when max_taker_fee == 0, the \"integrator portion\" should be 0.\n    // Instead, the calculation computes:\n    //   integrator_share = taker_fees * (PRECISION - max_taker_fee) / PRECISION\n    // With max_taker_fee == 0:\n    //   integrator_share = taker_fees * PRECISION / PRECISION = taker_f",
+  "// Step 1: Register as integrator with max_taker_fee = 0\n// This makes the integrator_share = 0, ensuring underflow when protocol_fee is subtracted\n\n// Step 2: Open two accounts (maker: 1227, taker/integrator: 1228)\n//         Deposit minimal collateral (100 USDC) into account 1228\n\n// Step 3: Post a limit order from account 1227 (maker)\n//         Place market order from account 1228 (taker, using own interface as integrator)\n\n// Step 4: Fee settlement\n//   taker_fees charged to account 1228 = 1,573,916,085,000,000 (internal units)\n//   integrator_taker_fees = underflow → ≈ 2^256 - 1  (credited to integrator)\n\n// Step 5: PaidIntegratorFees credits ≈2^256 USDC to integrator vault\n//         Protocol caps realized payout to available collateral in account 1228\n//         DeallocatedCollater"
+ ]
+}

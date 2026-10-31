@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-01-12_UniLend_AccountingError_ETH",
+ "source_file": "2025/2025-01-12_UniLend_AccountingError_ETH.md",
+ "title": "UniLend — Incorrect Health Factor Calculation (Accounting Error) Vulnerability Analysis",
+ "date": "2025-01-12",
+ "protocol": "UniLend V2",
+ "chain": "Ethereum",
+ "loss_raw": "~$196,200 (~60.67 stETH)",
+ "loss_usd": 196200.0,
+ "root_cause": "Accounting error due to health factor calculation using stale balance during `redeemUnderlying` execution",
+ "attack_tx": "0x4403...b6ba",
+ "vulnerable_contract": "0xc86d...30e",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — userBalanceOftoken0 (estimated reconstruction)\nfunction userBalanceOftoken0(\n    PoolTokenManager storage _tm0,\n    PositionManager storage _positionMt,\n    address token0\n) internal view returns (uint256 _lendBalance0) {\n\n    // [VULNERABLE] Reads the current pool balance of token0 as-is\n    // When called during redeemUnderlying, USDC that has not yet been withdrawn\n    // is still included, causing the balance to appear excessively large\n    uint256 tokenBalance0 = IERC20(token0).balanceOf(address(this));\n\n    // Sum totalBorrow to compute total token balance\n    uint256 _totTokenBalance0 = tokenBalance0 + _tm0.totalBorrow0;\n\n    // [VULNERABLE] _positionMt.token0lendShare has already been burned (reduced)\n    // by _burnLPposition(), but tokenBalance0 is still the pre-reduction value\n    // → Mismatch between numerator (balance) and denominator (lendShare)\n    //   causes the result to be abnormally large\n    _lendBalance0 = getShareValue(\n        _totTokenBalance0,        // Excessively large balance (stale value)\n        _tm0.totalLendShare0,     // Still based on total supply\n        _positionMt.token0lendShare  // Already burned lendShare (reduced value)\n    );\n    // Result: lendBalance0 is inflated ~10,000x beyond actual value\n}",
+  "// ❌ Vulnerable code — incorrect execution order in redeemUnderlying (estimated reconstruction)\nfunction redeemUnderlying(\n    uint256 _positionID,\n    address _token,\n    uint256 _redeemAmount,\n    address _to\n) external nonReentrant {\n    // Step 1: Burn LP position → lendShare decreases\n    _burnLPposition(_positionID, _token, _redeemAmount);\n\n    // Step 2: Validate health factor ← [VULNERABLE] lendShare reduced but pool balance still stale\n    // When checkHealthFactorLtv1 calls userBalanceOftoken0,\n    // it reads 60M USDC as still present in the pool, computing an abnormally high health factor\n    require(\n        checkHealthFactorLtv1(_positionID) >= MIN_HEALTH_FACTOR,\n        \"UniLend: INSUFFICIENT_COLLATERAL\"\n    );\n\n    // Step 3: Actual token transfer ← Only at this point does pool balance decrease\n    IERC20(_token).safeTransfer(_to, _redeemAmount);\n}",
+  "// ❌ Vulnerable code — floor division\nfunction getShareByValue(\n    uint256 _valueAmount,\n    uint256 _totalSupply,\n    uint256 _totalAmount\n) internal pure returns (uint256) {\n    // [VULNERABLE] Solidity's default integer division uses floor\n    // Rounds in the user's favor, allowing acquisition of a marginal excess share\n    return (_valueAmount * _totalSupply) / _totalAmount;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — pre-applies expected balance after redeemUnderlying execution\nfunction userBalanceOftoken0(\n    PoolTokenManager storage _tm0,\n    PositionManager storage _positionMt,\n    address token0,\n    uint256 pendingRedeemAmount0  // Pending withdrawal amount passed as parameter\n) internal view returns (uint256 _lendBalance0) {\n\n    // [FIX] Pre-subtracts pending withdrawal amount from current balance\n    uint256 tokenBalance0 = IERC20(token0).balanceOf(address(this));\n    uint256 adjustedBalance0 = tokenBalance0 - pendingRedeemAmount0;\n\n    uint256 _totTokenBalance0 = adjustedBalance0 + _tm0.totalBorrow0;\n\n    // Calculates with adjusted balance and lendShare in a consistent state\n    _lendBalance0 = getShareValue(\n        _totTokenBalance0,\n        _tm0.totalLendShare0,\n        _positionMt.token0lendShare\n    );\n}",
+  "// ✅ Fixed code — validate before burn, or validate after reflecting balance\nfunction redeemUnderlying(\n    uint256 _positionID,\n    address _token,\n    uint256 _redeemAmount,\n    address _to\n) external nonReentrant {\n    // Step 1: Pre-validate health factor reflecting pending withdrawal amount\n    // (validates based on final state before burning tokens and transferring)\n    require(\n        checkHealthFactorWithPendingRedeem(_positionID, _token, _redeemAmount) >= MIN_HEALTH_FACTOR,\n        \"UniLend: INSUFFICIENT_COLLATERAL\"\n    );\n\n    // Step 2: Burn LP position\n    _burnLPposition(_positionID, _token, _redeemAmount);\n\n    // Step 3: Token transfer (after passing validation)\n    IERC20(_token).safeTransfer(_to, _redeemAmount);\n}"
+ ],
+ "steps": [
+  "[Step 2] Convert wstETH → stETH (Lido)",
+  "5.76 wstETH → 6 stETH",
+  "→ USDC lendShare: 45,070,997,672,933",
+  "→ stETH lendShare: 6,663,517,741,687,683,225",
+  "stETH lendShare → 0 (fully burned)"
+ ],
+ "other_code": [
+  "Attacker (0x55f5...c33)\n│\n│  [Step 1] Request flash loan from Morpho Blue\n│  ┌─────────────────────────────────────┐\n│  │  Morpho Blue Flash Loan             │\n│  │  ├─ Borrow 60,000,000 USDC          │\n│  │  └─ Borrow 5.76 wstETH             │\n│  └──────────────┬──────────────────────┘\n│                 │\n│  [Step 2] Convert wstETH → stETH (Lido)\n│  ┌──────────────▼──────────────────────┐\n│  │  Lido wstETH.unwrap()               │\n│  │  5.76 wstETH → 6 stETH             │\n│  └──────────────┬──────────────────────┘\n│                 │\n│  [Step 3] Deposit collateral into UniLend V2 (2x lend calls)\n│  ┌──────────────▼──────────────────────┐\n│  │  UniLend V2 Core.lend()             │\n│  │  ├─ Deposit 60,000,000 USDC         │\n│  │  │  → USDC lendShare: 45,070,997,672,933\n│  │  └─ Deposit 6 st",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo - Analysis metadata\n// UniLend protocol exploit PoC\n// Attack TX: 0x44037ffc0993327176975e08789b71c1058318f48ddeff25890a577d6555b6ba\n// Vulnerable contract: 0xc86d2555f8c360d3c5e8e4364f42c1f2d169330e\n\ncontract AttackContract {\n    // Primary contract interfaces\n    IUniLendV2Core constant uniLendCore = IUniLendV2Core(0xc86d2555...);\n    IMorpho       constant morpho       = IMorpho(0xBBBBBbbBBb...);\n    IERC20        constant USDC         = IERC20(0xA0b86991...);\n    IERC20        constant stETH        = IERC20(0xae7ab965...);\n    IwstETH       constant wstETH       = IwstETH(0x7f39C581...);\n\n    // [Preparation] Set up pre-attack approvals\n    function setup() external {\n        USDC.approve(address(morpho),    t"
+ ]
+}

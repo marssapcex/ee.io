@@ -1,0 +1,28 @@
+{
+ "id": "2026__2026-04-05_Denaria_BusinessLogic_Linea",
+ "source_file": "2026/2026-04-05_Denaria_BusinessLogic_Linea.md",
+ "title": "Denaria Finance — Business Logic Exploit on Linea",
+ "date": "2026-04-05",
+ "protocol": "Denaria Finance",
+ "chain": "Linea",
+ "loss_raw": "~$166K",
+ "loss_usd": 166.0,
+ "root_cause": "Business Logic Flaw — incorrect or manipulable share/asset accounting during withdrawal allows attacker to extract more than their proportional entitlement",
+ "attack_tx": "0xcb0744a0...6447",
+ "vulnerable_contract": "0xb68396dd4230253d27589e2004ac37389836ae17 (PerpPair on Linea)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1. Attacker acquires Denaria shares (either by depositing legitimately or buying on secondary market).",
+  "2. Attacker donates tokens directly to the Denaria vault contract (or uses a flash loan to temporarily inflate the vault's balance), increasing `totalAssets()` without minting new shares.",
+  "3. Attacker calls `withdraw(shares)` — the inflated `totalAssets()` causes the share-to-asset ratio to be higher than at deposit time.",
+  "4. Attacker receives more tokens than the proportional share value at the time of deposit, netting a profit of ~$166K.",
+  "5. If a flash loan was used to inflate the balance, the loan is repaid from the excess withdrawn assets."
+ ],
+ "other_code": [
+  "// VULNERABLE — totalAssets() can be stale or externally manipulated\nfunction withdraw(uint256 shares) external {\n    // BUG: totalAssets() reads the contract's current token balance,\n    // which can be inflated by a prior donation or flash-loan deposit.\n    // The amount is calculated before shares are burned, but the\n    // token transfer happens after — a reentrancy window also exists\n    // if the token has callback hooks.\n    uint256 amount = shares * totalAssets() / totalSupply();\n    _burn(msg.sender, shares);\n    token.transfer(msg.sender, amount);\n}\n\nfunction totalAssets() public view returns (uint256) {\n    // BUG: returns raw balance — susceptible to donation manipulation\n    return token.balanceOf(address(this));\n}\n\n// FIXED — snapshot totalAssets before any state change; use "
+ ]
+}

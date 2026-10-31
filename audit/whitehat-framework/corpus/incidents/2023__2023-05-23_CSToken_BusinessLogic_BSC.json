@@ -1,0 +1,42 @@
+{
+ "id": "2023__2023-05-23_CSToken_BusinessLogic_BSC",
+ "source_file": "2023/2023-05-23_CSToken_BusinessLogic_BSC.md",
+ "title": "CS Token — Business Logic Flaw Analysis Based on Global Variable Misuse",
+ "date": "2023-05-23",
+ "protocol": "CS Token",
+ "chain": "BSC",
+ "loss_raw": "~$714,285 BUSD (on-chain confirmed: 714,285.0018 BUSD)",
+ "loss_usd": 714285.0,
+ "root_cause": "Excessive LP burn using outdated global variable `sellAmount` — business logic flaw",
+ "attack_tx": "0x9063...aa4",
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: sellAmount declared as permanent contract state, not transaction-scoped\nuint256 public sellAmount;                              // ❌ Global state variable\nuint256 public totalBurnAmount = 0;\nuint256 public maxBurnAmount = 90_000_000 * 10 ** 18;  // Burn cap: 90M CS\n\n// Inside _transfer() — on sell transactions\nfunction _transfer(address from, address to, uint256 amount) internal {\n    // ... omitted ...\n\n    // ❌ Problem: overwrites global sellAmount on every sell\n    // The previous sell's sellAmount can persist until the next sync() call\n    if (takeSellFee) {\n        sellAmount = amount;  // ❌ Global state mutation\n    }\n\n    // sync() trigger condition: also triggered when CS transfers to itself\n    bool canSell = sellAmount >= 1;\n    if (canSell && from != address(this) && from != uniswapV2Pair\n            && from != owner() && to != owner() && !_isLiquidity(from, to)) {\n        sync();  // ❌ Can execute with contaminated sellAmount unrelated to current transaction\n    }\n}\n\n// sync() — burns CS from the LP pool\nfunction sync() private lockTheSync {\n    if (totalBurnAmount >= maxBurnAmount) {\n        return;\n    }\n    // ❌ Core vulnerability: uses global sellAmount, not the current sell amount\n    // Even a dummy call like CS.transfer(address(this), 2) uses this stale value\n    uint256 burnAmount = sellAmount.mul(800).div(1000);  // ❌ Outdated value\n    sellAmount = 0;  // Resets, but calculation already used the contaminated value\n\n    if (totalBurnAmount + burnAmount > maxBurnAmount) {\n        burnAmount = maxBurnAmount - totalBurnAmount;\n    }\n    if (_tOwned[uniswapV2Pair] > burnAmount) {\n        totalBurnAmount += burnAmount;\n        _tOwned[uniswapV2Pair] -= burnAmount;           // ❌ Force-burns CS from LP pool\n        _tOwned[address(burnAddress)] += burnAmount;\n        emit Transfer(uniswapV2Pair, address(burnAddress), burnAmount);\n        // Update pair reserves (price changes)\n        IUniswapV2Pair(uniswapV2Pair).sync();\n    }\n}",
+  "// ❌ Vulnerability: sync() can be triggered by a dummy transfer(self, 2)\n// When CS.transfer(address(this), 2) is called:\n//   - from = attack contract\n//   - to = attack contract (address(this))\n//   - Condition: from != uniswapV2Pair, from != owner() → sync() executes!\nbool canSell = sellAmount >= 1;\nif (canSell\n    && from != address(this)    // ❌ Passes if from is not self\n    && from != uniswapV2Pair\n    && from != owner()\n    && to != owner()\n    && !_isLiquidity(from, to)) {\n    sync();                     // ❌ Can be maliciously triggered\n}",
+  "❌ Risk of global state contamination\n\n// After: Remove or declare private and use only within the same transaction scope\n\n// _transfer() modification\nfunction _transfer(address from, address to, uint256 amount) internal {\n    // ...\n    if (takeSellFee) {\n        //"
+ ],
+ "code_after": [
+  "// ✅ Fix 1: Treat sellAmount as a local variable — prevent global state contamination\nfunction _transfer(address from, address to, uint256 amount) internal {\n    // ... omitted ...\n\n    if (takeSellFee) {\n        // ✅ Call sync() directly, passing amount as a parameter\n        _syncBurn(amount);\n    }\n}\n\n// ✅ Fix 2: Modify sync function to use only the current transaction's amount\nfunction _syncBurn(uint256 currentSellAmount) private lockTheSync {\n    if (totalBurnAmount >= maxBurnAmount) {\n        return;\n    }\n    // ✅ Use parameter instead of global variable\n    uint256 burnAmount = currentSellAmount.mul(800).div(1000);\n\n    if (totalBurnAmount + burnAmount > maxBurnAmount) {\n        burnAmount = maxBurnAmount - totalBurnAmount;\n    }\n    if (_tOwned[uniswapV2Pair] > burnAmount) {\n        totalBurnAmount += burnAmount;\n        _tOwned[uniswapV2Pair] -= burnAmount;\n        _tOwned[address(burnAddress)] += burnAmount;\n        emit Transfer(uniswapV2Pair, address(burnAddress), burnAmount);\n        IUniswapV2Pair(uniswapV2Pair).sync();\n    }\n}",
+  "// ✅ Fix: Make sync() non-externally-triggerable — call only within sell transactions\n// Execute only within the takeSellFee condition using the _syncBurn() approach above\n// Remove the separate syncable condition block"
+ ],
+ "steps": [
+  "→ Flash loan callback: pancakeCall() executes",
+  "BUSD → CS swap (buy exactly 5,000 CS each time)",
+  "_transfer() → sellAmount global variable",
+  "(remaining_BUSD → CS → address 0x382e96...)",
+  "→ sellAmount set to a large value",
+  "(3,000 CS → BUSD, attacker)",
+  "→ _transfer() executes",
+  "→ sync() called (based on outdated sellAmount)",
+  "→ 2,400+ CS burned from LP pool",
+  "→ Pair reserve decreases → CS price rises",
+  "165 iterations, total burned: 398,733 CS"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────┐\n│  Attacker EOA: 0x2cDE...27BA                     │\n│  Deploy attack contract, call testExp()          │\n└───────────────────┬─────────────────────────────┘\n                    │\n                    ▼\n┌─────────────────────────────────────────────────┐\n│  [Step 1] PancakeSwap Flash Loan                 │\n│  pair.swap(80,000,000 BUSD, 0, attacker, \"123\") │\n│  → Flash loan callback: pancakeCall() executes   │\n│  Borrow 80,000,000 BUSD                         │\n└───────────────────┬─────────────────────────────┘\n                    │\n                    ▼\n┌─────────────────────────────────────────────────┐\n│  [Step 2] Repeated Buy — 99-iteration loop       │\n│  swapTokensForExactTokens(5,000 CS) × 99        │\n│  BUSD → CS swap (buy exactly ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @Analysis Reference\n// https://twitter.com/BlockSecTeam/status/1661098394130198528\n// @Attack Tx\n// https://bscscan.com/tx/0x906394b2ee093720955a7d55bff1666f6cf6239e46bea8af99d6352b9687baa4\n// @Vulnerability Summary\n// Global variable sellAmount reused in burnAmount calculation — outdated value misuse\n\ncontract CSExp is Test, IPancakeCallee {\n    // CS/BUSD PancakeSwap V2 pair\n    IPancakePair pair = IPancakePair(0x7EFaEf62fDdCCa950418312c6C91Aef321375A00);\n    IPancakeRouter router = IPancakeRouter(payable(0x10ED43C718714eb63d5aA57B78B54704E256024E));\n    IERC20 BUSD = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IERC20 CS = IERC20(0x8BC6Ce23E5e2c4f0A96429E3C9d482d74171215e);\n\n    function setUp() public {\n    "
+ ]
+}

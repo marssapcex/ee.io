@@ -1,0 +1,45 @@
+{
+ "id": "2023__2023-01-10_BRAToken_BusinessLogic_BSC",
+ "source_file": "2023/2023-01-10_BRAToken_BusinessLogic_BSC.md",
+ "title": "BRA Token — Double Tax Business Logic Flaw + skim() Compound Attack Analysis",
+ "date": "2023-01-10",
+ "protocol": "BRA Token",
+ "chain": "BSC",
+ "loss_raw": "819 BNB (~$224,000 USD net profit)",
+ "loss_usd": 224000.0,
+ "root_cause": "`_transfer()` double tax logic + missing `sync()` call → `skim()` compound vulnerability (business logic flaw)",
+ "attack_tx": null,
+ "vulnerable_contract": "0x449f...3752",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: When LP Pair is both sender and recipient, both conditions become true simultaneously\n// ❌ Vulnerability: When skim() triggers a pair→pair transfer, tax is applied twice\n// ❌ Vulnerability: After tax is applied, sync() is not called, causing reserve vs. actual balance imbalance\nfunction _transfer(address sender, address recipient, uint256 amount) internal override {\n    uint256 taxAmount = 0;\n\n    // Buy tax condition: sender is LP Pair (someone is buying BRA)\n    if (sender == uniswapV2Pair && !isExcludedFromFee[recipient]) {\n        taxAmount += amount * buyTaxRate / 10000; // ❌ This condition also triggers on skim() calls\n    }\n\n    // Sell tax condition: recipient is LP Pair (someone is selling BRA)\n    if (recipient == uniswapV2Pair && !isExcludedFromFee[sender]) {\n        taxAmount += amount * sellTaxRate / 10000; // ❌ This condition also triggers on skim() calls\n    }\n\n    // ❌ On skim(pair) call: sender == pair, recipient == pair\n    // → Both conditions satisfied → double tax applied\n    // ❌ Tax tokens remain inside the pair contract\n    // ❌ sync() not called → reserve0 unchanged, actual balance increases\n\n    if (taxAmount > 0) {\n        super._transfer(sender, address(this), taxAmount); // Tax stored in contract\n        // Or tax remains in the pair itself\n    }\n\n    super._transfer(sender, recipient, amount - taxAmount);\n    // ❌ PancakePair.sync() is not called here\n}",
+  "❌ For BRA token: actual balance - reserve = surplus → sending to pair itself triggers double tax\n    _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)).sub(reserve0));\n    _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)).sub(reserve1));\n    //",
+  "❌ sync() is not called after transfer → reserve is not updated\n    //"
+ ],
+ "code_after": [
+  "// ✅ Explicitly block self-transfer cases (skim scenario) where LP Pair sends to itself\n// ✅ Call sync() immediately after taxing an LP transfer to synchronize reserve\nfunction _transfer(address sender, address recipient, uint256 amount) internal override {\n    uint256 taxAmount = 0;\n\n    // ✅ Self-referential transfers (e.g., skim()) are excluded from tax\n    bool isSelfTransfer = (sender == recipient);\n\n    if (!isSelfTransfer) {\n        // Buy tax: sender is LP Pair and recipient is not excluded from fees\n        if (sender == uniswapV2Pair && !isExcludedFromFee[recipient]) {\n            taxAmount += amount * buyTaxRate / 10000;\n        }\n\n        // Sell tax: recipient is LP Pair and sender is not excluded from fees\n        if (recipient == uniswapV2Pair && !isExcludedFromFee[sender]) {\n            taxAmount += amount * sellTaxRate / 10000;\n        }\n    }\n\n    if (taxAmount > 0) {\n        super._transfer(sender, address(this), taxAmount);\n        // ✅ If LP Pair is involved in a taxed transfer, immediately call sync() to update reserve\n        if (sender == uniswapV2Pair || recipient == uniswapV2Pair) {\n            IPancakePair(uniswapV2Pair).sync();\n        }\n    }\n\n    super._transfer(sender, recipient, amount - taxAmount);\n}",
+  "✅ This function itself is not vulnerable — the issue lies in BRA's _transfer() logic\nfunction skim(address to) external lock {\n    address _token0 = token0;\n    address _token1 = token1;\n    //"
+ ],
+ "steps": [
+  "0x0fe2...65F4 → Lend 1,400 WBNB to Exploit contract",
+  "[STEP 2] Unwrap WBNB (1,400 WBNB → 1,400 BNB)",
+  "[STEP 3] BNB → BRA Swap (PancakeSwap multi-hop)",
+  "1,000 BNB → USDT → BRA (acquire approx. 10,539 BRA)",
+  "Path: WBNB → USDT → BRA (Pair: 0x8F4B...dF0E)",
+  "↳ BRA._transfer() applies sell tax → pair balance > reserve",
+  "1 pair.skim(pair) → pair→pair double tax triggered",
+  "2 imbalance = prior imbalance + 2×△X → more double tax",
+  "... Compound amplification (~325 BRA → ~196,475 BRA/iter",
+  "101 Total accumulated BRA imbalance: hundreds of thousands",
+  "[STEP 6] Extract profit by swapping BRA→USDT",
+  "[STEP 7] Re-swap USDT → WBNB (PancakeRouter)",
+  "458,918 USDT → 2,075.72 WBNB",
+  "675.72 WBNB net profit (transferred to attacker)"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│  Attacker EOA: 0x67a9...0795                                        │\n│  Attack Tx: 0x6759...4047  (Block: 24,655,772)                      │\n└─────────────────────────────┬───────────────────────────────────────┘\n                              │ testExploit() call\n                              ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│  [STEP 1] DODO DPP Advanced Pool Flash Loan                          │\n│  0x0fe2...65F4 → Lend 1,400 WBNB to Exploit contract               │\n└─────────────────────────────┬───────────────────────────────────────┘\n                              │ DPPFlashLoanCall() callback\n                              ▼\n┌────────────────────────────────────────────────",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\n// PoC source: SunWeb3Sec/DeFiHackLabs — BRA_exp.sol\n// Core attack logic only (with English comments)\n\ncontract Exploit is Test {\n    // Main contract address constants\n    IDPPAdvanced constant dppAdvanced = IDPPAdvanced(0x0fe261aeE0d1C4DFdDee4102E82Dd425999065F4); // DODO flash loan pool\n    WBNB constant wbnb = WBNB(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);          // Wrapped BNB\n    IUSDT constant usdt = IUSDT(0x55d398326f99059fF775485246999027B3197955);          // BSC-USDT\n    IERC20 constant bra  = IERC20(0x449FEA37d339a11EfE1B181e5D5462464bBa3752);        // Vulnerable BRA token\n    IPancakeRouter constant pancakeRouter = IPancakeRouter(\n        payable(0x10ED43C718714eb63d5aA57B78B54704E256024E)                 "
+ ]
+}

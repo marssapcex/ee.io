@@ -1,0 +1,50 @@
+{
+ "id": "2024__2024-05-14_PredyFinance_AccountingError_ARB",
+ "source_file": "2024/2024-05-14_PredyFinance_AccountingError_ARB.md",
+ "title": "Predy Finance — Cross-Pair Accounting Discrepancy (Accounting Error) Analysis",
+ "date": "2024-05-14",
+ "protocol": "Predy Finance",
+ "chain": "Arbitrum",
+ "loss_raw": "~$464,000 (83.91 WETH + 219,585.74 USDC)",
+ "loss_usd": 464000.0,
+ "root_cause": "Cross-pair liquidity theft inside `trade()` callback (accounting validation ordering error)",
+ "attack_tx": "0xbe16...f50f",
+ "vulnerable_contract": "PredyPool 0x9215...8613",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — trade() function missing nonReentrant\nfunction trade(\n    TradeParams memory tradeParams,\n    bytes memory settlementData\n) external returns (TradeResult memory tradeResult) {\n    // [1] Lock initialization: msg.sender (attacker contract) becomes the locker\n    DataType.PairStatus storage pairStatus = _getPairStatus(tradeParams.pairId);\n    Locks.initialize(globalData, msg.sender);   // ❌ locker = attacker\n\n    // [2] Actual position settlement (internal logic)\n    tradeResult = TradeLogic.trade(globalData, tradeParams, settlementData);\n\n    // [3] Callback invocation — attacker code executes at this point\n    // ❌ No nonReentrant, so take/supply can be called inside the callback\n    IPredyTradeCallback(msg.sender).predyTradeAfterCallback(tradeParams, tradeResult);\n\n    // [4] Validation — only performed after the callback completes\n    PositionCalculator.checkSafe(globalData, pairStatus, tradeParams.vaultId);\n    // ❌ Funds have already moved by this point, but the balance sum appears unchanged\n}",
+  "// ❌ Vulnerable code — duplicate registration of the same token pair is possible\nfunction registerPair(\n    AddPairLogic.AddPairParams memory addPairParam\n) external returns (uint256 pairId) {\n    // ❌ Does not check whether the same token combination already exists\n    pairId = AddPairLogic.addPair(globalData, uniswapFactory, addPairParam);\n    // Attacker creates a pair with poolOwner = address(this) → becomes the callback recipient\n}",
+  "// ❌ Vulnerable code — any locker can withdraw funds from arbitrary pairs\nfunction take(\n    bool isQuoteAsset,\n    address to,\n    uint256 amount\n) external onlyByLocker {\n    // ❌ Does not verify that the funds belong to the pairId currently being traded\n    if (isQuoteAsset) {\n        IERC20(quoteToken).safeTransfer(to, amount);\n    } else {\n        IERC20(baseToken).safeTransfer(to, amount);\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — nonReentrant added + pre-callback validation\nfunction trade(\n    TradeParams memory tradeParams,\n    bytes memory settlementData\n) external nonReentrant returns (TradeResult memory tradeResult) {  // ✅ Reentrancy lock\n    DataType.PairStatus storage pairStatus = _getPairStatus(tradeParams.pairId);\n    Locks.initialize(globalData, msg.sender);\n\n    tradeResult = TradeLogic.trade(globalData, tradeParams, settlementData);\n\n    // ✅ Snapshot pair-internal state before callback\n    uint256 baseBalanceBefore = IERC20(pairStatus.baseToken).balanceOf(address(this));\n    uint256 quoteBalanceBefore = IERC20(pairStatus.quoteToken).balanceOf(address(this));\n\n    IPredyTradeCallback(msg.sender).predyTradeAfterCallback(tradeParams, tradeResult);\n\n    // ✅ Verify that balances have not decreased after callback (prevents cross-pair fund drain)\n    require(\n        IERC20(pairStatus.baseToken).balanceOf(address(this)) >= baseBalanceBefore,\n        \"base balance decreased\"\n    );\n\n    PositionCalculator.checkSafe(globalData, pairStatus, tradeParams.vaultId);\n}",
+  "// ✅ Fixed code — prevents duplicate pair registration\nfunction registerPair(\n    AddPairLogic.AddPairParams memory addPairParam\n) external returns (uint256 pairId) {\n    // ✅ Reverts if a pair with the same (marginId, quoteToken, uniswapPool) already exists\n    bytes32 pairKey = keccak256(abi.encodePacked(\n        addPairParam.marginId,\n        addPairParam.uniswapPool\n    ));\n    require(!registeredPairs[pairKey], \"pair already exists\");\n    registeredPairs[pairKey] = true;\n\n    pairId = AddPairLogic.addPair(globalData, uniswapFactory, addPairParam);\n}"
+ ],
+ "steps": [
+  "1. registerPair() — Attacker contract registers a new USDC/WETH pair (id=3) with itself as poolOwner",
+  "2. trade() — Opens a position with tradeAmount=0 on pairId=3 (zero cost)",
+  "→ Locks.initialize(locker = attacker contract) ← locker acquired",
+  "3. predyTradeAfterCallback() entered (attacker callback executes)",
+  "→ PredyPool → attacker: 219,585.74 USDC transferred ← USDC drained from existing pairs",
+  "→ attacker → PredyPool pair3: USDC re-supplied ← pair3 LP tokens received",
+  "→ PredyPool → attacker: 83.91 WETH transferred ← WETH drained from existing pairs",
+  "→ attacker → PredyPool pair3: WETH re-supplied ← pair3 LP tokens received",
+  "4. PositionCalculator.checkSafe() — total balance unchanged → validation passes ✓ (cross-pair theft undetected)",
+  "5. withdraw(pairId=3, true, all WETH LP) — pair3 LP burned → WETH withdrawn",
+  "6. withdraw(pairId=3, false, all USDC LP) — pair3 LP burned → USDC withdrawn",
+  "[3a] take(all USDC) ▶ 219,585 USDC → attacker",
+  "[3b] supply(USDC) ▶ attacker USDC → pair3",
+  "[3c] take(all WETH) ▶ 83.91 WETH → attacker",
+  "[3d] supply(WETH) ▶ attacker WETH → pair3",
+  "(total pool balance unchanged → checkSafe() passes)",
+  "[4] withdraw(pair3, WETH) ▶ pair3 LP → WETH withdrawn",
+  "[5] withdraw(pair3, USDC) ▶ pair3 LP → USDC withdrawn",
+  "83.91 WETH (~$252K)"
+ ],
+ "other_code": [
+  "1. registerPair()  — Attacker contract registers a new USDC/WETH pair (id=3) with itself as poolOwner\n                     (same token combination as existing pair id=1,2 — permitted)\n\n2. trade()         — Opens a position with tradeAmount=0 on pairId=3 (zero cost)\n                     └→ Locks.initialize(locker = attacker contract)  ← locker acquired\n\n3. predyTradeAfterCallback() entered (attacker callback executes)\n   │\n   ├─ take(true, attacker, all USDC balance)\n   │   └→ PredyPool → attacker: 219,585.74 USDC transferred  ← USDC drained from existing pairs\n   │\n   ├─ supply(pairId=3, false, full USDC)\n   │   └→ attacker → PredyPool pair3: USDC re-supplied  ← pair3 LP tokens received\n   │\n   ├─ take(false, attacker, all WETH balance)\n   │   └→ PredyPool → attacker: 83.91 WETH transferre",
+  "┌─────────────────────────────┐\n│  Attacker EOA               │\n│  0x76B0...D008              │\n└──────────────┬──────────────┘\n               │ Single Tx call\n               ▼\n┌─────────────────────────────┐\n│  Attack Contract            │\n│  0xb797...0149              │\n│                             │\n│  [1] registerPair()         │─────────────────────────────────▶ ┌─────────────────────┐\n│      poolOwner = self       │                                    │   PredyPool         │\n│      pairId = 3 acquired    │                                    │   0x9215...8613     │\n│                             │                                    │                     │\n│  [2] trade(pairId=3,        │─────────────────────────────────▶ │  pair1: USDC/WETH   │\n│       amount=0)             │           "
+ ]
+}

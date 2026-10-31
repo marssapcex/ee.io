@@ -1,0 +1,22 @@
+{
+ "id": "2023__2023-11-18_KronosResearch_APIKeyCompromise_Multi",
+ "source_file": "2023/2023-11-18_KronosResearch_APIKeyCompromise_Multi.md",
+ "title": "Kronos Research — API Key Compromise Trading Loss Analysis",
+ "date": "2023-11-18",
+ "protocol": "Kronos Research",
+ "chain": "Multiple",
+ "loss_raw": "~$26,000,000 (USDT, USDC, ETH, WBTC drained via compromised API keys)",
+ "loss_usd": 26000000.0,
+ "root_cause": "Exchange API keys used by Kronos Research for automated market-making operations were compromised, allowing the attacker to execute unauthorized withdrawal or trading transactions on behalf of the firm",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Obtain Kronos Research API keys\n    │       (method unconfirmed: phishing, credential leak, infrastructure breach)\n    │\n    ├─[2] Use API keys to authenticate to exchange(s) as Kronos Research\n    │       API permissions allowed withdrawals and/or fund transfers\n    │\n    ├─[3] Execute unauthorized withdrawals:\n    │       ~$26M in USDT, USDC, ETH, WBTC\n    │       Transferred to attacker-controlled addresses\n    │\n    ├─[4] Kronos detects anomalous activity; suspends all trading\n    │       \"We have identified unauthorized access to some of our API keys\n    │        and are investigating.\" — Kronos Research, Nov 19 2023\n    │\n    └─[5] Funds laundered through on-chain DeFi protocols\n              Losses absorbed by Kronos Research; trading resumed ~Nov 26"
+ ]
+}

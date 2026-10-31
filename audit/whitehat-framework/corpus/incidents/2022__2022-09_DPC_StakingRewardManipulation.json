@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-09_DPC_StakingRewardManipulation",
+ "source_file": "2022/2022-09_DPC_StakingRewardManipulation.md",
+ "title": "DPC — Staking Reward Re-Claim Attack Analysis",
+ "date": "2022-09-01",
+ "protocol": "DPC Token Staking",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "No reward amount validation on repeated `claimStakeLp()` calls",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable claimStakeLp() - no protection against repeated claims\nfunction claimStakeLp() external {\n    uint256 userStake = stakedBalance[msg.sender];\n\n    //",
+  "❌ Only calculates time elapsed since last claim\n    // but can be called repeatedly within the same block/transaction\n    uint256 reward = calculateReward(userStake, lastClaimTime[msg.sender]);\n\n    //",
+  "❌ lastClaimTime is not updated, or updated incompletely\n    // reward should become 0 but is recalculated fresh each time\n    dpcToken.transfer(msg.sender, reward);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - state update immediately after claim\nmapping(address => uint256) public lastClaimBlock;\n\nfunction claimStakeLp() external {\n    require(block.number > lastClaimBlock[msg.sender], \"Already claimed this block\");\n    uint256 userStake = stakedBalance[msg.sender];\n    uint256 reward = calculateReward(userStake, lastClaimTime[msg.sender]);\n\n    lastClaimTime[msg.sender] = block.timestamp; //",
+  "✅ Immediate update\n    lastClaimBlock[msg.sender] = block.number;   //"
+ ],
+ "steps": [
+  "[1] 2 WBNB → USDT swap (PancakeRouter)",
+  "[2] Half of USDT → DPC swap",
+  "[8] Accumulated DPC → WBNB reverse swap"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IDPC {\n    function approve(address spender, uint256 amount) external returns (bool);\n    function balanceOf(address owner) external view returns (uint256);\n    function tokenAirdrop(uint256 amount) external;\n    function stakeLp(uint256 amount) external;\n    function claimStakeLp() external;\n    function claimDpcAirdrop() external;\n}\n\ninterface IPair {\n    function approve(address spender, uint256 amount) external returns (bool);\n    function balanceOf(address owner) external view returns (uint256);\n}\n\ncontract DPCExploit is Test {\n    IDPC dpc = IDPC(0xB75cA3C3e99747d0e2F6e75A9fBD17F5Ac03cebE);\n    IPair pair = IPair(0x79cD24Ed4524373aF6e047556018b1440CF04be3);\n\n    function setUp() p"
+ ]
+}

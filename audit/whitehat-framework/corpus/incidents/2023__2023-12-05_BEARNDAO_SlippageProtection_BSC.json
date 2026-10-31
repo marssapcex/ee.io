@@ -1,0 +1,43 @@
+{
+ "id": "2023__2023-12-05_BEARNDAO_SlippageProtection_BSC",
+ "source_file": "2023/2023-12-05_BEARNDAO_SlippageProtection_BSC.md",
+ "title": "BEARNDAO — Missing Slippage Protection Vulnerability Analysis",
+ "date": "2023-12-05",
+ "protocol": "BEARNDAO",
+ "chain": "BSC",
+ "loss_raw": "~$769,000",
+ "loss_usd": 769000.0,
+ "root_cause": "Missing `amountOutMin` validation in the `convertDustToEarned()` function's token swap enables price manipulation via flash loan",
+ "attack_tx": "0x5191...d5f",
+ "vulnerable_contract": "0x2112...3E0e",
+ "classes": [
+  "business-logic",
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// BvaultsStrategy.sol — estimated vulnerable convertDustToEarned() implementation\n\nfunction convertDustToEarned() external {\n    // Check ALPACA balance\n    uint256 alpacaBalance = ALPACA.balanceOf(address(this));\n    if (alpacaBalance == 0) return;\n\n    // ❌ Vulnerability: amountOutMin = 0, no slippage protection whatsoever\n    // If the attacker manipulates the ALPACA/WBNB pool price first, then calls this,\n    // the vault executes the swap at the worst possible exchange rate\n    address[] memory path = new address[](2);\n    path[0] = address(ALPACA);\n    path[1] = address(WBNB);\n\n    Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        alpacaBalance,\n        0,            // ❌ amountOutMin = 0: no minimum output amount enforced\n        path,\n        address(this),\n        block.timestamp\n    );\n}",
+  "// ❌ external visibility: anyone can call this\nfunction convertDustToEarned() external {\n    // ...\n}",
+  "┌─────────────────────────────────────┐\n│          Attacker Contract           │\n│  (0xe1997bC971D5986AA57Ee8ffB57...)  │\n└────────────────┬────────────────────┘\n                 │ ① Flash loan request (10,000 WBNB)\n                 ▼\n┌─────────────────────────────────────┐\n│   PancakeSwap CAKE/WBNB Pool        │\n│   (Flash loan provider)             │\n└────────────────┬────────────────────┘\n                 │ ② Transfer 10,000 WBNB → trigger pancakeCall()\n                 ▼\n┌─────────────────────────────────────┐\n│          pancakeCall() Execution     │\n│                                     │\n│  ③ WBNB → ALPACA swap               │\n│     (PancakeSwap Router)            │\n│     ALPACA price surges ↑           │\n│                                     │\n│  ④ BvaultsStrategy                  │\n│     .convertDustToEarned() called   │\n│                                     │\n└────────────────┬────────────────────┘\n                 │ ④ Swap request with amountOutMin=0\n                 ▼\n┌─────────────────────────────────────┐\n│       BvaultsStrategy               │\n│  (0x21125d94Cfe886e7179c8D2fE8...)  │\n│                                     │\n│  Vault swaps its ALPACA for WBNB    │\n│  at the manipulated rate → receives │\n│  only a tiny amount of WBNB         │\n│  (Vault incurs loss ❌)             │\n└────────────────┬────────────────────┘\n                 │ ⑤ State now favorable for attacker\n                 ▼\n┌─────────────────────────────────────┐\n│          pancakeCall() Continues    │\n│                                     │\n│  ⑤ ALPACA → WBNB re-swap           │\n│     (profit captured at             │\n│      manipulated ALPACA price)      │\n│                                     │\n│  ⑥ WBNB → BUSD swap (lock profit)  │\n│                                     │\n│  ⑦ Receive WBNB from helper        │\n│     contract (for flash loan        │\n│     repayment)                      │\n└────────────────┬────────────────────┘\n                 │ ⑧ Flash loan repayment\n                 ▼\n┌─────────────────────────────────────┐\n│   PancakeSwap CAKE/WBNB Pool        │\n│   (Flash loan repaid)               │\n└─────────────────────────────────────┘\n                 │\n                 ▼\n         💰 Attacker profit: ~$769,000 (BUSD)"
+ ],
+ "code_after": [
+  "// ✅ convertDustToEarned() implementation with slippage protection\n\nfunction convertDustToEarned() external {\n    uint256 alpacaBalance = ALPACA.balanceOf(address(this));\n    if (alpacaBalance == 0) return;\n\n    address[] memory path = new address[](2);\n    path[0] = address(ALPACA);\n    path[1] = address(WBNB);\n\n    // ✅ Calculate expected output using TWAP or a trusted oracle\n    uint256 expectedOut = oracle.getAmountOut(address(ALPACA), address(WBNB), alpacaBalance);\n\n    // ✅ Allow at most 1% slippage\n    uint256 minAmountOut = expectedOut * 99 / 100;\n\n    Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        alpacaBalance,\n        minAmountOut, // ✅ Slippage upper bound enforced\n        path,\n        address(this),\n        block.timestamp\n    );\n}",
+  "// ✅ Access control added\nfunction convertDustToEarned() external onlyGovernance {\n    // Or restrict to strategy keeper only\n}"
+ ],
+ "steps": [
+  "1. **Flash Loan Initiation**: Borrow 10,000 WBNB from the PancakeSwap CAKE/WBNB pool",
+  "2. **ALPACA Price Manipulation (Buy)**: Swap all WBNB for ALPACA, causing a sharp spike in the ALPACA price",
+  "3. **Call Vulnerable Function**: Call `BvaultsStrategy.convertDustToEarned()` — vault swaps its held ALPACA for WBNB with `amountOutMin = 0` (receives only a tiny amount of WBNB at the manipulated price)",
+  "4. **ALPACA Price Restoration (Sell)**: Swap held ALPACA back to WBNB to realize profit",
+  "5. **Profit Conversion**: Swap remaining WBNB to BUSD to lock in gains",
+  "6. **Flash Loan Repayment**: Receive WBNB from the helper contract and repay PancakeSwap",
+  "② Transfer 10,000 WBNB → trigger pancakeCall()",
+  "③ WBNB → ALPACA swap",
+  "at the manipulated rate → receives",
+  "⑤ ALPACA → WBNB re-swap",
+  "⑥ WBNB → BUSD swap (lock profit)"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo - Total Lost : ~$769K\n// Attacker : https://bscscan.com/address/0xce27b195fa6de27081a86b98b64f77f5fb328dd5\n// Attack Contract : https://bscscan.com/address/0xe1997bc971d5986aa57ee8ffb57eb1deba4fdaaa\n// Victim Contract : https://bscscan.com/address/0x21125d94cfe886e7179c8d2fe8c1ea8d57c73e0e\n// Attack Tx : https://explorer.phalcon.xyz/tx/bsc/0x51913be3f31d5ddbfc77da789e5f9653ed6b219a52772309802226445a1edd5f\n\ninterface IBvaultsStrategy {\n    function convertDustToEarned() external;\n}\n\ncontract ContractTest is Test {\n    // BSC fork: attack block 34,099,688\n    // Relevant token and contract addresses\n    IERC20 private constant WBNB = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n    IERC20 private constant ALP",
+  "// Before (vulnerable)\nfunction convertDustToEarned() external { ... }\n\n// After (safe)\nfunction convertDustToEarned() external onlyOwner { ... }\n// Or whitelist trusted keeper addresses\nmodifier onlyKeeper() {\n    require(msg.sender == keeper || msg.sender == owner(), \"Not authorized\");\n    _;\n}\nfunction convertDustToEarned() external onlyKeeper { ... }"
+ ]
+}

@@ -1,0 +1,44 @@
+{
+ "id": "2025__2025-07-08_PeapodsFinance_PriceDependency_ETH",
+ "source_file": "2025/2025-07-08_PeapodsFinance_PriceDependency_ETH.md",
+ "title": "PeapodsFinance — TWAP Oracle Price Dependency Vulnerability Analysis",
+ "date": "2025-07-08",
+ "protocol": "Peapods Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~78.5 ETH ($229,950 USD)",
+ "loss_usd": 229950.0,
+ "root_cause": "Use of a low-liquidity Uniswap V3 pool as a TWAP oracle (Vulnerable Price Dependency)",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — Peapods Pod oracle pseudocode (estimated)\ncontract PodOracle {\n    IUniswapV3Pool public immutable pool; // aspLONGsUSDe/WETH pool\n    uint32 public constant TWAP_PERIOD = 1800; // 30-minute TWAP\n\n    function getPrice() external view returns (uint256) {\n        // ❌ Vulnerability: trusts TWAP without validating liquidity\n        // When pool liquidity is low, even small swaps can move the tick significantly\n        uint32[] memory secondsAgos = new uint32[](2);\n        secondsAgos[0] = TWAP_PERIOD; // 30 minutes ago\n        secondsAgos[1] = 0;           // now\n\n        (int56[] memory tickCumulatives, ) = pool.observe(secondsAgos);\n        int24 avgTick = int24(\n            (tickCumulatives[1] - tickCumulatives[0]) / int56(int32(TWAP_PERIOD))\n        );\n\n        // ❌ No liquidity threshold validation\n        // ❌ Does not verify whether the oracle pool has sufficient current liquidity\n        return OracleLibrary.getQuoteAtTick(avgTick, 1e18, token, WETH);\n    }\n}",
+  "// ❌ Vulnerable Pod creation code (estimated)\nfunction createPod(\n    address collateralToken,\n    address oraclePool,  // ❌ Users can specify an arbitrary Uniswap V3 pool address\n    uint256 maxLTV\n) external {\n    // ❌ No validation of oracle pool liquidity or trustworthiness\n    pods[collateralToken] = Pod({\n        oracle: oraclePool,\n        maxLTV: maxLTV\n    });\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — with liquidity validation added\ncontract PodOracleFixed {\n    IUniswapV3Pool public immutable pool;\n    uint32 public constant TWAP_PERIOD = 1800;\n    uint128 public constant MIN_LIQUIDITY = 1_000_000e18; // minimum liquidity threshold\n\n    function getPrice() external view returns (uint256) {\n        // ✅ Fix: validate pool's current liquidity first\n        uint128 liquidity = pool.liquidity();\n        require(\n            liquidity >= MIN_LIQUIDITY,\n            \"Oracle: Insufficient pool liquidity — price manipulation risk\"\n        );\n\n        uint32[] memory secondsAgos = new uint32[](2);\n        secondsAgos[0] = TWAP_PERIOD;\n        secondsAgos[1] = 0;\n\n        (int56[] memory tickCumulatives, ) = pool.observe(secondsAgos);\n        int24 avgTick = int24(\n            (tickCumulatives[1] - tickCumulatives[0]) / int56(int32(TWAP_PERIOD))\n        );\n\n        // ✅ Added: validate price deviation against external oracle such as Chainlink\n        uint256 twapPrice = OracleLibrary.getQuoteAtTick(avgTick, 1e18, token, WETH);\n        uint256 chainlinkPrice = getChainlinkPrice();\n        uint256 deviation = twapPrice > chainlinkPrice\n            ? (twapPrice - chainlinkPrice) * 1e4 / chainlinkPrice\n            : (chainlinkPrice - twapPrice) * 1e4 / chainlinkPrice;\n        require(deviation <= 500, \"Oracle: Price deviation of 5% or more vs Chainlink\"); // 5% tolerance\n\n        return twapPrice;\n    }\n}",
+  "// ✅ Fixed Pod creation code\nfunction createPod(\n    address collateralToken,\n    address oraclePool,\n    uint256 maxLTV\n) external {\n    // ✅ Validate minimum liquidity of the oracle pool\n    IUniswapV3Pool pool = IUniswapV3Pool(oraclePool);\n    require(\n        pool.liquidity() >= MIN_ORACLE_LIQUIDITY,\n        \"Pod: Insufficient oracle pool liquidity\"\n    );\n\n    // ✅ Verify cross-validation capability with Chainlink oracle\n    // ✅ Requires operator approval or community governance\n    require(\n        approvedOracles[oraclePool] || hasGovernanceApproval(oraclePool),\n        \"Pod: Unapproved oracle\"\n    );\n\n    pods[collateralToken] = Pod({\n        oracle: oraclePool,\n        maxLTV: maxLTV\n    });\n}"
+ ],
+ "steps": [
+  "Step 1: TWAP Oracle Manipulation",
+  "Tick accumulation over 30-min TWAP window → artificial price spike",
+  "Step 2: Borrow Against Inflated Collateral",
+  "Oracle price = manipulated high value → collateral over-valued",
+  "Step 3: Repeat Attack (2nd Attempt)",
+  "Step 4: Fund Withdrawal & Laundering",
+  "Stolen WETH → converted to ETH (78.5175512 ETH)",
+  "→ Transferred to address 0x656148F26... (block 22874078)",
+  "→ Laundered via ChangeNow / FixedFloat mixers",
+  "Repeated small swaps → TWAP tick accumulation",
+  "Price: $1 → $tens (manipulated)",
+  "Actual collateral $1 → System recognizes $tens",
+  "→ Excessive WETH borrow executed",
+  "▶ 78.5 ETH stolen → ChangeNow/FixedFloat"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────┐\n│                      Preparation Phase                           │\n│  Attack contract deployed (block 22873857)                       │\n│  aspLONGsUSDe/WETH Uniswap V3 pool — liquidity depletion confirmed│\n└──────────────────────────────┬──────────────────────────────────┘\n                               │\n                               ▼\n┌─────────────────────────────────────────────────────────────────┐\n│                   Step 1: TWAP Oracle Manipulation               │\n│  Repeated small swaps in low-liquidity aspLONGsUSDe/WETH pool   │\n│  Tick accumulation over 30-min TWAP window → artificial price spike│\n│  aspLONGsUSDe price: inflated tens of times vs. fair value       │\n└──────────────────────────────┬─────────────",
+  "Attacker EOA (0x277d...)\n      │\n      │ Contract deployment\n      ▼\nAttack Contract (0x7212...)\n      │\n      ├──▶ [Low-liquidity Uniswap V3 Pool]\n      │    aspLONGsUSDe/WETH\n      │    Repeated small swaps → TWAP tick accumulation\n      │    ─────────────────────────────\n      │    Price: $1 → $tens (manipulated)\n      │\n      ├──▶ [Pod Lending Contract] (0xd153...)\n      │    Deposit aspLONGsUSDe as collateral\n      │    Collateral evaluated at manipulated oracle price\n      │    ─────────────────────────────\n      │    Actual collateral $1 → System recognizes $tens\n      │    → Excessive WETH borrow executed\n      │\n      └──▶ 78.5 ETH stolen → ChangeNow/FixedFloat"
+ ]
+}

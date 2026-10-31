@@ -1,0 +1,41 @@
+{
+ "id": "2024__2024-06-10_UwULend_CurveOracleManipulation_ETH",
+ "source_file": "2024/2024-06-10_UwULend_CurveOracleManipulation_ETH.md",
+ "title": "UwU Lend — Curve Pool-Based Oracle Manipulation Attack Analysis",
+ "date": "2024-06-10",
+ "protocol": "UwU Lend",
+ "chain": "Ethereum",
+ "loss_raw": "~$19,300,000 (3 consecutive same-day attacks; combined with Jun 13 follow-on: ~$23M)",
+ "loss_usd": 19300000.0,
+ "root_cause": "The spot price (`get_p()`) of the Curve sUSDE pool was used directly in the oracle median calculation, making it manipulable via flash loans",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: get_p() is a spot price manipulable instantly via flash loan\nfunction getPrice() external view override returns (uint256) {\n    (uint256[] memory prices, bool uniFail) = _getPrices(true); // sorted array of 11 prices\n\n    // ❌ Median = prices[5] (6th of indices 0~10)\n    // 5 spot prices based on get_p() are included, making it manipulable\n    uint256 median = uniFail ? (prices[5] + prices[6]) / 2 : prices[5];\n\n    require(median > 0, 'Median is zero');\n\n    // sUSDeScalingFactor = 1047 → median * 1.047 = final price\n    return FullMath.mulDiv(median, sUSDeScalingFactor, 1e3);\n}\n\nfunction _getPrices(bool sorted) internal view returns (uint256[] memory, bool uniFail) {\n    uint256[] memory prices = new uint256[](11);\n    // Collect two prices per pool: EMA (price_oracle) + spot (get_p)\n    (prices[0], prices[1]) = _getUSDeFraxEMAInUSD();   // prices[1] = get_p() ❌\n    (prices[2], prices[3]) = _getUSDeUsdcEMAInUSD();   // prices[3] = get_p() ❌\n    (prices[4], prices[5]) = _getUSDeDaiEMAInUSD();    // prices[5] = get_p() ❌\n    (prices[6], prices[7]) = _getCrvUsdUSDeEMAInUSD(); // prices[7] = get_p() ❌\n    (prices[8], prices[9]) = _getUSDeGhoEMAInUSD();    // prices[9] = get_p() ❌\n    try UNI_V3_TWAP_USDT_ORACLE.getPrice() returns (uint256 price) {\n        prices[10] = price; // Uniswap V3 TWAP (only safe source)\n    } catch {\n        uniFail = true;\n    }\n    if (sorted) { _bubbleSort(prices); }\n    return (prices, uniFail);\n}\n\n// ❌ Direct reference to spot price (get_p) — manipulable\nfunction _getUSDeFraxEMAInUSD() internal view returns (uint256, uint256) {\n    uint256 price = uwuOracle.getAssetPrice(FRAX);\n    return (\n        FullMath.mulDiv(FRAX_POOL.price_oracle(0), price, 1e18), // EMA (safe)\n        FullMath.mulDiv(FRAX_POOL.get_p(0), price, 1e18)         // ❌ Spot (manipulable)\n    );\n}\n// _getUSDeUsdcEMAInUSD, _getUSDeDaiEMAInUSD, _getCrvUsdUSDeEMAInUSD, _getUSDeGhoEMAInUSD follow the same pattern",
+  "Step 1: Flash Loan Acquisition\n   ┌─────────────────────────────────────────────────────────────────┐\n   │  Attacker contract requests simultaneous flash loans            │\n   │  from multiple protocols                                        │\n   │  Total: ~$3.796B in assets                                      │\n   │  • AAVE V3 / AAVE V2 / Balancer / Maker                        │\n   │  • Spark / Morpho / Uniswap V3                                  │\n   │  (~40,000 ETH equivalent)                                       │\n   └──────────────────────────────┬──────────────────────────────────┘\n                                  │\n                                  ▼\nStep 2: Curve Pool Spot Price Manipulation\n   ┌─────────────────────────────────────────────────────────────────┐\n   │  Execute large swaps across 5 Curve pools using                 │\n   │  a portion of the borrowed funds                                │\n   │  (USDe/FRAX, USDe/USDC, USDe/crvUSD, USDe/DAI, GHO/USDe)      │\n   │                                                                 │\n   │  Pre-attack get_p() values:                                     │\n   │    FRAXUSDe: 1.0027  USDe-USDC: 0.9994  USDe-crvUSD: 0.9977   │\n   │    USDe/DAI: 0.9994  GHOUSDe: 1.0020                           │\n   │                                                                 │\n   │  After mass swaps: get_p() values across 5 pools are            │\n   │  manipulated                                                    │\n   │  → sUSDE oracle median rises (deflated then re-manipulated      │\n   │    to ~$0.99 level)                                             │\n   └──────────────────────────────┬──────────────────────────────────┘\n                                  │\n                                  ▼\nStep 3: Oracle Read — Manipulated Price Reflected\n   ┌─────────────────────────────────────────────────────────────────┐\n   │  sUSDePriceProviderBUniCatch.getPrice() is called               │\n   │                                                                 │\n   │  _getPrices() collects 11 prices:                               │\n   │    [0] EMA_FRAX  [1] get_p_FRAX  ← ❌ manipulated              │\n   │    [2] EMA_USDC  [3] get_p_USDC  ← ❌ manipulated              │\n   │    [4] EMA_DAI   [5] get_p_DAI   ← ❌ manipulated              │\n   │    [6] EMA_CRVUSD[7] get_p_CRVUSD← ❌ manipulated              │\n   │    [8] EMA_GHO   [9] get_p_GHO   ← ❌ manipulated              │\n   │    [10] Uniswap TWAP (cannot be manipulated)                    │\n   │                                                                 │\n   │  After sorting, median = prices[5] → artificially inflated      │\n   │  Final price = median × 1.047 (sUSDeScalingFactor)             │\n   └──────────────────────────────┬──────────────────────────────────┘\n                                  │\n                                  ▼\nStep 4: Over-borrowing Against Inflated Collateral\n   ┌─────────────────────────────────────────────────────────────────┐"
+ ],
+ "code_after": [
+  "// ✅ get_p() fully removed — EMA (price_oracle) only\nfunction _getPrices(bool sorted) internal view returns (uint256[] memory, bool uniFail) {\n    uint256[] memory prices = new uint256[](6); // ✅ 5 EMA + 1 TWAP\n    prices[0] = _getUSDeFraxEMAInUSD();\n    prices[1] = _getUSDeUsdcEMAInUSD();\n    prices[2] = _getUSDeDaiEMAInUSD();\n    prices[3] = _getCrvUsdUSDeEMAInUSD();\n    prices[4] = _getUSDeGhoEMAInUSD();\n    try UNI_V3_TWAP_USDT_ORACLE.getPrice() returns (uint256 price) {\n        prices[5] = price;\n    } catch {\n        uniFail = true;\n    }\n    if (sorted) { _bubbleSort(prices); }\n    return (prices, uniFail);\n}\n\n// ✅ Returns EMA only (single value)\nfunction _getUSDeFraxEMAInUSD() internal view returns (uint256) {\n    uint256 price = uwuOracle.getAssetPrice(FRAX);\n    return FullMath.mulDiv(FRAX_POOL.price_oracle(0), price, 1e18); // ✅ EMA only\n}",
+  "// ✅ Fixed _getUSDeFraxEMAInUSD — returns single EMA value\nfunction _getUSDeFraxEMAInUSD() internal view returns (uint256) {\n    uint256 fraxPrice = uwuOracle.getAssetPrice(FRAX);\n    // ✅ price_oracle() is EMA-based — cannot be manipulated by a single-block swap\n    return FullMath.mulDiv(FRAX_POOL.price_oracle(0), fraxPrice, 1e18);\n}\n\n// ✅ Fixed getPrice() — uses only 6 sources: 5 EMA + 1 TWAP\nfunction getPrice() external view override returns (uint256) {\n    uint256[] memory prices = new uint256[](6);\n    prices[0] = _getUSDeFraxEMAInUSD();\n    prices[1] = _getUSDeUsdcEMAInUSD();\n    prices[2] = _getUSDeDaiEMAInUSD();\n    prices[3] = _getCrvUsdUSDeEMAInUSD();\n    prices[4] = _getUSDeGhoEMAInUSD();\n    prices[5] = UNI_V3_TWAP_USDT_ORACLE.getPrice();\n\n    _bubbleSort(prices);\n    uint256 median = prices[2]; // median of 6 values\n\n    require(median > 0, 'Median is zero');\n    return FullMath.mulDiv(median, sUSDeScalingFactor, 1e3);\n}"
+ ],
+ "steps": [
+  "Step 1: Flash Loan Acquisition",
+  "- AAVE V3 / AAVE V2 / Balancer / Maker",
+  "- Spark / Morpho / Uniswap V3",
+  "Step 2: Curve Pool Spot Price Manipulation",
+  "→ sUSDE oracle median rises (deflated then re-manipulated",
+  "Step 3: Oracle Read — Manipulated Price Reflected",
+  "After sorting, median = prices[5] → artificially inflated",
+  "Step 4: Over-borrowing Against Inflated Collateral",
+  "- WETH, WBTC, DAI, USDT, FRAX",
+  "- crvUSD, CRV, sDAI, bLUSD, sUSDE",
+  "Step 5: Reverse Swap on Curve Pools — Price Normalization",
+  "Step 6: Profit Extraction",
+  "- 1,292.98 ETH transferred to 0x48D7...EB6",
+  "- 4,000 ETH transferred to 0x050c...B70"
+ ],
+ "other_code": []
+}

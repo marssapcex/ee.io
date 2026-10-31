@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-12-25_Rubic_RouterCallNativeArbitraryCall",
+ "source_file": "2022/2022-12-25_Rubic_RouterCallNativeArbitraryCall.md",
+ "title": "Rubic — routerCallNative() Arbitrary Call Attack: USDC Theft from Victims Analysis",
+ "date": "2022-12-25",
+ "protocol": "Rubic Exchange",
+ "chain": "Ethereum",
+ "loss_raw": "~$1,400,000 (USDC, 26 victims)",
+ "loss_usd": 1400000.0,
+ "root_cause": "The `router` parameter in `routerCallNative()` is not validated, allowing an attacker to set the USDC contract as the `router` and inject a `transferFrom()` encoding into `data`, enabling arbitrary theft of victims' USDC",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable Rubic Proxy - no router address validation\ncontract RubicProxy1 {\n    struct BaseCrossChainParams {\n        address srcInputToken;\n        uint256 srcInputAmount;\n        uint256 dstChainID;\n        address dstOutputToken;\n        uint256 dstMinOutputAmount;\n        address recipient;\n        address integrator;\n        address router;  //",
+  "❌ Unvalidated router address\n    }\n\n    //",
+  "❌ router can be set to an arbitrary address (e.g., USDC)\n    function routerCallNative(\n        BaseCrossChainParams calldata params,\n        bytes calldata data  //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - router whitelist + data validation\ncontract SafeRubicProxy {\n    mapping(address => bool) public whitelistedRouters;\n    bytes4 private constant TRANSFER_FROM_SELECTOR = bytes4(keccak256(\"transferFrom(address,address,uint256)\"));\n    bytes4 private constant TRANSFER_SELECTOR = bytes4(keccak256(\"transfer(address,uint256)\"));\n\n    function routerCallNative(\n        BaseCrossChainParams calldata params,\n        bytes calldata data\n    ) external payable {\n        //",
+  "✅ Only whitelisted routers can be called\n        require(whitelistedRouters[params.router], \"Router not whitelisted\");\n\n        //"
+ ],
+ "steps": [
+  "→ victim1's USDC → attacker",
+  "→ 18 victims' USDC → attacker"
+ ],
+ "other_code": []
+}

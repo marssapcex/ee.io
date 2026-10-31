@@ -1,0 +1,36 @@
+{
+ "id": "2023__2023-12-13_HyprNetwork_BusinessLogic_ETH",
+ "source_file": "2023/2023-12-13_HyprNetwork_BusinessLogic_ETH.md",
+ "title": "Hypr Network — OP Stack Bridge Re-initialization Vulnerability Analysis",
+ "date": "2023-12-13",
+ "protocol": "Hypr Network",
+ "chain": "Ethereum",
+ "loss_raw": "~$220,000 (2,570,000 HYPR tokens → swapped to 97 ETH)",
+ "loss_usd": 220000.0,
+ "root_cause": "The `clearLegacySlot` modifier resets `Initializable`'s initialization flag (storage slot 0), allowing re-initialization",
+ "attack_tx": "0x51ce...f65",
+ "vulnerable_contract": "0x40C3...595e (L1ChugSplashProxy)",
+ "classes": [
+  "business-logic",
+  "proxy-storage"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: temporary modifier for legacy storage migration\n// Forcibly stores 0 at storage slot 0,\n// which overlaps with Initializable contract's initialization flags (_initialized, _initializing)\nmodifier clearLegacySlot() {\n    assembly {\n        sstore(0, 0)  // ❌ Overwrites slot 0 with 0, resetting the _initialized flag\n    }\n    _;\n}\n\n// ❌ Vulnerability: this function is public, and reinitializer(2) is checked after clearLegacySlot executes\n// Because clearLegacySlot reset _initialized to 0, the reinitializer(2) condition passes\n// → Attacker can re-initialize with an arbitrary address for _messenger\nfunction initialize(CrossDomainMessenger _messenger) public clearLegacySlot reinitializer(2) {\n    __StandardBridge_init({ _messenger: _messenger });\n}\n\n// ❌ Result: messenger variable is replaced with the attacker's contract address\n// → onlyOtherBridge modifier trusts the attacker's contract",
+  "// StandardBridge.sol (vulnerable version)\n\n// ❌ Vulnerability: messenger is a mutable state variable, so it can be replaced via re-initialization\nCrossDomainMessenger public messenger;  // Stored in storage (attacker can overwrite)\n\n// onlyOtherBridge trusts messenger; when messenger is replaced with attacker's contract, it is bypassed\nmodifier onlyOtherBridge() {\n    require(\n        // ❌ msg.sender == attacker_contract (because messenger was replaced via re-initialization)\n        msg.sender == address(messenger) &&\n        // ❌ attacker contract returns the OTHER_BRIDGE address via xDomainMessageSender()\n            messenger.xDomainMessageSender() == address(OTHER_BRIDGE),\n        \"StandardBridge: function can only be called from the other bridge\"\n    );\n    _;\n}\n\n// ❌ Result: attacker can completely bypass the onlyOtherBridge guard and withdraw tokens\nfunction finalizeBridgeERC20(\n    address _localToken,\n    address _remoteToken,\n    address _from,\n    address _to,\n    uint256 _amount,\n    bytes calldata _extraData\n) public onlyOtherBridge {\n    // ...token transfer logic\n}",
+  "❌ Never use — destroys the Initializable flag\n    }\n    _;\n}\nfunction initialize(CrossDomainMessenger _messenger) public clearLegacySlot reinitializer(2) {\n    __StandardBridge_init({ _messenger: _messenger });\n}\n\n// Fixed code (identical to Optimism official patch v1.4.0)\nfunction initialize(CrossDomainMessenger _messenger) public reinitializer(Constants.INITIALIZER) {\n    //"
+ ],
+ "code_after": [
+  "// ✅ Fix: clearLegacySlot modifier removed\n// Uses Constants.INITIALIZER to avoid hard-coding the initialization version value\n// Manages the N value of reinitializer(N) as a constant to ensure it is updated with each new contract deployment\nfunction initialize(CrossDomainMessenger _messenger) public reinitializer(Constants.INITIALIZER) {\n    // ✅ Uses only the standard OpenZeppelin initialization pattern without the clearLegacySlot modifier\n    __StandardBridge_init({ _messenger: _messenger });\n}",
+  "// ✅ Comparison with safe design pattern (using immutable)\n// StandardBridge.sol at commit 65ec61dde (using immutable variables)\n\n// ✅ Declaring as immutable prevents changes after deployment → cannot be replaced even via re-initialization\nCrossDomainMessenger public immutable MESSENGER;\n\nmodifier onlyOtherBridge() {\n    require(\n        msg.sender == address(MESSENGER) &&  // ✅ Trusts only the immutable address\n            MESSENGER.xDomainMessageSender() == address(OTHER_BRIDGE),\n        \"StandardBridge: function can only be called from the other bridge\"\n    );\n    _;\n}"
+ ],
+ "steps": [
+  "→ _initialized = 0",
+  "→ Check passed! Guard bypassed",
+  "⑥ Swap HYPR → ETH",
+  "ETH Movement | Attacker 1 → `0x41dc1916...` (April 2024)"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────────────────────────┐\n│                         Hypr Network Bridge Attack Flow                          │\n└──────────────────────────────────────────────────────────────────────────────────┘\n\n  Attacker EOA             Attack Contract            L1ChugSplashProxy          HYPR Token\n (0x3ea6)                 (0xbA6f)                (L1StandardBridge)           (0x31ad)\n     │                        │                          │                         │\n     │  ① Deploy attack contract                         │                         │\n     │──────────────────────▶│                          │                         │\n     │                        │                          │                         │\n     │  ② Call attack()  ",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.15;\n\n// PoC Reproduction Code — Hypr Network Bridge Re-initialization Attack\n// Vulnerability: L1StandardBridge's clearLegacySlot modifier + reinitializer(2)\n\n// Attack contract interface\ninterface IL1StandardBridge {\n    // ① Re-initialization target function — re-callable due to clearLegacySlot\n    function initialize(address _messenger) external;\n    // ② Final token withdrawal function — has onlyOtherBridge guard but can be bypassed\n    function finalizeERC20Withdrawal(\n        address _l1Token,\n        address _l2Token,\n        address _from,\n        address _to,\n        uint256 _amount,\n        bytes calldata _extraData\n    ) external;\n    // Check L2 bridge address locked in the bridge\n    function l2TokenBridge() external view re"
+ ]
+}

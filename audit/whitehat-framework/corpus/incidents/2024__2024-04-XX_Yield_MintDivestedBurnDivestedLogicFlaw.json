@@ -1,0 +1,38 @@
+{
+ "id": "2024__2024-04-XX_Yield_MintDivestedBurnDivestedLogicFlaw",
+ "source_file": "2024/2024-04-XX_Yield_MintDivestedBurnDivestedLogicFlaw.md",
+ "title": "Yield Protocol — mintDivested/burnDivested Logic Flaw Analysis",
+ "date": "2024-04-01",
+ "protocol": "Yield Protocol",
+ "chain": "Arbitrum",
+ "loss_raw": "~$181,000",
+ "loss_usd": 181000.0,
+ "root_cause": "When `mintDivested()` and `burnDivested()` are used in combination, a donation of pool tokens to the vault distorts the shares ratio, allowing withdrawal of more USDC than was actually deposited",
+ "attack_tx": null,
+ "vulnerable_contract": "Strategy 0x3b4FFD93",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: shares ratio distortion via donation\ncontract YieldStrategy {\n    // totalAssets = poolToken.balanceOf(address(this))\n    // shares = amount * totalSupply / totalAssets\n\n    function mintDivested(address to) external returns (uint256 minted) {\n        uint256 poolTokenIn = poolToken.balanceOf(address(this)) - storedBalance;\n        // shares calculated based on storedBalance\n        minted = poolTokenIn * totalSupply / storedBalance;\n        storedBalance += poolTokenIn;\n        _mint(to, minted);\n    }\n\n    function burnDivested(address to) external returns (uint256 poolTokenOut) {\n        uint256 sharesToBurn = balanceOf(address(this));\n        // returned at current totalAssets / totalSupply ratio\n        poolTokenOut = sharesToBurn * totalAssets() / totalSupply;\n        // ← donated tokens included in totalAssets → excess returned\n        storedBalance -= poolTokenOut;\n        _burn(address(this), sharesToBurn);\n        poolToken.transfer(to, poolTokenOut);\n    }\n}\n\n//",
+  "// File: Strategy.sol\n    function mintDivested(address to)  // ❌ Vulnerability\n        external\n        isState(State.DIVESTED)\n        returns (uint256 minted)\n    {\n        // minted = supply * value(deposit) / value(strategy)\n        uint256 baseCached_ = baseCached;\n        uint256 deposit = base.balanceOf(address(this)) - baseCached_;\n        baseCached = baseCached_ + deposit;\n\n        minted = _totalSupply * deposit / baseCached_;\n\n        _mint(to, minted);\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: donation prevention + storedBalance consistency\nfunction totalAssets() public view returns (uint256) {\n    return storedBalance;  // use only the recorded balance, not the actual balance\n}\n\nfunction burnDivested(address to) external returns (uint256 poolTokenOut) {\n    uint256 sharesToBurn = balanceOf(address(this));\n    poolTokenOut = sharesToBurn * storedBalance / totalSupply;\n    storedBalance -= poolTokenOut;\n    _burn(address(this), sharesToBurn);\n    poolToken.transfer(to, poolTokenOut);\n}"
+ ],
+ "steps": [
+  "→ [1] Balancer flash loan: 400,000 USDC",
+  "→ [2] 308,000 USDC → YieldPool.mintDivested() → obtain pool tokens",
+  "→ [3] Half of pool tokens → YieldStrategy.mint()",
+  "→ [4] Remaining pool tokens → donated directly to YieldStrategy",
+  "totalAssets increases, totalSupply unchanged → share value inflated",
+  "→ [5] Call YieldStrategy.burn()",
+  "→ [6] pool tokens → USDC (burnDivested)",
+  "→ [7] Repay Balancer flash loan",
+  "→ [8] ~$181K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Balancer flash loan: 400,000 USDC\n  │\n  ├─→ [2] 308,000 USDC → YieldPool.mintDivested() → obtain pool tokens\n  │\n  ├─→ [3] Half of pool tokens → YieldStrategy.mint()\n  │         └─ Obtain Strategy shares\n  │\n  ├─→ [4] Remaining pool tokens → donated directly to YieldStrategy\n  │         └─ totalAssets increases, totalSupply unchanged → share value inflated\n  │\n  ├─→ [5] Call YieldStrategy.burn()\n  │         └─ Excess pool tokens returned due to donation\n  │\n  ├─→ [6] pool tokens → USDC (burnDivested)\n  │\n  ├─→ [7] Repay Balancer flash loan\n  │\n  └─→ [8] ~$181K profit",
+  "interface IYieldStrategy {\n    function mint(address to) external returns (uint256);\n    function burn(address to) external returns (uint256);\n    function mintDivested(address to) external returns (uint256);\n    function burnDivested(address to) external returns (uint256);\n}\n\ninterface IBalancerVault {\n    function flashLoan(address recipient, address[] memory tokens, uint256[] memory amounts, bytes memory userData) external;\n}\n\ncontract AttackContract {\n    IYieldStrategy constant strategy = IYieldStrategy(0x3b4FFD93CE5fCf97e61AA8275Ec241C76cC01a47);\n    IYieldStrategy constant pool     = IYieldStrategy(0x7012aF43F8a3c1141Ee4e955CC568Ad2af59C3fa);\n    IBalancerVault constant balancer = IBalancerVault(/* Balancer */);\n    IERC20 constant USDC = IERC20(0xFF970A61A04b1cA14834A43f5dE4533eBDD"
+ ]
+}

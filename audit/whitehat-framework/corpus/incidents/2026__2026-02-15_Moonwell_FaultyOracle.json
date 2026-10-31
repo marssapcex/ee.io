@@ -1,0 +1,30 @@
+{
+ "id": "2026__2026-02-15_Moonwell_FaultyOracle",
+ "source_file": "2026/2026-02-15_Moonwell_FaultyOracle.md",
+ "title": "Moonwell — Bad Debt Analysis from Faulty Chainlink Oracle Integration",
+ "date": "2026-02-15",
+ "protocol": "Moonwell",
+ "chain": "Base",
+ "loss_raw": "$1,780,000 (Bad Debt)",
+ "loss_usd": 1780000.0,
+ "root_cause": "Faulty Chainlink oracle integration caused cbETH price to be overvalued, allowing excessive borrowing followed by unliquidatable bad debt",
+ "attack_tx": "0x2f4ff77c77ce2a52c80fcd59a4cac4b05f4285afe1f3b92118b0a004a325953c",
+ "vulnerable_contract": "0xEC942bE8A8114bFD0396A5052c36027f2cA6a9d0 (Moonwell Chainlink Oracle)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: cbETH/USD price is simply calculated as ETH/USD × cbETH/ETH\n//               but cbETH/ETH exchange rate is read from a stale or incorrect feed\nfunction getPrice(address asset) external view returns (uint256) {\n    if (asset == cbETH) {\n        // ETH/USD Chainlink feed\n        (, int256 ethUsdPrice,,,) = ethUsdFeed.latestRoundData();\n        // ❌ cbETH/ETH feed - wrong feed address or staleness allowed\n        (, int256 cbEthEthRate,,,) = cbEthEthFeed.latestRoundData();\n        // ❌ No staleness check → stale cbEthEthRate may be used\n        return uint256(ethUsdPrice) * uint256(cbEthEthRate) / 1e18;\n    }\n    // ...\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: staleness check + correct feed address + dual validation\nuint256 constant MAX_STALENESS = 3600; // 1 hour\n\nfunction getPrice(address asset) external view returns (uint256) {\n    if (asset == cbETH) {\n        (\n            uint80 roundId,\n            int256 ethUsdPrice,\n            ,\n            uint256 updatedAt,\n            uint80 answeredInRound\n        ) = ethUsdFeed.latestRoundData();\n\n        // ✅ Staleness check\n        require(block.timestamp - updatedAt <= MAX_STALENESS, \"ETH/USD stale\");\n        require(answeredInRound >= roundId, \"ETH/USD incomplete round\");\n        require(ethUsdPrice > 0, \"ETH/USD invalid price\");\n\n        (\n            uint80 roundId2,\n            int256 cbEthEthRate,\n            ,\n            uint256 updatedAt2,\n            uint80 answeredInRound2\n        ) = cbEthEthFeed.latestRoundData();\n\n        // ✅ cbETH/ETH staleness check\n        require(block.timestamp - updatedAt2 <= MAX_STALENESS, \"cbETH/ETH stale\");\n        require(answeredInRound2 >= roundId2, \"cbETH/ETH incomplete round\");\n        require(cbEthEthRate > 0, \"cbETH/ETH invalid price\");\n\n        return uint256(ethUsdPrice) * uint256(cbEthEthRate) / 1e18;\n    }\n    // ...\n}"
+ ],
+ "steps": [
+  "[4] Redeem mcbETH → cbETH",
+  "[5] Swap cbETH → other tokens on Aerodrome"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1] Flash loan cbETH from Aerodrome DEX\n  │         Acquire large amount of cbETH\n  │\n  ├─[2] Analyze Moonwell market\n  │         Identify victim positions where collateral value > actual value\n  │         due to oracle overvaluation\n  │\n  ├─[3] Liquidate victim position (liquidateBorrow)\n  │         ┌─ Attacker: provides some cbETH\n  │         └─ Receives: mcbETH (discounted collateral)\n  │         ⚠️  Liquidation profit inflated by oracle overvaluation\n  │\n  ├─[4] Redeem mcbETH → cbETH\n  │         Call Moonwell's redeem()\n  │         Convert mcbETH back to cbETH\n  │\n  ├─[5] Swap cbETH → other tokens on Aerodrome\n  │         Acquire tokens to repay the flash loan\n  │\n  └─[6] Repay Aerodrome flash loan\n        Net result:\n        - Attacker: liquidation profit + oracle mis",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\ninterface IAerodrome {\n    function swap(\n        uint amount0Out,\n        uint amount1Out,\n        address to,\n        bytes calldata data\n    ) external;\n}\n\ninterface IMoonwellMarket {\n    function liquidateBorrow(\n        address borrower,\n        uint repayAmount,\n        address mTokenCollateral\n    ) external returns (uint);\n\n    function redeem(uint redeemTokens) external returns (uint);\n    function balanceOf(address account) external view returns (uint);\n}\n\ninterface IERC20 {\n    function transfer(address to, uint256 amount) external returns (bool);\n    function approve(address spender, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n}\n\ncontract MoonwellAttack"
+ ]
+}

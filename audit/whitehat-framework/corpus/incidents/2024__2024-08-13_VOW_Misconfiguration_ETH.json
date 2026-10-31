@@ -1,0 +1,51 @@
+{
+ "id": "2024__2024-08-13_VOW_Misconfiguration_ETH",
+ "source_file": "2024/2024-08-13_VOW_Misconfiguration_ETH.md",
+ "title": "VOW — Misconfiguration Exploit Analysis",
+ "date": "2024-08-13",
+ "protocol": "VOW",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$1,000,000 – $1,200,000 (175 ETH + 595,000 USDT + remaining VOW)",
+ "loss_usd": 1000000.0,
+ "root_cause": "Critical exchange rate parameter misconfigured in production for testing purposes (usdRate: normal [5,1] → at time of attack [1,100])",
+ "attack_tx": "0xb569340f...dee36b3",
+ "vulnerable_contract": "VOWToken 0x1BBf25...946Fb / VSCTokenManager 0x184497...46E5dC",
+ "classes": [
+  "access-control",
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — VOWToken.sol\n// Access control: only validates onlyUSDRateSetter, no other protections\ncontract VOWToken is Token, IERC777Recipient, Owned {\n\n    uint256[2] public usdRate;       // ❌ [numTokens, numUSD] ratio — changeable instantly\n    address public usdRateSetter;    // ❌ single address holds unlimited change authority\n\n    modifier onlyUSDRateSetter() {\n        require(msg.sender == usdRateSetter, \"onlyUSDRateSetter\");\n        _;\n    }\n\n    // ❌ Problem: no parameter range validation, no time delay, only emits event\n    function setUSDRate(uint256 _numTokens, uint256 _numUSD)\n        external\n        onlyUSDRateSetter  // ❌ simple address check only — no governance/multisig/timelock\n    {\n        doSetUSDRate(_numTokens, _numUSD);\n        emit LogUSDRateSet(_numTokens, _numUSD);\n    }\n\n    function doSetUSDRate(uint256 _numTokens, uint256 _numUSD)\n        private\n    {\n        require(_numTokens != 0, \"numTokens cannot be zero\");  // ❌ only zero check\n        require(_numUSD != 0, \"numUSD cannot be zero\");        // ❌ no upper bound validation\n        usdRate = [_numTokens, _numUSD];  // ❌ any value applied immediately\n    }\n}",
+  "// ❌ Vulnerable code — VSCTokenManager.sol\n// Actual Sourcify-verified source\n\nfunction getVOWVSCRate()\n    public\n    view\n    returns (uint256 numVOW_, uint256 numVSC_)\n{\n    VSCToken vscToken = VSCToken(token);\n    VOWToken vowToken = VOWToken(vowContract);\n    // ❌ Reads VOW token's usdRate in real time — manipulated value is reflected immediately\n    numVOW_ = vowToken.usdRate(0).mul(vscToken.usdRate(1));\n    numVSC_ = vowToken.usdRate(1).mul(vscToken.usdRate(0));\n}\n\nfunction tokensReceivedVOW(address _from, bytes memory _data, uint256 _amount)\n    private\n{\n    VOWToken(vowContract).burn(_amount, \"\");\n    (uint256 numVOW, uint256 numVSC) = getVOWVSCRate();\n    // ❌ With usdRate=[1,100]: vscAmount = _amount * 100 / 1 = 100× mint\n    uint256 vscAmount = _amount.mul(numVSC).div(numVOW);\n    VSCToken(token).mint(_from, vscAmount);  // ❌ 100× vUSD minted\n    emit LogBurnAndMint(_from, _amount, vscAmount);\n}",
+  "[Attacker EOA — 0x48de6b...]\n    │  T-110 days: deploy attack contract and wait\n    │  approve(attackContract, VOW/vUSD, max)\n    ▼\n┌──────────────────────────────────────┐\n│  Attack Contract (0xb7f221e3...)     │\n│  (automated bot, monitors rate change)│\n└───────────────┬──────────────────────┘\n                │  Step 1: swap(vowBalance-1, 0, this, \"0x00\")\n                ▼\n┌──────────────────────────────────────┐\n│  VOW-WETH Uniswap V2 Pool           │\n│  (0x7FdEB46b...)                    │\n│  → Execute flash swap of 1,486,625 VOW│\n└───────────────┬──────────────────────┘\n                │  uniswapV2Call callback\n                ▼\n┌──────────────────────────────────────┐\n│  Attack Contract (callback handling) │\n│  Step 2a: 1,486,625 VOW             │\n│           → forward to attacker EOA  │\n└───────────────┬──────────────────────┘\n                │  transferFrom(attacker → vscTokenManager)\n                ▼\n┌──────────────────────────────────────┐     usdRate = [1, 100]\n│  VSCTokenManager (0x184497...)       │  ← ❌ Misconfigured rate applied!\n│  tokensReceived → burn(1,486,625 VOW)│\n│  1 VOW × 100 = 100 vUSD             │\n│  → Mint 148,662,500 vUSD            │\n└───────────────┬──────────────────────┘\n                │  Step 3: inject 148,662,500 vUSD → pool\n                ▼\n┌──────────────────────────────────────┐\n│  vUSD-VOW Uniswap V2 Pool           │\n│  (0x97BE09f2...)                    │\n│  → Drain most of pool's VOW liquidity│\n└───────────────┬──────────────────────┘\n                │  Acquire large VOW then repay flash loan\n                ▼\n┌──────────────────────────────────────────────────────────────┐\n│  Step 4: surplus VOW/2 → VOW_WETH_Pair → WETH → unwrap ETH  │\n│  Step 5: remaining surplus VOW → VOW_USDT_Pair → acquire USDT│\n└──────────────────────────┬───────────────────────────────────┘\n                           │\n                           ▼\n               ┌────────────────────────┐\n               │  Attacker EOA Final    │\n               │  Receipt               │\n               │  ~175 ETH (~$452K)     │\n               │  ~595,000 USDT         │\n               │  Remaining VOW tokens  │\n               │  Total: ~$1.2M         │\n               └────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — multi-layered protection applied\ncontract VOWToken is Token, IERC777Recipient, Owned {\n\n    uint256[2] public usdRate;\n    address public usdRateSetter;\n\n    // ✅ Added: maximum allowed rate multiplier constant (e.g., prohibit changes over 10×)\n    uint256 public constant MAX_RATE_MULTIPLIER = 10;\n    // ✅ Added: timelock delay (e.g., 24 hours)\n    uint256 public constant RATE_CHANGE_DELAY = 24 hours;\n    uint256 public pendingRateChangeTime;\n    uint256[2] public pendingUsdRate;\n    bool public hasPendingRateChange;\n\n    // ✅ Added: emergency pause functionality\n    bool public paused;\n    modifier whenNotPaused() {\n        require(!paused, \"Contract is paused\");\n        _;\n    }\n\n    // ✅ Schedule rate change (timelock instead of immediate application)\n    function proposeUSDRate(uint256 _numTokens, uint256 _numUSD)\n        external\n        onlyUSDRateSetter\n    {\n        require(_numTokens != 0 && _numUSD != 0, \"Rate cannot be zero\");\n        // ✅ Deviation check: within maximum 10× of current rate\n        uint256 currentRatio = usdRate[1] * 1e18 / usdRate[0];\n        uint256 newRatio = _numUSD * 1e18 / _numTokens;\n        require(\n            newRatio <= currentRatio * MAX_RATE_MULTIPLIER &&\n            newRatio * MAX_RATE_MULTIPLIER >= currentRatio,\n            \"Rate change exceeds max multiplier\"\n        );\n        pendingUsdRate = [_numTokens, _numUSD];\n        pendingRateChangeTime = block.timestamp + RATE_CHANGE_DELAY;\n        hasPendingRateChange = true;\n        emit LogUSDRateProposed(_numTokens, _numUSD, pendingRateChangeTime);\n    }\n\n    // ✅ Applicable only after timelock expires\n    function applyPendingUSDRate() external onlyUSDRateSetter {\n        require(hasPendingRateChange, \"No pending rate change\");\n        require(block.timestamp >= pendingRateChangeTime, \"Timelock not expired\");\n        usdRate = pendingUsdRate;\n        hasPendingRateChange = false;\n        emit LogUSDRateSet(pendingUsdRate[0], pendingUsdRate[1]);\n    }\n}",
+  "// ✅ Fixed code — add TWAP or upper bound\nfunction tokensReceivedVOW(address _from, bytes memory _data, uint256 _amount)\n    private\n{\n    VOWToken(vowContract).burn(_amount, \"\");\n    (uint256 numVOW, uint256 numVSC) = getVOWVSCRate();\n\n    // ✅ Ratio sanity check: cap maximum mint amount\n    uint256 vscAmount = _amount.mul(numVSC).div(numVOW);\n    require(\n        vscAmount <= _amount.mul(MAX_MINT_RATIO),  // ✅ upper bound on max mint multiplier\n        \"Mint amount exceeds safety limit\"\n    );\n\n    VSCToken(token).mint(_from, vscAmount);\n    emit LogBurnAndMint(_from, _amount, vscAmount);\n}"
+ ],
+ "steps": [
+  "1. **[Step 1] Initiate Uniswap V2 Flash Swap**",
+  "- Fund flow: VOW-WETH pool → attack contract",
+  "2. **[Step 2] uniswapV2Call callback — Burn VOW → Mint 100× excess vUSD**",
+  "- Attacker EOA → transfers VOW to VSCTokenManager (triggers `tokensReceived` hook)",
+  "- Excess minted vUSD recovered from attacker EOA → attack contract",
+  "3. **[Step 3] Swap vUSD → VOW (drain vUSD-VOW pool)**",
+  "- Fund flow: vUSD-VOW pool → attack contract (large amount of VOW)",
+  "4. **[Step 4] Repay Flash Loan + Realize VOW → ETH**",
+  "- Inject half of surplus VOW into VOW_WETH_Pair → acquire WETH",
+  "- Unwrap WETH → ETH and transfer to attacker EOA",
+  "5. **[Step 5] Realize remaining VOW → USDT**",
+  "- Inject remaining VOW into VOW_USDT_Pair → acquire USDT",
+  "Step 1: swap(vowBalance-1, 0, this, \"0x00\")",
+  "→ Execute flash swap of 1,486,625 VOW",
+  "→ forward to attacker EOA",
+  "transferFrom(attacker → vscTokenManager)",
+  "tokensReceived → burn(1,486,625 VOW)",
+  "1 VOW × 100 = 100 vUSD",
+  "→ Mint 148,662,500 vUSD",
+  "Step 3: inject 148,662,500 vUSD → pool"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.15;\n\n// @KeyInfo\n// Total Lost: ~1M USD\n// Attacker: 0x48de6bf9e301946b0a32b053804c61dc5f00c0c3\n// Attack Tx: 0xb569340f147cb6d5722490221ba65950a870aaa4db6ab835b8aa128c5dee36b3\n// Attack Block: 20,519,309 (fork base: 20,519,308)\n\ncontract VOW is BaseTestWithBalanceLog {\n    uint256 blocknumToForkFrom = 20_519_309 - 1;\n\n    // Related contract address definitions\n    address private constant VOW_WETH_Pair   = 0x7FdEB46b3a0916630f36E886D675602b1007Fcbb;\n    address private constant vUSD_VOW_Pair   = 0x97BE09f2523B39B835Da9EA3857CfA1D3C660cBb;\n    address private constant VOW_USDT_Pair   = 0x1E49768714E438E789047f48FD386686a5707db2;\n    address private constant vscTokenManager = 0x184497031808F2b6A2126886C712CC41f146E5dC;\n    address"
+ ]
+}

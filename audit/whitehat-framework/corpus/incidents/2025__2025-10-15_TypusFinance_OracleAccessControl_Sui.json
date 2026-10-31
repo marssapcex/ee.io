@@ -1,0 +1,23 @@
+{
+ "id": "2025__2025-10-15_TypusFinance_OracleAccessControl_Sui",
+ "source_file": "2025/2025-10-15_TypusFinance_OracleAccessControl_Sui.md",
+ "title": "Typus Finance — Unauthorized TLP Oracle Update Drains ~$3.44M",
+ "date": "2025-10-15",
+ "protocol": "Typus Finance",
+ "chain": "Sui",
+ "loss_raw": "~$3,440,000",
+ "loss_usd": 3440000.0,
+ "root_cause": "Access Control Issue — `update_tlp_price` lacked a capability parameter, allowing any address to overwrite the TLP oracle NAV",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "// Typus Finance — TLPOracle update, vulnerable version\n// Any address can call this; no capability object required\npublic fun update_tlp_price(\n    oracle: &mut TLPOracle,\n    new_price: u64,\n    clock: &Clock,\n) {\n    // BUG: no AdminCap, PriceFeedCap, or sender assertion\n    oracle.price       = new_price;\n    oracle.last_updated = sui::clock::timestamp_ms(clock);\n}",
+  "// Typus Finance — TLPOracle update, fixed version\npublic fun update_tlp_price(\n    _feed_cap: &PriceFeedCap,      // ← only authorized price feeders hold this\n    oracle: &mut TLPOracle,\n    new_price: u64,\n    clock: &Clock,\n) {\n    assert!(new_price > 0, E_INVALID_PRICE);\n    assert!(\n        sui::clock::timestamp_ms(clock) > oracle.last_updated,\n        E_STALE_UPDATE\n    );\n    oracle.price       = new_price;\n    oracle.last_updated = sui::clock::timestamp_ms(clock);\n}"
+ ]
+}

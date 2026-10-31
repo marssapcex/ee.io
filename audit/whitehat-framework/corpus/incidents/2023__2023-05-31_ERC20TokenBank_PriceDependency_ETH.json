@@ -1,0 +1,49 @@
+{
+ "id": "2023__2023-05-31_ERC20TokenBank_PriceDependency_ETH",
+ "source_file": "2023/2023-05-31_ERC20TokenBank_PriceDependency_ETH.md",
+ "title": "ERC20TokenBank — Flawed Price Dependency Analysis",
+ "date": "2023-05-31",
+ "protocol": "ERC20TokenBank",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$111,000 (~119,023 USDC)",
+ "loss_usd": 111000.0,
+ "root_cause": "`doExchange()` directly relies on the manipulable Curve Y Pool spot price to withdraw excess USDC from the victim pool",
+ "attack_tx": "0x578a...f26",
+ "vulnerable_contract": "0x765b...f6d",
+ "classes": [
+  "business-logic",
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.5.10;\n\ninterface ICurveYSwap {\n    // ❌ Vulnerable: exchange executed at spot price based on current block's pool balance\n    // If called after manipulating pool balance with a flash loan, the ratio is distorted\n    function exchange_underlying(\n        int128 i,\n        int128 j,\n        uint256 dx,\n        uint256 min_dy  // ❌ Vulnerable: min_dy can be set to 0 → no slippage protection\n    ) external;\n    \n    function get_dy_underlying(\n        int128 i,\n        int128 j,\n        uint256 dx\n    ) external view returns (uint256);\n}\n\ncontract ExchangeBetweenPools is Ownable {\n    using SafeERC20 for IERC20;\n    \n    string public note = \"Only for USDC to USDT\";\n    address public usdt;      // USDT token address\n    address public usdc;      // USDC token address\n    address public from_bank; // USDC source bank contract (ERC20TokenBank)\n    address public to_bank;   // USDT destination bank contract (ERC20TokenBank)\n    address public curve;     // Curve Y Pool address (0x45F783...)\n    uint256 public minimum_amount; // Minimum exchange amount\n    \n    // ❌ Core vulnerable function: unconditionally trusts Curve spot price\n    function doExchange(uint256 amount) public returns (bool) {\n        // ❌ Vulnerability 1: No caller restriction — anyone can call\n        require(amount >= minimum_amount, \"Amount too low\");\n        \n        // ❌ Vulnerability 2: Withdraws `amount` USDC from from_bank\n        // At this point, the Curve pool has already been manipulated by the attacker's 120,000 USDC injection\n        IERC20(usdc).safeTransferFrom(from_bank, address(this), amount);\n        \n        // ❌ Vulnerability 3: Exchange executed at manipulated Curve spot price\n        // min_dy parameter is 0 or set low — no slippage protection\n        ICurveYSwap(curve).exchange_underlying(\n            1,      // USDC (index 1)\n            2,      // USDT (index 2)\n            amount,\n            0       // ❌ min_dy = 0: exchange allowed at any unfavorable rate\n        );\n        \n        // ❌ Vulnerability 4: Transfer USDT to to_bank after exchange\n        // Due to manipulated price, from_bank's USDC is converted to undervalued USDT\n        uint256 usdtBalance = IERC20(usdt).balanceOf(address(this));\n        IERC20(usdt).safeTransfer(to_bank, usdtBalance);\n        \n        return true;\n    }\n}",
+  "// ❌ Callable by anyone — no access control\nfunction doExchange(uint256 amount) public returns (bool) {\n    // ...\n}",
+  "// ❌ min_dy = 0: unlimited slippage allowed — completely exposed to price manipulation\nICurveYSwap(curve).exchange_underlying(1, 2, amount, 0);"
+ ],
+ "code_after": [
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.5.10;\n\ncontract ExchangeBetweenPools is Ownable {\n    using SafeERC20 for IERC20;\n    \n    // ✅ Added: slippage tolerance (e.g., 0.5% = 50 bps)\n    uint256 public maxSlippageBps = 50; // 0.5%\n    uint256 constant BPS_DENOMINATOR = 10000;\n    \n    // ✅ Added: only authorized callers can execute exchanges\n    mapping(address => bool) public authorizedCallers;\n    \n    modifier onlyAuthorized() {\n        require(authorizedCallers[msg.sender], \"Not authorized\");\n        _;\n    }\n    \n    // ✅ Updated doExchange: slippage protection + access control applied\n    function doExchange(uint256 amount) public onlyAuthorized returns (bool) {\n        require(amount >= minimum_amount, \"Amount too low\");\n        \n        // ✅ Improvement 1: Query expected output before exchange\n        uint256 expectedOutput = ICurveYSwap(curve).get_dy_underlying(1, 2, amount);\n        \n        // ✅ Improvement 2: Calculate minimum output (apply slippage tolerance)\n        uint256 minOutput = expectedOutput * (BPS_DENOMINATOR - maxSlippageBps) / BPS_DENOMINATOR;\n        require(minOutput > 0, \"Expected output too low\");\n        \n        // Withdraw USDC from from_bank\n        IERC20(usdc).safeTransferFrom(from_bank, address(this), amount);\n        \n        // ✅ Improvement 3: Set min_dy to calculated value for slippage protection\n        ICurveYSwap(curve).exchange_underlying(\n            1,          // USDC\n            2,          // USDT\n            amount,\n            minOutput   // ✅ Automatically reverts if exchange occurs at manipulated price\n        );\n        \n        uint256 usdtBalance = IERC20(usdt).balanceOf(address(this));\n        \n        // ✅ Improvement 4: Verify actual received amount meets minimum\n        require(usdtBalance >= minOutput, \"Slippage too high\");\n        \n        IERC20(usdt).safeTransfer(to_bank, usdtBalance);\n        \n        return true;\n    }\n}",
+  "// ✅ Only authorized addresses can call\nfunction doExchange(uint256 amount) public onlyAuthorized returns (bool) {\n    // ...\n}"
+ ],
+ "steps": [
+  "1. Approve USDC, USDT → curveYSwap",
+  "2. Request Uniswap V3 flash()",
+  "Lend 120,000 USDC → send to attack contract",
+  "Step 1: Curve Y Pool Price Manipulation",
+  "120,000 USDC → receive ~119,xxx USDT",
+  "(Curve Y Pool USDC balance spikes → price ratio distorted)",
+  "Step 2: Call Vulnerable Function",
+  "② Swap USDC→USDT at manipulated Curve price (min_dy=0)",
+  "Step 3: Reverse Swap to Recover USDC",
+  "All held USDT → swap back to USDC",
+  "Step 4: Flash Loan Repayment and Profit Extraction",
+  "1. **[Preparation]** The attacker deploys the attack contract and grants unlimited approval of USDC and USDT to the Curve Y Pool.",
+  "2. **[Flash Loan Request]** Borrows 120,000 USDC as a flash loan from the Uniswap V3 USDC/DAI pool (`0x5777...168`). Uniswap V3 calls back the `uniswapV3FlashCallback()` function.",
+  "3. **[Price Manipulation]** Calls `curveYSwap.exchange_underlying(1, 2, 120_000 * 1e6, 0)` to inject the borrowed 120,000 USDC into the Curve Y Pool and exchange it for USDT. This temporarily distorts the USDC/USDT ratio in the Curve Y Pool.",
+  "4. **[Core Attack]** Calls `ExchangeBetweenPools.doExchange(119_023_523_157)`. This function withdraws approximately 119,023 USDC from `from_bank` (ERC20TokenBank) and exchanges it for USDT at the **manipulated Curve spot price**. Since `min_dy = 0`, the exchange is forced to execute at any unfavora",
+  "5. **[Reverse Swap]** Swaps all held USDT back to USDC via `curveYSwap.exchange_underlying(2, 1, ...)`. Thanks to the price manipulation state and the injection of victim funds, more USDC is obtained than the original amount.",
+  "6. **[Repayment and Profit]** Repays the Uniswap V3 flash loan with 120,000 USDC + fee and retains a net profit of approximately 111,000 USDC."
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────┐\n│                     Attacker EOA                            │\n│              0xc0ffeebabe...9671 (c0ffeebabe.eth)           │\n└──────────────────────┬──────────────────────────────────────┘\n                       │ Deploy and call attack contract\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│                Attack Contract                              │\n│              0x7c28e0977...82b3                              │\n│  testExploit() execution                                    │\n│  1. Approve USDC, USDT → curveYSwap                        │\n│  2. Request Uniswap V3 flash()                              │\n└──────────────────────┬──────────────────────────────────────┘\n              ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\nimport \"./../interface.sol\";\n\n// @KeyInfo\n// Total Loss: ~111K USD$\n// Attacker: https://etherscan.io/address/0xc0ffeebabe5d496b2dde509f9fa189c25cf29671\n// Attack Contract: https://etherscan.io/address/0x7c28e0977f72c5d08d5e1ac7d52a34db378282b3\n// Vulnerable Contract: https://etherscan.io/address/0x765b8d7cd8ff304f796f4b6fb1bcf78698333f6d\n// Attack Tx: https://etherscan.io/tx/0x578a195e05f04b19fd8af6358dc6407aa1add87c3167f053beb990d6b4735f26\n\ninterface IExchangeBetweenPools {\n    function doExchange(uint256 amounts) external returns (bool);\n}\n\ncontract ContractTest is Test {\n    // ─── Relevant contract addresses ─────────────────────────────────\n    IERC20 USDC = IERC20(0xA0b86991c6218b36c1d19D4a"
+ ]
+}

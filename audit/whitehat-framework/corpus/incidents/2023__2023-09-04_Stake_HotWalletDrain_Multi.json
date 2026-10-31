@@ -1,0 +1,22 @@
+{
+ "id": "2023__2023-09-04_Stake_HotWalletDrain_Multi",
+ "source_file": "2023/2023-09-04_Stake_HotWalletDrain_Multi.md",
+ "title": "Stake.com — Hot Wallet Private Key Compromise Analysis",
+ "date": "2023-09-04",
+ "protocol": "Stake.com",
+ "chain": "Multiple",
+ "loss_raw": "~$41,000,000 (ETH, USDC, USDT, DAI, SHIB, MATIC, and others drained from hot wallets)",
+ "loss_usd": 41000000.0,
+ "root_cause": "Stake.com's hot wallet private keys were compromised, enabling simultaneous drains across multiple blockchains. The FBI attributed the attack to North Korean Lazarus Group within two days of the incident based on on-chain forensics and fund routing patterns.",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Lazarus Group (DPRK TraderTraitor)\n    │\n    ├─[Pre-exploit] Obtain Stake.com hot wallet private keys\n    │       (method: spear-phishing of employees or supply chain compromise)\n    │\n    ├─[2023-09-04] Multi-chain hot wallet drain (FBI confirmed):\n    │       Ethereum: ~$15.7M (ETH, USDC, USDT, DAI, SHIB, MATIC, others)\n    │       Binance Smart Chain (BSC): ~$17.8M (BNB, USDT-BEP20, others)\n    │       Polygon: ~$7.8M (MATIC, USDC-Polygon, others)\n    │       Total: ~$41.3M\n    │\n    ├─[ZachXBT detection] Large suspicious outflows flagged within hours\n    │       Public alert issued before Stake.com official confirmation\n    │\n    ├─[2023-09-06] FBI official statement:\n    │       \"The FBI is aware of the hack and attributes it to Lazarus Group\"\n    │       Fastest public crypto hack at"
+ ]
+}

@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-11_MEV_0ad8_ArbitraryCallAllowanceDrain",
+ "source_file": "2022/2022-11_MEV_0ad8_ArbitraryCallAllowanceDrain.md",
+ "title": "MEV Bot 0x0AD8 — Arbitrary External Call Victim Allowance Drain Attack Analysis",
+ "date": "2022-11-01",
+ "protocol": "MEV Bot 0x0AD8",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "Victim's entire USDC balance",
+ "loss_usd": null,
+ "root_cause": "MEV Bot function `0x090f88ca` executes arbitrary target and calldata without validation, draining victim's USDC allowance",
+ "attack_tx": null,
+ "vulnerable_contract": "0x0AD8229D4bC84135786AE752B9A9D53392A8afd4",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable MEV Bot - arbitrary external call function (selector 0x090f88ca)\ncontract MEVBot_0x0AD8 {\n    address owner;\n\n    //",
+  "❌ Callable by anyone - no validation of target or calldata\n    // function selector: 0x090f88ca\n    function execute(\n        address target,      //",
+  "❌ arbitrary contract address\n        bytes calldata data  //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - onlyOwner access control\ncontract SafeMEVBot {\n    address public owner;\n\n    modifier onlyOwner() {\n        require(msg.sender == owner, \"Not owner\");\n        _;\n    }\n\n    //",
+  "✅ Only owner can execute arbitrary calls\n    function execute(\n        address target,\n        bytes calldata data\n    ) external payable onlyOwner {\n        (bool success,) = target.call{value: msg.value}(data);\n        require(success, \"Call failed\");\n    }\n}"
+ ],
+ "steps": [
+  "→ MEVBot executes USDC.transferFrom(victim, attacker, victimUSDC)",
+  "→ MEVBot uses allowance where msg.sender = victim"
+ ],
+ "other_code": []
+}

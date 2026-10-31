@@ -1,0 +1,31 @@
+{
+ "id": "2023__2023-09-01_DEXRouter_ArbitraryCall",
+ "source_file": "2023/2023-09-01_DEXRouter_ArbitraryCall.md",
+ "title": "DEXRouter Arbitrary External Call Vulnerability — Incident Analysis",
+ "date": "2023-09-01",
+ "protocol": "DEXRouter",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// File: DEXRouter_decompiled.sol\n    function sellall() external {}  // ❌\n\n// ...\n\n    function withdraw(address account, address recipient, uint256 shares) external {}  // ❌\n\n// ...\n\n    function approve(address account, address recipient, uint256 shares) external returns (bool) {}  // ❌\n\n// ...\n\n    function update(address account, address recipient, address spender, address owner) external {}  // ❌\n\n// ...\n\n    function getHolder(uint256 amount) external view returns (uint256) {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ DEXRouter.update(",
+  "No access control → all configuration overwritten with attacker's address",
+  "2 ▶ DEXRouter.functionCallWithValue(",
+  "→ Router transfers ETH to attacker + executes callback",
+  "3 ▶ ~$4,000 USD profit realized"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: arbitrary external call with no validation\ncontract DEXRouter {\n    address public feeReceiver;\n    address public liquidityManager;\n\n    // Vulnerable: anyone can update router configuration\n    function update(\n        address _feeReceiver,\n        address _liquidityManager,\n        address _swapHelper,\n        address _priceOracle\n    ) external {\n        // No onlyOwner check\n        feeReceiver = _feeReceiver;\n        liquidityManager = _liquidityManager;\n    }\n\n    // Vulnerable: arbitrary call to arbitrary address + arbitrary ETH transfer\n    function functionCallWithValue(\n        address target,\n        bytes calldata data,\n        uint256 value\n    ) external returns (bytes memory) {\n        // No caller validation — anyone can make arbitrary calls using th",
+  "Attacker [0x09039e2082a0a815908e68bd52b86f96573768e8]\n  │\n  ├─1─▶ DEXRouter.update(\n  │          address(this),   // feeReceiver = attacker\n  │          address(this),   // liquidityManager = attacker\n  │          address(this),   // swapHelper = attacker\n  │          address(this)    // priceOracle = attacker\n  │      )\n  │      [DEXRouter: 0x1f7cf218b46e613d1ba54cac11dc1b5368d94fb7]\n  │      No access control → all configuration overwritten with attacker's address\n  │\n  ├─2─▶ DEXRouter.functionCallWithValue(\n  │          address(this),                          // target = attacker\n  │          abi.encodePacked(this.a.selector),      // attacker callback function\n  │          address(DEXRouter).balance              // Router's entire balance\n  │      )\n  │      → Router transfers ETH to a"
+ ]
+}

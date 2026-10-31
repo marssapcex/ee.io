@@ -1,0 +1,29 @@
+{
+ "id": "2025__2025-08-07_SizeCredit_ArbitraryCall",
+ "source_file": "2025/2025-08-07_SizeCredit_ArbitraryCall.md",
+ "title": "SizeCredit — Arbitrary External Call Vulnerability Analysis",
+ "date": "2025-08-07",
+ "protocol": "SizeCredit",
+ "chain": "Ethereum",
+ "loss_raw": "~19,700 USD",
+ "loss_usd": null,
+ "root_cause": "The `leverageUpWithSwap` function passes supplied calldata to an external contract for execution without any validation",
+ "attack_tx": "0xc7477d6a...",
+ "vulnerable_contract": "0xf4a21ac7e51d17a0e1c8b59f7a98bb7a97806f14",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: external call executed without calldata validation\nfunction leverageUpWithSwap(\n    address swapTarget,\n    bytes calldata swapData,  // ← attacker can inject arbitrary data\n    ...\n) external {\n    // swapData contents are executed without any validation\n    (bool success,) = swapTarget.call(swapData);\n    require(success, \"swap failed\");\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Remediation: only execute allowed swap targets and function selectors\nfunction leverageUpWithSwap(\n    address swapTarget,\n    bytes calldata swapData,\n    ...\n) external {\n    require(allowedSwapTargets[swapTarget], \"target not allowed\");\n    require(isAllowedSelector(swapData[:4]), \"selector not allowed\");\n    (bool success,) = swapTarget.call(swapData);\n    require(success, \"swap failed\");\n}"
+ ],
+ "steps": [
+  "Check allowance: victim → LEVERAGE_UP"
+ ],
+ "other_code": [
+  "// File: src/liquidator/DexSwap.sol\nfunction _swap(SwapParams[] memory swapParamsArray) internal {\n        for (uint256 i = 0; i < swapParamsArray.length; i++) {\n            _executeSwapStep(swapParamsArray[i]);\n        }\n    }\n    function _executeSwapStep(SwapParams memory swapParams) internal {\n        if (swapParams.method == SwapMethod.GenericRoute) {\n            _swapGenericRoute(swapParams.data);\n        } else if (swapParams.method == SwapMethod.OneInch) {\n            _swap1Inch(swapParams.data);\n        } else if (swapParams.method == SwapMethod.Unoswap) {\n            _swapUnoswap(swapParams.data);\n        } else if (swapParams.method == SwapMethod.UniswapV2) {\n            _swapUniswapV2(swapParams.data);\n        } else if (swapParams.method == SwapMethod.UniswapV3) {\n            ",
+  "Attacker\n  │\n  ├─[1]─▶ Confirm victim's PT-wstUSR approval to LEVERAGE_UP contract\n  │         └─ Check allowance: victim → LEVERAGE_UP\n  │\n  ├─[2]─▶ Call leverageUpWithSwap\n  │         └─ swapData = encode transferFrom(victim, attacker, amount)\n  │\n  ├─[3]─▶ LEVERAGE_UP executes malicious calldata against PT-wstUSR contract\n  │         └─ transferFrom(victim, attacker, fullBalance) succeeds\n  │\n  └─[4]─▶ Theft complete\n              └─ Receive ~19,700 USD worth of PT-wstUSR"
+ ]
+}

@@ -1,0 +1,27 @@
+{
+ "id": "2022__2022-08-13_ReaperFarm_MissingOwnerCheck",
+ "source_file": "2022/2022-08-13_ReaperFarm_MissingOwnerCheck.md",
+ "title": "ReaperFarm — ERC4626 redeem() Owner Validation Missing Attack Analysis",
+ "date": "2022-08-13",
+ "protocol": "ReaperFarm",
+ "chain": "Fantom",
+ "loss_raw": "~$1,700,000",
+ "loss_usd": 1700000.0,
+ "root_cause": "`redeem(shares, receiver, owner)` function allows withdrawal of another user's shares without validating the `owner` parameter",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable redeem() — no owner validation\nfunction redeem(\n    uint256 shares,\n    address receiver,\n    address owner    //",
+  "❌ any address can be specified\n) public override returns (uint256 assets) {\n    //",
+  "❌ does not check whether msg.sender is owner, or whether allowance exists\n    // ERC4626 standard: if msg.sender != owner, allowance must be decremented\n\n    uint256 assets = convertToAssets(shares);\n\n    // burn shares from owner\n    _burn(owner, shares);  //"
+ ],
+ "code_after": [
+  "✅ Correct ERC4626 standard implementation\nfunction redeem(\n    uint256 shares,\n    address receiver,\n    address owner\n) public override returns (uint256 assets) {\n    //",
+  "✅ if msg.sender is not owner, check and decrement allowance\n    if (msg.sender != owner) {\n        uint256 allowed = allowance(owner, msg.sender);\n        if (allowed != type(uint256).max) {\n            require(allowed >= shares, \"ERC4626: redeem exceeds allowance\");\n            _approve(owner, msg.sender, allowed - shares);\n        }\n    }\n\n    uint256 assets = convertToAssets(shares);\n    _burn(owner, shares);\n    IERC20(asset()).safeTransfer(receiver, assets);\n\n    emit Withdraw(msg.sender, receiver, owner, assets, shares);\n    return assets;\n}"
+ ],
+ "steps": [],
+ "other_code": []
+}

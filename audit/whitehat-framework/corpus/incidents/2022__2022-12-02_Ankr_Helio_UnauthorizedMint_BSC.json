@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-12-02_Ankr_Helio_UnauthorizedMint_BSC",
+ "source_file": "2022/2022-12-02_Ankr_Helio_UnauthorizedMint_BSC.md",
+ "title": "Ankr / Helio — Unauthorized aBNBc Mint + Collateral Liquidation Attack Analysis",
+ "date": "2022-12-02",
+ "protocol": "Ankr Protocol / Helio Money",
+ "chain": "BSC",
+ "loss_raw": "~$20,000,000 combined (Ankr: ~$5M in aBNBc liquidated; Helio: ~$15M HAY drained via underpriced aBNBc collateral)",
+ "loss_usd": 20000000.0,
+ "root_cause": "Ankr's aBNBc contract deployer private key was compromised (likely via infrastructure breach), allowing unlimited aBNBc minting. A secondary attack on Helio exploited the time lag between the aBNBc depeg and Helio's oracle price update to borrow HAY at the pre-crash aBNBc price",
+ "attack_tx": null,
+ "vulnerable_contract": "Ankr aBNBc token (deployer key compromise); Helio HAY stablecoin (oracle delayed price update)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "❌ Vulnerable Ankr aBNBc — unbounded mint with single-key authorization\ncontract aBNBc {\n    address public deployer;  //",
+  "❌ Single point of failure for minting\n    \n    function mint(address to, uint256 amount) external {\n        require(msg.sender == deployer, \"Not deployer\");  //",
+  "❌ No multisig, no timelock\n        _mint(to, amount);  //"
+ ],
+ "code_after": [
+  "✅ Correct patterns:\n// Ankr: Use multisig or DAO governance for mint authority; set per-period mint caps\n// Helio: Use manipulation-resistant oracle with deviation threshold; halt if price drops >X% in one block"
+ ],
+ "steps": [
+  "aBNBc price: ~$300 → ~$0 (massive sell pressure)"
+ ],
+ "other_code": [
+  "Stage 1: Ankr Deployer Key Compromise\n    │\n    ├─[1] Attacker obtains Ankr deployer private key\n    │       (method unconfirmed: phishing / infrastructure breach)\n    │\n    ├─[2] Call aBNBc.mint(attacker, 6e15) — mint 6 quadrillion aBNBc\n    │\n    ├─[3] Swap aBNBc for BNB on PancakeSwap\n    │       aBNBc price: ~$300 → ~$0 (massive sell pressure)\n    │       Direct profit: ~5,000 BNB (~$1.5M)\n    │\nStage 2: Helio Stale Oracle Exploit\n    │\n    ├─[4] Third party (or same attacker) buys crashed aBNBc at near-zero market price\n    │\n    ├─[5] Deposit aBNBc into Helio as collateral\n    │       Helio oracle: still showing ~$300 per aBNBc (stale)\n    │       Market price: ~$0 per aBNBc\n    │\n    ├─[6] Borrow maximum HAY against stale collateral valuation\n    │       ~$15M HAY minted against nea"
+ ]
+}

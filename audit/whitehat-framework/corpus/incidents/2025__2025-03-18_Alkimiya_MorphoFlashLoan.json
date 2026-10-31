@@ -1,0 +1,35 @@
+{
+ "id": "2025__2025-03-18_Alkimiya_MorphoFlashLoan",
+ "source_file": "2025/2025-03-18_Alkimiya_MorphoFlashLoan.md",
+ "title": "Alkimiya.io — Silica Pool Manipulation via Morpho Flash Loan Analysis",
+ "date": "2025-03-18",
+ "protocol": "Alkimiya.io",
+ "chain": "Ethereum",
+ "loss_raw": "~95,500 USD (1.14015390 WBTC)",
+ "loss_usd": null,
+ "root_cause": "`collateralizedMint` in silicaPools allows collateral manipulation via attacker-controlled tokens",
+ "attack_tx": "0x9b9a6dd0...",
+ "vulnerable_contract": "0xf3f84ce038442ae4c4dcb6a8ca8bacd7f28c9bde",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable collateralizedMint: no validation of collateral token trustworthiness\nfunction collateralizedMint(\n    address collateralToken,  //",
+  "❌ Allows attacker-controlled address\n    uint256 amount,\n    // ...\n) external {\n    // Calls decimals(), balance(), shares() on the collateral token\n    //",
+  "❌ These values are returned by the attacker-controlled contract\n    uint256 collateralAmount = IToken(collateralToken).balance();\n    uint256 shares = IToken(collateralToken).shares();\n\n    //"
+ ],
+ "code_after": [
+  "✅ Correct code: whitelist-based collateral validation\nfunction collateralizedMint(\n    address collateralToken,\n    uint256 amount,\n    // ...\n) external {\n    require(approvedCollaterals[collateralToken], \"Not approved collateral\"); //",
+  "✅\n    // Use only verified on-chain data\n}"
+ ],
+ "steps": [
+  "► decimals() → returns manipulated value",
+  "► balance() → returns manipulated value",
+  "► shares() → returns manipulated value",
+  "► transferFrom() → always returns success"
+ ],
+ "other_code": [
+  "// File: contracts/SilicaPools.sol\nfunction unpause() external onlyOwner {\n        paused = false;\n        emit SilicaPools__UnpauseProtocol();\n    }\n\n// ... (lines 148-153 omitted) ...\n\n    function startPools(PoolParams[] calldata poolParams) external {\n        for (uint256 i = 0; i < poolParams.length; ++i) {\n            startPool(poolParams[i]);\n        }\n    }\n\n// ... (lines 159-234 omitted) ...\n\n    function poolState(bytes32 poolHash) external view returns (PoolState memory) {\n        return sPoolState[poolHash];\n    }\n\n// ... (lines 238-239 omitted) ...\n\n    function startBounty(PoolParams[] calldata poolParams) external view returns (uint256[] memory) {\n        uint256[] memory bounties = new uint256[](poolParams.length);\n        for (uint256 i = 0; i < poolParams.length; ++i) {\n ",
+  "Attacker\n  │\n  ├─[1]─► Morpho Flash Loan (borrow WBTC)\n  │\n  ├─[2]─► Deploy fake collateral token contract\n  │         ├─► decimals() → returns manipulated value\n  │         ├─► balance() → returns manipulated value\n  │         ├─► shares() → returns manipulated value\n  │         └─► transferFrom() → always returns success\n  │\n  ├─[3]─► Call silicaPools.startPool() (start pool with fake token)\n  │\n  ├─[4]─► Call silicaPools.collateralizedMint()\n  │         └─► Extract real WBTC using fake collateral\n  │\n  ├─[5]─► Call silicaPools.endPool()\n  │\n  ├─[6]─► Repay Morpho flash loan\n  │\n  └─[7]─► Net profit: 1.14 WBTC (~95,500 USD)"
+ ]
+}

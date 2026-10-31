@@ -1,0 +1,51 @@
+{
+ "id": "2024__2024-05-14_SonneFinance_ERC4626Inflation_OP",
+ "source_file": "2024/2024-05-14_SonneFinance_ERC4626Inflation_OP.md",
+ "title": "SonneFinance — ERC4626 Inflation Attack Analysis",
+ "date": "2024-05-14",
+ "protocol": "SonneFinance",
+ "chain": "Optimism | Optimism",
+ "loss_raw": "~$7M | ~$20M",
+ "loss_usd": 7.0,
+ "root_cause": "Direct donation to newly added VELO market to manipulate soVELO exchange rate — Precision Loss (ERC4626 Inflation Attack)",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — getCash() returns the actual ERC20 balance, allowing manipulation via direct transfer\nfunction exchangeRateStoredInternal() internal view returns (MathError, uint) {\n    uint _totalSupply = totalSupply;\n    if (_totalSupply == 0) {\n        // Return initial exchange rate if pool is empty\n        return (MathError.NO_ERROR, initialExchangeRateMantissa);\n    } else {\n        // ❌ getCash() = IERC20(underlying).balanceOf(address(this))\n        // An attacker sending tokens directly via transfer() increases totalCash\n        uint totalCash = getCash();\n\n        uint cashPlusBorrowsMinusReserves;\n        MathError err;\n        (err, cashPlusBorrowsMinusReserves) = addThenSubUInt(\n            totalCash, totalBorrows, totalReserves\n        );\n        if (err != MathError.NO_ERROR) { return (err, 0); }\n\n        uint exchangeRate;\n        // ❌ If totalSupply = 2 wei and totalCash = 35,471,603 VELO (18 decimals):\n        // exchangeRate ≈ 17,735,851,964,756,377,265,143,988,000,000,000,000,000\n        (err, exchangeRate) = divScalarByExpTruncate(\n            cashPlusBorrowsMinusReserves,\n            Exp({mantissa: _totalSupply})\n        );\n        return (MathError.NO_ERROR, exchangeRate);\n    }\n}",
+  "// ❌ Vulnerable code — truncation occurs when calculating redeemTokens\nfunction redeemUnderlyingInternal(uint redeemAmount) internal nonReentrant returns (uint) {\n    // redeemTokens = redeemAmount / exchangeRate\n    // e.g.: redeemAmount = 35,469,150 VELO, exchangeRate = 1.7e43\n    // redeemTokens = 35,469,150e18 / 1.7e43 ≈ 1.999994 → truncated to 1 wei\n    // ❌ Attacker holds 2 wei soVELO but only 1 wei is burned, leaving 1 wei soVELO intact\n    uint redeemTokens = div_(redeemAmount, exchangeRate);\n    // ...\n    doTransferOut(redeemer, redeemAmount); // Full underlying asset is transferred out\n}",
+  "// ❌ Vulnerable structure — anyone can execute after timelock expiry\nfunction execute(\n    address target,\n    uint256 value,\n    bytes memory data,\n    bytes32 predecessor,\n    bytes32 salt\n) external payable {\n    // ❌ No onlyRole(EXECUTOR_ROLE) — permissionless\n    // Attacker directly executes the VELO market activation transaction\n    // and immediately performs the inflation attack in the same block\n    bytes32 id = hashOperation(target, value, data, predecessor, salt);\n    require(isOperationReady(id));\n    _execute(target, value, data);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — OpenZeppelin ERC4626 recommended approach: virtual shares/assets\nfunction _convertToShares(uint256 assets, Math.Rounding rounding)\n    internal view virtual returns (uint256)\n{\n    // ✅ Adding 1 to totalAssets() and 10^_decimalsOffset to totalSupply()\n    // makes it mathematically impossible for a first depositor to manipulate the exchange rate\n    return assets.mulDiv(\n        totalSupply() + 10 ** _decimalsOffset(),\n        totalAssets() + 1,          // ✅ +1 prevents division by zero and mitigates inflation\n        rounding\n    );\n}\n\n// ✅ Alternative: protocol deposits a small amount at deploy time to keep totalSupply > 0\n// This eliminates the entry condition for a first depositor attack\nfunction _initializeMarket() internal {\n    // ✅ Small deposit in the same transaction as governance execution → atomic deployment\n    underlyingToken.transferFrom(treasury, address(this), INITIAL_DEPOSIT);\n    _mint(address(0xdead), INITIAL_MINT); // Mint to dead address to establish totalSupply\n}",
+  "// ✅ Fixed code — deposit initial liquidity in the same transaction as market activation\nfunction _supportMarketWithInitialDeposit(\n    CToken cToken,\n    uint256 initialDepositAmount\n) external onlyAdmin {\n    require(!markets[address(cToken)].isListed, \"already listed\");\n\n    // Activate market\n    markets[address(cToken)].isListed = true;\n\n    // ✅ Immediately deposit small amount in same Tx → ensure totalSupply > 0\n    // Mint to dead address to eliminate first depositor attack entry condition\n    IERC20(cToken.underlying()).transferFrom(\n        msg.sender, address(this), initialDepositAmount\n    );\n    cToken.mint(initialDepositAmount);\n    IERC20(address(cToken)).transfer(\n        address(0x000000000000000000000000000000000000dEaD),\n        IERC20(address(cToken)).balanceOf(address(this))\n    );\n\n    emit MarketListed(cToken);\n}"
+ ],
+ "steps": [
+  "1. **Timelock execution (5 transactions)**: Set soVELO market parameters (collateral factor, oracle, collateral factor)",
+  "2. **VELO Approve**: Unlimited approve for the soVELO contract",
+  "3. **Flash swap initiation**: Flash loan of 35,469,150.965 VELO from the VolatileV2 USDC/VELO pool",
+  "4. **Minimal deposit**: Deposit 400,000,001 wei VELO into soVELO → mint 2 wei soVELO",
+  "5. **Large donation**: Transfer the entire flash-loaned VELO directly to the soVELO contract via transfer() → exchangeRate explodes",
+  "6. **Market entry**: `enterMarkets()` for soUSDC and soVELO",
+  "7. **Borrow**: Use 2 wei inflated soVELO as collateral to borrow 768,947,220,961 wei USDC.e from soUSDC",
+  "8. **Redeem**: Call `redeemUnderlying(total VELO balance - 1)` → Precision Loss burns only 1 wei soVELO, recovering all VELO",
+  "9. **Flash loan repayment**: Return VELO (principal - 1) + USDC fee (44,656,863,632 wei)",
+  "10. **Profit realization**: Net USDC.e profit secured (attack repeated on other pools in subsequent attack Txs)",
+  "1. TimelockController.execute() × 5",
+  "2. VELO market activation complete",
+  "3. Flash swap: borrow 35,469,150 VELO",
+  "4. CErc20.mint(400_000_001) → mint 2 wei soVELO",
+  "5. IERC20(VELO).transfer(soVELO, 35_469_150 VELO) ← Direct donation (DONATION)",
+  "6. enterMarkets([soUSDC, soVELO])",
+  "7. soUSDC.borrow(768_947_220_961 wei USDC.e)",
+  "→ 768,947 USDC.e borrow approved",
+  "8. soVELO.redeemUnderlying(totalVELO - 1)",
+  "= 1.999994 → truncation → 1 wei"
+ ],
+ "other_code": [
+  "exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply",
+  "┌─────────────────────────────────────────────────────────────┐\n  │                     Attacker (EOA)                          │\n  │  0x5d0d...0bbb / 0xae4A...3f43                             │\n  └──────────────────────┬──────────────────────────────────────┘\n                         │ 1. TimelockController.execute() × 5\n                         ▼\n  ┌──────────────────────────────────────────────────────────────┐\n  │              TimelockController (Governance Timelock)        │\n  │  0x37fF...6b6                                                │\n  │  - soVELO initialization / oracle setup / collateral factor  │\n  └──────────────────────┬───────────────────────────────────────┘\n                         │ 2. VELO market activation complete\n                         ▼\n  ┌──────────────────────"
+ ]
+}

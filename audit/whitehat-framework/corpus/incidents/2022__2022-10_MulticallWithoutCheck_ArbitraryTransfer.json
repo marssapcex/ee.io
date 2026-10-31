@@ -1,0 +1,27 @@
+{
+ "id": "2022__2022-10_MulticallWithoutCheck_ArbitraryTransfer",
+ "source_file": "2022/2022-10_MulticallWithoutCheck_ArbitraryTransfer.md",
+ "title": "MulticallWithoutCheck — Arbitrary Token Transfer Attack via Unvalidated Multicall",
+ "date": "2022-10-01",
+ "protocol": "MulticallWithoutCheck",
+ "chain": "Polygon",
+ "loss_raw": "All USDT held by the contract",
+ "loss_usd": null,
+ "root_cause": "`multicallWithoutCheck()` executes arbitrary external calls with no validation on target or calldata",
+ "attack_tx": null,
+ "vulnerable_contract": "0x940cE652A51EBadB5dF09d605dBEDA95fDcF697b",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable multicallWithoutCheck() - allows arbitrary external calls\ncontract MulticallContract {\n    struct Call {\n        address target;   // target contract to call\n        bytes callData;   // calldata to execute\n    }\n\n    //",
+  "❌ callable by anyone, no validation on target or callData\n    function multicallWithoutCheck(Call[] memory calls) external {\n        for (uint256 i = 0; i < calls.length; i++) {\n            //",
+  "❌ executes arbitrary calldata against arbitrary contracts\n            // called under this contract's identity (address(this))\n            (bool success,) = calls[i].target.call(calls[i].callData);\n            require(success, \"Call failed\");\n        }\n    }\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - target whitelist + function selector restriction\ncontract SafeMulticall {\n    mapping(address => bool) public allowedTargets;\n    mapping(bytes4 => bool) public allowedSelectors;\n\n    function multicall(Call[] memory calls) external {\n        for (uint256 i = 0; i < calls.length; i++) {\n            //",
+  "✅ only call whitelisted contracts\n            require(allowedTargets[calls[i].target], \"Target not allowed\");\n            //"
+ ],
+ "steps": [],
+ "other_code": []
+}

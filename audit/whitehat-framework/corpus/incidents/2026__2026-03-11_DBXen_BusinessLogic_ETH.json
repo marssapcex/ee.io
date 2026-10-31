@@ -1,0 +1,38 @@
+{
+ "id": "2026__2026-03-11_DBXen_BusinessLogic_ETH",
+ "source_file": "2026/2026-03-11_DBXen_BusinessLogic_ETH.md",
+ "title": "DBXen — ERC-2771 Sender Confusion Reward Double-Claim Analysis",
+ "date": "2026-03-11",
+ "protocol": "DBXen",
+ "chain": "Ethereum Mainnet + BNB Chain",
+ "loss_raw": "~$149,000 (65.28 ETH + 2,305 DXN tokens)",
+ "loss_usd": 149000.0,
+ "root_cause": "State inconsistency caused by mixed use of `_msgSender()` and `msg.sender` in an ERC-2771 meta-transaction context",
+ "attack_tx": null,
+ "vulnerable_contract": "0xf5c80c...abd",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code — gasWrapper and onTokenBurned record different addresses\n\nmodifier gasWrapper(uint256 batchNumber) {\n    uint256 startGas = gasleft();\n    _;\n    //",
+  "❌ msg.sender is the xenCrypto contract address (or the forwarder if called via forwarder)\n    // accCycleBatchesBurned is recorded for the actual user (user),\n    // but lastActiveCycle is updated for msg.sender (the forwarder)\n    lastActiveCycle[msg.sender] = currentCycle;  //",
+  "❌ Recorded to the forwarder address!\n    accCycleBatchesBurned[user][currentCycle] += amount / tokensByBatch;\n}"
+ ],
+ "code_after": [
+  "✅ Uses _msgSender() to correctly identify the actual user\n    // (ERC-2771: forwarder appends the original sender as the last 20 bytes of calldata)\n    _updateUserStats(_msgSender(), batchNumber);\n    _chargeGasFee(_msgSender(), startGas - gasleft());\n}\n\nfunction burnBatch(uint256 batchNumber) external payable gasWrapper(batchNumber) {\n    // Burns XEN tokens and triggers the callback\n    IBurnableToken(xenCrypto).burn(\n        _msgSender(),  //",
+  "✅ Burn subject is correctly set to the actual user\n        batchNumber * tokensByBatch\n    );\n    // onTokenBurned() callback is invoked from the xenCrypto contract\n}\n\n// Callback invoked by the XEN token contract\nfunction onTokenBurned(address user, uint256 amount) external {\n    require(msg.sender == xenCrypto, \"DBXen: only XEN contract\");\n    //"
+ ],
+ "steps": [
+  "1. Call burnBatch(5560)",
+  "2. Forwarded call",
+  "- _msgSender() → Attacker EOA (correct ✅)",
+  "- msg.sender → xenCrypto contract address",
+  "→ Attacker EOA's lastActiveCycle remains 0",
+  "3. Call claimFees()",
+  "→ 3 years of accumulated fees paid out in one shot ❌",
+  "4. Withdraw 65.28 ETH"
+ ],
+ "other_code": [
+  "1. Transfer (XEN)  : Attacker → 0x000...dead (burn)\n2. TokensBurned    : DBXen event (burn recorded)\n3. FeesClaimed     : DBXen event (fees for 1,085 cycles)\n4. Transfer (ETH)  : DBXen → Attacker (65.28 ETH)\n5. OFTSent         : LayerZero event (bridged to another chain)"
+ ]
+}

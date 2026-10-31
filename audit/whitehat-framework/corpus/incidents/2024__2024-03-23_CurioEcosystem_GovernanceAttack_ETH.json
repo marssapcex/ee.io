@@ -1,0 +1,46 @@
+{
+ "id": "2024__2024-03-23_CurioEcosystem_GovernanceAttack_ETH",
+ "source_file": "2024/2024-03-23_CurioEcosystem_GovernanceAttack_ETH.md",
+ "title": "Curio Ecosystem Security Incident Analysis",
+ "date": "2024-03-23",
+ "protocol": "CurioEcosystem",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "governance"
+ ],
+ "code_before": [
+  "❌)\nuint256 delay = 0; // allows immediate execution\n\n// Secure configuration ("
+ ],
+ "code_after": [
+  "✅)\nuint256 delay = 2 days; // minimum 48-hour wait (or longer)"
+ ],
+ "steps": [
+  "1. lock() 20 CGT",
+  "--------------------------->",
+  "2. vote([attacker])",
+  "3. lift(attacker)",
+  "4. Deploy malicious Spell contract",
+  "5. plot(spell, tag, sig, now)",
+  "-------------------------------------------------------->",
+  "6. exec(spell, tag, sig, now)",
+  "+------------------>+",
+  "suck() → create |<---------+",
+  "7. Mass sell CGT (DEX swaps)",
+  "1. **CGT Token Acquisition and Locking**: The attacker acquires a small amount of CGT tokens (approximately 20, 2e18 wei) and calls `DSChief.lock(20 ether)` to lock them.",
+  "2. **Self-Vote**: Calls `DSChief.vote([attacker_address])` to assign 20 CGT worth of voting power to their own address.",
+  "3. **Governance Leader (hat) Hijack**: Calls `DSChief.lift(attacker_address)`. If the current hat has fewer votes, or if no hat has been set, the attacker becomes the new hat. This grants the `auth` privilege to call `DSPause.plot()`.",
+  "4. **Malicious Spell Contract Deployment**: Deploys a malicious `Spell` contract that executes `IVat.suck()` and `IMERC20.mint()`. Computes the contract's `extcodehash` to use as the `tag`.",
+  "5. **Register Malicious Spell (plot)**: Calls `DSPause.plot(spell_addr, tag, calldata, block.timestamp)`. With `delay=0`, setting `eta = block.timestamp` enables immediate execution.",
+  "6. **Execute Malicious Spell (exec)**: Calls `DSPause.exec(spell_addr, tag, calldata, eta)`. `DSPause` performs a `delegatecall` to `Spell.act()`, which:",
+  "7. **Asset Liquidation and Obfuscation**: Swaps large quantities of CGT for WETH, DAI, XCHF, 1INCH, UNI, LINK, SKL, and other tokens via Uniswap V2/V3 routers. Assets are then transferred cross-chain via Omni Bridge, SKALE Bridge, and Boba Bridge to complicate tracing."
+ ],
+ "other_code": [
+  "// DSChief.sol (MakerDAO fork — Curio implementation)\n// Anyone with more votes than the current hat can call lift()\nfunction lift(address whom) external {\n    require(approvals[whom] > approvals[hat]);\n    hat = whom;\n}\n\n// DSPause.sol\n// Only the hat (governance leader) can call plot(), but\n// the problem is that the hat itself can be obtained with very few tokens\nfunction plot(\n    address usr,\n    bytes32 tag,\n    bytes memory fax,\n    uint256 eta\n) external auth {\n    // auth modifier: checks if msg.sender == hat\n    // if delay=0, eta = block.timestamp allows immediate exec()\n    require(eta >= add(now, delay));\n    plans[soul(usr, tag, fax, eta)] = true;\n}\n\nfunction exec(\n    address usr,\n    bytes32 tag,\n    bytes memory fax,\n    uint256 eta\n) external returns (bytes memory out) {\n",
+  "// Improved DSChief.sol\nuint256 public constant MINIMUM_QUORUM = 1_000_000 ether; // minimum 1M CGT\n\nfunction lift(address whom) external {\n    // must receive votes above the minimum threshold to become hat\n    require(approvals[whom] > approvals[hat], \"Insufficient approvals to lift\");\n    require(approvals[whom] >= MINIMUM_QUORUM, \"Below minimum quorum\");\n    hat = whom;\n}\n\n// Improved DSPause.sol\nuint256 public constant MIN_DELAY = 2 days; // minimum 2-day wait\n\nconstructor() {\n    delay = MIN_DELAY; // enforce timelock\n}\n\nfunction setDelay(uint256 _delay) external auth {\n    require(_delay >= MIN_DELAY, \"Delay too short\");\n    delay = _delay;\n}\n\n// Spell contract — only whitelisted actions allowed\ncontract SafeSpell {\n    mapping(address => bool) public whitelistedTargets;\n    address"
+ ]
+}

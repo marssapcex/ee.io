@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-10-22_UniBot_UnauthorizedTransfer",
+ "source_file": "2023/2023-10-22_UniBot_UnauthorizedTransfer.md",
+ "title": "UniBot Router Unauthorized Token Transfer Incident Analysis",
+ "date": "2023-10-22",
+ "protocol": "UniBot",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "approval-abuse"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ UniBot.allowance(victim, UniBotRouter) query",
+  "2 ▶ UniBot.balanceOf(victim) query",
+  "3 ▶ UniBotRouter.call(0xb2bd16ab, ...)",
+  "→ UniBot.transferFrom(victim, attacker, amount)",
+  "4 ▶ UniBot.approve(UniRouter, totalBalance)",
+  "5 ▶ UniRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens()",
+  "UniBot → WETH swap",
+  "6 ▶ ~$83,994 profit realized"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: Router transferring victim tokens to arbitrary address\ncontract UniBotRouter {\n    // Vulnerable: accepts victim address and recipient as parameters, then executes transferFrom\n    // Function selector: 0xb2bd16ab\n    function executeTransfer(\n        address token,\n        address from,    // victim\n        address to,      // attacker\n        uint256 amount\n    ) external {\n        // No caller validation\n        // Any amount within what `from` approved to the Router can be transferred arbitrarily\n        IERC20(token).transferFrom(from, to, amount);\n    }\n}",
+  "// Root Cause: Unauthorized Token Transfer via Router Vulnerability\n// Source code unverified — analysis based on bytecode"
+ ]
+}

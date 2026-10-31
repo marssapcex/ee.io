@@ -1,0 +1,38 @@
+{
+ "id": "2023__2023-07-21_ConicFinance_ReadOnlyReentrancy_ETH",
+ "source_file": "2023/2023-07-21_ConicFinance_ReadOnlyReentrancy_ETH.md",
+ "title": "Conic Finance — Curve Read-Only Reentrancy Attack Analysis",
+ "date": "2023-07-21",
+ "protocol": "Conic Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$4,200,000 USD (~$3,250,000 ETH pool + ~$934,000 crvUSD pool, second attack same day)",
+ "loss_usd": 4200000.0,
+ "root_cause": "Stale virtual_price used during Curve pool ETH callback (read-only reentrancy)",
+ "attack_tx": "0x8b74...b146",
+ "vulnerable_contract": "0xbb78...91e9",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: directly reads Curve virtual_price\n// This function can be called even during Curve's remove_liquidity ETH callback\nfunction getUSDPrice(address token) external returns (uint256) {\n    if (isCurveLpToken[token]) {\n        ICurvePool pool = curvePoolOf[token];\n\n        // ❌ virtual_price is stale if read before Curve's internal balance update\n        // When called during ETH callback: balances not yet updated → returns manipulated price\n        uint256 virtualPrice = pool.get_virtual_price();\n\n        uint256 underlyingPrice = getUnderlyingPrice(pool); // ETH price\n        return virtualPrice * underlyingPrice / 1e18;\n    }\n    // ...\n}",
+  "// ❌ Vulnerable: no nonReentrant guard, freely callable from outside even during callbacks\nfunction handleDepeggedCurvePool(address curvePool_) external {\n    // ❌ This logic executes even when oracle price is stale during ETH callback\n    require(\n        oracle.getUSDPrice(lpTokenOf[curvePool_]) < depegThreshold,\n        \"Pool is not depegged\"\n    );\n\n    // ❌ Incorrectly marks a healthy pool as depegged using stale oracle value\n    isPoolDepegged[curvePool_] = true;\n    _rebalanceAfterDepeg(curvePool_);  // Asset rebalancing → creates condition for over-withdrawal\n}",
+  "// ❌ Vulnerable: withdrawal amount calculated using manipulated weights immediately after depegged marking\nfunction withdraw(uint256 conicLpAmount, uint256 minUnderlyingReceived) external nonReentrant {\n    // ❌ Depegged pool weight becomes 0, causing over-withdrawal from remaining pools\n    uint256 underlyingAmount = calculateWithdrawal(conicLpAmount);\n    require(underlyingAmount >= minUnderlyingReceived, \"Slippage exceeded\");\n    _transferUnderlying(msg.sender, underlyingAmount);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed: check Curve pool reentrancy guard state first\nfunction getUSDPrice(address token) external returns (uint256) {\n    if (isCurveLpToken[token]) {\n        ICurvePool pool = curvePoolOf[token];\n\n        // ✅ claim_admin_fees() triggers Curve's internal nonreentrant lock\n        // If called during reentrancy (inside ETH callback) → reverts → blocks stale price return\n        pool.claim_admin_fees();\n\n        uint256 virtualPrice = pool.get_virtual_price();\n        uint256 underlyingPrice = getUnderlyingPrice(pool);\n        return virtualPrice * underlyingPrice / 1e18;\n    }\n}",
+  "// ✅ Fixed: nonReentrant + Curve reentrancy state validation\nfunction handleDepeggedCurvePool(address curvePool_) external nonReentrant {\n    // ✅ Validate Curve pool reentrancy state: revert if currently reentrant\n    ICurvePool(curvePool_).claim_admin_fees();\n\n    uint256 lpPrice = oracle.getUSDPrice(lpTokenOf[curvePool_]);\n    require(lpPrice < depegThreshold, \"Pool is not depegged\");\n\n    isPoolDepegged[curvePool_] = true;\n    _rebalanceAfterDepeg(curvePool_);\n}"
+ ],
+ "steps": [
+  "cbETH_ETH_Pool.exchange(cbETH → WETH)",
+  "rETH_ETH_Pool.exchange(rETH → WETH)",
+  "→ LidoPool marked as depegged",
+  "→ cbETH_ETH_Pool marked depegged",
+  "All 3 pools depegged → weight 0",
+  "→ abnormally large withdrawal calculated",
+  "sellAllTokenToWETH() → finalize profit"
+ ],
+ "other_code": [
+  "1. Burn LP tokens\n2. Transfer ETH → invoke receiver's receive() (this is the vulnerable window)\n3. Update internal balances (balances[])",
+  "Attacker Contract (0x7435...e4eb)\n         │\n         ▼\n┌────────────────────────┐\n│ [1] AaveV2 Flash Loan  │  Borrow stETH 20,000 ETH\n│     executeOperation() │\n└──────────┬─────────────┘\n           │ nested call\n           ▼\n┌────────────────────────┐\n│ [2] AaveV3 Flash Loan  │  Borrow additional cbETH 850 ETH\n│     executeOperation() │\n└──────────┬─────────────┘\n           │ nested call\n           ▼\n┌────────────────────────────────────────────┐\n│ [3] Balancer Flash Loan                    │\n│     receiveFlashLoan()                     │\n│     - rETH 20,550 + cbETH 3,000 + WETH 28,504 │\n└──────────┬─────────────────────────────────┘\n           │\n           ▼\n┌────────────────────────────────────────────┐\n│ [4] 7-iteration loop (pool ratio manipulation) │\n│  ConicEthPool.deposit(1,214 ET"
+ ]
+}

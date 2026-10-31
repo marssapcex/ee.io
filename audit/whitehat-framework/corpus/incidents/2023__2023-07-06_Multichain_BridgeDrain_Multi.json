@@ -1,0 +1,25 @@
+{
+ "id": "2023__2023-07-06_Multichain_BridgeDrain_Multi",
+ "source_file": "2023/2023-07-06_Multichain_BridgeDrain_Multi.md",
+ "title": "Multichain Bridge — Centralized MPC Key Compromise Analysis",
+ "date": "2023-07-06",
+ "protocol": "Multichain",
+ "chain": "Multiple",
+ "loss_raw": "~$126,000,000 (USDC, USDT, DAI, WBTC, WETH, and other assets drained from bridge custody)",
+ "loss_usd": 126000000.0,
+ "root_cause": "Multichain's CEO Zhaojun held unilateral access to the MPC signing keys used by all Multichain bridge routers. When Zhaojun was detained by Chinese police in May 2023, the team lost access to server infrastructure. Funds sat in limbo until July 6–7, when large unauthorized outflows occurred — likely from authorities or parties with access to the seized infrastructure.",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "// contracts/router/MultichainV7Router.sol — REAL SOURCE\n// anyswap/multichain-smart-contracts, main branch\n// NOTE: The exploit was NOT in this code. The MPC key used by onlyMPC was\n// physically seized. These functions are shown to illustrate the trust model.\n\n// Called by users on the source chain to initiate a cross-chain transfer.\n// Burns the wrapped token on the source chain.\nfunction anySwapOut(\n    address token,\n    string calldata to,\n    uint256 amount,\n    uint256 toChainID\n)\n    external\n    whenNotPaused(Swapout_Paused_ROLE)\n    nonReentrant\n{\n    bytes32 swapoutID = IRouterSecurity(routerSecurity).registerSwapout(\n        token, msg.sender, to, amount, toChainID, \"\", \"\"\n    );\n    assert(IRouterMintBurn(token).burn(msg.sender, amount));\n    emit LogAnySwapOut(swapoutID, token, msg.sender, to, amount, toChainID);\n}\n\n// Called ONLY by the MPC key holder on the destination chain to complete a transfer.\n// Mints the wrapped token to the recipient.\n//\n// ❌ onlyMPC is the entire security perimeter.\n//    If the MPC private key is obtained by an adversary — even via physical seizure\n//    of the signing server — the adversary can call this function with arbitrary\n//    `swapInfo.receiver` and `swapInfo.amount`, minting tokens out of thin air\n//    on the destination chain.\nfunction anySwapIn(\n    string calldata swapID,\n    SwapInfo calldata swapInfo\n)\n    external\n    whenNotPaused(Swapin_Paused_ROLE)\n    nonReentrant\n    onlyMPC   // ← THE ONLY GUARD — no multi-sig, no timelock, no second key\n{\n    IRouterSecurity(routerSecurity).registerSwapin(swapID, swapInfo);\n    assert(\n        IRouterMintBurn(swapInfo.token).mint(\n            swapInfo.receiver,\n            swapInfo.amount\n        )\n    );\n    emit LogAnySwapIn(\n        swapID, swapInfo.swapoutID, swapInfo.token,\n        swapInfo.receiver, swapInfo.amount, swapInfo.fromChainID\n    );\n}"
+ ],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Claimed Architecture:\n  Multichain \"MPC Committee\"\n    ├── Node A\n    ├── Node B\n    └── Node C\n  → Threshold signing: 2-of-3 required\n\nActual Architecture:\n  CEO Zhaojun's servers\n    ├── MPC Node A (CEO-controlled server)\n    ├── MPC Node B (CEO-controlled server)\n    └── MPC Node C (CEO-controlled server)\n  → De facto single-party control: 1 person held all key material\n\nCustody addresses (Ethereum):\n  - Fantom Bridge custody: ~$102M drained Jul 6\n  - Moonriver Bridge custody: ~$6.8M drained Jul 6\n  - Kava Bridge custody: ~$3M drained Jul 6\n  - Dogechain Bridge custody: ~$1.5M drained Jul 6\n  Total: ~$126M across all chains",
+  "[2023-05-21] Zhaojun (Multichain CEO) arrested by Chinese police\n             Team loses access to servers and MPC infrastructure\n             Protocol continues running; team says \"under maintenance\"\n\n[2023-06-01 – Jul 5] Six-week blackout period\n             No official explanation; Fantom Foundation and others request transparency\n             Users begin withdrawing; TVL drops significantly\n\n[2023-07-06] Large outflows begin from Multichain custody addresses\n             Fantom Bridge address on Ethereum drained ~$102M\n             Other bridge addresses drained: Moonriver, Kava, Dogechain\n\n[2023-07-07] Fantom Foundation acknowledges incident publicly\n             Multichain team issues statement acknowledging \"abnormal moves\"\n\n[2023-07-14] Multichain issues official statement confirmi"
+ ]
+}

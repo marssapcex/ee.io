@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-09-04_Pythia_ReentrancyStakingDrain",
+ "source_file": "2024/2024-09-04_Pythia_ReentrancyStakingDrain.md",
+ "title": "Pythia — Analysis of Infinite Staking Reward Extraction via claimRewards Reentrancy Attack",
+ "date": "2024-09-04",
+ "protocol": "Pythia Staking",
+ "chain": "Ethereum",
+ "loss_raw": "~21 ETH",
+ "loss_usd": null,
+ "root_cause": "PythiaStaking's `claimRewards()` executes token `transfer()` before updating state — repeated reward claims via reentrancy through ERC20 transfer hooks",
+ "attack_tx": "0x7e19f8edb1f1666322113f15d7674593950ac94bbc25d2aff96adabdcae0a6c3",
+ "vulnerable_contract": "0xe2910b29252F97bb6F3Cc5E66BfA0551821C7461",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: CEI violation — transfer executed before state update\n// PythiaStaking: 0xe2910b29252F97bb6F3Cc5E66BfA0551821C7461\nfunction claimRewards() external {\n    uint256 reward = _calculateReward(msg.sender);\n    //",
+  "❌ transfer executed after reward calculation but before state reset\n    IERC20(PYTHIA_TOKEN).transfer(msg.sender, reward);  //",
+  "❌ reentrancy entry point\n    // State update follows — reward already recalculated upon reentry\n    stakes[msg.sender].lastClaimTime = block.timestamp;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: CEI pattern applied\nfunction claimRewards() external nonReentrant {\n    uint256 reward = _calculateReward(msg.sender);\n    //",
+  "✅ State updated first (Effects)\n    stakes[msg.sender].lastClaimTime = block.timestamp;\n    stakes[msg.sender].pendingReward = 0;\n    //"
+ ],
+ "steps": [
+  "► WETH → PYTHIA (Uniswap V2)",
+  "► ❌ transfer executed → PYTHIA sent to Helper",
+  "► Transfer PYTHIA → AttackContract",
+  "► Return staking tokens → AttackContract",
+  "[4] ► After loop ends, transfer staking tokens → attacker",
+  "[5] ► Swap accumulated PYTHIA → WETH"
+ ],
+ "other_code": []
+}

@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-05-xx_SNK_StakingRewardChildMultiplier",
+ "source_file": "2023/2023-05-xx_SNK_StakingRewardChildMultiplier.md",
+ "title": "SNK Token Exploit — rewardPerToken Multiplied by All Children's Balances",
+ "date": "2023-01-01",
+ "protocol": "SNK",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "// File: SNKMiner.sol\n    function balanceOf(address account) public view returns (uint256) {\n        return _balances[account];  // ❌\n    }\n\n// ...\n\n    function withdraw(uint256 amount,uint256 feeAmount) internal {\n        _totalSupply = _totalSupply.sub(amount);\n        _balances[msg.sender] = _balances[msg.sender].sub(amount);  // ❌\n        y.transfer(msg.sender, amount.sub(feeAmount));\n    }\n\n// ...\n\n    function nodeEarned(address account) public view returns (uint256) {\n        if (block.timestamp < starttime) {\n            return 0;\n        }\n\n        uint256 node = getUserNode(account);\n\n        uint256 e1;\n        uint256 e2;\n        uint256 e3;\n        uint256 e4;\n        if (node == 4) {\n            e1 = nodeRewardPerToken(1).sub(nodeUserRewardPerTokenPaid1[account]).div(precision);  // ❌\n            e2 = nodeRewardPerToken(2).sub(nodeUserRewardPerTokenPaid2[account]).div(precision);  // ❌\n            e3 = nodeRewardPerToken(3).sub(nodeUserRewardPerTokenPaid3[account]).div(precision);  // ❌\n            e4 = nodeRewardPerToken(4).sub(nodeUserRewardPerTokenPaid4[account]).div(precision);  // ❌\n        } else if (node == 3) {\n            e1 = nodeRewardPerToken(1).sub(nodeUserRewardPerTokenPaid1[account]).div(precision);  // ❌\n            e2 = nodeRewardPerToken(2).sub(nodeUserRewardPerTokenPaid2[account]).div(precision);  // ❌\n            e3 = nodeRewardPerToken(3).sub(nodeUserRewardPerTokenPaid3[account]).div(precision);  // ❌\n        } else if (node == 2) {\n            e1 = nodeRewardPerToken(1).sub(nodeUserRewardPerTokenPaid1[account]).div(precision);  // ❌\n            e2 = nodeRewardPerToken(2).sub(nodeUserRewardPerTokenPaid2[account]).div(precision);  // ❌\n        } else if (node == 1) {\n            e1 = nodeRewardPerToken(1).sub(nodeUserRewardPerTokenPaid1[account]).div(precision);  // ❌\n        }\n\n        return e1+e2+e3+e4+nodeRewards[account];\n    }\n\n// ...\n\n    function rewardPerToken() internal view returns (uint256) {  // ❌\n        if (totalSupply() == 0) {\n            return rewardPerTokenStored;  // ❌\n        }\n        uint256 lastTime = 0;\n        if (flag) {\n            lastTime = lastUpdateTime;\n        } else {\n            lastTime = starttime;\n        }\n\n        return\n            rewardPerTokenStored.add(  // ❌\n                lastTimeRewardApplicable()\n                    .sub(lastTime)\n                    .mul(rewardRate)\n                    .mul(precision)\n                    .div(totalSupply())\n            );\n    }\n\n// ...\n\n    function getCommunityBalanceOf(address user) public view returns (uint256) {\n        return communityBalances[user];  // ❌\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → pancakeCall():",
+  "// d. child.stake() → stake large flash balance as child",
+  "// e. parent.exit2() → claim rewards inflated by children's balances",
+  "// f. child.exit1() → exit children"
+ ],
+ "other_code": [
+  "// 1. Deploy 10 HackerTemplate parent contracts\n// 2. Transfer 100 SNK to each, call stake()\n// 3. vm.warp(+20 days)\n// 4. Pair.swap(80_000e18 SNK, 0, address(this), data)\n//    → pancakeCall():\n//      a. Deploy 10 new HackerTemplate child contracts\n//      b. Each child: SNKMinter.bindParent(parentAddr)\n//      c. Transfer accumulated SNK to child contracts\n//      d. child.stake()  → stake large flash balance as child\n//      e. parent.exit2() → claim rewards inflated by children's balances\n//      f. child.exit1()  → exit children\n//    e. Repay 85,000 SNK to pair",
+  "interface ISNKMinter {\n    function bindParent(address parent) external;\n    function stake() external;\n    function getReward() external;\n    function exit() external;\n}\n\ninterface IPancakePair {\n    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;\n}"
+ ]
+}

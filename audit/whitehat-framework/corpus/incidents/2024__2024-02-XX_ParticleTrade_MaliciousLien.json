@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-02-XX_ParticleTrade_MaliciousLien",
+ "source_file": "2024/2024-02-XX_ParticleTrade_MaliciousLien.md",
+ "title": "Particle Trade — onERC721Received Vulnerability via Malicious Lien",
+ "date": "2024-02-01",
+ "protocol": "Particle Exchange",
+ "chain": "Ethereum",
+ "loss_raw": "~50 ETH",
+ "loss_usd": null,
+ "root_cause": "Created a zero-parameter Lien via `offerBid()`, passed maliciously encoded Lien data into `onERC721Received()` to manipulate account balances, then drained ETH via `withdrawAccountBalance()`",
+ "attack_tx": null,
+ "vulnerable_contract": "Proxy 0x7c5C9Af",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: Lien data not validated in onERC721Received\nstruct Lien {\n    address borrower;\n    address collection;\n    uint256 tokenId;\n    uint256 price;\n    uint256 rate;\n    uint256 loanStartTime;\n    uint256 credit;\n    uint256 lienId;\n}\n\nfunction onERC721Received(\n    address,\n    address from,\n    uint256 tokenId,\n    bytes calldata data  // ← attacker can inject arbitrary Lien data\n) external returns (bytes4) {\n    Lien memory lien = abi.decode(data, (Lien));\n    // No validation of lien.price, lien.credit, etc.\n    accountBalance[lien.borrower] += lien.credit;  // ← balance inflated arbitrarily\n    return this.onERC721Received.selector;\n}\n\n//",
+  "// File: ERC1967Proxy.sol\ncontract ERC1967Proxy is Proxy, ERC1967Upgrade {\n    /**\n     * @dev Initializes the upgradeable proxy with an initial implementation specified by `_logic`.\n     *\n     * If `_data` is nonempty, it's used as data in a delegate call to `_logic`. This will typically be an encoded\n     * function call, and allows initializing the storage of the proxy like a Solidity constructor.\n     */\n    constructor(address _logic, bytes memory _data) payable {  // ❌ vulnerability\n        _upgradeToAndCall(_logic, _data, false);\n    }\n\n    /**\n     * @dev Returns the current implementation address.\n     */\n    function _implementation() internal view virtual override returns (address impl) {\n        return ERC1967Upgrade._getImplementation();\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: strict Lien data validation\nfunction onERC721Received(\n    address,\n    address from,\n    uint256 tokenId,\n    bytes calldata data\n) external returns (bytes4) {\n    Lien memory lien = abi.decode(data, (Lien));\n    // Validate: lienId actually exists, from is the borrower, tokenId matches\n    require(liens[lien.lienId].borrower == from, \"invalid lien borrower\");\n    require(liens[lien.lienId].tokenId == tokenId, \"invalid lien tokenId\");\n    require(liens[lien.lienId].credit == lien.credit, \"invalid lien credit\");\n    // ...\n    return this.onERC721Received.selector;\n}"
+ ],
+ "steps": [
+  "→ [1] Call offerBid(0, 0, 0, ...)",
+  "→ [2] Encode malicious Lien struct",
+  "→ [3] NFT.safeTransferFrom(attacker, contract, tokenId, maliciousData)",
+  "→ [4] onERC721Received(): decodes data and inflates balance",
+  "→ [5] onERC721Received() called twice to double the balance",
+  "→ [6] Call withdrawAccountBalance()",
+  "→ [7] ~50 ETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Call offerBid(0, 0, 0, ...)\n  │         └─ Creates a Lien ID with zero parameters\n  │\n  ├─→ [2] Encode malicious Lien struct\n  │         └─ credit = 50 ETH, borrower = attacker\n  │\n  ├─→ [3] NFT.safeTransferFrom(attacker, contract, tokenId, maliciousData)\n  │         └─ Triggers onERC721Received() callback\n  │\n  ├─→ [4] onERC721Received(): decodes data and inflates balance\n  │         └─ accountBalance[attacker] += 50 ETH (no validation)\n  │\n  ├─→ [5] onERC721Received() called twice to double the balance\n  │\n  ├─→ [6] Call withdrawAccountBalance()\n  │         └─ Withdraws inflated 50 ETH balance\n  │\n  └─→ [7] ~50 ETH profit",
+  "interface IParticleExchange {\n    struct Lien {\n        address borrower;\n        address collection;\n        uint256 tokenId;\n        uint256 price;\n        uint256 rate;\n        uint256 loanStartTime;\n        uint256 credit;\n        uint256 lienId;\n    }\n    function offerBid(\n        address collection, uint256 margin, uint256 endTime,\n        uint256 rate, uint256 loanDuration\n    ) external payable returns (uint256 lienId);\n    function onERC721Received(address, address, uint256, bytes calldata) external returns (bytes4);\n    function withdrawAccountBalance() external;\n    function accountBalance(address) external view returns (uint256);\n}\n\ncontract AttackContract {\n    IParticleExchange constant particle = IParticleExchange(0x7c5C9AfEcf4013c43217Fb6A626A4687381f080D);\n    IERC721    "
+ ]
+}

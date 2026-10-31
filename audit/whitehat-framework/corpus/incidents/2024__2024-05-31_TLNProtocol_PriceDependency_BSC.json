@@ -1,0 +1,46 @@
+{
+ "id": "2024__2024-05-31_TLNProtocol_PriceDependency_BSC",
+ "source_file": "2024/2024-05-31_TLNProtocol_PriceDependency_BSC.md",
+ "title": "TLN Protocol — Manipulable Spot Price Dependency Vulnerability Analysis",
+ "date": "2024-05-31",
+ "protocol": "TLN Protocol",
+ "chain": "BSC",
+ "loss_raw": "~$163,000 (on-chain net profit: ~$107,881 USDT + VOW proceeds included)",
+ "loss_usd": 163000.0,
+ "root_cause": "The `lock()` function uses the PancakeSwap spot price (`getVowRate`) directly to determine vUSD mint amount — price manipulation via flash loan is possible",
+ "attack_tx": "0x1350...e6f7",
+ "vulnerable_contract": "0x19B3...3363 (TlnSwap)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — uses PancakeSwap spot price directly\nfunction getVowRate() public view returns (uint256) {\n    // Reads the current reserve values of the PancakeSwap VOW-USDT pool directly\n    // Warning: this value can be instantaneously manipulated via flash loan!\n    (uint112 reserveIn, uint112 reserveOut,) = IPair(vowUsdtPair).getReserves();\n    \n    // vowRate = VOW reserve * 10000 / USDT reserve\n    // When a large USDT→VOW swap executes, reserveIn drops sharply,\n    // causing vowRate to spike thousands of times over\n    uint256 vowRate = uint256(reserveIn) * RATE_MULTIPLIER / uint256(reserveOut);\n    return vowRate;\n    // vowRate before attack: 6,947\n    // vowRate after attack (theoretical): ~43,000,000+\n}",
+  "// ❌ Vulnerable code — collateral ratio determined by getVowRate()\nfunction lock(uint256 tlnAmount, uint256 vowAmount) external {\n    // Uses manipulated vowRate directly to determine vUSD mint amount\n    uint256 vowRate = getVowRate(); // ← already manipulated price!\n    \n    // Collateral validation: must be at least tlnAmount * vowRate / 10000\n    // Attacker can lock large amounts of TLN with minimal VOW\n    uint256 requiredVow = vowToLock(tlnAmount);\n    require(vowAmount >= requiredVow, \"insufficient VOW\");\n    \n    // Mint vUSD based on manipulated price\n    // Normal: small vUSD amount; Attack: thousands of times more vUSD\n    uint256 vusdToMint = tlnAmount; // vUSD minted 1:1 with TLN\n    \n    IERC20(tlnToken).transferFrom(msg.sender, address(this), tlnAmount);\n    IERC20(vowToken).transferFrom(msg.sender, address(this), vowAmount);\n    \n    IvUSD(vusdToken).mint(msg.sender, vusdToMint); // ← over-minting!\n    IERC20(tlnToken).transfer(msg.sender, tlnAmount); // TLN also returned\n}",
+  "// ❌ Vulnerable code — required collateral calculated with manipulated vowRate\nfunction vowToLock(uint256 tlnAmount) public view returns (uint256) {\n    uint256 vowRate = getVowRate(); // ← manipulated spot price\n    \n    // Requires VOW equivalent to 1/5 of tlnAmount (~20% collateral)\n    // When price is manipulated, required VOW collateral drops to near zero\n    // During attack: only 71.53 VOW needed to lock 3,199,510 TLN\n    return tlnAmount * RATE_MULTIPLIER / (vowRate * 5);\n}\n// Normal case before attack:\n//   vowToLock(1e18) = 287,894,054,987,764,502 (~0.288 VOW/TLN)\n// During attack (price distorted 6278x):\n//   vowToLock(1e18) = ~0.0000458 VOW/TLN (effectively uncollateralized)"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — uses TWAP-based price\nfunction getVowRate() public view returns (uint256) {\n    // Use Chainlink or TWAP oracle to prevent manipulation\n    // e.g., with a 30-minute TWAP, single-block flash loan manipulation is not possible\n    uint256 twapPrice = vowUsdtOracle.getTWAP(1800); // 30-minute TWAP\n    \n    // Validate deviation between spot price and TWAP (e.g., revert if > 5%)\n    uint256 spotRate = _getSpotRate();\n    require(\n        _deviation(spotRate, twapPrice) <= MAX_PRICE_DEVIATION, // ✅ 5% threshold\n        \"TlnSwap: price manipulation detected\"\n    );\n    \n    return twapPrice * RATE_MULTIPLIER / 1e18;\n}",
+  "// ✅ Fixed code — manipulation prevention mechanisms added\nfunction lock(uint256 tlnAmount, uint256 vowAmount) external {\n    // 1. Use TWAP-based price\n    uint256 vowRate = getVowRate(); // now returns TWAP\n    \n    // 2. Mint cap validation (protocol-wide limit)\n    require(\n        IvUSD(vusdToken).totalSupply() + tlnAmount <= MAX_VUSD_SUPPLY,\n        \"TlnSwap: mint cap exceeded\" // ✅ maximum supply limit\n    );\n    \n    // 3. Per-account mint limit\n    require(\n        userMinted[msg.sender] + tlnAmount <= MAX_PER_USER_MINT,\n        \"TlnSwap: per-user limit exceeded\" // ✅ per-user mint restriction\n    );\n    \n    uint256 requiredVow = vowToLock(tlnAmount);\n    require(vowAmount >= requiredVow, \"insufficient VOW\");\n    \n    userMinted[msg.sender] += tlnAmount;\n    IERC20(tlnToken).transferFrom(msg.sender, address(this), tlnAmount);\n    IERC20(vowToken).transferFrom(msg.sender, address(this), vowAmount);\n    IvUSD(vusdToken).mint(msg.sender, tlnAmount);\n    IERC20(tlnToken).transfer(msg.sender, tlnAmount);\n}"
+ ],
+ "steps": [
+  "Step 1: PancakeSwap Flash Loan",
+  "→ Loan 19,000,000 USDT to attack contract",
+  "Step 2: Large USDT → VOW Swap (Price Manipulation)",
+  "19M USDT in → 240,704 VOW acquired",
+  "(getVowRate: 6,947 → extreme spike after manipulation)",
+  "Step 3: TlnSwap.lock() Call — Mint vUSD at Manipulated Price",
+  "getVowRate() → returns manipulated spot price",
+  "71.53 VOW as collateral → 3,199,510 vUSD minted",
+  "→ Receive 3,199,510 vUSD + 3,199,510 TLN",
+  "Step 4: PancakeSwap LP → Liquidate TLN + vUSD via LP Removal",
+  "Supply vUSD → LP tokens → Remove LP → Obtain TLN + vUSD",
+  "Step 5: TLN → VOW → USDT Reverse Swap",
+  "PancakeSwap (TLN → VOW): 2,022,632 VOW received",
+  "PancakeSwap (VOW → USDT): 19,117,381 USDT received",
+  "Step 6: Flash Loan Repayment and Profit Realization"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────┐\n│                    Attacker EOA                                  │\n│              0x6951EB8a4A1DAb360F2230Fb654551335d560ec0         │\n└──────────────────────────┬──────────────────────────────────────┘\n                           │ Attack contract call (0xb9359cc2)\n                           │ params: 19,000,000 USDT, 800,000 VOW\n                           ▼\n┌─────────────────────────────────────────────────────────────────┐\n│  Step 1: PancakeSwap Flash Loan                                 │\n│  ┌───────────────────────────────────────────────────────────┐  │\n│  │  PancakeSwap BSC-USD-VOW Pool                             │  │\n│  │  0x36696169c63e42cd08ce11f5deebbcebae652050               │  │\n│  │  → Loan 19,000,000 USDT ",
+  "// TLN Protocol Attack Reconstruction — Based on On-Chain Analysis\n// Attack contract: 0xbDFbb387FBF20379c016998Ac609871C3357D749\n// Attack block: 39,198,686\n\ncontract TLNAttack {\n    // Relevant contract addresses\n    address constant PANCAKESWAP_ROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E;\n    address constant TLNSWAP = 0x19B3F588bdc9a6f9ecb8255919b02f9adf053363;\n    address constant USDT = 0x55d398326f99059ff775485246999027b3197955;   // BSC-USD\n    address constant VOW  = 0xf585b5b4f22816baf7629aea55b701662630397b;    // VOW token\n    address constant TLN  = 0x72dcf845ae36401e82e681b0e063d0703bac0bba;    // TLN token\n    address constant VUSD = 0xf7d142a354322c7560250caa0e2a06c89649e4c2;    // vUSD token\n    address constant VUSD_TLN_LP = 0xc0d8daa6516bab4efce440860987e735bab44"
+ ]
+}

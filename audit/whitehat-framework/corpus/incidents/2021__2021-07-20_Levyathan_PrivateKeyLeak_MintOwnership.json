@@ -1,0 +1,36 @@
+{
+ "id": "2021__2021-07-20_Levyathan_PrivateKeyLeak_MintOwnership",
+ "source_file": "2021/2021-07-20_Levyathan_PrivateKeyLeak_MintOwnership.md",
+ "title": "Levyathan — Private Key Leak + Timelock Abuse for Unlimited LEV Minting Analysis",
+ "date": "2021-07-20",
+ "protocol": "Levyathan",
+ "chain": "BSC",
+ "loss_raw": "Entire protocol TVL (exact amount unconfirmed)",
+ "loss_usd": null,
+ "root_cause": "Development team exposed the private key of the mint-privileged wallet on GitHub — attacker waited out the Timelock delay, seized MasterChef ownership, and minted unlimited LEV",
+ "attack_tx": "Address unconfirmed (fork block: 9,545,967)",
+ "vulnerable_contract": "MasterChef 0xA3fDF7F376F4BFD38D7C4A5cf8AAb4dE68792fd4 / Timelock 0x16149999C85c3E3f7d1B9402a4c64d125877d89D",
+ "classes": [
+  "private-key-compromise"
+ ],
+ "code_before": [
+  "// ❌ MasterChef @ 0xA3fDF7F376F4BFD38D7C4A5cf8AAb4dE68792fd4\n// Once ownership is seized, unlimited minting is possible\nfunction mint(address _to, uint256 _amount) public onlyOwner {\n    LEV.mint(_to, _amount); // Unlimited LEV token minting\n}\n\n// Ownership transfer via Timelock — executed after delay\n// Timelock @ 0x16149999C85c3E3f7d1B9402a4c64d125877d89D\nfunction executeTransaction(\n    address target, uint value, string memory signature,\n    bytes memory data, uint eta\n) public payable onlyAdmin returns (bytes memory) {\n    // Executed after 172,800-second delay\n    require(block.timestamp >= eta, \"Timelock::executeTransaction: not ready\");\n    // Executes transferOwnership(attacker)\n}",
+  "// ❌ Root cause: Development team exposed the private key of the mint-privileged wallet on GitHub — attacker waited out the Timelock delay, seized MasterChef ownership, and minted unlimited LEV\n    function transferFrom(address arg0, address arg1, uint256 arg2) external {}  // 0x23b872dd  // ❌ Unauthorized transferFrom"
+ ],
+ "code_after": [
+  "// ✅ Manage MasterChef ownership via multisig wallet\n// ✅ Emission cap + longer timelock + emergency pause functionality\n\ncontract SecureMasterChef {\n    address public multisig; // Gnosis Safe (3-of-5 or higher)\n    uint256 public constant MAX_EMISSION_PER_BLOCK = 10 * 1e18;\n    bool public paused;\n\n    modifier onlyMultisig() {\n        require(msg.sender == multisig, \"not multisig\");\n        _;\n    }\n\n    function updateEmissionRate(uint256 newRate) external onlyMultisig {\n        require(newRate <= MAX_EMISSION_PER_BLOCK, \"rate too high\");\n        LEV_PER_BLOCK = newRate;\n    }\n\n    function emergencyPause() external onlyMultisig {\n        paused = true;\n    }\n}",
+  "// ✅ Never include private keys in version control (.gitignore is mandatory)\n// ✅ Manage ownership exclusively via Gnosis Safe (3-of-5 multisig) wallet\n// ✅ Set timelock minimum to 7 days or more\n\n// .gitignore\n// .env\n// *.key\n// mnemonic.txt\n\n// Use environment variables in deployment scripts\n// DEPLOYER_PRIVATE_KEY=$(cat ~/.secret/deployer.key)  # Store locally only"
+ ],
+ "steps": [
+  "Step 1: Obtain exposed mint-privileged wallet private key",
+  "Step 2: Queue MasterChef ownership transfer tx in Timelock",
+  "Step 3: Timelock.executeTransaction() — ownership transfer",
+  "MasterChef owner → changed to attacker address",
+  "Step 4: MasterChef.mint(attacker, 100_000_000_000_000_000...",
+  "Mint 100 octillion LEV → immediately dumped"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────┐\n│ Step 1: Obtain exposed mint-privileged wallet private key    │\n│         from GitHub                                          │\n│ (Dev team accidentally exposed .env or hardcoded key)        │\n└─────────────────────┬────────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step 2: Queue MasterChef ownership transfer tx in Timelock   │\n│ Timelock @ 0x16149999C85c3E3f7d1B9402a4c64d125877d89D       │\n│ queueTransaction(masterChef, transferOwnership(attacker))   │\n└─────────────────────┬────────────────────────────────────────┘\n                      │ (172,800 seconds = 2-day delay)\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step ",
+  "// testExploit() — BSC fork block 9,545,967\nfunction testExploit() public {\n    // Prank as attacker address\n    // attacker = 0x7507f84610f6D656a70eb8CDEC044674799265D3\n\n    // Queue ownership transfer in Timelock (already queued 2 days prior)\n    // timelock @ 0x16149999C85c3E3f7d1B9402a4c64d125877d89D\n    // timelock.queueTransaction(masterChef, \"transferOwnership(address)\", attacker, eta)\n\n    // Execute after 2 days\n    // timelock.executeTransaction(masterChef, \"transferOwnership(address)\", attacker, eta)\n\n    // Mint unlimited LEV via MasterChef\n    // masterChef @ 0xA3fDF7F376F4BFD38D7C4A5cf8AAb4dE68792fd4\n    // masterChef.mint(attacker, 100_000_000_000_000_000_000_000_000_000)\n\n    // Dump LEV\n}"
+ ]
+}

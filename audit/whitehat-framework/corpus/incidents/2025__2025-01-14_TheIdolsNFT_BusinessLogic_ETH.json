@@ -1,0 +1,45 @@
+{
+ "id": "2025__2025-01-14_TheIdolsNFT_BusinessLogic_ETH",
+ "source_file": "2025/2025-01-14_TheIdolsNFT_BusinessLogic_ETH.md",
+ "title": "The Idols NFT — Self-Transfer Reward Double-Claim Vulnerability Analysis",
+ "date": "2025-01-14",
+ "protocol": "The Idols NFT",
+ "chain": "Ethereum",
+ "loss_raw": "97 stETH (~$340,503)",
+ "loss_usd": 340503.0,
+ "root_cause": "Infinite reward snapshot reset loop due to missing self-transfer validation in the `_beforeTokenTransfer` hook",
+ "attack_tx": "0x5e98...284c",
+ "vulnerable_contract": "0x439c...7094",
+ "classes": [
+  "business-logic",
+  "staking-reward"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — _beforeTokenTransfer function\nfunction _beforeTokenTransfer(\n    address _from,\n    address _to,\n    uint256 _tokenId\n) internal override {\n    // [VULNERABILITY] Does not distinguish the case where from and to are the same address (self-transfer)\n    // On self-transfer, the logic below executes as-is, resetting the reward snapshot\n\n    if (_from != address(0)) {\n        // Pay out the sender's unclaimed rewards first\n        _claimEthRewards(_from);\n\n        // [CORE BUG] Deletes the claim snapshot when the sender holds exactly 1 token\n        // On self-transfer, _to == _from, so _claimEthRewards(_to) below\n        // recalculates the same rewards with a zeroed snapshot\n        if (balanceOf(_from) == 1) {\n            delete claimedSnapshots[_from]; // ❌ Reward tracking record deleted (critical on self-transfer)\n        } else {\n            claimedSnapshots[_from] = rewardPerGod; // Update to current reward checkpoint\n        }\n    }\n\n    if (_to != address(0)) {\n        // [CORE BUG] When _from == _to, rewards are calculated against the already-deleted\n        // claimedSnapshots[_to], paying out the full rewardPerGod as a duplicate\n        _claimEthRewards(_to);\n        claimedSnapshots[_to] = rewardPerGod; // Update snapshot\n    }\n}\n\n// Reward calculation function\nfunction _claimEthRewards(address _user) internal {\n    // [VULNERABLE CALCULATION] If claimedSnapshots[_user] is 0, the full rewardPerGod is calculated as unclaimed\n    uint256 pendingReward =\n        balanceOf(_user) * (rewardPerGod - claimedSnapshots[_user]);\n\n    if (pendingReward > 0) {\n        allocatedStethRewards -= pendingReward;\n        IERC20(ST_ETH).transfer(_user, pendingReward); // ❌ Duplicate payout occurs\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — early return added for self-transfer\nfunction _beforeTokenTransfer(\n    address _from,\n    address _to,\n    uint256 _tokenId\n) internal override {\n    // ✅ Skip reward logic entirely for self-transfers\n    // If from == to, there is no actual change of ownership, so no snapshot modification is needed\n    if (_from == _to) {\n        return; // ✅ Edge case handling: early exit on self-transfer\n    }\n\n    if (_from != address(0)) {\n        // Pay out the sender's unclaimed rewards\n        _claimEthRewards(_from);\n\n        if (balanceOf(_from) == 1) {\n            delete claimedSnapshots[_from]; // Safe now since this is not a self-transfer\n        } else {\n            claimedSnapshots[_from] = rewardPerGod;\n        }\n    }\n\n    if (_to != address(0)) {\n        _claimEthRewards(_to);\n        claimedSnapshots[_to] = rewardPerGod;\n    }\n}",
+  "// ✅ Simplest and most effective fix: return immediately on self-transfer\nfunction _beforeTokenTransfer(\n    address _from,\n    address _to,\n    uint256 _tokenId\n) internal override {\n    // No actual change of ownership on self-transfer, so reward logic should not execute\n    if (_from == _to) return;\n\n    // Existing logic...\n}"
+ ],
+ "steps": [
+  "1. **[Attack Contract Deployment]**: `new AttackContract()` — exploit executes immediately inside the constructor",
+  "2. **[Self-Transfer Loop]**: `safeTransferFrom(address(this), address(this), TOKEN_ID)` repeated up to 2,000 times",
+  "- `_claimEthRewards(_from)` → receives stETH reward",
+  "- `delete claimedSnapshots[_from]` → snapshot reset",
+  "- `_claimEthRewards(_to)` (same address) → receives the same reward again",
+  "3. **[Exit Condition]**: Loop breaks when `rewardPerGod > allocatedStethRewards`",
+  "4. **[Fund Exfiltration]**: stETH held in the contract is transferred to the attacker's EOA",
+  "5. **[NFT Return]**: TokenID #940 is returned to the attacker's EOA",
+  "6. **[Contract Destruction]**: `selfdestruct(payable(msg.sender))` is executed",
+  "1. _claimEthRewards(_from)",
+  "2. balanceOf(_from) == 1",
+  "3. _claimEthRewards(_to) [same address]",
+  "Condition: rewardPerGod > allocatedStethRewards → break",
+  "- stETH → msg.sender transfer",
+  "- TokenID #940 → ATTACKER"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────┐\n│  Attacker EOA (0xe546...d101)   │\n│  - Holds TokenID #940           │\n└───────────────┬─────────────────┘\n                │ safeTransferFrom(ATTACKER, AttackContract, 940)\n                ▼\n┌─────────────────────────────────┐\n│  Attack Contract Deployment     │\n│  (new AttackContract())         │\n└───────────────┬─────────────────┘\n                │ constructor() executes\n                ▼\n┌─────────────────────────────────────────────────────┐\n│  Self-Transfer Loop (up to 2,000 iterations)        │\n│                                                     │\n│  safeTransferFrom(this, this, 940)                  │\n│       │                                             │\n│       ▼                                             │\n│  ┌─────────────────────────────",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.15;\n\n// Key constants used in the attack\naddress constant IDOLS_NFT = 0x439cac149B935AE1D726569800972E1669d17094; // Vulnerable contract\naddress constant ATTACKER  = 0xE546480138D50Bb841B204691C39cC514858d101; // Attacker EOA\naddress constant ATTACKER_2 = 0x8152970a81f558d171a22390E298B34Be8d40CF4; // Secondary attacker\naddress constant ST_ETH    = 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84; // Lido stETH\nuint256 constant TOKEN_ID  = 940; // NFT token ID used in the attack\n\ncontract IdolsNFT is BaseTestWithBalanceLog {\n    uint256 blocknumToForkFrom = 21624139 - 1; // Fork from the block just before the attack\n\n    function setUp() public {\n        // Set up Ethereum mainnet fork\n        vm.createSelectFork(\"mainnet\", blocknumToFo"
+ ]
+}

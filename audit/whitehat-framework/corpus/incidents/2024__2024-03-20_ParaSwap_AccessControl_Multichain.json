@@ -1,0 +1,39 @@
+{
+ "id": "2024__2024-03-20_ParaSwap_AccessControl_Multichain",
+ "source_file": "2024/2024-03-20_ParaSwap_AccessControl_Multichain.md",
+ "title": "ParaSwap Augustus V6 — Callback Access Control Vulnerability Analysis",
+ "date": "2024-03-20",
+ "protocol": "ParaSwap",
+ "chain": "Optimism",
+ "loss_raw": "~$300,000 (unrecovered) / Total exploited $1,100,000 (~$800K returned by whitehats)",
+ "loss_usd": 300000.0,
+ "root_cause": "Missing caller validation in `uniswapV3SwapCallback()` — a fake Uniswap V3 pool triggers the callback to gain control of `fromAddress` and drain victim tokens",
+ "attack_tx": "0x35a739...34e60 (Ethereum, Blocksec)",
+ "vulnerable_contract": "ParaSwap AugustusV6 (Optimism) · Ethereum",
+ "classes": [
+  "access-control",
+  "arbitrary-call"
+ ],
+ "code_before": [],
+ "code_after": [
+  "// ✅ Validate msg.sender against the Uniswap V3 factory within the callback function\nfunction uniswapV3SwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data\n) external {\n    // Extract swap path (tokenA, tokenB, fee) from data\n    (address tokenA, address tokenB, uint24 fee) = _decodePoolKey(data);\n\n    // Deterministically compute the canonical pool address via Uniswap V3 Factory\n    address expectedPool = IUniswapV3Factory(UNISWAP_FACTORY).getPool(\n        tokenA, tokenB, fee\n    );\n\n    // Immediately revert if msg.sender does not match the computed pool address\n    require(\n        msg.sender == expectedPool && expectedPool != address(0),\n        \"AugustusV6: invalid callback caller\"\n    );\n\n    // Perform token transfer only after passing validation\n    // ...\n}",
+  "// ✅ Use a lock variable to ensure the callback can only be called during an active internal swap\nbool private _inSwap;\n\nmodifier duringSwap() {\n    require(_inSwap, \"AugustusV6: callback outside swap context\");\n    _;\n}\n\nfunction swapExactAmountInOnUniswapV3(...) external {\n    _inSwap = true;\n    // ... Uniswap V3 swap logic ...\n    _inSwap = false;\n}\n\n// Allow callback only during an active internal swap\nfunction uniswapV3SwapCallback(...) external duringSwap {\n    // Callback handling\n}"
+ ],
+ "steps": [
+  "→ passes without validation!",
+  "⑥ Victim balance → transferred to attacker wallet",
+  "Optimism ► AugustusV6 ► victims → attacker",
+  "Ethereum ► AugustusV6 ► victims → attacker",
+  "Arbitrum ► AugustusV6 ► victims → attacker",
+  "Base ► AugustusV6 ► victims → attacker",
+  "Polygon ► AugustusV6 ► victims → attacker",
+  "2024-03-18 ▶ AugustusV6 deployed",
+  "2024-03-19 ▶ Ironblocks vulnerability report (Hats Finance)",
+  "2024-03-20 ▶ API shutdown + whitehat rescue + user notification",
+  "2024-04-06 ▶ ParaSwap DAO approves victim compensation (96.81% in favor)"
+ ],
+ "other_code": [
+  "// Augustus V6 — Vulnerable callback function in UniswapV3Utils (reconstructed)\nfunction uniswapV3SwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data\n) external {\n    // ══════════════════════════════════════════════════════════════════\n    // [VULNERABILITY] No msg.sender validation!\n    // Does not verify whether the caller is an actual Uniswap V3 pool —\n    // anyone can call this function directly\n    // ══════════════════════════════════════════════════════════════════\n\n    // Extracts fromAddress directly from data (caller can specify arbitrarily)\n    // assembly: let fromAddress := calldataload(164)\n    address fromAddress;\n    address toAddress;\n    address tokenIn;\n    address tokenOut;\n    // ... data decoding ...\n    assembly {\n        // Load",
+  "// Augustus V6.2 — Fixed callback function\nfunction uniswapV3SwapCallback(\n    int256 amount0Delta,\n    int256 amount1Delta,\n    bytes calldata data\n) external {\n    // ══════════════════════════════════════════════════════════════════\n    // [FIX] Must verify that the caller is an actual Uniswap V3 pool\n    // ══════════════════════════════════════════════════════════════════\n\n    // Extract token0, token1, fee from data to compute the actual pool address\n    address tokenIn;\n    address tokenOut;\n    uint24 fee;\n    // ... data decoding ...\n\n    // Deterministically compute the expected pool address via the Uniswap V3 factory\n    address expectedPool = IUniswapV3Factory(UNISWAP_V3_FACTORY).getPool(\n        tokenIn,\n        tokenOut,\n        fee\n    );\n\n    // Immediately revert if msg.se"
+ ]
+}

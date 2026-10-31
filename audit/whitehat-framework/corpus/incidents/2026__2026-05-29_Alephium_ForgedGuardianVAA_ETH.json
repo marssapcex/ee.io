@@ -1,0 +1,40 @@
+{
+ "id": "2026__2026-05-29_Alephium_ForgedGuardianVAA_ETH",
+ "source_file": "2026/2026-05-29_Alephium_ForgedGuardianVAA_ETH.md",
+ "title": "Alephium TokenBridge — Forged Guardian VAA (Fabricated Transfer Event) Exploit Analysis",
+ "date": "2026-05-29",
+ "protocol": "Alephium TokenBridge",
+ "chain": "Ethereum + BNB Chain",
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": "Off-chain guardian backend signed VAAs for a **forged transfer event** emitted by an attacker-deployed Alephium contract; valid VAAs then authorized **unbacked** wALPH mints on ETH/BSC",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "bridge-crosschain"
+ ],
+ "code_before": [
+  "❌ (NOT a contract bug) Mint/release exactly what the VAA says.\n    //    The contract has NO way to know the underlying Alephium event was forged.\n    //    It trusts the guardian-signed payload as ground truth.\n    if (transfer.tokenChain == chainId()) {\n        // wrapped asset native here → release locked collateral\n        SafeERC20.safeTransfer(IERC20(tokenAddr), recipient, transfer.amount);\n    } else {\n        // remote asset → MINT wrapped tokens (e.g., wALPH)\n        TokenImplementation(wrappedAsset(transfer.tokenChain, transfer.tokenAddress))\n            .mint(recipient, transfer.amount);\n    }\n}",
+  "❌ trusts log shape only\n\n    //",
+  "❌ FALLBACK PATH (taken when nodes were disrupted ~07:00–09:00 UTC):\n        //    Accepts the event based on the emitting contract's LOG7 alone,\n        //    WITHOUT re-deriving that a real, backed deposit occurred.\n        //    An attacker-deployed contract can emit this log at will.\n        if (looksLikeTransfer(ev)) {                   //"
+ ],
+ "code_after": [
+  "✅ Signatures are GENUINE (guardians really signed) → verification PASSES.\n    (IWormhole.VM memory vm, bool valid, string memory reason) =\n        wormhole().parseAndVerifyVM(encodedVm);\n    require(valid, reason);\n\n    // 2. Only accept VAAs emitted by the registered peer TokenBridge.\n    require(verifyBridgeVM(vm), \"invalid emitter\");\n\n    // 3. Replay guard: each VAA hash consumed once.\n    require(!isTransferCompleted(vm.hash), \"transfer already completed\");\n    setTransferCompleted(vm.hash);\n\n    // 4. Decode the transfer payload (recipient, amount, token).\n    BridgeStructs.Transfer memory transfer = parseTransfer(vm.payload);\n    require(transfer.toChain == chainId(), \"invalid target chain\");\n\n    address recipient = address(uint160(uint256(transfer.to)));\n    address tokenAddr = address(uint160(uint256(transfer.tokenAddress)));\n\n    // 5.",
+  "✅ Normal path: confirm the event against an authoritative bridge node\n    //    that re-derives the event from canonical chain state.\n    if (primaryBridgeNode.isHealthy()) {\n        const confirmed = await primaryBridgeNode.confirmEvent(ev.txId, ev.eventIndex);\n        if (!confirmed) return null;\n    } else {\n        //"
+ ],
+ "steps": [
+  "→ guardian backend forced onto FALLBACK validation path",
+  "→ produces VALID VAA over fabricated transfer",
+  "→ MINT unbacked wALPH → MINT / release collateral",
+  "2026-05-30 ~09:16:59 UTC (~64s)",
+  "- 13.76M unbacked wALPH minted",
+  "- ~$305K backed collateral drained",
+  "- ~500K wALPH dumped on Uniswap before pause",
+  "→ headline ~$815K",
+  "Alephium response: bridge PAUSED → unbacked wALPH BURNED",
+  "(June 2) → compensation promised"
+ ],
+ "other_code": [
+  "1. Require independent quorum of healthy bridge nodes before signing; if the\n   quorum cannot be reached, halt signing (fail closed) rather than fall back.\n2. Diversify node infrastructure/providers so a single connectivity disruption\n   cannot push all guardians onto a degraded path.\n3. Treat sudden bridge-node connectivity loss as a SECURITY event (alert + pause),\n   not merely an availability issue."
+ ]
+}

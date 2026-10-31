@@ -1,0 +1,25 @@
+{
+ "id": "2024__2024-07-18_WazirX_MultisigManipulation_ETH",
+ "source_file": "2024/2024-07-18_WazirX_MultisigManipulation_ETH.md",
+ "title": "WazirX Exchange — Multisig Safe Manipulation Analysis",
+ "date": "2024-07-18",
+ "protocol": "WazirX",
+ "chain": "Ethereum",
+ "loss_raw": "~$235,000,000 (SHIB, ETH, WBTC, MATIC, PEPE, USDT, and other ERC-20 tokens)",
+ "loss_usd": 235000000.0,
+ "root_cause": "Lazarus Group used targeted social engineering against WazirX multisig co-signers to manipulate them into signing a malicious Safe contract upgrade transaction, replacing the legitimate Safe implementation with an attacker-controlled contract that had a hidden drain function",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "3 WazirX signers sign; Liminal signs as 4th",
+  "→ Safe implementation replaced with malicious contract"
+ ],
+ "other_code": [
+  "Lazarus Group\n    │\n    ├─[Pre-attack preparation]\n    │       Deploy malicious Safe implementation contract (looks legitimate)\n    │       Forge UI metadata / transaction preview to appear as routine Safe upgrade\n    │       Target individual WazirX signers with social engineering (email, Telegram)\n    │\n    ├─[2024-07-18 Step 1 — Transaction 1]\n    │       Attacker submits transaction to Safe: \"upgrade to new implementation\"\n    │       WazirX signers approve — Liminal Custody UI shows benign-looking data\n    │       Actual calldata: upgradeTo(attacker_malicious_implementation)\n    │       3 WazirX signers sign; Liminal signs as 4th\n    │       → Safe implementation replaced with malicious contract\n    │\n    ├─[2024-07-18 Step 2 — Transaction 2 (minutes later)]\n    │       Attacker calls"
+ ]
+}

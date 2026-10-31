@@ -1,0 +1,25 @@
+{
+ "id": "2023__2023-12-12_DominoTT_PriceManipulation",
+ "source_file": "2023/2023-12-12_DominoTT_PriceManipulation.md",
+ "title": "DominoTT Price Manipulation Vulnerability Analysis (December 2023)",
+ "date": "2023-12-12",
+ "protocol": "DominoTT",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "▶ Force reserve update → price manipulation"
+ ],
+ "other_code": [
+  "interface IDominoTTWBNBN {\n    // sync callable by anyone\n    function sync() external;\n}\n\n// Uniswap V2 fork - sync implementation\nfunction sync() external lock {\n    // Force-updates reserves to current balances\n    // Manipulable by transferring tokens directly then calling sync\n    _update(\n        IERC20(token0).balanceOf(address(this)),\n        IERC20(token1).balanceOf(address(this)),\n        reserve0,\n        reserve1\n    );\n}",
+  "// Flash loan defense: detect large balance changes within the same block\nfunction sync() external lock {\n    uint256 balance0 = IERC20(token0).balanceOf(address(this));\n    uint256 balance1 = IERC20(token1).balanceOf(address(this));\n    // Block abnormal balance changes\n    require(balance0 <= reserve0 * 2, \"Suspicious balance\");\n    require(balance1 <= reserve1 * 2, \"Suspicious balance\");\n    _update(balance0, balance1, reserve0, reserve1);\n}"
+ ]
+}

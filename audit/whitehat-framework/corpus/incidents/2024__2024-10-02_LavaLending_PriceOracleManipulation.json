@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-10-02_LavaLending_PriceOracleManipulation",
+ "source_file": "2024/2024-10-02_LavaLending_PriceOracleManipulation.md",
+ "title": "Lava Lending — Price Oracle Manipulation Vulnerability Analysis",
+ "date": "2024-10-02",
+ "protocol": "Lava Lending",
+ "chain": "Arbitrum",
+ "loss_raw": "~130,000 USD",
+ "loss_usd": null,
+ "root_cause": "The WETH-USDC LP price directly referenced the UniswapV3 spot price without TWAP, allowing collateral value manipulation via large swaps within a single block",
+ "attack_tx": "0xb5cfa4ae",
+ "vulnerable_contract": "0x6700b021",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable LP oracle: uses spot price\ncontract LavaOracle {\n    function getLPTokenPrice() external view returns (uint256) {\n        //",
+  "❌ Uses AlgebraPool spot sqrtPriceX96\n        (uint160 sqrtPriceX96,,,,,,) = IAlgebraPool(AlgebraPool).globalState();\n        uint256 price = (uint256(sqrtPriceX96) ** 2) >> 192;\n\n        // LP price = sqrt(price_A * price_B) * 2\n        return _calculateLPPrice(price);\n        // LP price fluctuates sharply when price_A or price_B is manipulated via flash loan\n    }\n}\n\n//",
+  "// File: IonPool.sol\n    function collateral(uint8 ilkIndex, address user) external view returns (uint256) {  // ❌ Vulnerability\n        IonPoolStorage storage $ = _getIonPoolStorage();\n        return $.vaults[ilkIndex][user].collateral;\n    }"
+ ],
+ "code_after": [
+  "✅ Fix: use TWAP price\n// (uint160 sqrtPriceX96,,) = IAlgebraPool(pool).getTimepoints(...);"
+ ],
+ "steps": [
+  "AlgebraPool → WETH + USDC",
+  "Aave V3 → additional USDC",
+  "Balancer → additional WETH",
+  "SwapFlashLoan → additional assets",
+  "Large USDC → WETH swap",
+  "WETH price rises → LP price rises"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ Multiple flash loan borrows:\n  │         AlgebraPool → WETH + USDC\n  │         Aave V3 → additional USDC\n  │         Balancer → additional WETH\n  │         SwapFlashLoan → additional assets\n  │\n  ├─[2]─▶ Manipulate WETH/USDC price via AlgebraPool swap\n  │         Large USDC → WETH swap\n  │         └─ WETH price rises → LP price rises\n  │\n  ├─[3]─▶ Set collateral in LendingPool using manipulated LP price\n  │\n  ├─[4]─▶ Over-borrow:\n  │         Borrow cUSDC, aUSDCe, WBTC, WETH\n  │         Total ~130K USD\n  │\n  ├─[5]─▶ Repay all flash loans\n  │\n  └─[6]─▶ ~130K USD profit"
+ ]
+}

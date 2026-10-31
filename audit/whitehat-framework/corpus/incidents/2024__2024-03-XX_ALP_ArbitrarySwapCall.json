@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-03-XX_ALP_ArbitrarySwapCall",
+ "source_file": "2024/2024-03-XX_ALP_ArbitrarySwapCall.md",
+ "title": "ALP (ApolloX) — Missing Access Control on `_swap()` Enables Arbitrary Call Analysis",
+ "date": "2024-03-01",
+ "protocol": "ApolloX",
+ "chain": "BSC",
+ "loss_raw": "~$10,000",
+ "loss_usd": 10000.0,
+ "root_cause": "The `_swap()` function in the VUN contract lacks access control, allowing the attacker to encode their own address in the `unoswapTo` parameter to steal ALP tokens, then convert them to USDT via `redeem()`",
+ "attack_tx": null,
+ "vulnerable_contract": "VUN 0xD188492",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: _swap() has no access control\nfunction _swap(\n    address tokenIn,\n    uint256 amountIn,\n    bytes calldata swapData  // ← attacker manipulates unoswapTo data\n) internal /* actually external */ returns (uint256) {\n    // No msg.sender or owner validation\n    (bool success,) = router.call(swapData);\n    require(success);\n    // recipient address inside swapData is set to the attacker's address\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: enforced as internal-only callable\nfunction _swap(\n    address tokenIn,\n    uint256 amountIn,\n    bytes calldata swapData\n) internal returns (uint256) {  // internal — cannot be called externally\n    // Additionally validate recipient inside swapData\n    address recipient = extractRecipient(swapData);\n    require(recipient == address(this), \"invalid recipient\");\n    (bool success,) = router.call(swapData);\n    require(success);\n}"
+ ],
+ "steps": [
+  "→ [1] Encode unoswapTo calldata",
+  "→ [2] Call VUN._swap(ALP, amount, maliciousSwapData)",
+  "No access control → executes immediately",
+  "→ [3] ALP tokens held by VUN → transferred to attacker's address",
+  "→ [4] ALP.approve(redeem contract, amount)",
+  "→ [5] Call redeem(RedeemData)",
+  "ALP → USDT conversion",
+  "→ [6] ~$10K USDT obtained"
+ ],
+ "other_code": [
+  "// File: ALP_decompiled.sol\ncontract ALP {\ncontract ALP {\n    address public owner;\n\n}",
+  "Attacker\n  │\n  ├─→ [1] Encode unoswapTo calldata\n  │         └─ recipient = attacker's address\n  │\n  ├─→ [2] Call VUN._swap(ALP, amount, maliciousSwapData)\n  │         └─ No access control → executes immediately\n  │\n  ├─→ [3] ALP tokens held by VUN → transferred to attacker's address\n  │\n  ├─→ [4] ALP.approve(redeem contract, amount)\n  │\n  ├─→ [5] Call redeem(RedeemData)\n  │         └─ ALP → USDT conversion\n  │\n  └─→ [6] ~$10K USDT obtained"
+ ]
+}

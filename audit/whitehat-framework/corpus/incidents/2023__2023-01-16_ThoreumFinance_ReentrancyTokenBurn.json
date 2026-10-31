@@ -1,0 +1,39 @@
+{
+ "id": "2023__2023-01-16_ThoreumFinance_ReentrancyTokenBurn",
+ "source_file": "2023/2023-01-16_ThoreumFinance_ReentrancyTokenBurn.md",
+ "title": "Thoreum Finance — Reentrancy Attack During Token Transfer Analysis",
+ "date": "2023-01-16",
+ "protocol": "Thoreum Finance",
+ "chain": "BSC",
+ "loss_raw": "~2000 BNB",
+ "loss_usd": null,
+ "root_cause": "External callback possible within token transfer function without reentrancy protection",
+ "attack_tx": "0x3fe3a188...",
+ "vulnerable_contract": "0xce1b3e50...",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: external call before state update inside _transfer()\nfunction _transfer(address sender, address recipient, uint256 amount) internal {\n    uint256 senderBalance = _balances[sender];\n    require(senderBalance >= amount, \"Insufficient balance\");\n\n    //",
+  "❌ External call occurs before state update\n    if (isContract(recipient)) {\n        ITokenReceiver(recipient).onTokenReceived(sender, amount);  //",
+  "❌ Reentrancy possible\n    }\n\n    // If attacker reenters at this point, senderBalance check passes again\n    _balances[sender] = senderBalance - amount;\n    _balances[recipient] += amount;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Apply Checks-Effects-Interactions pattern\nfunction _transfer(address sender, address recipient, uint256 amount) internal {\n    uint256 senderBalance = _balances[sender];\n    require(senderBalance >= amount, \"Insufficient balance\");\n\n    //",
+  "✅ Update state first\n    _balances[sender] = senderBalance - amount;\n    _balances[recipient] += amount;\n\n    //"
+ ],
+ "steps": [
+  "1 ▶ Router.swapExactTokensForTokens()",
+  "WBNB → THOREUM swap request",
+  "2 ▶ THOREUM._transfer(router, attacker, amount)",
+  "3 ▶ attacker.onTokenReceived() reenters",
+  "4 ▶ Calls swap again (reentrant)",
+  "5 ▶ Receives additional THOREUM",
+  "6 ▶ Original transfer completes (tokens already received multiple times)",
+  "7 ▶ THOREUM → WBNB sell → profit realized"
+ ],
+ "other_code": [
+  "// Root cause: external callback possible within token transfer function without reentrancy protection\n// Source code unverified — based on bytecode analysis",
+  "Attacker Contract\n  │\n  ├─1─▶ Router.swapExactTokensForTokens()\n  │       WBNB → THOREUM swap request\n  │\n  ├─2─▶ THOREUM._transfer(router, attacker, amount)\n  │       Calls onTokenReceived() before deducting balance\n  │       │\n  │       └─3─▶ attacker.onTokenReceived() reenters\n  │                 │\n  │                 ├─4─▶ Calls swap again (reentrant)\n  │                 │      Balance not yet deducted, so check passes\n  │                 └─5─▶ Receives additional THOREUM\n  │\n  ├─6─▶ Original transfer completes (tokens already received multiple times)\n  │\n  └─7─▶ THOREUM → WBNB sell → profit realized"
+ ]
+}

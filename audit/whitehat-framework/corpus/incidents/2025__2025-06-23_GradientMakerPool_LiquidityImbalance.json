@@ -1,0 +1,35 @@
+{
+ "id": "2025__2025-06-23_GradientMakerPool_LiquidityImbalance",
+ "source_file": "2025/2025-06-23_GradientMakerPool_LiquidityImbalance.md",
+ "title": "GradientMakerPool — Liquidity Imbalance Arbitrage Attack Analysis",
+ "date": "2025-06-23",
+ "protocol": "GradientMakerPool",
+ "chain": "Ethereum",
+ "loss_raw": "~5,000 USD",
+ "loss_usd": null,
+ "root_cause": "Share calculation in provideLiquidity/withdrawLiquidity without validating the ETH-to-token ratio",
+ "attack_tx": "0xb5cfa3f8",
+ "vulnerable_contract": "0x37Ea5f691bCe8459C66fFceeb9cf34ffa32fdadC",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: provideLiquidity mints shares without validating the current pool ratio\nfunction provideLiquidity(address token, uint256 tokenAmount, uint256 minTokenAmount) external payable {\n    // No ETH-to-token ratio check — shares are minted even when the pool is imbalanced\n    uint256 shares = (msg.value * totalShares) / ethBalance;\n    totalShares += shares;\n    ethBalance += msg.value;\n    tokenBalance[token] += tokenAmount;\n    sharesOf[msg.sender] += shares;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Add minimum ratio validation\nfunction provideLiquidity(address token, uint256 tokenAmount, uint256 minTokenAmount) external payable {\n    uint256 expectedTokenAmount = (msg.value * tokenBalance[token]) / ethBalance;\n    require(tokenAmount >= expectedTokenAmount * 99 / 100, \"ratio mismatch\");\n    ...\n}"
+ ],
+ "steps": [
+  "1 ▶ MorphoBlue: flashLoan(3 WETH)",
+  "2 ▶ Unwrap 1 WETH → ETH",
+  "3 ▶ UniswapV2: WETH → buy 1,000 GRAY",
+  "4 ▶ GradientPool.provideLiquidity{ETH}(GRAY, 950 tokens)",
+  "5 ▶ GradientPool.withdrawLiquidity(GRAY, 10,000 shares)",
+  "6 ▶ WETH deposit (for repayment)",
+  "7 ▶ MorphoBlue: repay flash loan"
+ ],
+ "other_code": [
+  "// File: contracts/GradientMarketMakerPool.sol\nfunction _updatePool(address token, uint256 ethAmount) internal {\n        PoolInfo storage pool = pools[token];\n\n        if (pool.totalLPShares == 0) return;\n\n        pool.accRewardPerShare += (ethAmount * SCALE) / pool.totalLPShares;\n        pool.rewardBalance += ethAmount;\n    }\n\n// ... (lines 98-188 omitted) ...\n\n    function withdrawLiquidity(\n        address token,\n        uint256 shares\n    ) external nonReentrant {\n        PoolInfo storage pool = pools[token];\n        MarketMaker storage mm = marketMakers[token][msg.sender];\n\n        require(shares > 0 && shares <= 10000, \"Invalid shares percentage\");\n        require(pool.totalLiquidity > 0, \"No liquidity in pool\");\n\n        uint256 userLiquidity = mm.tokenAmount + mm.ethAmount;\n       ",
+  "Attacker\n  │\n  ├─1─▶ MorphoBlue: flashLoan(3 WETH)\n  │         [onMorphoFlashLoan callback]\n  │\n  ├─2─▶ Unwrap 1 WETH → ETH\n  │\n  ├─3─▶ UniswapV2: WETH → buy 1,000 GRAY\n  │         └─ GRAY/ETH market ratio shifts\n  │\n  ├─4─▶ GradientPool.provideLiquidity{ETH}(GRAY, 950 tokens)\n  │         └─ Shares minted at imbalanced ratio\n  │\n  ├─5─▶ GradientPool.withdrawLiquidity(GRAY, 10,000 shares)\n  │         └─ Recover ETH + GRAY exceeding initial deposit\n  │\n  ├─6─▶ WETH deposit (for repayment)\n  │\n  └─7─▶ MorphoBlue: repay flash loan"
+ ]
+}

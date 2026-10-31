@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-05-28_BabyDogeCoin_SlippageProtection_BSC",
+ "source_file": "2023/2023-05-28_BabyDogeCoin_SlippageProtection_BSC.md",
+ "title": "BabyDogeCoin — Fee Exemption Exploit + Unprotected Slippage Flash Loan Attack Analysis",
+ "date": "2023-05-28",
+ "protocol": "BabyDogeCoin",
+ "chain": "BSC",
+ "loss_raw": "~$135,000 (437 BNB)",
+ "loss_usd": 135000.0,
+ "root_cause": "Fee exemption configuration in the FarmZAP contract + lack of slippage protection in the BabyDoge contract, enabling price manipulation and asset theft",
+ "attack_tx": "0x098e...375",
+ "vulnerable_contract": "BabyDoge Token 0xc748...8de",
+ "classes": [
+  "flash-loan",
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — FarmZAP is registered as fee-exempt for BabyDoge\nfunction buyTokensAndDepositOnBehalf(\n    IFarm farm,\n    uint256 amountIn,\n    uint256 amountOutMin, // ❌ Slippage protection can be passed as 0\n    address[] calldata path\n) external payable returns (uint256) {\n    // BNB → BABYDOGE swap (via TreatSwap)\n    // ❌ FarmZAP is registered as a fee-exempt address for fee-on-transfer,\n    //    allowing large amounts of BabyDoge to be accumulated without fees\n    uint256 amountOut = _swap(amountIn, amountOutMin, path);\n\n    // Approve token to address returned by farm.stakeToken() + call depositOnBehalf\n    // ❌ Trusts the return value of stakeToken() without validation —\n    //    an external contract (attacker) can control the return value\n    address stakeTokenAddr = farm.stakeToken();\n    IERC20(stakeTokenAddr).approve(address(farm), amountOut);\n    farm.depositOnBehalf(amountOut, msg.sender);\n\n    return amountOut;\n}",
+  "// ❌ Vulnerable code — swapAndLiquify has no slippage protection\nfunction swapAndLiquify(uint256 contractTokenBalance) private lockTheSwap {\n    uint256 half = contractTokenBalance / 2;\n    uint256 otherHalf = contractTokenBalance - half;\n\n    uint256 initialBalance = address(this).balance;\n\n    // ❌ amountOutMin = 0 → swap executes even after price manipulation\n    swapTokensForEth(half); // internally uses amountOutMin = 0\n\n    uint256 newBalance = address(this).balance - initialBalance;\n\n    // ❌ Liquidity added at the manipulated low price\n    addLiquidity(otherHalf, newBalance);\n}\n\nfunction swapTokensForEth(uint256 tokenAmount) private {\n    address[] memory path = new address[](2);\n    path[0] = address(this);\n    path[1] = uniswapV2Router.WETH();\n\n    _approve(address(this), address(uniswapV2Router), tokenAmount);\n\n    // ❌ amountOutMin = 0 — completely unprotected against slippage\n    uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(\n        tokenAmount,\n        0,           // ❌ amountOutMin = 0\n        path,\n        address(this),\n        block.timestamp\n    );\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — fee exemption removed + external contract trust restricted\nfunction buyTokensAndDepositOnBehalf(\n    IFarm farm,\n    uint256 amountIn,\n    uint256 amountOutMin, // ✅ Requires a sufficient slippage protection value\n    address[] calldata path\n) external payable returns (uint256) {\n    // ✅ Only whitelisted farm addresses allowed\n    require(approvedFarms[address(farm)], \"Farm not approved\");\n\n    uint256 balanceBefore = IERC20(path[path.length - 1]).balanceOf(address(this));\n    _swap(amountIn, amountOutMin, path);\n    uint256 actualAmount = IERC20(path[path.length - 1]).balanceOf(address(this)) - balanceBefore;\n\n    // ✅ Does not trust stakeToken(); only processes whitelisted tokens\n    address stakeTokenAddr = approvedStakeTokens[address(farm)];\n    IERC20(stakeTokenAddr).approve(address(farm), actualAmount);\n    farm.depositOnBehalf(actualAmount, msg.sender);\n\n    return actualAmount;\n}",
+  "// ✅ Fixed code — TWAP-based minimum output validation\nfunction swapTokensForEth(uint256 tokenAmount) private {\n    address[] memory path = new address[](2);\n    path[0] = address(this);\n    path[1] = uniswapV2Router.WETH();\n\n    _approve(address(this), address(uniswapV2Router), tokenAmount);\n\n    // ✅ Calculate expected output via TWAP oracle and guarantee at least 95%\n    uint256 expectedOut = twapOracle.getExpectedOutput(address(this), weth, tokenAmount);\n    uint256 minOut = expectedOut * 95 / 100; // ✅ 5% slippage tolerance\n\n    uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(\n        tokenAmount,\n        minOut,      // ✅ Minimum output amount set\n        path,\n        address(this),\n        block.timestamp\n    );\n}"
+ ],
+ "steps": [
+  "Step 1: Flash Loan Borrow",
+  "Attacker → Radiant Lending Pool",
+  "Step 2: Bulk Buy BabyDoge (fee-exempt route)",
+  "Attacker → WBNB.withdraw() → Convert to BNB",
+  "Attacker → FarmZAP.buyTokensAndDepositOnBehalf()",
+  "80,000 BNB → ~3.53 trillion BABYDOGE (TreatSwap, fee-exempt)",
+  "Step 3: PancakeSwap Price Manipulation (downward)",
+  "76.9% of FarmZAP's BABYDOGE → sent to PancakeSwap pool",
+  "~3.53 trillion BABYDOGE → 13,208 WBNB (triggers price drop)",
+  "Step 4: Trigger swapAndLiquify (core exploit)",
+  "BABYDOGE.transferFrom(FarmZAP → BabyDoge contract) bulk send",
+  "→ BabyDoge contract exceeds threshold → swapAndLiquify auto-executes",
+  "→ Receives BNB at dirt-cheap price (amountOutMin=0), then adds liquidity",
+  "Step 5: PancakeSwap Reverse Swap (price recovery + profit)",
+  "76.7% of WBNB → buy back BABYDOGE via FarmZAP (at low price)",
+  "Step 6: Second FarmZAP Trigger (stakeToken manipulation)",
+  "Attacker → WBNB.withdraw(0.001 ether) → Re-call FarmZAP",
+  "3rd stakeToken() call → Attacker contract returns WBNB",
+  "Step 7: Liquidate Remaining BABYDOGE → WBNB",
+  "Re-route BABYDOGE through FarmZAP → Receive WBNB"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────┐\n│  Step 1: Flash Loan Borrow                                   │\n│  Attacker → Radiant Lending Pool                             │\n│  Borrow 80,000 WBNB (flash loan)                             │\n└────────────────────────────┬─────────────────────────────────┘\n                             │ 80,000 WBNB\n                             ▼\n┌──────────────────────────────────────────────────────────────┐\n│  Step 2: Bulk Buy BabyDoge (fee-exempt route)                │\n│  Attacker → WBNB.withdraw() → Convert to BNB                 │\n│  Attacker → FarmZAP.buyTokensAndDepositOnBehalf()            │\n│  80,000 BNB → ~3.53 trillion BABYDOGE (TreatSwap, fee-exempt)│\n│  FarmZAP balance: holding large amount of BABYDOGE           │\n└──────────",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo\n// Attacker: https://bscscan.com/address/0xcbc0d0c1049eb011d7c7cfc4ff556d281f0afebb\n// Attack Contract: https://bscscan.com/address/0x51873a0b615a51115f2cfbc2e24d9db4bfa2e6e2\n// Vulnerable Contract: https://bscscan.com/address/0xc748673057861a797275cd8a068abb95a902e8de\n// Attack Tx: https://bscscan.com/tx/0x098e7394a1733320e0887f0de22b18f5c71ee18d48a0f6d30c76890fb5c85375\n\ncontract ContractTest is Test {\n    IERC20 BABYDOGE = IERC20(0xc748673057861a797275CD8A068AbB95A902e8de);\n    IERC20 WBNB = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n    Uni_Pair_V2 Pair = Uni_Pair_V2(0xc736cA3d9b1E90Af4230BD8F9626528B3D4e0Ee0);\n    IFarmZAP FarmZAP = IFarmZAP(0x451583B6DA479eAA04366443262848e27706f762);\n    IAaveFlashl"
+ ]
+}

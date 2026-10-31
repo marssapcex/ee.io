@@ -1,0 +1,33 @@
+{
+ "id": "2023__2023-08-08_BTC20_PresalePriceManipulation",
+ "source_file": "2023/2023-08-08_BTC20_PresalePriceManipulation.md",
+ "title": "BTC20 Presale Price Manipulation Incident Analysis",
+ "date": "2023-08-08",
+ "protocol": "BTC20",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Balancer.flashLoan() call",
+  "2 ▶ SDEX_BTC20_Pair3.flash() chained flash loan",
+  "3 ▶ BTC20_WETH_Pair3.flash()",
+  "4 ▶ PresaleV4.buyWithEthDynamic() call",
+  "→ Significant discount applied vs. market price",
+  "5 ▶ uniRouter.swapTokensForExactTokens()",
+  "BTC20 → WETH reverse swap",
+  "6 ▶ uniRouterV3.exactInputSingle()",
+  "7 ▶ Repay all flash loans + realize ~18 ETH profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: presale price calculation based on DEX spot price\ncontract PresaleV4 {\n    address public SDEX;\n    address public BTC20;\n    IUniswapV2Pair public sdexBtc20Pair;\n\n    // Vulnerable: presale price determined by manipulable DEX spot price\n    function getEthToBtc20Rate() public view returns (uint256) {\n        (uint256 sdexReserve, uint256 btc20Reserve,) = sdexBtc20Pair.getReserves();\n        // Direct use of spot price — manipulable\n        uint256 sdexPerBtc20 = sdexReserve * 1e18 / btc20Reserve;\n        return calculateEthRate(sdexPerBtc20);\n    }\n\n    // Vulnerable: dynamic purchase executed at manipulated price\n    function buyWithEthDynamic() external payable {\n        uint256 rate = getEthToBtc20Rate();\n        uint256 btc20Amount = msg.value * rate / 1e18;\n   ",
+  "// Root cause: Flash Loan + Presale Price Manipulation\n// Source code unverified — based on bytecode analysis"
+ ]
+}

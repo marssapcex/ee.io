@@ -1,0 +1,43 @@
+{
+ "id": "2023__2023-08-03_MEVBot_0xd61492_UnverifiedInput_ARB",
+ "source_file": "2023/2023-08-03_MEVBot_0xd61492_UnverifiedInput_ARB.md",
+ "title": "MEV Bot 0xd61492 — Unverified User Input Exploit Analysis",
+ "date": "2023-08-03",
+ "protocol": "MEV Bot 0xd61492",
+ "chain": "Arbitrum One",
+ "loss_raw": "~$800,000 (on-chain measured: ~$851,045)",
+ "loss_usd": 800000.0,
+ "root_cause": "Unverified delegatecall target address (Unverified User Input)",
+ "attack_tx": "0x864c...fc1f",
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: receives external contract address from calldata and executes delegatecall without validation\nfunction executeArbitrage(\n    address[] calldata tokens,\n    uint256[] calldata amounts,\n    address externalContract,  // ❌ Unvalidated external address\n    bytes calldata data\n) external {\n    // Step 1: Borrow principal from Vault\n    IVault(vault).borrow(tokens, amounts);\n\n    // Step 2: ❌ Execute delegatecall against external contract address without validation\n    // delegatecall executes in the caller's (ArbitrageBot's) storage context\n    (bool success, ) = externalContract.delegatecall(data);\n    require(success, \"delegatecall failed\");\n}",
+  "// ❌ Vulnerable: no repayer validation in flash loan callback\nfunction executeOperation(\n    address[] calldata assets,\n    uint256[] calldata amounts,\n    uint256[] calldata premiums,\n    address initiator,\n    bytes calldata params\n) external returns (bool) {\n    // Transfer assets to ArbitrageBot\n    for (uint i = 0; i < assets.length; i++) {\n        IERC20(assets[i]).transfer(arbitrageBot, amounts[i]);\n    }\n\n    // Call ArbitrageBot's 0x7fe3ba8b function (execute arbitrage)\n    IArbitrageBot(arbitrageBot).executeStrategy(params);\n\n    // ❌ Vulnerable: executes approve unconditionally without validating the\n    // flash loan provider (flashloanProvider) — attacker can inject a FakeFlashloanProvider\n    for (uint i = 0; i < assets.length; i++) {\n        uint amountOwed = amounts[i] + premiums[i];\n        IERC20(assets[i]).approve(msg.sender, amountOwed); // ❌ No msg.sender validation\n    }\n\n    return true;\n}",
+  "[Attacker 0x826b]\n     │\n     │ 1. Deploy malicious contract (inline deployment within transaction)\n     ▼\n[Malicious Contract 0x2c53...74e]\n     │\n     │ 2. Call ArbitrageBot (0x8db0ef) function 0x0582f20f()\n     │    calldata includes FakeFlashloanProvider address\n     ▼\n[ArbitrageBot 0x8db0ef]\n     │\n     │ 3. Call Vault (0xd61492) borrow()\n     │    (request to secure funds)\n     ▼\n[Vault 0xd61492]\n     │\n     │ 4. Request flash loan from Balancer\n     │    (WBTC, WETH, USDC, USDT, DAI, ARB, etc.)\n     ▼\n[Balancer Flash Loan Provider 0xba1222...]\n     │\n     │ 5. Invoke executeOperation() callback (to Vault)\n     ▼\n[Vault 0xd61492] — executeOperation()\n     │\n     │ 6. Transfer borrowed assets to ArbitrageBot (0x8db0ef)\n     │    WBTC: 9.085, WETH: 234.65,\n     │    USDC: $570,538, USDT: $419,792, DAI: $9,381\n     │\n     │ 7. Call ArbitrageBot's 0x7fe3ba8b()\n     ▼\n[ArbitrageBot 0x8db0ef] — 0x7fe3ba8b()\n     │\n     │ 8. ❌ Execute delegatecall to external address from calldata\n     │    (FakeFlashloanProvider = attacker's malicious contract)\n     │\n     │    delegatecall → malicious code executes in ArbitrageBot's context\n     │    → hijacks approve permissions over Vault\n     ▼\n[FakeFlashloanProvider (malicious contract)]\n     │\n     │ 9. Within ArbitrageBot's context, set approve for all Vault assets\n     │    to attacker (0x826b) as recipient\n     ▼\n[Vault 0xd61492] — executeOperation() continues\n     │\n     │ 10. ❌ To repay flash loan, execute asset approve to FakeFlashloanProvider\n     │     (assets already approved to attacker)\n     │\n     │ 11. Entire Vault balance (half each) drained to attacker via transferFrom\n     ▼\n[Attacker 0x826b — Final Receipt]\n     WBTC: 4.54 (~$131,734)\n     WETH: 117.33 (~$219,402)\n     USDC: $285,269\n     USDT: $209,896\n     DAI: $4,691\n     ARB: 46.09 (~$53)\n     Total: ~$851,045"
+ ],
+ "code_after": [
+  "// ✅ Fixed: apply whitelist of allowed contract addresses\nmapping(address => bool) public allowedContracts;\n\nmodifier onlyAllowedContract(address target) {\n    // ✅ delegatecall target must be an allowed address\n    require(allowedContracts[target], \"Target not in allowlist\");\n    _;\n}\n\nfunction executeArbitrage(\n    address[] calldata tokens,\n    uint256[] calldata amounts,\n    address externalContract,\n    bytes calldata data\n) external onlyAllowedContract(externalContract) {\n    // ✅ Only allowed contracts can be delegatecalled\n    IVault(vault).borrow(tokens, amounts);\n    (bool success, ) = externalContract.delegatecall(data);\n    require(success, \"delegatecall failed\");\n}",
+  "// ✅ Fixed: validate that only trusted flash loan providers can callback\nmapping(address => bool) public trustedFlashloanProviders;\n\nfunction executeOperation(\n    address[] calldata assets,\n    uint256[] calldata amounts,\n    uint256[] calldata premiums,\n    address initiator,\n    bytes calldata params\n) external returns (bool) {\n    // ✅ Validate flash loan provider\n    require(trustedFlashloanProviders[msg.sender], \"Untrusted flashloan provider\");\n    // ✅ Validate initiator (confirm this contract initiated the flash loan)\n    require(initiator == address(this), \"Invalid initiator\");\n\n    for (uint i = 0; i < assets.length; i++) {\n        IERC20(assets[i]).transfer(arbitrageBot, amounts[i]);\n    }\n\n    IArbitrageBot(arbitrageBot).executeStrategy(params);\n\n    for (uint i = 0; i < assets.length; i++) {\n        uint amountOwed = amounts[i] + premiums[i];\n        IERC20(assets[i]).approve(msg.sender, amountOwed); // ✅ Approve only to validated provider\n    }\n\n    return true;\n}"
+ ],
+ "steps": [
+  "1. Deploy malicious contract (inline deployment within transaction)",
+  "2. Call ArbitrageBot (0x8db0ef) function 0x0582f20f()",
+  "3. Call Vault (0xd61492) borrow()",
+  "4. Request flash loan from Balancer",
+  "5. Invoke executeOperation() callback (to Vault)",
+  "6. Transfer borrowed assets to ArbitrageBot (0x8db0ef)",
+  "7. Call ArbitrageBot's 0x7fe3ba8b()",
+  "8. ❌ Execute delegatecall to external address from calldata",
+  "delegatecall → malicious code executes in ArbitrageBot's context",
+  "→ hijacks approve permissions over Vault",
+  "9. Within ArbitrageBot's context, set approve for all Vault assets",
+  "10. ❌ To repay flash loan, execute asset approve to FakeFlashloanProvider",
+  "11. Entire Vault balance (half each) drained to attacker via transferFrom"
+ ],
+ "other_code": [
+  "1. Balancer → intermediate contract (0x3c23...)  lend WBTC/WETH/ARB/DAI/USDT/USDC\n2. Intermediate contract (0x3c23...) → ArbitrageBot (0x0930...) forward\n3. ArbitrageBot (0x0930...) → Balancer repay (WBTC/WETH/ARB/DAI/USDT/USDC)\n4. Vault (0xd614...) → USDT → ArbitrageBot (0x8db0...)\n5. ArbitrageBot (0x8db0...) → USDT → intermediate contract (0x0930...)  [delegatecall result]\n6. Vault (0xd614...) → USDC → ArbitrageBot (0x8db0...)\n7. ArbitrageBot (0x8db0...) → USDC → intermediate contract (0x0930...)  [delegatecall result]\n8. Intermediate contract (0x0930...) → Balancer repay (USDT/USDC)\n9. Vault (0xd614...) → final transfer of half of each token to attacker (0x826b...)\n   - WBTC: 4.54\n   - WETH: 117.33\n   - USDC: $285,269\n   - USDT: $209,896\n   - DAI: $4,691\n   - ARB: 46.09"
+ ]
+}

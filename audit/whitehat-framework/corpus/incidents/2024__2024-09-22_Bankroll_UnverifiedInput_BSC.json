@@ -1,0 +1,45 @@
+{
+ "id": "2024__2024-09-22_Bankroll_UnverifiedInput_BSC",
+ "source_file": "2024/2024-09-22_Bankroll_UnverifiedInput_BSC.md",
+ "title": "BankrollNetworkStack — Unvalidated Input Vulnerability Analysis",
+ "date": "2024-09-22",
+ "protocol": "BankrollNetworkStack",
+ "chain": "BSC",
+ "loss_raw": "~403 WBNB (~$230,000 USD)",
+ "loss_usd": 230000.0,
+ "root_cause": "Unvalidated `_customerAddress` input in `buyFor()` — allowing the contract's own address enables unlimited artificial inflation of `profitPerShare_`",
+ "attack_tx": "0xd4c7...03b0",
+ "vulnerable_contract": "0x564D...7A54",
+ "classes": [
+  "arbitrary-call",
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — no validation of _customerAddress\nfunction buyFor(address _customerAddress, uint buy_amount) public returns (uint256) {\n    // Critical issue: when _customerAddress == address(this) (the contract itself),\n    // WBNB is transferred from the contract to itself, so no real liquidity is lost.\n    // However, profitPerShare_ still increases normally inside purchaseTokens().\n    require(token.transferFrom(_customerAddress, address(this), buy_amount));\n    totalDeposits += buy_amount;\n    \n    // If _customerAddress == address(this), tokens are minted to the contract itself.\n    // The contract cannot call withdraw(), so those tokens are permanently locked.\n    uint amount = purchaseTokens(_customerAddress, buy_amount);\n    \n    emit onLeaderBoard(_customerAddress, stats[_customerAddress].invested,\n        tokenBalanceLedger_[_customerAddress], stats[_customerAddress].withdrawn, now);\n    \n    // distribute() updates profitPerShare_, increasing dividends for all holders.\n    distribute();\n    return amount;\n}",
+  "// ❌ Vulnerable internal function — profitPerShare_ accumulation logic\nfunction purchaseTokens(address _customerAddress, uint _incomingTokens) \n    internal returns (uint256) \n{\n    // Calculate 10% entry fee\n    uint256 _undividedDividends = SafeMath.div(_incomingTokens, 10);\n    uint256 _taxedTokens = SafeMath.sub(_incomingTokens, _undividedDividends);\n    \n    // Calculate number of tokens to mint\n    uint256 _amountOfTokens = tokensToEthereum_(_taxedTokens);\n    \n    // 🔴 Core vulnerable point: profitPerShare_ increases as long as tokenSupply_ > 0.\n    // When _customerAddress == address(this), the minted tokens are owned by the contract\n    // and effectively never circulate, yet profitPerShare_ keeps increasing.\n    if (tokenSupply_ > 0) {\n        tokenSupply_ = SafeMath.add(tokenSupply_, _amountOfTokens);\n        profitPerShare_ += (_undividedDividends * magnitude / tokenSupply_);\n    } else {\n        tokenSupply_ = _amountOfTokens;\n    }\n    \n    tokenBalanceLedger_[_customerAddress] = SafeMath.add(\n        tokenBalanceLedger_[_customerAddress], \n        _amountOfTokens\n    );\n    \n    // payoutsTo_ acts as the \"baseline\" for newly minted tokens.\n    // When _customerAddress == address(this), only the contract's payoutsTo_ increases.\n    int256 _updatedPayouts = (int256)(profitPerShare_ * _amountOfTokens);\n    payoutsTo_[_customerAddress] += _updatedPayouts;\n    \n    return _amountOfTokens;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — blocks the contract's own address and the zero address\nfunction buyFor(address _customerAddress, uint buy_amount) public returns (uint256) {\n    // Fix: reject if _customerAddress is the contract itself or the zero address\n    require(\n        _customerAddress != address(this) && _customerAddress != address(0),\n        \"BankrollNetworkStack: invalid recipient address\"\n    );\n    \n    require(token.transferFrom(_customerAddress, address(this), buy_amount));\n    totalDeposits += buy_amount;\n    uint amount = purchaseTokens(_customerAddress, buy_amount);\n    \n    emit onLeaderBoard(_customerAddress, stats[_customerAddress].invested,\n        tokenBalanceLedger_[_customerAddress], stats[_customerAddress].withdrawn, now);\n    \n    distribute();\n    return amount;\n}",
+  "// ✅ Fixed internal function — when address validation is already performed in buyFor()\n// purchaseTokens itself is internal, so buyFor's validation is sufficient;\n// however, a defense-in-depth check can be added here as well.\nfunction purchaseTokens(address _customerAddress, uint _incomingTokens) \n    internal returns (uint256) \n{\n    // Fix: prevent token minting to the contract's own address (defense in depth)\n    require(\n        _customerAddress != address(this),\n        \"BankrollNetworkStack: cannot mint tokens to internal address\"\n    );\n    \n    // Remaining logic unchanged ...\n}"
+ ],
+ "steps": [
+  "1. Borrow Flash Loan",
+  "Attacker Contract → PancakeSwap V3 Pool",
+  "2. Initial Token Purchase (to attacker address)",
+  "→ Attacker acquires BankrollNetworkStack tokens",
+  "→ profitPerShare_ increases slightly",
+  "3. Artificially Inflate profitPerShare_ (×2,810)",
+  "- WBNB: contract→contract (no net change)",
+  "4. Sell Tokens",
+  "→ Sell all tokens held by the attacker",
+  "→ Receive WBNB based on inflated profitPerShare_",
+  "5. Withdraw Dividends",
+  "→ Withdraw all accumulated dividends",
+  "6. Repay Flash Loan",
+  "→ Net profit after repayment: ~403 WBNB (~$230,000)"
+ ],
+ "other_code": [
+  "// Dividend calculation function confirmed in the PoC.\n// As profitPerShare_ inflates, the return value grows exponentially.\nfunction dividendsOf(address _customerAddress) public view returns (uint256) {\n    // profitPerShare_ * tokenBalance - payoutsTo_ (already-paid baseline)\n    // After 2,810 iterations inflate profitPerShare_ dramatically,\n    // the attacker's dividends surge even though their tokenBalance is unchanged.\n    return (uint256)(\n        (int256)(profitPerShare_ * tokenBalanceLedger_[_customerAddress]) \n        - payoutsTo_[_customerAddress]\n    ) / magnitude;\n}",
+  "┌─────────────────────────────────────────────────┐\n│  1. Borrow Flash Loan                            │\n│  Attacker Contract → PancakeSwap V3 Pool         │\n│  pool.flash(this, 0, 16,000 WBNB, \"0x01\")       │\n└───────────────────────┬─────────────────────────┘\n                        │ Receive 16,000 WBNB\n                        ▼\n┌─────────────────────────────────────────────────┐\n│  2. Initial Token Purchase (to attacker address) │\n│  bankRoll.buyFor(address(this), 16,000 WBNB)    │\n│  → Attacker acquires BankrollNetworkStack tokens │\n│  → profitPerShare_ increases slightly            │\n└───────────────────────┬─────────────────────────┘\n                        │ Attacker secures token position\n                        ▼\n┌─────────────────────────────────────────────────┐\n│  3. Artificia"
+ ]
+}

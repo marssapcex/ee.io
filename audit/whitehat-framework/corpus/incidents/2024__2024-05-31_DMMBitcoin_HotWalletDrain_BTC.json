@@ -1,0 +1,25 @@
+{
+ "id": "2024__2024-05-31_DMMBitcoin_HotWalletDrain_BTC",
+ "source_file": "2024/2024-05-31_DMMBitcoin_HotWalletDrain_BTC.md",
+ "title": "DMM Bitcoin — Hot Wallet Private Key Compromise Analysis",
+ "date": "2024-05-31",
+ "protocol": "DMM Bitcoin",
+ "chain": "Bitcoin",
+ "loss_raw": "~$305,000,000–$308,000,000 (4,502.9 BTC; FBI official figure is $308M; contemporaneous reporting cited $305M at exchange rate at time of theft)",
+ "loss_usd": 305000000.0,
+ "root_cause": "DMM Bitcoin's Bitcoin hot wallet private keys were compromised, enabling complete drainage of the exchange's BTC holdings in a single transaction. The attack methodology, fund routing, and subsequent on-chain activity matched Lazarus Group's established BTC laundering playbook.",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "Ginco employee copied script to personal GitHub → attacker gained GitHub access",
+  "Leveraged access to compromise Ginco's systems → DMM Bitcoin wallet management"
+ ],
+ "other_code": [
+  "Lazarus Group (DPRK TraderTraitor)\n    │\n    ├─[Pre-exploit] Social engineering of Ginco (crypto wallet software company) employee\n    │       Attacker posed as recruiter, sent malicious \"pre-employment test\" Python script\n    │       Ginco employee copied script to personal GitHub → attacker gained GitHub access\n    │       Leveraged access to compromise Ginco's systems → DMM Bitcoin wallet management\n    │\n    ├─[2024-05-31 10:26 AM JST] Single transaction sweep:\n    │       4,502.9 BTC ($305M) transferred from DMM Bitcoin hot wallet\n    │       Transferred to single attacker-controlled Bitcoin address\n    │\n    ├─[DMM Bitcoin response]\n    │       Restricts spot buy orders and BTC withdrawals\n    │       Announces emergency procurement of 4,502.9 BTC (~$320M) to cover losses\n    │      "
+ ]
+}

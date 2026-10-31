@@ -1,0 +1,51 @@
+{
+ "id": "2024__2024-05-28_OrionProtocol_BusinessLogic_BSC",
+ "source_file": "2024/2024-05-28_OrionProtocol_BusinessLogic_BSC.md",
+ "title": "Orion Protocol (TradeOnOrion) — Atomic Swap Signature Replay + Balance Accounting Error Analysis",
+ "date": "2024-05-28",
+ "protocol": "Orion Protocol",
+ "chain": "BSC",
+ "loss_raw": "~$645,000 (BUSDT, ORN, XRP, BNB, and various other tokens)",
+ "loss_usd": 645000.0,
+ "root_cause": "`redeemAtomic()` business logic flaw — double-draining stake balance via signed orders during stake release request, then over-withdrawing",
+ "attack_tx": "0x6608...e18c",
+ "vulnerable_contract": "0xe9d1...17Ca (proxy)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable redeemAtomic implementation (estimated)\nfunction redeemAtomic(\n    LibAtomic.RedeemOrder calldata order,\n    bytes calldata secret\n) external {\n    // Signature verification: confirm order.sender signed it\n    require(\n        recoverSigner(hashOrder(order), order.signature) == order.sender,\n        \"Invalid signature\"\n    );\n\n    // Secret hash verification\n    require(\n        keccak256(secret) == order.secretHash,\n        \"Invalid secret\"\n    );\n\n    // ❌ Core flaw 1: stake lock state not verified\n    // Even after requestReleaseStake(), this function can drain stake balance\n    // No check for isStakeLocked[order.sender]\n\n    // ❌ Core flaw 2: no consistency check between actual token holdings and internal balance\n    // Only checks balances[order.sender][order.asset] >= order.amount\n    // But does not verify whether the same balance can be transferred multiple times\n\n    // Internal balance transfer (no actual token movement)\n    balances[order.sender][order.asset] -= order.amount;\n    balances[order.claimReceiver][order.asset] += order.amount;\n\n    emit AtomicRedeemed(order.sender, order.receiver, order.asset, order.amount);\n}",
+  "// ❌ Vulnerable stake state management\nfunction lockStake(uint64 amount) external {\n    // Move from internal balance to stake\n    require(balances[msg.sender][orionToken] >= int192(amount), \"Insufficient balance\");\n    balances[msg.sender][orionToken] -= int192(amount);\n    stakes[msg.sender] += amount;\n}\n\nfunction requestReleaseStake() external {\n    // ❌ Only records the release request, immediately restores stake to balance\n    // redeemAtomic() does not reference this state, allowing attacker to exploit both\n    stakes[msg.sender] = 0;\n    balances[msg.sender][orionToken] += int192(uint192(currentStake));\n}",
+  "// ❌ Vulnerable withdrawTo — only checks internal balance, does not verify actual holdings\nfunction withdrawTo(address assetAddress, uint112 amount, address to) external {\n    require(\n        balances[msg.sender][assetAddress] >= int192(amount),\n        \"Insufficient balance\"\n    );\n    balances[msg.sender][assetAddress] -= int192(amount);\n\n    // ❌ No check that actual contract holdings > withdrawal amount\n    if (assetAddress == address(0)) {\n        payable(to).transfer(amount);\n    } else {\n        IERC20(assetAddress).transfer(to, amount);\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed redeemAtomic implementation\nfunction redeemAtomic(\n    LibAtomic.RedeemOrder calldata order,\n    bytes calldata secret\n) external {\n    // Retain signature verification\n    require(\n        recoverSigner(hashOrder(order), order.signature) == order.sender,\n        \"Invalid signature\"\n    );\n    require(\n        keccak256(secret) == order.secretHash,\n        \"Invalid secret\"\n    );\n\n    // ✅ Fix 1: block atomic swap while stake release is in progress\n    require(\n        !releaseStakeRequested[order.sender],\n        \"Stake release in progress\"\n    );\n\n    // ✅ Fix 2: mark order hash as consumed (prevent replay)\n    bytes32 orderHash = hashOrder(order);\n    require(!usedOrderHashes[orderHash], \"Order already redeemed\");\n    usedOrderHashes[orderHash] = true;\n\n    // ✅ Fix 3: re-verify balance sufficiency (validate actual balance including stake)\n    int192 availableBalance = balances[order.sender][order.asset];\n    if (order.asset == orionToken) {\n        availableBalance -= int192(uint192(stakes[order.sender]));\n    }\n    require(availableBalance >= int192(uint192(order.amount)), \"Insufficient balance\");\n\n    balances[order.sender][order.asset] -= int192(uint192(order.amount));\n    balances[order.claimReceiver][order.asset] += int192(uint192(order.amount));\n\n    emit AtomicRedeemed(order.sender, order.receiver, order.asset, order.amount);\n}",
+  "// ✅ Fixed stake state machine\nenum StakeState { NONE, LOCKED, RELEASE_REQUESTED }\nmapping(address => StakeState) public stakeState;\n\nfunction lockStake(uint64 amount) external {\n    require(stakeState[msg.sender] == StakeState.NONE, \"Already staked\");\n    require(balances[msg.sender][orionToken] >= int192(amount), \"Insufficient\");\n    balances[msg.sender][orionToken] -= int192(amount);\n    stakes[msg.sender] += amount;\n    stakeState[msg.sender] = StakeState.LOCKED;\n}\n\nfunction requestReleaseStake() external {\n    require(stakeState[msg.sender] == StakeState.LOCKED, \"Not locked\");\n    stakeState[msg.sender] = StakeState.RELEASE_REQUESTED;\n    // ✅ Does not immediately restore balance — only transitions to pending state\n    // redeemAtomic() is blocked in RELEASE_REQUESTED state\n}\n\nfunction finalizeReleaseStake() external {\n    require(stakeState[msg.sender] == StakeState.RELEASE_REQUESTED, \"Not requested\");\n    require(block.timestamp >= releaseTime[msg.sender], \"Timelock active\");\n    uint192 amount = stakes[msg.sender];\n    stakes[msg.sender] = 0;\n    stakeState[msg.sender] = StakeState.NONE;\n    balances[msg.sender][orionToken] += int192(amount);\n}"
+ ],
+ "steps": [
+  "[Step 1] alice → VulnContract: depositAssetTo(BUSDT, 1e18, alice)",
+  "[Step 2] alice → VulnContract: depositAssetTo(ORN, 10,000,000, alice)",
+  "[Step 3] alice → VulnContract: redeemAtomic(order_1) ← signed order",
+  "alice.stakes → attacker.balances[ORN]: +10,000,000 transferred",
+  "[Step 4] alice → VulnContract: requestReleaseStake()",
+  "alice.stakes released → alice.balances[ORN] restored",
+  "[Step 5] alice → VulnContract: redeemAtomic(order_2) ← same balance reused",
+  "alice.balances[ORN] → attacker.balances[ORN]: re-transferred",
+  "[Step 10] this → VulnContract: depositAssetTo(BUSDT, 4,000,000 ether, attacker)",
+  "attacker.balances[ORN] 196,375 ORN → alice.balances[ORN] transferred",
+  "alice.balances[BUSDT] 401,984 BUSDT → this.balances[BUSDT] transferred",
+  "Actual withdrawal: 4,019,844 BUSDT → attack contract",
+  "alice.balances[ORN] 49,892 ORN → this → withdrawn",
+  "alice.balances[BNB] 79.9 BNB → this → withdrawn",
+  "alice.balances[XRP] 62,444 XRP → this → withdrawn",
+  "1. Create alice account (vm.makeAddrAndKey)",
+  "2. Fund alice with ORN/BUSDT",
+  "3. alice deposits funds + stakes in VulnContract",
+  "4. alice → attacker signed orders via redeemAtomic x4",
+  "5. Trigger Pool.flash()"
+ ],
+ "other_code": [
+  "[Setup] Create alice account and set up initial funds\n  ├─ deal(ORN, alice, 10,000,000)\n  ├─ deal(BUSDT, alice, 1 ether)\n  └─ deal(WBNB, alice, 0.005 ether)\n\n[Step 1] alice → VulnContract: depositAssetTo(BUSDT, 1e18, alice)\n  └─ alice's internal BUSDT balance: +1 BUSDT\n\n[Step 2] alice → VulnContract: depositAssetTo(ORN, 10,000,000, alice)\n          VulnContract: lockStake(10,000,000)\n  └─ alice's ORN stake: 10,000,000\n\n[Step 3] alice → VulnContract: redeemAtomic(order_1)  ← signed order\n  └─ alice.stakes → attacker.balances[ORN]: +10,000,000 transferred\n     ⚠️ Balance is credited more than actual holdings\n\n[Step 4] alice → VulnContract: requestReleaseStake()\n  └─ alice.stakes released → alice.balances[ORN] restored\n     ⚠️ Same balance was already transferred in Step 3, creating double-co",
+  "[Inside pancakeV3FlashCallback]\n\n[Step 10] this → VulnContract: depositAssetTo(BUSDT, 4,000,000 ether, attacker)\n  └─ attacker internal BUSDT balance: +4,000,000 BUSDT\n\n[Step 11] VulnContract: redeemAtomic(attackorder)\n  └─ attacker.balances[ORN] 196,375 ORN → alice.balances[ORN] transferred\n     (positioning alice's balance as ORN withdrawal limit for attacker)\n\n[Step 12] VulnContract: redeemAtomic(attackorder_2)\n  └─ alice.balances[BUSDT] 401,984 BUSDT → this.balances[BUSDT] transferred\n     (moving inflated BUSDT balance to final withdrawer (this))\n\n[Step 13] VulnContract: withdrawTo(BUSDT, 4,019,844 ether, this)\n  └─ ⚠️ Internal balance: 4,019,844 BUSDT (4,000,000 actual deposit + 19,844 illegitimate credit)\n     Actual withdrawal: 4,019,844 BUSDT → attack contract\n\n[Step 14] VulnContr"
+ ]
+}

@@ -1,0 +1,46 @@
+{
+ "id": "2023__2023-07-11_RodeoFinance_TWAPOracleManipulation_ARB",
+ "source_file": "2023/2023-07-11_RodeoFinance_TWAPOracleManipulation_ARB.md",
+ "title": "Rodeo Finance — TWAP Oracle Manipulation Attack Analysis",
+ "date": "2023-07-11",
+ "protocol": "Rodeo Finance",
+ "chain": "Arbitrum",
+ "loss_raw": "~472 ETH net (~$888,000); gross drained ~810 ETH (~$1,530,000) before white-hat recovery",
+ "loss_usd": 888000.0,
+ "root_cause": "Short-window TWAP oracle manipulation to inflate collateral value and bypass health factor check",
+ "attack_tx": "0xb1be...25a",
+ "vulnerable_contract": "0xf372...0da (Investor)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: relies on manipulable Camelot V2 TWAP oracle\nfunction earn(\n    address usr,\n    address pol,   // USDC pool address\n    uint256 str,   // strategy ID (41 = unshETH strategy)\n    uint256 amt,   // initial collateral amount (0)\n    uint256 bor,   // borrow amount (400,000 USDC)\n    bytes memory dat\n) external returns (uint256) {\n    // 1. Borrow `bor` from the USDC pool\n    uint256 borrowed = IPool(pol).borrow(bor);\n\n    // 2. Execute strategy with borrowed funds (buy unshETH)\n    uint256 positionId = IStrategy(strategies[str]).mint(usr, amt + borrowed, dat);\n\n    // 3. ❌ Core vulnerability: health factor calculated using TWAP price\n    // The TWAP was manipulated across multiple blocks before the attack,\n    // so the manipulated high price is reflected here\n    uint256 positionValue = _getPositionValue(positionId); // TWAP-based\n    uint256 healthFactor = positionValue * 1e18 / borrowed;\n\n    // Manipulated TWAP makes health factor appear within normal range\n    require(healthFactor >= MIN_HEALTH_FACTOR, \"Unhealthy position\");\n\n    return positionId;\n}",
+  "// ❌ Vulnerable: average of 4 instances at 45-min intervals → manipulable via multi-block attack\nfunction _getTWAPPrice(address camelotPair) internal view returns (uint256) {\n    // Read cumulative price data from Camelot V2\n    uint256 price0CumulativeLast = ICamelotPair(camelotPair).price0CumulativeLast();\n    // Average 4 observations to derive TWAP\n    // Window size: ~45 min × 4 = ~3 hours (in practice much shorter, thus manipulable)\n    return _computeAverage(priceObservations, 4);\n}",
+  "// ❌ Vulnerable: anyone can borrow from the pool via Investor\n// Oracle validation occurs only at the Investor level,\n// which is neutralized by oracle manipulation\nfunction borrow(uint256 amount) external returns (uint256) {\n    // Callable only from Investor, but Investor itself is vulnerable\n    require(msg.sender == investor, \"Not investor\");\n    // Reaches this function after passing with a manipulated health factor\n    totalBorrowed += amount;\n    USDC.transfer(msg.sender, amount);\n    return amount;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: dual validation with Chainlink + TWAP, using a longer TWAP window\nfunction _getPositionValue(uint256 positionId) internal view returns (uint256) {\n    // Primary: Chainlink oracle price\n    (, int256 chainlinkPrice,, uint256 updatedAt,) = priceFeed.latestRoundData();\n    require(block.timestamp - updatedAt <= 3600, \"Chainlink: stale price\");\n    require(chainlinkPrice > 0, \"Chainlink: invalid price\");\n\n    // Secondary: TWAP with a sufficiently long window (e.g., 24 hours)\n    uint256 twapPrice = _getTWAPPrice(pair, 24 hours); // ✅ long window\n\n    // Verify the deviation between the two prices is within the allowed range\n    uint256 deviation = _absDiff(uint256(chainlinkPrice), twapPrice);\n    require(deviation * 100 / uint256(chainlinkPrice) <= 5, \"Price deviation too high\");\n\n    return _calculateValue(positionId, uint256(chainlinkPrice));\n}",
+  "// ✅ Fix: use 24-hour TWAP\nuint32 constant MIN_TWAP_PERIOD = 24 hours;\n\nfunction _getTWAPPrice(address pool) internal view returns (uint256) {\n    uint32[] memory secondsAgos = new uint32[](2);\n    secondsAgos[0] = MIN_TWAP_PERIOD; // 24 hours ago\n    secondsAgos[1] = 0;               // now\n    (int56[] memory tickCumulatives,) = IUniswapV3Pool(pool).observe(secondsAgos);\n    int56 tickCumulativesDelta = tickCumulatives[1] - tickCumulatives[0];\n    int24 arithmeticMeanTick = int24(tickCumulativesDelta / int56(uint56(MIN_TWAP_PERIOD)));\n    return OracleLibrary.getQuoteAtTick(arithmeticMeanTick, 1e18, token, WETH);\n}"
+ ],
+ "steps": [
+  "1. Hold 47.3T unshETH (deal)",
+  "2. Pass health factor check with manipulated TWAP",
+  "Strategy: Buy USDC → WETH → unshETH",
+  "Camelot Router: 400,000 USDC → WETH → unshETH",
+  "3. Dump attacker's unshETH holdings",
+  "CamelotRouter: unshETH → WETH (swap attacker-held tokens)",
+  "47.3T unshETH → large amount of WETH",
+  "4. WETH → USDC",
+  "CamelotRouter: WETH → USDC",
+  "5. USDC → WETH (Uniswap V3)",
+  "UniswapV3 SwapRouter: USDC → WETH (0.05% pool)",
+  "6. Balancer flash loan (30 WETH)",
+  "① 30 WETH → USDC (CamelotRouter)",
+  "② USDC → WETH (UniswapV3 SwapRouter)",
+  "7. Realize profit"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────┐\n│                      Attacker (EOA)                                  │\n│          0x2f3788f2396127061c46fc07bd0fcb91faace328                  │\n└──────────────────────────────┬──────────────────────────────────────┘\n                               │ 1. Hold 47.3T unshETH (deal)\n                               │    approve to CamelotRouter\n                               ▼\n┌─────────────────────────────────────────────────────────────────────┐\n│                  Call Investor.earn()                                │\n│  - pol: USDC Pool (0x0032F5E1...)                                    │\n│  - str: 41 (ETH-unshETH strategy)                                    │\n│  - bor: 400,000 USDC                                         ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo\n// Total Loss: ~472 ETH (~$888K)\n// Attacker: 0x2f3788f2396127061c46fc07bd0fcb91faace328\n// Vulnerable Contract: 0xf3721d8a2c051643e06bf2646762522fa66100da (Investor)\n// Attack Tx: 0xb1be5dee3852c818af742f5dd44def285b497ffc5c2eda0d893af542a09fb25a\n\ncontract RodeoTest is Test {\n    // Core token and protocol contract references\n    IERC20 unshETH = IERC20(0x0Ae38f7E10A43B5b2fB064B42a2f4514cbA909ef);\n    IERC20 WETH    = IERC20(0x82aF49447D8a07e3bd95BD0d56f35241523fBab1);\n    IERC20 USDC    = IERC20(0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8);\n    IInvestor Investor = IInvestor(0x8accf43Dd31DfCd4919cc7d65912A475BfA60369);\n    ICamelotRouter Router = ICamelotRouter(0xc873fEcbd354f5A56E00E710B90EF4201db2448d);\n    ISw"
+ ]
+}

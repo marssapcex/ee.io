@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-11-29_TheNFTV2_Reentrancy",
+ "source_file": "2023/2023-11-29_TheNFTV2_Reentrancy.md",
+ "title": "TheNFTV2 Reentrancy Attack Incident Analysis",
+ "date": "2023-11-29",
+ "protocol": "TheNFTV2",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// File: TheNFT.sol\n    function safeTransferFrom(  // ❌\n\n// ...\n\n    function transferFrom(  // ❌\n\n// ...\n\n    function safeTransferFrom(  // ❌\n\n// ...\n\n    function transfer(address recipient, uint256 amount) external returns (bool);  // ❌\n\n// ...\n\n    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);  // ❌",
+  "// File: TheNFTv2.sol\n     * @dev Restore is fired when a token is restored from the burn  // ❌\n\n// ...\n\n     * @dev OwnershipTransferred is fired when a curator is changed  // ❌\n\n// ...\n\n    event OwnershipTransferred(address previousOwner, address newOwner);  // ❌\n\n// ...\n\n    function transferFrom(address,address,uint256) external;  // ❌\n\n// ...\n\n    function burn(uint256) external;  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Attacker → transferFrom NFT (ID 1071) to TheNFTV2",
+  "2 ▶ Uniswap V2 Pair.swap(0, amount, address(this), data)",
+  "3 ▶ Inside uniswapV2Call:",
+  "burn() → _transfer(to dead) → onERC721Received callback",
+  "Call burn() again → duplicate burn → double TheDAO claim",
+  "4 ▶ Check TheDAO balance",
+  "5 ▶ Transfer TheDAO → Uniswap Pair (repay flash swap)",
+  "6 ▶ WETH.withdraw() + ~$19,000 profit realized"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: reentrancy possible in burn()\ncontract TheNFTV2 {\n    mapping(uint256 => address) public tokenOwners;\n    IERC20 public theDAO;\n\n    function burn(uint256 tokenId) external {\n        require(tokenOwners[tokenId] == msg.sender, \"Not owner\");\n\n        // Vulnerable: external call (including NFT transfer) before state update\n        _transfer(msg.sender, address(0xdead), tokenId);\n        // onERC721Received callback can occur inside the above _transfer\n\n        // State update happens after the external call\n        tokenOwners[tokenId] = address(0);\n\n        // TheDAO payout\n        theDAO.transfer(msg.sender, calculateReward(tokenId));\n    }\n}",
+  "Attacker [0x2F746bC70f72aAF3340B8BbFd254fd91a3996218]\n  │\n  ├─1─▶ Attacker → transferFrom NFT (ID 1071) to TheNFTV2\n  │      Transfer NFT to attack contract\n  │\n  ├─2─▶ Uniswap V2 Pair.swap(0, amount, address(this), data)\n  │      Borrow TheDAO tokens via flash swap\n  │      Triggers uniswapV2Call callback\n  │\n  ├─3─▶ Inside uniswapV2Call:\n  │      a. TheNFTV2 NFT.approve(address(this), tokenId)\n  │      b. Repeat TheNFTV2.burn(tokenId):\n  │           burn() → _transfer(to dead) → onERC721Received callback\n  │           In callback: recover NFT from dead address via transferFrom\n  │           Call burn() again → duplicate burn → double TheDAO claim\n  │\n  ├─4─▶ Check TheDAO balance\n  │      [TheDAO: 0xBB9bc244D798123fDe783fCc1C72d3Bb8C189413]\n  │\n  ├─5─▶ Transfer TheDAO → Uniswap Pair (repa"
+ ]
+}

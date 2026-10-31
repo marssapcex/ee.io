@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-12_TIFI_DepositBorrowReserveManipulation",
+ "source_file": "2022/2022-12_TIFI_DepositBorrowReserveManipulation.md",
+ "title": "TIFI Finance — Flash Loan Reserve Manipulation via deposit()/borrow() Attack Analysis",
+ "date": "2022-12-01",
+ "protocol": "TIFI Finance",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "Calling `borrow()` after `deposit()` while internal reserves are manipulated via a WBNB→BUSD swap allows borrowing the entire TIFI token supply based on the manipulated reserve ratio",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable TIFI Finance - borrow() calculates based on manipulated reserves\ncontract TIFIFinance {\n    uint256 public tifiReserve;   // TIFI token holdings\n    uint256 public busdReserve;   // BUSD holdings\n\n    // deposit(): Deposit BUSD and update internal balance\n    function deposit(uint256 busdAmount) external {\n        BUSD.transferFrom(msg.sender, address(this), busdAmount);\n        busdReserve += busdAmount;\n        depositBalance[msg.sender] += busdAmount;\n    }\n\n    //",
+  "❌ borrow(): Calculate TIFI borrow amount from current reserve ratio\n    function borrow(uint256 busdAmount) external {\n        require(depositBalance[msg.sender] >= busdAmount, \"Insufficient deposit\");\n\n        //",
+  "❌ Calculate borrowable TIFI using busdReserve/tifiReserve ratio\n        // Inflating busdReserve via WBNB→BUSD swap causes borrowed TIFI to spike\n        uint256 tifiOut = busdAmount * tifiReserve / busdReserve;\n\n        //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - use a fixed exchange rate or oracle that cannot be externally manipulated\ncontract SafeTIFIFinance {\n    AggregatorV3Interface public tifiOracle;\n    AggregatorV3Interface public busdOracle;\n\n    function borrow(uint256 busdAmount) external {\n        require(depositBalance[msg.sender] >= busdAmount, \"Insufficient deposit\");\n\n        //",
+  "✅ Chainlink oracle-based exchange rate (manipulation-resistant)\n        (, int256 tifiPrice,,,) = tifiOracle.latestRoundData();\n        (, int256 busdPrice,,,) = busdOracle.latestRoundData();\n        uint256 tifiOut = busdAmount * uint256(busdPrice) / uint256(tifiPrice);\n\n        //"
+ ],
+ "steps": [
+  "[3] WBNB → BUSD swap (PancakeSwap or TIFI Router)",
+  "❌ tifiReserve unchanged → TIFI/BUSD ratio plummets",
+  "→ Borrows entire or majority of TIFI token supply",
+  "[5] TIFI → WBNB swap (PancakeSwap)"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ITIFIFinance {\n    function deposit(uint256 amount) external;\n    function borrow(uint256 amount) external;\n    function withdraw(uint256 amount) external;\n}\n\ninterface IRouter {\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        uint256, uint256, address[] calldata, address, uint256\n    ) external;\n}\n\ninterface IPancakePair {\n    function swap(uint256, uint256, address, bytes calldata) external;\n}\n\ninterface IERC20 {\n    function balanceOf(address) external view returns (uint256);\n    function approve(address, uint256) external returns (bool);\n    function transfer(address, uint256) external returns (bool);\n}\n\ncontract TIFIExploit is Test {\n    ITIFIFinance tif"
+ ]
+}

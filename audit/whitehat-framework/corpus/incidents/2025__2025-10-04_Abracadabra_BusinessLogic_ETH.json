@@ -1,0 +1,50 @@
+{
+ "id": "2025__2025-10-04_Abracadabra_BusinessLogic_ETH",
+ "source_file": "2025/2025-10-04_Abracadabra_BusinessLogic_ETH.md",
+ "title": "Abracadabra (MIM) — Business Logic Vulnerability Analysis (2025-10)",
+ "date": "2025-10-04",
+ "protocol": "Abracadabra",
+ "chain": "Ethereum",
+ "loss_raw": "~$1,793,766 MIM (~$1.7M) · converted to ~395 ETH",
+ "loss_usd": 1793766.0,
+ "root_cause": "An unimplemented Action (ID=0) in the `cook()` function initializes `CookStatus` to its default value, allowing bypass of the solvency check",
+ "attack_tx": "0x842a...e5e6",
+ "vulnerable_contract": "CauldronV4 (6 deprecated Cauldrons, ETH Mainnet)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: processes the actions array sequentially, updating CookStatus\nfunction cook(\n    uint8[] calldata actions,\n    uint256[] calldata values,\n    bytes[] calldata datas\n) external payable returns (uint256 value1, uint256 value2) {\n    CookStatus memory status;  // default: needsSolvencyCheck = false\n\n    for (uint256 i = 0; i < actions.length; i++) {\n        uint8 action = actions[i];\n\n        if (action == ACTION_BORROW) {          // action == 5\n            // ❌ Sets solvency check flag after executing borrow\n            (status.needsSolvencyCheck, ) = _borrow(abi.decode(datas[i], (address, uint256)));\n            // → needsSolvencyCheck is set to true\n        } else {\n            // ❌ Core vulnerability: unknown action ID → calls _additionalCookAction\n            // → returns CookStatus(false, false) → overwrites status!\n            status = _additionalCookAction(status, action, values[i], datas[i]);\n        }\n    }\n\n    // ❌ Final solvency check: already reset to false, so check is skipped\n    if (status.needsSolvencyCheck) {\n        require(_isSolvent(msg.sender, exchangeRate), \"Cauldron: user insolvent\");\n    }\n}",
+  "// ❌ Core vulnerable function: unimplemented action resets the safety flag\nfunction _additionalCookAction(\n    CookStatus memory,       // ❌ Ignores the existing status (unused)\n    uint8 /*action*/,\n    uint256 /*value*/,\n    bytes calldata /*data*/\n) internal virtual returns (CookStatus memory) {\n    // ❌ Returns default value with no logic → needsSolvencyCheck = false\n    return CookStatus(false, false);\n}",
+  "Attacker EOA (0x1aaa...354d)\n      │\n      │ deploys\n      ▼\n┌─────────────────────────┐\n│   Attack Contract       │  (0xB8e0...B993, selfdestruct after attack)\n│  (AttackContract)       │\n└────────────┬────────────┘\n             │ calls cook([5, 0])\n             │\n             ▼\n┌─────────────────────────────────────────────────────┐\n│              CauldronV4 (deprecated, x6)             │\n│                                                      │\n│  1. Process Action 5 (BORROW)                        │\n│     → _borrow(attacker, 300,000 MIM)                 │\n│     → needsSolvencyCheck = true ← flag set           │\n│                                                      │\n│  2. Process Action 0                                 │\n│     → _additionalCookAction() called                 │\n│     → return CookStatus(false, false)  ← ❌ reset    │\n│     → status.needsSolvencyCheck = false              │\n│                                                      │\n│  3. Final check: needsSolvencyCheck == false         │\n│     → Solvency check skipped!                        │\n│     → 300,000 MIM uncollateralized borrow confirmed  │\n└──────────────┬──────────────────────────────────────┘\n               │\n               │ repeated × 6 Cauldrons\n               ▼\n┌─────────────────────────┐\n│  Drained: 1,793,766 MIM │\n└────────────┬────────────┘\n             │ DEX swap (MIM → USDC → ETH)\n             ▼\n┌─────────────────────────┐\n│  Acquired: ~395 ETH     │\n└────────────┬────────────┘\n             │ Tornado Cash (46+ transactions)\n             ▼\n      [Laundering complete]"
+ ],
+ "code_after": [
+  "// ✅ Fix Method 1: Preserve existing status using OR operation\nfunction cook(\n    uint8[] calldata actions,\n    uint256[] calldata values,\n    bytes[] calldata datas\n) external payable returns (uint256 value1, uint256 value2) {\n    CookStatus memory status;\n\n    for (uint256 i = 0; i < actions.length; i++) {\n        uint8 action = actions[i];\n\n        if (action == ACTION_BORROW) {\n            (bool needsCheck, ) = _borrow(abi.decode(datas[i], (address, uint256)));\n            // ✅ Preserve existing flag using OR (once true, never revert to false)\n            status.needsSolvencyCheck = status.needsSolvencyCheck || needsCheck;\n        } else {\n            CookStatus memory newStatus = _additionalCookAction(status, action, values[i], datas[i]);\n            // ✅ OR the new status flag with the existing flag\n            status.needsSolvencyCheck = status.needsSolvencyCheck || newStatus.needsSolvencyCheck;\n        }\n    }\n\n    if (status.needsSolvencyCheck) {\n        require(_isSolvent(msg.sender, exchangeRate), \"Cauldron: user insolvent\");\n    }\n}\n\n// ✅ Fix Method 2: Explicitly reject unknown action IDs\nfunction _additionalCookAction(\n    CookStatus memory status,\n    uint8 action,\n    uint256 value,\n    bytes calldata data\n) internal virtual returns (CookStatus memory) {\n    // ✅ Immediately revert on unrecognized action IDs\n    revert(\"Cauldron: unknown action\");\n}",
+  "// ✅ Recommended: use OR operation to ensure flag is never reverted to false\nfor (uint256 i = 0; i < actions.length; i++) {\n    CookStatus memory newStatus = _processAction(actions[i], values[i], datas[i]);\n    // OR operation: once true, stays true\n    status.needsSolvencyCheck = status.needsSolvencyCheck || newStatus.needsSolvencyCheck;\n    status.targetSuccess = status.targetSuccess || newStatus.targetSuccess;\n}"
+ ],
+ "steps": [
+  "1. cook([ACTION_BORROW=5, ACTION_ADDITIONAL=0], ...)",
+  "→ needsSolvencyCheck = true is set",
+  "→ returns CookStatus(false, false)",
+  "→ overwrites status.needsSolvencyCheck = false",
+  "2. Final check: if(status.needsSolvencyCheck) → false → check skipped",
+  "3. ~300,000 MIM borrowed successfully without collateral",
+  "6 addresses × 6 Cauldrons → total ~1,793,766 MIM drained",
+  "Borrowed MIM swapped to USDC/USDT via DEX aggregator, then converted to ETH → total 395 ETH",
+  "1. Process Action 5 (BORROW)",
+  "→ _borrow(attacker, 300,000 MIM)",
+  "→ needsSolvencyCheck = true ← flag set",
+  "2. Process Action 0",
+  "→ _additionalCookAction() called",
+  "→ return CookStatus(false, false) ← ❌ reset",
+  "→ status.needsSolvencyCheck = false",
+  "3. Final check: needsSolvencyCheck == false",
+  "→ Solvency check skipped!",
+  "→ 300,000 MIM uncollateralized borrow confirmed",
+  "DEX swap (MIM → USDC → ETH)"
+ ],
+ "other_code": [
+  "// CauldronV4.sol\nstruct CookStatus {\n    bool needsSolvencyCheck;  // Whether a solvency check is required\n    bool targetSuccess;       // Whether the external call succeeded\n}",
+  "1. cook([ACTION_BORROW=5, ACTION_ADDITIONAL=0], ...)\n   ├─ Action 5 executed: borrow(attacker, large MIM amount)\n   │     → needsSolvencyCheck = true is set\n   └─ Action 0 executed: _additionalCookAction() called\n         → returns CookStatus(false, false)\n         → overwrites status.needsSolvencyCheck = false\n\n2. Final check: if(status.needsSolvencyCheck) → false → check skipped\n\n3. ~300,000 MIM borrowed successfully without collateral"
+ ]
+}

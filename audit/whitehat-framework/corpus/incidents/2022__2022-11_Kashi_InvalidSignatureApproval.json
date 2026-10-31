@@ -1,0 +1,30 @@
+{
+ "id": "2022__2022-11_Kashi_InvalidSignatureApproval",
+ "source_file": "2022/2022-11_Kashi_InvalidSignatureApproval.md",
+ "title": "Kashi (Abracadabra) — Invalid Signature Approval + Self-Liquidation Attack Analysis",
+ "date": "2022-11-01",
+ "protocol": "Abracadabra Money",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "`setMasterContractApproval()` processes an invalid signature with `v=0` as a valid approval",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "❌ Vulnerable setMasterContractApproval() - skips signature verification when v=0\ncontract BentoBox {\n    function setMasterContractApproval(\n        address user,\n        address masterContract,\n        bool approved,\n        uint8 v,        //",
+  "❌ verification skipped if v=0\n        bytes32 r,\n        bytes32 s\n    ) external {\n        //",
+  "❌ If v is 0, approval is processed without signature verification\n        if (v == 0 && r == 0 && s == 0) {\n            // Should only allow msg.sender to change their own approval without a signature,\n            // but missing user parameter validation allows changing approval for any arbitrary user\n            masterContractApproved[masterContract][user] = approved;\n            return;\n        }\n\n        // Normal signature verification (when v != 0)\n        bytes32 digest = keccak256(abi.encodePacked(\n            \"\\x19\\x01\",\n            DOMAIN_SEPARATOR,\n            keccak256(abi.encode(APPROVAL_TYPEHASH, masterContract, approved, nonces[user]++))\n        ));\n        address recoveredAddress = ecrecover(digest, v, r, s);\n        require(recoveredAddress == user, \"Invalid signature\");\n        masterContractApproved[masterContract][user] = approved;\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - removes v=0 case, enforces msg.sender\ncontract SafeBentoBox {\n    function setMasterContractApproval(\n        address user,\n        address masterContract,\n        bool approved,\n        uint8 v,\n        bytes32 r,\n        bytes32 s\n    ) external {\n        //",
+  "✅ If called without a signature, must have msg.sender == user\n        if (v == 0 && r == 0 && s == 0) {\n            require(msg.sender == user, \"Not authorized\");\n            masterContractApproved[masterContract][user] = approved;\n            return;\n        }\n\n        //"
+ ],
+ "steps": [
+  "→ Approval registered without signature verification",
+  "Realize profit via MIM → WETH → xSUSHI swap"
+ ],
+ "other_code": []
+}

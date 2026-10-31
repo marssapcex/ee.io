@@ -1,0 +1,50 @@
+{
+ "id": "2026__2026-03-17_dTRINITY_PrecisionLoss_ETH",
+ "source_file": "2026/2026-03-17_dTRINITY_PrecisionLoss_ETH.md",
+ "title": "dTRINITY — Empty cbBTC Market liquidityIndex Inflation Attack Analysis",
+ "date": "2026-03-17",
+ "protocol": "dTRINITY",
+ "chain": "Ethereum",
+ "loss_raw": "~$257,300 (dUSD bad debt)",
+ "loss_usd": 257300.0,
+ "root_cause": "`liquidityIndex` inflation and precision loss due to repeated flash loan fee accumulation in an empty cbBTC market",
+ "attack_tx": null,
+ "vulnerable_contract": "0xfda3...e84 (dTRINITY L2Pool)",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — WadRayMath.sol (Aave V3 fork)\nuint256 internal constant RAY = 1e27;\nuint256 internal constant HALF_RAY = 5e26;\n\nfunction rayDiv(uint256 a, uint256 b) internal pure returns (uint256) {\n    // ❌ When b (total liquidity) is very small, the HALF_RAY rounding value\n    //    pushes the result up by 1 RAY at a time.\n    // ❌ As flash loans are repeated, this error accumulates and\n    //    liquidityIndex grows exponentially.\n    return (a * RAY + HALF_RAY) / b;\n}",
+  "// ❌ Vulnerable code — ReserveLogic.sol (flash loan fee handling)\nfunction _updateIndexes(\n    DataTypes.ReserveData storage reserve,\n    DataTypes.ReserveCache memory reserveCache\n) internal {\n    // ❌ When reflecting flash loan fees, rayDiv rounding errors are amplified\n    //    on every call in an empty market where total liquidity (b) approaches 0.\n    uint256 newLiquidityIndex = reserveCache.currLiquidityRate.rayMul(\n        reserveCache.currLiquidityIndex\n    );\n    // ❌ No upper bound check on liquidityIndex allows abnormal inflation\n    reserve.liquidityIndex = newLiquidityIndex.toUint128();\n}",
+  "// ❌ Vulnerable code — Pool.sol (flashLoan function)\nfunction flashLoan(\n    address receiverAddress,\n    address[] calldata assets,\n    uint256[] calldata amounts,\n    uint256[] calldata interestRateModes,\n    address onBehalfOf,\n    bytes calldata params,\n    uint16 referralCode\n) external override {\n    // ...flash loan execution...\n\n    // ❌ liquidityIndex updated after fee processing\n    // ❌ When called repeatedly on an empty market where totalLiquidity ≈ 0,\n    //    liquidityIndex increases abnormally.\n    _reserves[asset].updateState(reserveCache);\n\n    // ❌ No upper bound check on exponential growth within a single transaction\n    // ❌ No restriction on flash loan usage for empty markets\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix 1 — Upper bound check on liquidityIndex delta\nfunction flashLoan(\n    address receiverAddress,\n    address[] calldata assets,\n    uint256[] calldata amounts,\n    uint256[] calldata interestRateModes,\n    address onBehalfOf,\n    bytes calldata params,\n    uint16 referralCode\n) external override {\n    for (uint256 i = 0; i < assets.length; i++) {\n        // ✅ Save current index before flash loan\n        uint256 indexBefore = _reserves[assets[i]].liquidityIndex;\n\n        // ...flash loan execution...\n        _reserves[assets[i]].updateState(reserveCache);\n\n        // ✅ Apply upper bound on index growth rate within a single transaction (e.g., 2x max)\n        require(\n            _reserves[assets[i]].liquidityIndex <= indexBefore * 2,\n            \"Abnormal liquidityIndex growth detected: suspected empty market attack\"\n        );\n    }\n}",
+  "// ✅ Fix 2 — Minimum liquidity deposit at market initialization\nfunction initReserve(\n    address asset,\n    address aTokenAddress,\n    address stableDebtAddress,\n    address variableDebtAddress,\n    address interestRateStrategyAddress\n) external override onlyPoolAdmin {\n    // ✅ Force minimum liquidity injection at new market initialization (prevents first depositor attack)\n    uint256 minSeedAmount = 1e6; // Adjust to asset decimals (e.g., USDC=1e6, cbBTC=1e3)\n    IERC20(asset).safeTransferFrom(msg.sender, address(this), minSeedAmount);\n    _deposit(asset, minSeedAmount, address(0xdead), 0); // Minimum deposit to burn address\n}"
+ ],
+ "steps": [
+  "1. Borrow cbBTC via Morpho Blue flash loan",
+  "2. Deposit cbBTC into dLEND-cbBTC pool → receive 100 scaled shares",
+  "3. Withdraw 99 shares → leave pool nearly empty (only 1 share remaining)",
+  "4. Directly transfer 0.8 cbBTC to aToken contract (donation)",
+  "5. Repeatedly execute dLEND flash loans → accumulate fees",
+  "- Tens to hundreds of repetitions → liquidityIndex ≈ 6.22e27 (6x the normal 1e27)",
+  "6. Repay Morpho flash loan",
+  "1. Borrow cbBTC again via Morpho Blue flash loan",
+  "2. Deposit approximately 7.72 cbBTC into the inflated cbBTC market",
+  "→ Based on liquidityIndex 6.22e27, collateral value calculated at ~$4.8M (actual: ~$772)",
+  "3. Borrow 257,300 dUSD from dLEND-dUSD market (exploiting phantom collateral)",
+  "4. Repeat deposit/withdraw cycles → recover cbBTC",
+  "5. Repay Morpho flash loan",
+  "6. Transfer 257,300 dUSD to attacker EOA",
+  "1. Deposit(cbBTC) → issue 100 shares",
+  "2. Withdraw 99 shares → drain pool",
+  "3. Direct transfer of 0.8 cbBTC to aToken (donation)",
+  "4. Execute flash loans repeatedly (tens~hundreds of times)",
+  "1. Deposit 7.72 cbBTC"
+ ],
+ "other_code": [
+  "1. Borrow cbBTC via Morpho Blue flash loan\n2. Deposit cbBTC into dLEND-cbBTC pool → receive 100 scaled shares\n3. Withdraw 99 shares → leave pool nearly empty (only 1 share remaining)\n4. Directly transfer 0.8 cbBTC to aToken contract (donation)\n5. Repeatedly execute dLEND flash loans → accumulate fees\n   - Each cycle: liquidityIndex += rounding error (△≈ +RAY)\n   - Tens to hundreds of repetitions → liquidityIndex ≈ 6.22e27 (6x the normal 1e27)\n6. Repay Morpho flash loan",
+  "1. Borrow cbBTC again via Morpho Blue flash loan\n2. Deposit approximately 7.72 cbBTC into the inflated cbBTC market\n   → Based on liquidityIndex 6.22e27, collateral value calculated at ~$4.8M (actual: ~$772)\n3. Borrow 257,300 dUSD from dLEND-dUSD market (exploiting phantom collateral)\n4. Repeat deposit/withdraw cycles → recover cbBTC\n5. Repay Morpho flash loan\n6. Transfer 257,300 dUSD to attacker EOA"
+ ]
+}

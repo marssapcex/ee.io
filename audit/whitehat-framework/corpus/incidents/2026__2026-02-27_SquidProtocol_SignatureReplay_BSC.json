@@ -1,0 +1,46 @@
+{
+ "id": "2026__2026-02-27_SquidProtocol_SignatureReplay_BSC",
+ "source_file": "2026/2026-02-27_SquidProtocol_SignatureReplay_BSC.md",
+ "title": "Squid Protocol* — Signature Replay Attack Analysis (3 Consecutive Incidents)",
+ "date": "2026-02-27",
+ "protocol": "Squid Protocol*",
+ "chain": "BNB Chain",
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": "Signature Replay Attack — nonce `0xf9a0d115` not invalidated after use",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "// Vulnerable withdrawal function — no nonce invalidation\nfunction withdraw(\n    uint256 poolId,\n    uint256 amount,\n    uint256 nonce,        // Acts as deadline/nonce (0xf9a0d115 = year 2102)\n    bytes[] calldata signatures\n) external {\n    // Signature verification: checks for requiredSignatures(3) valid signatures\n    require(signatures.length >= requiredSignatures, \"insufficient sigs\");\n    \n    bytes32 hash = keccak256(abi.encodePacked(poolId, amount, nonce, msg.sender));\n    for (uint i = 0; i < requiredSignatures; i++) {\n        address signer = ecrecover(hash, signatures[i]);\n        require(isAuthorizedSigner[signer], \"invalid signer\");\n    }\n\n    // ❌ MISSING: usedNonces[nonce] = true is never set\n    // ❌ Nonce is never consumed, allowing infinite replay with the same signature bundle\n\n    // Execute fund transfer\n    IERC20(usdt).transfer(msg.sender, amount);\n    \n    emit Withdrawal(poolId, msg.sender, amount, nonce);\n}"
+ ],
+ "code_after": [
+  "// Fixed withdrawal function — nonce invalidation added\nmapping(uint256 => bool) public usedNonces; // ✅ Nonce tracking mapping\n\nfunction withdraw(\n    uint256 poolId,\n    uint256 amount,\n    uint256 nonce,\n    bytes[] calldata signatures\n) external {\n    // ✅ Check whether nonce has been used\n    require(!usedNonces[nonce], \"nonce already used\");\n    \n    // Signature verification\n    require(signatures.length >= requiredSignatures, \"insufficient sigs\");\n    \n    bytes32 hash = keccak256(abi.encodePacked(poolId, amount, nonce, msg.sender));\n    for (uint i = 0; i < requiredSignatures; i++) {\n        address signer = ecrecover(hash, signatures[i]);\n        require(isAuthorizedSigner[signer], \"invalid signer\");\n    }\n\n    // ✅ Mark nonce as 'spent' — prevents replay\n    usedNonces[nonce] = true;\n\n    // Execute fund transfer\n    IERC20(usdt).transfer(msg.sender, amount);\n    \n    emit Withdrawal(poolId, msg.sender, amount, nonce);\n}",
+  "// === Immediate Action 1: Add nonce invalidation mapping ===\nmapping(uint256 => bool) public usedNonces;\n\nmodifier onlyUnusedNonce(uint256 nonce) {\n    require(!usedNonces[nonce], \"nonce already used\"); // Reject used nonces\n    _;\n    usedNonces[nonce] = true; // Invalidate immediately after use\n}\n\nfunction withdraw(\n    uint256 poolId,\n    uint256 amount,\n    uint256 nonce,\n    bytes[] calldata signatures\n) external onlyUnusedNonce(nonce) {  // ✅ Apply nonce validation modifier\n    // ... signature verification and withdrawal logic\n}\n\n// === Immediate Action 2: Enforce reasonable deadline ===\nrequire(nonce <= block.timestamp + 7 days, \"deadline too far in future\");\n// If nonce is used as a timestamp-based deadline,\n// cap it at 7 days (or an appropriate duration)\n\n// === Immediate Action 3: Bind signature to poolId ===\nbytes32 hash = keccak256(abi.encodePacked(\n    address(this),    // ✅ Include contract address (prevents cross-contract replay)\n    block.chainid,    // ✅ Include chain ID (prevents cross-chain replay)\n    poolId,           // ✅ Include pool ID in signature hash\n    amount,\n    nonce,\n    msg.sender\n));"
+ ],
+ "steps": [
+  "1. **Obtaining a valid signature bundle**: A withdrawal signature bundle created by 3 authorized signers was leaked",
+  "2. **Nonce selection**: `0xf9a0d115` (= 2102-09-18 timestamp) — a practically permanent nonce that never expires",
+  "3. **Prior knowledge** that the signature bundle could be replayed regardless of pool ID",
+  "EIP-7702 delegation → 0xa124d385...8b21 (batch execution code)",
+  "Step 1: Pool withdrawal call",
+  "→ 59,781.25 USDT drained",
+  "Step 2: USDT → WBNB swap",
+  "Step 3: WBNB → BNB unwrap",
+  "EIP-7702 delegation → 0xa124d385...8b21 (same batch execution code)",
+  "→ 59,974.609375 USDT drained",
+  "Step 1: Router call",
+  "→ Router forwards withdrawal request to Pool",
+  "Step 2: Pool withdrawal",
+  "→ 59,991.77 USDT drained",
+  "Step 3: USDT held (no swap)",
+  "TX3 (1st) | 83,574,859 | 01:09:54 | Pool 15 | 59,781.25 | 95.17 WBNB → BNB",
+  "TX1 (2nd) | 83,603,918 | 04:47:51 | Pool 5 | 59,974.61 | 94.13 WBNB → BNB"
+ ],
+ "other_code": [
+  "Attacker: 0x8C98770C (EIP-7702 account)\n  │\n  │  EIP-7702 delegation → 0xa124d385...8b21 (batch execution code)\n  │\n  ▼\n┌─────────────────────────────────────────────────────────┐\n│ Step 1: Pool withdrawal call                             │\n│ Pool(0x20dbf429).withdraw(poolId=15, nonce=0xf9a0d115)  │\n│ → 59,781.25 USDT drained                                │\n└─────────────────────────────────────────────────────────┘\n  │\n  ▼\n┌─────────────────────────────────────────────────────────┐\n│ Step 2: USDT → WBNB swap                                │\n│ PancakeSwap USDT/WBNB LP (0x16b9a828...)                │\n│ 59,781.25 USDT ──▶ 95.17 WBNB                          │\n└─────────────────────────────────────────────────────────┘\n  │\n  ▼\n┌─────────────────────────────────────────────────────────┐\n│ St",
+  "Attacker: 0xd25F4344 (EIP-7702 account)\n  │\n  │  EIP-7702 delegation → 0xa124d385...8b21 (same batch execution code)\n  │\n  ▼\n┌─────────────────────────────────────────────────────────┐\n│ Step 1: Pool withdrawal call                             │\n│ Pool(0x20dbf429).withdraw(poolId=5, nonce=0xf9a0d115)   │\n│ → 59,974.609375 USDT drained                            │\n└─────────────────────────────────────────────────────────┘\n  │\n  ▼\n┌─────────────────────────────────────────────────────────┐\n│ Step 2: USDT → WBNB swap                                │\n│ PancakeSwap USDT/WBNB LP (0x16b9a828...)                │\n│ 59,974.61 USDT ──▶ 94.13 WBNB                          │\n└─────────────────────────────────────────────────────────┘\n  │\n  ▼\n┌─────────────────────────────────────────────────────────┐"
+ ]
+}

@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-07-10_USDTStakingContract28_AccessControl",
+ "source_file": "2023/2023-07-10_USDTStakingContract28_AccessControl.md",
+ "title": "USDTStakingContract28 Access Control Vulnerability Incident Analysis",
+ "date": "2023-07-10",
+ "protocol": "USDTStakingContract28",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// File: BUSD_staking.sol\n    function tokenAllowAll(address asset, address allowee) public {  // ❌\n        IERC20 token = IERC20(asset);\n\n        if (token.allowance(address(this), allowee) != uint256(-1)) {\n            token.safeApprove(allowee, uint256(-1));\n        }\n    }"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Deploy Money attack contract",
+  "2 ▶ Call money.attack()",
+  "→ Contract grants attacker unlimited USDT approval",
+  "3 ▶ ~20,999 USDT drained successfully"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: unrestricted unlimited approval function\ncontract USDTStakingContract28 {\n    IERC20 public USDT;\n\n    // Vulnerable: anyone can call this unlimited approval function\n    function tokenAllowAll() external {\n        // No access control — approves full balance to caller\n        USDT.approve(msg.sender, type(uint256).max);\n    }\n\n    // Or another variant: transfers to arbitrary address without owner check\n    function emergencyWithdraw(address to, uint256 amount) external {\n        // require(msg.sender == owner) missing\n        USDT.transfer(to, amount);\n    }\n}",
+  "Attacker [0x000000915f1b10b0ef5c4efe696ab65f13f36e74]\n  │\n  ├─1─▶ Deploy Money attack contract\n  │      [Attack contract: 0xb754ebdba9b009113b4cf445a7cb0fc9227648ad]\n  │\n  ├─2─▶ Call money.attack()\n  │      Internally:\n  │      a) Call USDTStakingContract28.tokenAllowAll()\n  │         → Contract grants attacker unlimited USDT approval\n  │      b) Call USDT.transferFrom(\n  │            stakingContract,\n  │            attacker,\n  │            USDT.balanceOf(stakingContract)\n  │         )\n  │         [USDT: 0xdAC17F958D2ee523a2206206994597C13D831ec7]\n  │\n  └─3─▶ ~20,999 USDT drained successfully"
+ ]
+}

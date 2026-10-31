@@ -1,0 +1,29 @@
+{
+ "id": "2022__2022-07-10_FlippazOne_AccessControl",
+ "source_file": "2022/2022-07-10_FlippazOne_AccessControl.md",
+ "title": "FlippazOne — Unauthorized Withdrawal Function Attack Analysis",
+ "date": "2022-07-10",
+ "protocol": "FlippazOne",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "All ETH held by the contract",
+ "loss_usd": null,
+ "root_cause": "`ownerWithdrawAllTo()` function lacks access control, allowing any address to drain all funds",
+ "attack_tx": "0x8bde...a30 (block 15,084,458)",
+ "vulnerable_contract": "0xE85A08Cf316F695eBE7c13736C8Cc38a7Cc3e944",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable withdrawal function — no access control\nfunction ownerWithdrawAllTo(address recipient) external {\n    //",
+  "❌ No onlyOwner modifier → callable by anyone\n    (bool success, ) = recipient.call{value: address(this).balance}(\"\");\n    require(success, \"Transfer failed\");\n}\n\n// Deposit function — receives ETH normally\nfunction bid() external payable {\n    // bid logic...\n}\n\n//",
+  "// ❌ Root cause: `ownerWithdrawAllTo()` function lacks access control, allowing any address to drain all funds\n    function ownerWithdrawAllTo(address toAddress) public  {\n        (bool success, ) = toAddress.call{value: address(this).balance}(\"\");  // ❌ Arbitrary external call\n        require(success, \"Failed to withdraw funds.\");\n    }"
+ ],
+ "code_after": [
+  "✅ Correct pattern\nfunction ownerWithdrawAllTo(address recipient) external onlyOwner {\n    //",
+  "✅ onlyOwner modifier restricts calls to the contract owner only\n    (bool success, ) = recipient.call{value: address(this).balance}(\"\");\n    require(success, \"Transfer failed\");\n}"
+ ],
+ "steps": [
+  "❌ No access control → callable by anyone"
+ ],
+ "other_code": []
+}

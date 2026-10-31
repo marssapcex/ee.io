@@ -1,0 +1,48 @@
+{
+ "id": "2023__2023-10-11_BHToken_BusinessLogic_BSC",
+ "source_file": "2023/2023-10-11_BHToken_BusinessLogic_BSC.md",
+ "title": "BH Token — Business Logic Vulnerability Analysis",
+ "date": "2023-10-11",
+ "protocol": "BH Token",
+ "chain": "BSC",
+ "loss_raw": "~$1,270,000 (on-chain confirmed: 1,275,981.82 BUSDT)",
+ "loss_usd": 1270000.0,
+ "root_cause": "LP ratio manipulation via repeated `Upgrade()` calls — Business Logic Flaw (Price Manipulation via Business Logic Flaw)",
+ "attack_tx": "0xc11e...7662",
+ "vulnerable_contract": "0xcc61...52b5",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerability 1: No access control modifier — anyone can call\n// ❌ Vulnerability 2: No call-count limit — unlimited repetition possible\n// ❌ Vulnerability 3: No lpToken parameter validation — arbitrary LP can be specified\nfunction Upgrade(address _lpToken) external {\n    // Internally rebalances the liquidity ratio in the LP pool\n    // The BUSDT:BH internal weight shifts on each call\n    // Repeated calls cause the ratio to accumulate and become severely skewed\n    _adjustPoolRatio(_lpToken);\n}",
+  "// selector: 0x33688938 — addLiquidity\n// ❌ Vulnerability: Uses the internal ratio distorted by Upgrade() as-is\nfunction addLiquidity(uint256 busdtAmount) external {\n    // LP token mint amount determined by the distorted internal ratio\n    uint256 lpToMint = busdtAmount * internalRatio / BASE;\n    _mint(msg.sender, lpToMint);\n}\n\n// selector: 0x4e290832 — removeLiquidity\n// ❌ Vulnerability: Applies the manipulated BH balance ratio (55%) directly, allowing excess withdrawal\nfunction removeLiquidity(uint256 lpAmount) external {\n    // lpAmount at attack time = BH.balanceOf(busdt_bh_lp) * 55 / 100\n    // The manipulated ratio is applied as-is, returning excess BUSDT vs. amount deposited\n    uint256 busdtOut = lpAmount * totalBusdt / totalBH;\n    BUSDT.transfer(msg.sender, busdtOut);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: Only callable by admin\nmodifier onlyOwner() {\n    require(msg.sender == owner, \"Unauthorized: only admin can call\");\n    _;\n}\n\n// ✅ Fix: Track whether upgrade has been completed\nbool public upgraded;\n\nfunction Upgrade(address _lpToken) external onlyOwner {\n    // ✅ Prevent duplicate calls\n    require(!upgraded, \"Upgrade already completed\");\n    // ✅ Whitelist validation for LP token address\n    require(allowedLpTokens[_lpToken], \"LP token not allowed\");\n    upgraded = true;\n    _adjustPoolRatio(_lpToken);\n}",
+  "// ✅ Fix: onlyOwner + guarantee single execution\naddress private owner;\nbool public upgradeExecuted;\nmapping(address => bool) public allowedLpTokens;\n\nmodifier onlyOwner() {\n    require(msg.sender == owner, \"Unauthorized\");\n    _;\n}\n\nfunction Upgrade(address _lpToken) external onlyOwner {\n    // Guarantee single execution\n    require(!upgradeExecuted, \"Upgrade already completed\");\n    // Only process allowed LP tokens\n    require(allowedLpTokens[_lpToken], \"LP token not allowed\");\n    upgradeExecuted = true;\n    _adjustPoolRatio(_lpToken);\n    emit Upgraded(msg.sender, _lpToken);\n}"
+ ],
+ "steps": [
+  "1. DPPOracle1.flashLoan(0, ~1.52M BUSDT)",
+  "8. BUSDT, BH → UnverifiedContract1 approve (unlimited)",
+  "9. UnverifiedContract1.Upgrade(lpToken) × 12 iterations",
+  "→ Cumulative distortion of LP pool's internal liquidity ratio",
+  "10. UnverifiedContract1.addLiquidity(3,000,000 BUSDT) [selector: 0x33688938]",
+  "→ Acquire LP tokens at the skewed ratio",
+  "11. Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(",
+  "22,000,000 BUSDT → BH,",
+  "→ Massive BUSDT injection causes BH price/ratio to spike",
+  "→ Each iteration recovers excess BUSDT at the manipulated ratio",
+  "22. Repay BUSDT_USDC V3 pool: 15,009,000 BUSDT (15M + fee)",
+  "23. Repay WBNB_BUSDT pool: 10,060,000 BUSDT",
+  "24. Repay each flash loan in reverse DPP chain order",
+  "25. Transfer 1,275,981.82 BUSDT to attacker EOA (profit)",
+  "DPPOracle1 → DPPOracle2 → DPPOracle3 → DPP → DPPAdvanced",
+  "22,000,000 BUSDT → BH",
+  "→ BH price/ratio spikes",
+  "→ Excess BUSDT recovered each iteration"
+ ],
+ "other_code": [
+  "1. DPPOracle1.flashLoan(0, ~1.52M BUSDT)\n   └─▶ 2. DPPOracle2.flashLoan(0, ~additional BUSDT)\n          └─▶ 3. DPPOracle3.flashLoan(0, ~additional BUSDT)\n                 └─▶ 4. DPP.flashLoan(0, ~additional BUSDT)\n                        └─▶ 5. DPPAdvanced.flashLoan(0, ~additional BUSDT)\n                               └─▶ 6. WBNB_BUSDT.swap(10,000,000 BUSDT)\n                                      └─▶ 7. BUSDT_USDC(V3).flash(15,000,000 BUSDT)",
+  "8. BUSDT, BH → UnverifiedContract1 approve (unlimited)\n9. UnverifiedContract1.Upgrade(lpToken) × 12 iterations\n   → Cumulative distortion of LP pool's internal liquidity ratio\n10. UnverifiedContract1.addLiquidity(3,000,000 BUSDT) [selector: 0x33688938]\n    → Acquire LP tokens at the skewed ratio"
+ ]
+}

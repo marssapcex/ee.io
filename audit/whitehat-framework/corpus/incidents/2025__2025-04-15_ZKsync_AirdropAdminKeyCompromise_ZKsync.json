@@ -1,0 +1,22 @@
+{
+ "id": "2025__2025-04-15_ZKsync_AirdropAdminKeyCompromise_ZKsync",
+ "source_file": "2025/2025-04-15_ZKsync_AirdropAdminKeyCompromise_ZKsync.md",
+ "title": "ZKsync Era — Airdrop Distributor Admin Key Compromise Analysis",
+ "date": "2025-04-15",
+ "protocol": "ZKsync Era",
+ "chain": "ZKsync Era",
+ "loss_raw": "~$5,000,000 (~111,000,000 ZK tokens drained from unclaimed airdrop reserves)",
+ "loss_usd": 5000000.0,
+ "root_cause": "The private key controlling the admin address of ZKsync's airdrop distributor contract was compromised. The attacker used the admin `sweepUnclaimed()` function to drain approximately 111 million unclaimed ZK tokens from the airdrop reserve, converting them for ~$5M.",
+ "attack_tx": null,
+ "vulnerable_contract": "ZKsync airdrop distributor contract (`sweepUnclaimed()` admin function)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Attacker\n    │\n    ├─[Pre-exploit] Obtain private key for airdrop distributor admin address\n    │       (method: phishing, credential breach, or infrastructure compromise)\n    │\n    ├─[2025-04-15] Call sweepUnclaimed() with compromised admin key:\n    │       Transfer ~111,000,000 unclaimed ZK tokens to attacker addresses\n    │       Value at time: ~$5M\n    │\n    ├─[Partial conversion] Swap portion of stolen ZK to ETH on DEXs\n    │       ZK price drops on selling pressure\n    │\n    ├─[ZKsync Foundation response]\n    │       Confirms incident via official channels\n    │       States protocol and user funds unaffected\n    │       Engages law enforcement and blockchain forensics\n    │       Offers 10% white hat bounty (~500K ZK / ~$50K) for return of funds\n    │\n    └─[Outcome — RESOLVED]\n    "
+ ]
+}

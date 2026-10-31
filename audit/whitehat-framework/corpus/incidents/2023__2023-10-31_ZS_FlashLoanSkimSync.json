@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-10-31_ZS_FlashLoanSkimSync",
+ "source_file": "2023/2023-10-31_ZS_FlashLoanSkimSync.md",
+ "title": "ZS Flash Loan Skim/Sync Attack Incident Analysis",
+ "date": "2023-10-31",
+ "protocol": "ZS",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Flash Loan (borrow large amount of WBNB)",
+  "2 ▶ Swap WBNB → ZS (buy large amount of ZS)",
+  "3 ▶ ZSToken.destory_pair_amount(amount)",
+  "→ Internal call to IUniswapV2Pair(pair).sync()",
+  "→ ZS reserves decrease, WBNB reserves remain unchanged",
+  "4 ▶ Pair.skim(address(this))",
+  "5 ▶ Swap held ZS → WBNB",
+  "6 ▶ Repay flash loan + realize ~$14,000 profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: destory_pair_amount + skim combination\ncontract ZSToken {\n    address public pair;\n\n    // Vulnerable: burns tokens from the pair without access control\n    function destory_pair_amount(uint256 amount) external {\n        // Forcibly burn ZS balance held in the pair\n        _burn(pair, amount);\n        // Call sync() to update reserves\n        IUniswapV2Pair(pair).sync();\n        // After burn: WBNB reserves unchanged, ZS reserves decreased\n        // → ZS/WBNB ratio skewed → excess WBNB extractable via skim()\n    }\n}",
+  "// Root cause: Flash Loan + Skim/Sync Reserve Manipulation\n// Source code unverified — analysis based on bytecode"
+ ]
+}

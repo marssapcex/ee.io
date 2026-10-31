@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-11-16_LinkDao_FlashSwapReentrancy",
+ "source_file": "2023/2023-11-16_LinkDao_FlashSwapReentrancy.md",
+ "title": "LinkDao Flash Swap Reentrancy Attack Incident Analysis",
+ "date": "2023-11-16",
+ "protocol": "LinkDao",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ x55d3(BUSDT).balanceOf(x6524)",
+  "2 ▶ x6524.swap(29663356140000000000000, 0, address(this), hex\"313233\")",
+  "3 ▶ Callback: invoke xdc6eaaa9() function",
+  "→ Imbalance created before reserve update",
+  "4 ▶ swap() reserve update completes",
+  "Imbalanced state reflected in reserves → profit realized (~$30,000)"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: state manipulation possible via swap() callback\ncontract LinkDAOToken is IUniswapV2Pair {\n    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external {\n        // Token transfer\n        if (amount0Out > 0) _transfer(address(this), to, amount0Out);\n        if (amount1Out > 0) _transfer(address(this), to, amount1Out);\n\n        // Vulnerable: reentrancy possible via callback\n        if (data.length > 0) IUniswapV2Callee(to).uniswapV2Call(...);\n        // Or callback via custom selector (0xdc6eaaa9)\n\n        // State update happens after callback\n        uint256 balance0 = IERC20(token0).balanceOf(address(this));\n        uint256 balance1 = IERC20(token1).balanceOf(address(this));\n        _update(balance0, balance1, reserve0, reserv",
+  "// Root cause: Flash Swap Callback Reentrancy\n// Source code unverified — analysis based on bytecode"
+ ]
+}

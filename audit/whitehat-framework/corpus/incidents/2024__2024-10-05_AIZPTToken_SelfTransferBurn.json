@@ -1,0 +1,29 @@
+{
+ "id": "2024__2024-10-05_AIZPTToken_SelfTransferBurn",
+ "source_file": "2024/2024-10-05_AIZPTToken_SelfTransferBurn.md",
+ "title": "AIZPT Token — Self-Transfer Burn Mechanism Vulnerability Analysis",
+ "date": "2024-10-05",
+ "protocol": "AIZPT Token",
+ "chain": "BSC",
+ "loss_raw": "~20,000 USD (34.88 BNB)",
+ "loss_usd": null,
+ "root_cause": "Transferring AIZPT tokens to the contract itself triggers an internal burn logic that swaps them for BNB",
+ "attack_tx": "0x5e694707",
+ "vulnerable_contract": "0xBe779D42",
+ "classes": [
+  "self-balance-exploit"
+ ],
+ "code_before": [
+  "❌ Vulnerable AIZPT transfer: self-transfer triggers burn + BNB payout\ncontract AIZPTToken {\n    function _transfer(address from, address to, uint256 amount) internal {\n        if (to == address(this)) {\n            //",
+  "❌ Sending to self pays out internal BNB\n            // BNB calculated proportionally to amount (based on price oracle)\n            uint256 bnbAmount = _calculateBNB(amount);\n            _burn(from, amount);\n            payable(from).transfer(bnbAmount);  // BNB payout\n        } else {\n            // Normal transfer\n        }\n    }\n\n    //",
+  "❌ Repeated calls can fully drain all BNB\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: block self-transfers\n// require(to != address(this), \"cannot send to self\");"
+ ],
+ "steps": [
+  "[2] ▶ WBNB.withdraw(8,000 ether) — WBNB → BNB",
+  "[5] ▶ WBNB.deposit{value: balance}() — BNB → WBNB"
+ ],
+ "other_code": []
+}

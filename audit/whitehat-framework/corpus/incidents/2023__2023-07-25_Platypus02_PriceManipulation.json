@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-07-25_Platypus02_PriceManipulation",
+ "source_file": "2023/2023-07-25_Platypus02_PriceManipulation.md",
+ "title": "Platypus Finance 02 Price Manipulation Incident Analysis",
+ "date": "2023-07-25",
+ "protocol": "Platypus02",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Aave V3.flashLoan() [0x794a61358D6845594F94dc1DB02A252b5b4814aD]",
+  "2 ▶ PlatypusPool.deposit(USDC, 85000)",
+  "3 ▶ PlatypusPool.withdraw(USDTe, LP_USDC_balance)",
+  "4 ▶ Swap USDTe → USDC",
+  "5 ▶ Repay Aave flash loan + realize ~51K USD profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: ratio discrepancy during LP token withdrawal\ncontract PlatypusPool {\n    function deposit(address token, uint256 amount) external returns (uint256 lpAmount) {\n        // Deposit USDC → receive LP_USDC\n        AssetInfo storage asset = assets[token];\n        lpAmount = amount * asset.totalSupply / asset.cash;\n        asset.cash += amount;\n        asset.totalSupply += lpAmount;\n        _mint(msg.sender, lpAmount);\n    }\n\n    function withdraw(address token, uint256 lpAmount) external returns (uint256 amount) {\n        // Vulnerable: ratio discrepancy occurs when withdrawing a different token (USDTe)\n        AssetInfo storage asset = assets[token];\n        amount = lpAmount * asset.cash / asset.totalSupply;\n\n        // Ratio gap: withdrawing USDTe using USDC-deposited L",
+  "// Root cause: Flash Loan + Price Ratio Discrepancy\n// Source code unverified — based on bytecode analysis"
+ ]
+}

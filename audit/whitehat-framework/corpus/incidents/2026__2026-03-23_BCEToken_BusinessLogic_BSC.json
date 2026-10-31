@@ -1,0 +1,39 @@
+{
+ "id": "2026__2026-03-23_BCEToken_BusinessLogic_BSC",
+ "source_file": "2026/2026-03-23_BCEToken_BusinessLogic_BSC.md",
+ "title": "BCE Token — Delayed Burn (scheduledDestruction) Business Logic Flaw Analysis",
+ "date": "2026-03-23",
+ "protocol": "BCE Token",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~$679,000 (LP liquidity provider losses)",
+ "loss_usd": 679000.0,
+ "root_cause": "The state variable `scheduledDestruction`, which can be influenced by users, burns tokens directly from the PancakeSwap pair — the destruction amount derived from sell activity is settled from LP reserves rather than at the user's expense",
+ "attack_tx": "0x85ac...452 (block 88,215,293) — confirmed on-chain: flash loan → BCE/USDT swaps (Venus + PancakeSwap), March 23 2026",
+ "vulnerable_contract": "BCE Token (BSC) — specific contract address not independently verified",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — scheduledDestruction accumulation logic\nuint256 public scheduledDestruction;  // ❌ Pending burn amount accumulated as a state variable\n\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    // Sell detection: from is a regular address, to is the PancakeSwap pair\n    if (to == uniswapV2Pair && !_isExcludedFromFees[from]) {\n        uint256 pairBalance = balanceOf(uniswapV2Pair);\n        // ❌ Calculates and accumulates pending burn amount based on trade volume and pool reserves\n        // This amount is NOT deducted from the seller!\n        uint256 destructionAmount = (amount * pairBalance) / totalSupply();\n        scheduledDestruction += destructionAmount;  // ❌ Only accumulates; no deduction from seller's balance\n    }\n    \n    // ❌ Executes previously accumulated pending burn amount\n    if (scheduledDestruction > 0) {\n        _executeScheduledDestruction();  // ← Executed via a separate code path\n    }\n    \n    super._transfer(from, to, amount);\n}\n\nfunction _executeScheduledDestruction() private {\n    uint256 amount = scheduledDestruction;\n    scheduledDestruction = 0;\n    \n    // ❌ Burns directly from the PancakeSwap pair, not the seller's balance!\n    _burn(uniswapV2Pair, amount);\n    \n    // ❌ Calls sync() to reflect the manipulated reserves into the AMM\n    IUniswapV2Pair(uniswapV2Pair).sync();\n}",
+  "// ❌ Simple per-wallet transaction limit — bypassable with two malicious contracts\nuint256 public maxTransactionAmount;\nmapping(address => bool) public isWhitelisted;\n\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    if (!isWhitelisted[from] && !isWhitelisted[to]) {\n        // ❌ Only checks individual wallet limits; assumes multi-contract attacks are impossible\n        require(amount <= maxTransactionAmount, \"Exceeds max transaction\");\n    }\n    // ...\n}",
+  "Attacker EOA\n     │\n     ▼\n┌─────────────────────────┐\n│ Deploy Malicious MC1    │  ← Flash loan coordinator\n└────────────┬────────────┘\n             │ Flash loan request\n             ▼\n┌─────────────────────────┐\n│  Lending Protocol       │  ← Provides 123.5M USDT\n└────────────┬────────────┘\n             │ 123.5M USDT\n             ▼\n┌─────────────────────────┐\n│  Malicious Contract MC2 │  ← For bypassing transaction limits\n└────────────┬────────────┘\n             │ 2.222M USDT → swap\n             ▼\n┌─────────────────────────────────────────────┐\n│  PancakeSwap BCE/USDT Pool                  │\n│  [BCE Reserve Manipulation Process]         │\n│                                             │\n│  Initial:    BCE reserves = X (normal)      │\n│  Post-swap:  BCE reserves = ~174K (pressured) │\n│  Post-burn:  BCE reserves = ~10,000 (drained) │\n│                                             │\n│  ❌ scheduledDestruction → _burn(pair, N)   │\n│  ❌ IUniswapV2Pair(pair).sync()             │\n└────────────┬────────────────────────────────┘\n             │ BCE price spikes (reserves exhausted)\n             │\n             ▼\n┌─────────────────────────┐\n│  BCE → USDT Arbitrage   │  ← Sells at manipulated price\n└────────────┬────────────┘\n             │ Receives large USDT amount\n             ▼\n┌─────────────────────────┐\n│  Flash Loan Repayment   │  ← Principal + fee\n└────────────┬────────────┘\n             │ Net profit ~$679K\n             ▼\n         Attacker receives"
+ ],
+ "code_after": [
+  "// ✅ Fix: Burns must be deducted from the seller's balance\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    if (to == uniswapV2Pair && !_isExcludedFromFees[from]) {\n        // ✅ Deduct burn amount from the transfer amount first, charged to the seller\n        uint256 burnAmount = (amount * BURN_RATE) / 10000;\n        \n        // ✅ Burn from the seller's amount first (no impact on LP reserves)\n        _burn(from, burnAmount);\n        amount -= burnAmount;\n    }\n    \n    // ✅ Delayed burn state variable removed — handled immediately\n    super._transfer(from, to, amount);\n    // Note: sync() is not called. The AMM updates its own reserves.\n}",
+  "// ✅ Fix: Per-block cumulative volume limit to prevent multi-contract bypass\nmapping(uint256 => uint256) public blockVolume;  // ✅ Tracks volume on a per-block basis\nuint256 public maxBlockVolume;\n\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    // ✅ Check cumulative per-block volume (prevents multi-contract bypass)\n    blockVolume[block.number] += amount;\n    require(blockVolume[block.number] <= maxBlockVolume, \"Exceeds block volume limit\");\n    // ...\n}"
+ ],
+ "steps": [
+  "1. **Flash Loan Borrow**: MC1 borrows a 123.5M USDT flash loan from a lending protocol",
+  "2. **USDT→BCE Swap**: Buys 5.529M BCE with 2.222M USDT through MC2",
+  "3. **Reserve Pressure**: MC2 executes a series of USDT→BCE swaps totaling ~34.9M USDT → drives the pool's BCE reserves down to ~174K",
+  "4. **scheduledDestruction Accumulation**: Large-scale pending burn amount accumulates in `scheduledDestruction` during the bulk buy/transfer process",
+  "5. **LP Burn Execution**: Burn trigger fires — `scheduledDestruction` executes directly against the PancakeSwap pair → BCE reserves compressed to ~10,000",
+  "6. **Price Spike**: `sync()` call reflects the manipulated reserves into the AMM → BCE/USDT price surges",
+  "7. **BCE→USDT Arbitrage**: Swaps BCE for USDT at the manipulated price, securing massive arbitrage profit",
+  "8. **Flash Loan Repayment**: Repays flash loan principal + fee, retaining ~$679K net profit",
+  "2.222M USDT → swap",
+  "❌ scheduledDestruction → _burn(pair, N)",
+  "BCE → USDT Arbitrage ← Sells at manipulated price"
+ ],
+ "other_code": []
+}

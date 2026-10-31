@@ -1,0 +1,50 @@
+{
+ "id": "2025__2025-10-20_SharwaFinance_BusinessLogic_ARB",
+ "source_file": "2025/2025-10-20_SharwaFinance_BusinessLogic_ARB.md",
+ "title": "Sharwa Finance — Business Logic Flaw (Position Liquidation Integrity Bypass) Analysis",
+ "date": "2025-10-20",
+ "protocol": "Sharwa Finance",
+ "chain": "Arbitrum",
+ "loss_raw": "$146,000 USD (USDC + WBTC liquidity pools)",
+ "loss_usd": 146000.0,
+ "root_cause": "Missing post-insolvency check after position liquidation + Uniswap V3 spot price oracle dependency",
+ "attack_tx": null,
+ "vulnerable_contract": "FacadeTradeRouter — deployed 18 days prior",
+ "classes": [
+  "business-logic",
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — FacadeTradeRouter.sol (inferred)\nfunction getPositionValue(\n    address tokenIn,\n    address tokenOut,\n    uint256 amountIn\n) internal view returns (uint256 amountOut) {\n    // ❌ Dangerous: directly queries spot price from Uniswap V3 quoter\n    // Price can be manipulated via a large swap in the same block\n    amountOut = IQuoter(UNISWAP_V3_QUOTER).quoteExactInputSingle(\n        tokenIn,\n        tokenOut,\n        FEE_TIER,         // ❌ Based on current pool state — manipulable\n        amountIn,\n        0\n    );\n    // ❌ No slippage protection: no return value validation logic\n    // ❌ No TWAP (time-weighted average price) usage\n}\n\nfunction decreaseLongPosition(\n    address account,\n    uint256 collateralDelta,\n    uint256 sizeDelta,\n    address receiver\n) external {\n    // ❌ Position value calculated using manipulated spot price\n    uint256 positionValue = getPositionValue(WBTC, USDC, sizeDelta);\n\n    // ❌ No insolvency check — does not verify protocol has sufficient balance\n    uint256 payout = calculatePayout(positionValue, collateralDelta);\n\n    IERC20(USDC).transfer(receiver, payout); // ❌ Overpayment\n}",
+  "// ❌ Vulnerable code — no protocol health validation after position increase\nfunction increaseLongPosition(\n    address account,\n    uint256 amountIn,\n    uint256 sizeDelta\n) external {\n    // Receive collateral\n    IERC20(USDC).transferFrom(account, address(this), amountIn);\n\n    // Open leveraged position\n    _openPosition(account, amountIn, sizeDelta);\n\n    // ❌ No protocol-wide health check after position is opened\n    // Large leverage can effectively leave the protocol vulnerable\n}",
+  "TX1 — Open Long Position (Price Manipulation)\n┌─────────────────────────────────────────────────────────────────┐\n│  Attacker EOA  0xd356c82e                                        │\n└────────────────────────┬────────────────────────────────────────┘\n                         │ trigger\n                         ▼\n┌─────────────────────────────────────────────────────────────────┐\n│  Attack Contract  0xd9ff21ca                                     │\n└──────┬──────────────────────────────────────────────────────────┘\n       │ flashLoan(40M USDC)\n       ▼\n┌──────────────────┐\n│  Morpho Protocol │ ──▶ 40,000,000 USDC loaned\n└──────────────────┘\n       │ onMorphoFlashLoan() callback\n       ▼\n┌──────────────────────────────────────────────────────────────┐\n│  FacadeTradeRouter (Sharwa)                                   │\n│  increaseLongPosition(22M USDC collateral, 36.2M WBTC pos)   │\n│                                                               │\n│  Internal: quoteExactInputSingle() → UniV3 Pool spot query ❌ │\n└───────────────────────────────┬──────────────────────────────┘\n                                │ price query\n                                ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Uniswap V3  WBTC/USDC Pool                                  │\n│  WBTC price artificially inflated via large swap             │\n│  → distorted amountOut returned                              │\n└─────────────────────────────────────────────────────────────┘\n\nTX2 — Position Liquidation (Profit Extraction)\n┌─────────────────────────────────────────────────────────────────┐\n│  Attack Contract  0xd9ff21ca                                     │\n└──────┬──────────────────────────────────────────────────────────┘\n       │ flashLoan(37M WBTC)\n       ▼\n┌──────────────────┐\n│  Morpho Protocol │ ──▶ 37,000,000 WBTC loaned\n└──────────────────┘\n       │\n       ▼\n┌──────────────────────────┐\n│  Uniswap V3 WBTC→USDC    │ ──▶ Large WBTC sell → WBTC price artificially depressed\n└──────────────────────────┘\n       │\n       ▼\n┌──────────────────────────────────────────────────────────────┐\n│  FacadeTradeRouter (Sharwa)                                   │\n│  decreaseLongPosition()                                       │\n│                                                               │\n│  quoteExactInputSingle() → returns manipulated low WBTC price ❌ │\n│  No insolvency check ❌ → protocol overpays USDC              │\n└───────────────────────────────┬──────────────────────────────┘\n                                │ excess USDC paid out\n                                ▼\n┌─────────────────────────────────────────────────────────────┐\n│  Attacker Contract                                           │\n│  Received USDC → converted to WBTC → Morpho repaid          │\n│  → $146,000 profit retained                                  │\n└─────────────────────────────────────────────────────────────┘"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — safe implementation\nimport \"@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol\";\n\nfunction getPositionValue(\n    address tokenIn,\n    address tokenOut,\n    uint256 amountIn\n) internal view returns (uint256 amountOut) {\n    // ✅ Query manipulation-resistant price from Chainlink oracle\n    (, int256 price, , uint256 updatedAt, ) =\n        AggregatorV3Interface(CHAINLINK_FEED).latestRoundData();\n\n    // ✅ Validate price freshness (max 1 hour allowed)\n    require(block.timestamp - updatedAt <= 3600, \"Stale oracle price\");\n    require(price > 0, \"Invalid price\");\n\n    amountOut = (amountIn * uint256(price)) / 1e8; // Chainlink 8 decimal places\n}\n\nfunction decreaseLongPosition(\n    address account,\n    uint256 collateralDelta,\n    uint256 sizeDelta,\n    address receiver\n) external {\n    uint256 positionValue = getPositionValue(WBTC, USDC, sizeDelta);\n    uint256 payout = calculatePayout(positionValue, collateralDelta);\n\n    // ✅ Insolvency check: verify protocol balance can cover the payout\n    uint256 poolBalance = IERC20(USDC).balanceOf(address(this));\n    require(poolBalance >= payout, \"Protocol insolvent after payout\");\n\n    // ✅ Added slippage protection\n    require(payout <= maxAllowedPayout, \"Payout exceeds slippage limit\");\n\n    IERC20(USDC).transfer(receiver, payout);\n}",
+  "// ✅ Fixed code — health validation after each operation\nfunction increaseLongPosition(\n    address account,\n    uint256 amountIn,\n    uint256 sizeDelta\n) external {\n    IERC20(USDC).transferFrom(account, address(this), amountIn);\n    _openPosition(account, amountIn, sizeDelta);\n\n    // ✅ Check protocol solvency after position is opened\n    require(!isProtocolInsolvent(), \"Position would make protocol insolvent\");\n}\n\nfunction isProtocolInsolvent() public view returns (bool) {\n    // ✅ Validate total collateral vs. total liabilities ratio\n    uint256 totalLiabilities = getTotalOpenPositionValue();\n    uint256 totalAssets = getTotalPoolAssets();\n    return totalLiabilities > totalAssets * MAX_LEVERAGE_RATIO / 100;\n}"
+ ],
+ "steps": [
+  "1. Flash loan of 40,000,000 USDC borrowed from Morpho",
+  "2. 22,000,000 USDC deposited as collateral into Sharwa Finance",
+  "3. `FacadeTradeRouter.increaseLongPosition()` called",
+  "4. Large swap executed on WBTC/USDC Uniswap V3 pool → WBTC price distorted",
+  "5. Long position worth 36.2M WBTC opened at manipulated price",
+  "6. Flash loan repaid",
+  "1. Flash loan of 37,000,000 WBTC borrowed from Morpho",
+  "2. Borrowed WBTC swapped to USDC (pool price reversed)",
+  "3. `FacadeTradeRouter.decreaseLongPosition()` called",
+  "4. Position liquidated at manipulated low WBTC price → protocol overpays USDC",
+  "5. Received USDC converted back to WBTC",
+  "6. Flash loan repaid + profit retained",
+  "Internal: quoteExactInputSingle() → UniV3 Pool spot query ❌",
+  "→ distorted amountOut returned",
+  "Uniswap V3 WBTC→USDC ▶ Large WBTC sell → WBTC price artificially depressed",
+  "quoteExactInputSingle() → returns manipulated low WBTC price ❌",
+  "No insolvency check ❌ → protocol overpays USDC",
+  "Received USDC → converted to WBTC → Morpho repaid",
+  "→ $146,000 profit retained"
+ ],
+ "other_code": [
+  "1. MorphoFlashLoan(token=WBTC, assets=37M)\n2. Uniswap V3 Swap(WBTC→USDC, large sell depresses WBTC price)\n3. FacadeTradeRouter.decreaseLongPosition() called\n4. USDC Transfer(from=SharwaPool, to=AttackContract, excess amount)\n5. Uniswap V3 Swap(USDC→WBTC, price normalized)\n6. WBTC Transfer(to=Morpho, flash loan repaid)\n7. Remaining WBTC → transferred to attacker EOA"
+ ]
+}

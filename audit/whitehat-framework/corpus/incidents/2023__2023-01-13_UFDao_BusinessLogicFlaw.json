@@ -1,0 +1,36 @@
+{
+ "id": "2023__2023-01-13_UFDao_BusinessLogicFlaw",
+ "source_file": "2023/2023-01-13_UFDao_BusinessLogicFlaw.md",
+ "title": "UFDao — LP Token Purchase Business Logic Flaw Analysis",
+ "date": "2023-01-13",
+ "protocol": "UFDao",
+ "chain": "BSC",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "Missing LP amount validation in `buyPublicOffer()` allows token purchases under abnormal conditions",
+ "attack_tx": "0x933d19d7...",
+ "vulnerable_contract": "Unknown",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable buyPublicOffer function\ninterface SHOP {\n    function buyPublicOffer(address _dao, uint256 _lpAmount) external;\n}\n\n// Presumed vulnerable implementation\nfunction buyPublicOffer(address _dao, uint256 _lpAmount) external {\n    //",
+  "❌ No minimum/maximum validation on _lpAmount\n    //",
+  "❌ Price calculation relies solely on the current LP ratio\n    uint256 tokenPrice = getLPBasedPrice(_lpAmount);  // manipulable\n    uint256 tokenAmount = _lpAmount * RATE / tokenPrice;\n\n    IERC20(lpToken).transferFrom(msg.sender, address(this), _lpAmount);\n    ITokenDAO(_dao).mint(msg.sender, tokenAmount);  // excessive token minting\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix\nfunction buyPublicOffer(address _dao, uint256 _lpAmount) external {\n    require(_lpAmount >= MIN_LP_AMOUNT, \"Too small\");\n    require(_lpAmount <= MAX_LP_AMOUNT, \"Too large\");\n    // Use TWAP-based pricing\n}"
+ ],
+ "steps": [
+  "1 ▶ Borrow large amount of tokens via flash loan",
+  "2 ▶ Manipulate LP pair liquidity (distort price)",
+  "3 ▶ SHOP.buyPublicOffer(_dao, manipulated_lpAmount)",
+  "Processed without validation → receive UFT tokens at favorable ratio",
+  "4 ▶ Extract value via UFT.burn() etc.",
+  "5 ▶ Repay flash loan → net profit"
+ ],
+ "other_code": [
+  "// Root cause: Missing LP amount validation in `buyPublicOffer()` allows token purchases under abnormal conditions\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ Borrow large amount of tokens via flash loan\n  │\n  ├─2─▶ Manipulate LP pair liquidity (distort price)\n  │\n  ├─3─▶ SHOP.buyPublicOffer(_dao, manipulated_lpAmount)\n  │       Processed without validation → receive UFT tokens at favorable ratio\n  │\n  ├─4─▶ Extract value via UFT.burn() etc.\n  │\n  └─5─▶ Repay flash loan → net profit"
+ ]
+}

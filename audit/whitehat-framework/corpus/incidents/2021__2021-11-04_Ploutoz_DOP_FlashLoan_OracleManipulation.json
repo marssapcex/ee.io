@@ -1,0 +1,35 @@
+{
+ "id": "2021__2021-11-04_Ploutoz_DOP_FlashLoan_OracleManipulation",
+ "source_file": "2021/2021-11-04_Ploutoz_DOP_FlashLoan_OracleManipulation.md",
+ "title": "Ploutoz (DOP) — Flash Loan DOP Price Manipulation Collateral Lending Analysis",
+ "date": "2021-11-04",
+ "protocol": "Ploutoz",
+ "chain": "BSC",
+ "loss_raw": "~$365,000",
+ "loss_usd": 365000.0,
+ "root_cause": "AMM spot price from Twinidex/PancakeSwap used for DOP collateral valuation — manipulable within a single block via large swaps",
+ "attack_tx": "0x7fe4...457 (block 12,886,417)",
+ "vulnerable_contract": "0x844FA82f1E54824655470970F7004Dd90546bB28 (DOP Token)",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ Ploutoz lending pool — collateral value calculated using DOP spot price\n// DOP @ 0x844FA82f1E54824655470970F7004Dd90546bB28\n\nfunction getDOPPrice() internal view returns (uint256) {\n    // Price calculated from current reserves on Twinidex or PancakeSwap\n    // Manipulable via large swaps within a flash loan\n    (uint112 reserve0, uint112 reserve1,) = IDEXPair(dopPair).getReserves();\n    return uint256(reserve1) * 1e18 / uint256(reserve0); // spot price\n}\n\nfunction borrow(address token, uint256 amount) external {\n    uint256 dopBalance = IERC20(DOP).balanceOf(msg.sender);\n    uint256 dopPrice = getDOPPrice(); // manipulated price\n    uint256 collateralValue = dopBalance * dopPrice / 1e18;\n    require(collateralValue >= amount, \"insufficient collateral\");\n    IERC20(token).transfer(msg.sender, amount);\n}",
+  "// ❌ Root cause: AMM spot price from Twinidex/PancakeSwap used for DOP collateral valuation — manipulable within a single block via large swaps\n    function transferFrom(address arg0, address arg1, uint256 arg2) external {}  // 0x23b872dd  // ❌ Unauthorized transferFrom"
+ ],
+ "code_after": [
+  "// ✅ Use Chainlink oracle or TWAP\ninterface AggregatorV3Interface {\n    function latestRoundData() external view returns (\n        uint80 roundId, int256 answer, uint256 startedAt,\n        uint256 updatedAt, uint80 answeredInRound\n    );\n}\n\nAggregatorV3Interface public dopOracle; // Chainlink DOP/USD\n\nfunction getDOPPrice() internal view returns (uint256) {\n    (, int256 price,, uint256 updatedAt,) = dopOracle.latestRoundData();\n    require(block.timestamp - updatedAt <= 3600, \"Oracle: stale price\");\n    require(price > 0, \"Oracle: invalid price\");\n    return uint256(price) * 1e10; // 8 decimals → 18 decimals\n}",
+  "// ✅ Use averaged multiple oracles + TWAP\n// ✅ Set price deviation threshold within a single transaction\n\nfunction getDOPPrice() internal view returns (uint256) {\n    uint256 twapPrice = getTWAP(dopPair, 1800); // 30-minute TWAP\n    uint256 chainlinkPrice = getChainlinkPrice();\n\n    // If deviation between two prices exceeds 5%, use the lower price\n    if (absDiff(twapPrice, chainlinkPrice) * 100 / twapPrice > 5) {\n        return twapPrice < chainlinkPrice ? twapPrice : chainlinkPrice;\n    }\n    return (twapPrice + chainlinkPrice) / 2;\n}"
+ ],
+ "steps": [
+  "Step 1: Flash loan 1,000,400 BUSD from PancakeSwap",
+  "Step 2: Large BUSD → DOP swap on Twinidex",
+  "Step 3: Additional BUSD → DOP swap on PancakeSwap",
+  "Step 4: Borrow from 6 pools using inflated DOP collat.",
+  "Step 5: Convert borrowed tokens → BUSD + repay loan"
+ ],
+ "other_code": [
+  "┌────────────────────────────────────────────────────────┐\n│ Step 1: Flash loan 1,000,400 BUSD from PancakeSwap     │\n│ pancakeCall() callback executed                        │\n└─────────────────────┬──────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────┐\n│ Step 2: Large BUSD → DOP swap on Twinidex              │\n│ DOP price rises (Twinidex reserve manipulation)        │\n└─────────────────────┬──────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────┐\n│ Step 3: Additional BUSD → DOP swap on PancakeSwap      │\n│ DOP price rises further (PancakeSwap reserve manip.)   │\n└─────────────────────┬──────────────────────────────────┘\n                      │\n┌───────────────────",
+  "// pancakeCall() — flash loan callback\nfunction pancakeCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external {\n    // Large BUSD → DOP swap on Twinidex (price increase)\n    // twinidexRouter.swapExactTokensForTokens(busd, 0, [BUSD, DOP], ...)\n\n    // Additional BUSD → DOP swap on PancakeSwap\n    // pancakeRouter.swapExactTokensForTokens(busd, 0, [BUSD, DOP], ...)\n\n    // Borrow tokens from 6 lending pools (inflated DOP collateral)\n    // lendingPool1.borrow(token1, maxAmount)\n    // lendingPool2.borrow(token2, maxAmount)\n    // ... (6 pools)\n\n    // Convert borrowed assets → BUSD\n    // Repay flash loan principal + fee\n    // BUSD.transfer(pair, 1_000_400 * 1e18 * 10030 / 10000)\n}"
+ ]
+}

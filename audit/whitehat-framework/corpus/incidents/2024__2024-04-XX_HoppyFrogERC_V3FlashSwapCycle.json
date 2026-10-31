@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-04-XX_HoppyFrogERC_V3FlashSwapCycle",
+ "source_file": "2024/2024-04-XX_HoppyFrogERC_V3FlashSwapCycle.md",
+ "title": "HoppyFrogERC — V3 Flash Loan Swap Cycle Price Manipulation Analysis",
+ "date": "2024-04-01",
+ "protocol": "HoppyFrogERC",
+ "chain": "Ethereum",
+ "loss_raw": "~0.3 ETH",
+ "loss_usd": null,
+ "root_cause": "The V2 pool allowed full token dumps without slippage protection, enabling an attacker to crash the price and rebuy at a discount within a single transaction for profit",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerability: entire Hoppy supply can be flash-borrowed from V3 pool + insufficient V2 price coupling\n\ninterface Uni_Pair_V3 {\n    function flash(\n        address recipient,\n        uint256 amount0,   // token0 (Hoppy) borrow amount\n        uint256 amount1,   // token1 (WETH) borrow amount\n        bytes calldata data\n    ) external;\n}\n\n// flash() call is handled inside uniswapV3FlashCallback()\n// V3 pool only validates balance after flash loan, allowing V2 price manipulation in between\n\n//",
+  "// File: HoppyFrogERC_decompiled.sol\ncontract HoppyFrogERC {\ncontract HoppyFrogERC {\n    address public owner;\n\n\n    // Selector: 0x715018a6\n    function renounceOwnership() external {}  // ❌ Vulnerability\n\n    // Selector: 0x8da5cb5b\n    function owner() external view returns (address) {}\n\n    // Selector: 0xc45a0155\n    function unknown_c45a0155() external {}\n\n    // Selector: 0xdf2ab5bb\n\n    // 📌 Missing access control - token theft\n    function sweepToken(address p0, uint256 p1, address p2) external {}\n\n    // Selector: 0xe9cbafb0\n    // 📌 Swap - price manipulation risk\n    function uniswapV3FlashCallback(uint256 p0, uint256 p1, bytes memory p2) external {}\n\n    // Selector: 0x12210e8a\n    function refundETH() external {}\n\n    // Selector: 0x49404b7c\n    function unwrapWETH9(uint256 p0, address p1) external {}\n\n    // Selector: 0x4aa4a4fc\n    function WETH9() external {}\n\n    // Selector: 0x5a2b490e\n    function unknown_5a2b490e() external {}\n\n    // Selector: 0x70a08231\n    function balanceOf(address p0) external view returns (uint256) {}\n\n    // Selector: 0x2e1a7d4d\n    // Alternative: OwnerTransferV7b711143(uint256)\n    // 📌 Withdrawal - reserve validation required\n    function withdraw(uint256 p0) external {}\n\n    // Selector: 0x490e6cbc\n\n    function flash(address p0, uint256 p1, uint256 p2, bytes memory p3) external {}\n\n    // Selector: 0x5c11d795\n    // Alternative: watch_tg_invmru_77e6c68(uint256,bool,address)\n    // 📌 Swap - price manipulation risk\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256 p0, uint256 p1, address[] memory p2, address p3, uint256 p4) external {}\n\n    // Selector: 0x8803dbee\n    // 📌 Swap - price manipulation risk\n    function swapTokensForExactTokens(uint256 p0, uint256 p1, address[] memory p2, address p3, uint256 p4) external {}\n\n    // Selector: 0xa9059cbb\n    function transfer(address p0, uint256 p1) external {}\n\n    // Selector: 0x313ce567\n    function decimals() external view returns (uint8) {}\n\n    // Selector: 0x095ea7b3\n    // 📌 approve - safeApprove race condition risk\n    function approve(address p0, uint256 p1) external {}\n\n    // Selector: 0xd0e30db0\n    // Alternative: X19B3C29E(string)\n    function deposit() external {}\n\n    // Selector: 0x23b872dd\n    // 📌 Arbitrary transferFrom - approval validation required\n    function transferFrom(address p0, address p1, uint256 p2) external {}\n\n    // Selector: 0x43000706\n    function unknown_43000706() external {}\n}"
+ ],
+ "code_after": [
+  "✅ Safe Code (from token design perspective)\n// 1. Avoid single-pool liquidity concentration: distribute across multiple pools\n// 2. Large sell tax: apply high tax rate when selling above a threshold in a single TX\n// 3. Volume cap: limit maximum trading volume per block"
+ ],
+ "steps": [
+  "→ [1] Uniswap V3 pair.flash(attacker, totalHoppy, 0, \"\")",
+  "→ [2] Enter uniswapV3FlashCallback()",
+  "→ [3] Swap Hoppy → WETH (Uniswap V2 Router)",
+  "→ [4] Rebuy some WETH → Hoppy (V2, at depressed price)",
+  "→ [5] Repay V3 flash loan (Hoppy + fees)",
+  "→ [6] Remaining WETH ~0.3 ETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Uniswap V3 pair.flash(attacker, totalHoppy, 0, \"\")\n  │         └─ Borrow entire Hoppy balance from V3 pool\n  │\n  ├─→ [2] Enter uniswapV3FlashCallback()\n  │\n  ├─→ [3] Swap Hoppy → WETH (Uniswap V2 Router)\n  │         └─ Massive sell dumps Hoppy price\n  │\n  ├─→ [4] Rebuy some WETH → Hoppy (V2, at depressed price)\n  │         └─ Acquire Hoppy + fees needed to repay V3 flash loan\n  │\n  ├─→ [5] Repay V3 flash loan (Hoppy + fees)\n  │\n  └─→ [6] Remaining WETH ~0.3 ETH profit",
+  "interface Uni_Pair_V3 {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ninterface Uni_Router_V2 {\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        uint256 amountIn, uint256 amountOutMin,\n        address[] calldata path, address to, uint256 deadline\n    ) external;\n}\n\ncontract AttackContract {\n    Uni_Pair_V3  constant v3Pair  = Uni_Pair_V3(0xaA6f337f16E6658d9c9599c967D3126051b6c726);\n    Uni_Router_V2 constant router = Uni_Router_V2(/* Uniswap V2 Router */);\n    IERC20 constant Hoppy = IERC20(0xE5c6F5fEF89B64f36BfcCb063962820136bAc42F);\n    IERC20 constant WETH  = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n\n    function testExploit() external {\n        // [1] Flash-borrow entire Hoppy balance from"
+ ]
+}

@@ -1,0 +1,25 @@
+{
+ "id": "2024__2024-01-31_ChrisLarsen_PrivateKeyCompromise_XRP",
+ "source_file": "2024/2024-01-31_ChrisLarsen_PrivateKeyCompromise_XRP.md",
+ "title": "Chris Larsen (Ripple Co-Founder) — Personal Wallet Private Key Compromise Analysis",
+ "date": "2024-01-31",
+ "protocol": "Personal XRP wallets of Chris Larsen",
+ "chain": "XRP Ledger",
+ "loss_raw": "~$112,500,000 (213,100,000 XRP drained from personal wallets)",
+ "loss_usd": 112500000.0,
+ "root_cause": "Private keys stored in LastPass were compromised via the 2022 LastPass vault breach; ZachXBT and a March 2025 US government forfeiture complaint confirmed this as the root cause — attackers decrypted LastPass vaults and used the extracted keys to drain Larsen's XRP wallets",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "→ Binance security team freezes ~$4.2M before conversion",
+  "→ Exchanges cooperate with investigation; some funds frozen"
+ ],
+ "other_code": [
+  "Attacker\n    │\n    ├─[Pre-exploit] Obtain private keys for Chris Larsen's personal XRP wallets\n    │       Root cause (confirmed by ZachXBT + March 2025 US government forfeiture complaint):\n    │       Larsen stored private keys in LastPass; the 2022 LastPass vault breach\n    │       exposed encrypted vaults later decrypted by attackers with master passwords\n    │\n    ├─[2024-01-31] Drain XRP wallets:\n    │       Transfer 213,100,000 XRP from Larsen's wallets to attacker addresses\n    │       Value at time of theft: ~$112.5M\n    │\n    ├─[ZachXBT alert] On-chain analyst flags suspicious transfers in real-time\n    │       Chris Larsen confirms hack publicly within hours\n    │\n    ├─[Laundering attempt] Funds routed to exchanges:\n    │       Binance: attacker deposits funds for conversion\n   "
+ ]
+}

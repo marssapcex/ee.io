@@ -1,0 +1,46 @@
+{
+ "id": "2024__2024-03-05_WOOFi_sPMMOracleManipulation_ARB",
+ "source_file": "2024/2024-03-05_WOOFi_sPMMOracleManipulation_ARB.md",
+ "title": "WOOFi — sPMM Price Oracle Manipulation Attack Analysis",
+ "date": "2024-03-05",
+ "protocol": "WOO Network",
+ "chain": "Arbitrum",
+ "loss_raw": "~$8,750,000",
+ "loss_usd": 8750000.0,
+ "root_cause": "The sPMM price algorithm can be manipulated via sequential large-scale swaps within a single block; `woFeasible` remains `true` even when the deviation threshold against Chainlink is exceeded",
+ "attack_tx": "0x57e5...1fbd",
+ "vulnerable_contract": "WooPPV2 0xeFF2...3062",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code: WooPPV2.sol\n// swap() is nonReentrant but allows sequential external calls\nfunction swap(\n    address fromToken,\n    address toToken,\n    uint256 fromAmount,\n    uint256 minToAmount,\n    address to,\n    address rebateTo\n) external override returns (uint256 realToAmount) {  // ❌ external — can be called repeatedly within the same TX\n    if (fromToken == quoteToken) {\n        realToAmount = _sellQuote(toToken, fromAmount, minToAmount, to, rebateTo);\n    } else if (toToken == quoteToken) {\n        realToAmount = _sellBase(fromToken, fromAmount, minToAmount, to, rebateTo);\n    } else {\n        // ❌ base→base swap: updates internal prices for both tokens\n        realToAmount = _swapBaseToBase(fromToken, toToken, fromAmount, minToAmount, to, rebateTo);\n    }\n}",
+  "// ❌ Vulnerable code: _sellBase() — internal price updated immediately after swap (spot price dependency)\nfunction _sellBase(\n    address baseToken,\n    uint256 baseAmount,\n    uint256 minQuoteAmount,\n    address to,\n    address rebateTo\n) private nonReentrant whenNotPaused returns (uint256 quoteAmount) {\n    // ...\n    {\n        uint256 newPrice;\n        IWooracleV2.State memory state = IWooracleV2(wooracle).state(baseToken);\n        (quoteAmount, newPrice) = _calcQuoteAmountSellBase(baseToken, baseAmount, state);\n        // ❌ Price updated immediately after swap — manipulable within a block\n        IWooracleV2(wooracle).postPrice(baseToken, uint128(newPrice));\n    }\n    // ...\n}",
+  "// ❌ Vulnerable code: _calcQuoteAmountSellBase() — sPMM price calculation formula\n// newPrice changes drastically when baseAmount input is very large\nfunction _calcQuoteAmountSellBase(\n    address baseToken,\n    uint256 baseAmount,\n    IWooracleV2.State memory state\n) private view returns (uint256 quoteAmount, uint256 newPrice) {\n    // quoteAmount = baseAmount * price * (1 - k * baseAmount * price - spread)\n    {\n        uint256 coef = uint256(1e18) -\n            ((uint256(state.coeff) * baseAmount * state.price) / decs.baseDec / decs.priceDec) -\n            state.spread;\n        quoteAmount = (((baseAmount * decs.quoteDec * state.price) / decs.priceDec) * coef) / 1e18 / decs.baseDec;\n    }\n\n    // ❌ newPrice = (1 - 2k * price * baseAmount) * price\n    // When baseAmount is extremely large, newPrice converges toward 0\n    newPrice =\n        ((uint256(1e18) - (uint256(2) * state.coeff * state.price * baseAmount) / decs.priceDec / decs.baseDec) *\n            state.price) /\n        1e18;\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code: strengthened deviation validation against Chainlink price before swap\nfunction _sellBase(\n    address baseToken,\n    uint256 baseAmount,\n    uint256 minQuoteAmount,\n    address to,\n    address rebateTo\n) private nonReentrant whenNotPaused returns (uint256 quoteAmount) {\n    // ...\n    {\n        uint256 newPrice;\n        IWooracleV2.State memory state = IWooracleV2(wooracle).state(baseToken);\n        (quoteAmount, newPrice) = _calcQuoteAmountSellBase(baseToken, baseAmount, state);\n\n        // ✅ Newly added: verify new price is within allowed deviation from current Chainlink price\n        (uint256 cloPrice,) = IWooracleV2(wooracle).cloPrice(baseToken);\n        if (cloPrice != 0) {\n            uint256 deviation = newPrice > cloPrice\n                ? ((newPrice - cloPrice) * 1e18) / cloPrice\n                : ((cloPrice - newPrice) * 1e18) / cloPrice;\n            // ✅ Reject swap if deviation exceeds 10%\n            require(deviation <= MAX_PRICE_DEVIATION, \"WooPPV2: price deviation exceeds limit\");\n        }\n\n        IWooracleV2(wooracle).postPrice(baseToken, uint128(newPrice));\n    }\n    // ...\n}\n\n// ✅ Or limit the maximum size of a single swap\nuint256 public constant MAX_SWAP_AMOUNT = 1_000_000e6; // 1M USDC cap\n\nfunction _validateSwapAmount(uint256 amount) private pure {\n    require(amount <= MAX_SWAP_AMOUNT, \"WooPPV2: swap amount too large\");\n}",
+  "// ✅ Fix 1: Revert if new price deviates from Chainlink price by more than 10%\nuint256 public constant MAX_PRICE_DEVIATION = 1e17; // 10%\n\nfunction _postPriceWithValidation(address baseToken, uint128 newPrice) private {\n    (uint256 cloPrice,) = IWooracleV2(wooracle).cloPrice(baseToken);\n    if (cloPrice != 0) {\n        uint256 woP = uint256(newPrice);\n        uint256 deviation = woP > cloPrice\n            ? ((woP - cloPrice) * 1e18) / cloPrice\n            : ((cloPrice - woP) * 1e18) / cloPrice;\n        // ✅ Reject swap if deviation exceeds limit\n        require(deviation <= MAX_PRICE_DEVIATION, \"WooPPV2: oracle price deviation too high\");\n    }\n    IWooracleV2(wooracle).postPrice(baseToken, newPrice);\n}"
+ ],
+ "steps": [
+  "deposit(USDC.e) → post collateral",
+  "borrow(WOO) → drain all liquidity",
+  "WooPPV2.swap(USDC → WETH, large)",
+  "→ sPMM internal WETH price rises",
+  "→ WooracleV2 WETH newPrice updated",
+  "WooPPV2.swap(USDC → WOO, large)",
+  "→ sPMM internal WOO price rises",
+  "→ WooracleV2 WOO newPrice updated",
+  "WooPPV2.swap(WOO → USDC, all)",
+  "→ Based on manipulated high WOO",
+  "→ Receive far more USDC than real",
+  "→ WooPPV2 USDC reserves drained",
+  "WooPPV2.swap(USDC → WOO)",
+  "→ Additional profit at recovered",
+  "Silo.repay(WOO) → repay borrow",
+  "Silo.withdraw(USDC.e) → reclaim"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────────────┐\n│                         Attacker Contract (Attack Contract)                  │\n│                   Tx: 0x57e5...1fbd  |  Block: Arbitrum                     │\n└───────────────────────────┬─────────────────────────────────────────────────┘\n                            │\n          ┌─────────────────▼──────────────────┐\n          │  [Step 1] Uniswap V3 Flash Loan     │\n          │  USDC.e/WETH Pool (0xC31E...fa443)  │\n          │  Borrow: large-scale USDC.e         │\n          └─────────────────┬──────────────────┘\n                            │ Enter uniswapV3FlashCallback()\n          ┌─────────────────▼──────────────────┐\n          │  [Step 2] LBT (Liquidity Book)      │\n          │  Flash Loan — borrow addition"
+ ]
+}

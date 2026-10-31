@@ -1,0 +1,23 @@
+{
+ "id": "2023__2023-12-05_CCV_FlashLoan",
+ "source_file": "2023/2023-12-05_CCV_FlashLoan.md",
+ "title": "CCV Flash Loan Vulnerability Analysis (December 2023)",
+ "date": "2023-12-05",
+ "protocol": "CCV",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "// Price calculation within the CCV protocol\nfunction getTokenPrice() public view returns (uint256) {\n    // Uses spot price that can be manipulated within a single block\n    (uint112 reserve0, uint112 reserve1,) = pair.getReserves();\n    return uint256(reserve1) * 1e18 / uint256(reserve0);\n}\n\nfunction swap(uint256 amount) external {\n    uint256 price = getTokenPrice(); // Uses manipulated price\n    // Swap executed based on manipulated price\n}",
+  "function getTokenPrice() public view returns (uint256) {\n    // Uses TWAP oracle to prevent manipulation\n    return twapOracle.consult(token, 1e18);\n}"
+ ]
+}

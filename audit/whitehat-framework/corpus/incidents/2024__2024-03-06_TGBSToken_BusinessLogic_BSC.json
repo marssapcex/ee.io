@@ -1,0 +1,43 @@
+{
+ "id": "2024__2024-03-06_TGBSToken_BusinessLogic_BSC",
+ "source_file": "2024/2024-03-06_TGBSToken_BusinessLogic_BSC.md",
+ "title": "TGBS Token — Price Manipulation Attack via Repeated LP Pool Burning",
+ "date": "2024-03-06",
+ "protocol": "TGBS Token",
+ "chain": "BSC",
+ "loss_raw": "~$150,000",
+ "loss_usd": 150000.0,
+ "root_cause": "Business logic flaw — unlimited repeated burning of LP pool tokens possible via `_transfer()` calls",
+ "attack_tx": "0xa040...2a4",
+ "vulnerable_contract": "0xedec...50f4",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ VULNERABLE: _burnPool() is called even on ordinary (non-swap) transfers\n// Attacker can trigger it unlimited times via self-transfer\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    if (_inSwapAndLiquify || isFeeExempt[from] || isFeeExempt[to]) {\n        // Fee-exempt addresses: standard transfer\n        super._transfer(from, to, amount);\n    } else if (from == _swapPair) {\n        // Buy: collect 5% fee\n        uint256 every = amount.div(100);\n        super._transfer(from, address(this), every * 5);\n        super._transfer(from, to, amount - every * 5);\n    } else if (to == _swapPair) {\n        // Sell: execute burn + liquify\n        _burnPool();          // ❌ LP pool burn trigger\n        _swapAndLiquify();\n    } else {\n        // ❌ _burnPool() is called even on ordinary transfers (wallet → wallet)!\n        // An attacker repeatedly calling transfer(self, 1) will repeatedly execute this path\n        super._transfer(from, to, amount);\n        _burnPool();          // ❌ Core vulnerability: LP burn with no guard\n    }\n}",
+  "// ❌ VULNERABLE: Burns 0.3% from LP pool whenever _burnBlock condition is met\n// Repeated calls can drain the entire LP supply once enough blocks have elapsed\nfunction _burnPool() private lockTheSwap returns (bool) {\n    if (_burnBlock < block.number && _burnBlock > 0) {\n        // ❌ Block number incremented on each call (but attacker can loop fast enough)\n        _burnBlock += 28800 / 24;  // ~1200 block increase\n        uint256 burnAmount = (balanceOf(_swapPair) * 3) / 1000;  // 0.3% of LP balance\n        if (burnAmount > 1) {\n            super._burn(_swapPair, burnAmount);  // ❌ Burns directly from LP pool\n            // No IUniswapV2Pair(_swapPair).sync() call → reserve mismatch state\n        }\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ FIX: Remove _burnPool() call from ordinary transfers\n// Burn is restricted to swap-related transactions only\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    if (_inSwapAndLiquify || isFeeExempt[from] || isFeeExempt[to]) {\n        super._transfer(from, to, amount);\n    } else if (from == _swapPair) {\n        uint256 every = amount.div(100);\n        super._transfer(from, address(this), every * 5);\n        super._transfer(from, to, amount - every * 5);\n    } else if (to == _swapPair) {\n        // ✅ burn + liquify only on sell (unchanged)\n        _burnPool();\n        _swapAndLiquify();\n    } else {\n        // ✅ Ordinary transfer: no _burnPool() call\n        super._transfer(from, to, amount);\n        // burn is only triggered via the swap path\n    }\n}",
+  "// ✅ FIX: Call sync() after burn and strengthen burn conditions\n// Or remove _burnPool() from ordinary transfers to block the exploit path\nfunction _burnPool() private lockTheSwap returns (bool) {\n    if (_burnBlock < block.number && _burnBlock > 0) {\n        _burnBlock += 28800 / 24;\n        uint256 burnAmount = (balanceOf(_swapPair) * 3) / 1000;\n        if (burnAmount > 1) {\n            super._burn(_swapPair, burnAmount);\n            // ✅ LP reserve sync is mandatory after burn\n            IUniswapV2Pair(_swapPair).sync();\n        }\n    }\n}"
+ ],
+ "steps": [
+  "1. flashLoan(full WBNB balance)",
+  "2. DPPFlashLoanCall() callback executes",
+  "[Step A] Swap WBNB → TGBS",
+  "3. Loop begins (up to 1,600 iterations)",
+  "→ enters else branch (not a swap pair)",
+  "→ calls _burnPool()",
+  "→ if _burnBlock < block.number:",
+  "→ if burnBlock != block.number: i++",
+  "4. LP pool state change",
+  "TGBS supply plummets → price spikes",
+  "5. Sell at inflated price",
+  "[Step C] Swap TGBS → WBNB (sell high)",
+  "6. Repay flash loan"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────┐\n│  Attacker EOA (0xff1d...01e1)                        │\n│  Attack Contract (0x3eBA...3011)                     │\n└─────────────────────┬───────────────────────────────┘\n                      │ 1. flashLoan(full WBNB balance)\n                      ▼\n┌─────────────────────────────────────────────────────┐\n│  DODO DPP Oracle (0x05d9...eB5)                     │\n│  Flash loan provider — lends full WBNB balance       │\n└─────────────────────┬───────────────────────────────┘\n                      │ 2. DPPFlashLoanCall() callback executes\n                      ▼\n┌─────────────────────────────────────────────────────┐\n│  [Step A] Swap WBNB → TGBS                          │\n│  Buy large amount of TGBS via PancakeSwap Router     │\n│  (acquire ",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\n// Source: https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2024-03/TGBS_exp.sol\n\ncontract ContractTest is Test {\n    // Key contract address declarations\n    DVM private constant DPPOracle = DVM(0x05d968B7101701b6AD5a69D45323746E9a791eB5);  // DODO flash loan provider\n    IERC20 private constant WBNB = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n    ITGBS private constant TGBS = ITGBS(0xedecfA18CAE067b2489A2287784a543069f950F4);   // Vulnerable contract\n    Uni_Router_V2 private constant Router = Uni_Router_V2(0x10ED43C718714eb63d5aA57B78B54704E256024E); // PancakeSwap\n\n    function setUp() public {\n        // Fork BSC at block 36,725,819 (block just before the attack)\n        vm.createSelectFork(\"bsc\", "
+ ]
+}

@@ -1,0 +1,23 @@
+{
+ "id": "2023__2023-12-29_ChannelsFinance_DonationAttack",
+ "source_file": "2023/2023-12-29_ChannelsFinance_DonationAttack.md",
+ "title": "ChannelsFinance Donation Attack Analysis (December 2023)",
+ "date": "2023-12-29",
+ "protocol": "ChannelsFinance",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "donation-inflation"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "interface IcCLP_BTCB_BUSD is ICErc20Delegate {\n    // gulp function callable by anyone\n    function gulp() external;\n}\n\n// Internal implementation in Compound fork\nfunction gulp() external {\n    // Reflects the contract's actual balance into totalReserves\n    // Can be manipulated via direct token transfers (donations)\n    uint256 balance = token.balanceOf(address(this));\n    totalReserves = balance; // exchange rate updated\n}",
+  "function gulp() external onlyAdmin {\n    // Only callable by admin\n    uint256 balance = token.balanceOf(address(this));\n    // Detect abnormal increases\n    require(balance <= totalReserves * 110 / 100, \"Suspicious balance increase\");\n    totalReserves = balance;\n}"
+ ]
+}

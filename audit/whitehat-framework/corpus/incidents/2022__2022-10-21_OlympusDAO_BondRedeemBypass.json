@@ -1,0 +1,34 @@
+{
+ "id": "2022__2022-10-21_OlympusDAO_BondRedeemBypass",
+ "source_file": "2022/2022-10-21_OlympusDAO_BondRedeemBypass.md",
+ "title": "OlympusDAO — BondFixedExpiryTeller Fake Token redeem() Attack Analysis",
+ "date": "2022-10-21",
+ "protocol": "OlympusDAO",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$292,000 (30,437 OHM)",
+ "loss_usd": 292000.0,
+ "root_cause": "The `redeem()` function did not validate whether the supplied token address was a genuine BondFixedExpiry token, allowing OHM to be drained via a fake token",
+ "attack_tx": "0x3ed75df83d907412af874b7998d911fdf990704da87c2b1a8cf95ca5d21504cf",
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable BondFixedExpiryTeller.redeem()\ncontract BondFixedExpiryTeller {\n    mapping(ERC20BondToken => bool) public tokenCreated; // Registry of issued bond tokens\n\n    function redeem(\n        ERC20BondToken token_,  //",
+  "❌ No validation that this token was actually issued by this Teller\n        uint256 amount_\n    ) external override {\n        //",
+  "❌ No tokenCreated[token_] check\n        // Fake tokens can receive OHM as long as the maturity condition is met\n\n        if (uint48(block.timestamp) < token_.expiry()) revert Teller_TokenNotMatured(token_.expiry());\n\n        token_.burn(msg.sender, amount_); // Fake token's burn() does nothing\n\n        token_.underlying().transfer(msg.sender, amount_); // ← OHM transferred\n        // underlying() = OHM (returned by attacker's fake token)\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern — only allow issued tokens\ncontract SafeBondTeller {\n    mapping(address => bool) public isIssuedToken;\n\n    function redeem(address token_, uint256 amount_) external {\n        //",
+  "✅ Verify the token was issued by this Teller\n        require(isIssuedToken[token_], \"Token not issued by this teller\");\n\n        IBondToken token = IBondToken(token_);\n        require(block.timestamp >= token.expiry(), \"Not matured\");\n\n        token.burn(msg.sender, amount_);\n        token.underlying().transfer(msg.sender, amount_);\n    }\n}"
+ ],
+ "steps": [
+  "underlying() → returns OHM address",
+  "expiry() → returns past timestamp (already matured)",
+  "burn() → does nothing",
+  "FakeToken.expiry() < now → maturity check passes",
+  "FakeToken.burn() → does nothing (no actual burn)",
+  "FakeToken.underlying() → OHM address"
+ ],
+ "other_code": []
+}

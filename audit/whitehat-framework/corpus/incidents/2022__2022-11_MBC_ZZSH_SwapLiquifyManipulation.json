@@ -1,0 +1,31 @@
+{
+ "id": "2022__2022-11_MBC_ZZSH_SwapLiquifyManipulation",
+ "source_file": "2022/2022-11_MBC_ZZSH_SwapLiquifyManipulation.md",
+ "title": "MBC/ZZSH — swapAndLiquifyStepv1() Reserve Manipulation Attack Analysis",
+ "date": "2022-11-01",
+ "protocol": "MBC Token / ZZSH Token",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "`swapAndLiquifyStepv1()` is callable by anyone without access control and uses `amountOutMin=0` for internal swaps, forcing execution even under manipulated reserve conditions (missing access control + slippage protection)",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable swapAndLiquifyStepv1() - externally triggerable + susceptible to reserve manipulation\ncontract MBCToken {\n    uint256 private _liquidityFee = 5; // 5% liquidity fee\n    uint256 private _tokenBalance; // accumulated fee tokens\n\n    //",
+  "❌ Callable by anyone - triggering after AMM reserve manipulation executes a distorted swap\n    function swapAndLiquifyStepv1() public {\n        uint256 contractBalance = balanceOf(address(this));\n        if (contractBalance < minTokensBeforeSwap) return;\n\n        // Swap half of the contract's held tokens for USDT\n        uint256 half = contractBalance / 2;\n\n        //",
+  "❌ AMM spot price-based swap - executes at an unfavorable ratio under manipulated reserves\n        address[] memory path = new address[](2);\n        path[0] = address(this);\n        path[1] = USDT;\n        // No minimum output validation → swap executes at any price\n        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n            half, 0, path, address(this), block.timestamp\n        );\n\n        // Add liquidity with remaining half + received USDT\n        uint256 usdtBalance = IERC20(USDT).balanceOf(address(this));\n        router.addLiquidity(address(this), USDT, half, usdtBalance, 0, 0, owner, block.timestamp);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - access control + minimum output validation\ncontract SafeMBCToken {\n    function swapAndLiquifyStepv1() public onlyOwnerOrKeeper {\n        uint256 contractBalance = balanceOf(address(this));\n        if (contractBalance < minTokensBeforeSwap) return;\n\n        uint256 half = contractBalance / 2;\n        //",
+  "✅ Defend against reserve manipulation via TWAP or minimum output validation\n        uint256 expectedUsdt = _getExpectedOut(half);\n        uint256 minUsdt = expectedUsdt * 95 / 100; // Allow 5% slippage\n\n        address[] memory path = new address[](2);\n        path[0] = address(this); path[1] = USDT;\n        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(\n            half, minUsdt, path, address(this), block.timestamp\n        );\n    }\n}"
+ ],
+ "steps": [
+  "Swap 150,000 USDT → MBC",
+  "Contract's held MBC → converted to USDT at manipulated ratio (large MBC drain)",
+  "Reverse swap MBC → USDT (attacker sells held MBC)"
+ ],
+ "other_code": []
+}

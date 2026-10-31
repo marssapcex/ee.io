@@ -1,0 +1,29 @@
+{
+ "id": "2023__2023-11-07_XAI_TokenLogic",
+ "source_file": "2023/2023-11-07_XAI_TokenLogic.md",
+ "title": "XAI Token — Token Logic Vulnerability Analysis",
+ "date": "2023-11-07",
+ "protocol": "XAI Token",
+ "chain": "BSC",
+ "loss_raw": "Unclear",
+ "loss_usd": null,
+ "root_cause": "Balance calculation error in XAI token transfer logic",
+ "attack_tx": "0x2b251e456c434992...",
+ "vulnerable_contract": "0x570ce7b89c672007...",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: balance calculation error\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    //",
+  "❌ Balance can increase under certain conditions\n    uint256 adjustedAmount = adjustForTax(amount);\n    if (adjustedAmount > amount) { //",
+  "❌ This case can occur\n        _balances[to] += adjustedAmount;\n    }\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: transfer amount must always be less than or equal to the original amount"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: balance calculation error in XAI token transfer logic\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① Identify error in XAI token transfer logic\n  ├─② Trigger balance increase by transferring a specific amount\n  └─③ Sell excess balance"
+ ]
+}

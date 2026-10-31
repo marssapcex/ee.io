@@ -1,0 +1,42 @@
+{
+ "id": "2026__2026-03-02_InverseFinance_FiRM_sDOLA_YieldSniping_LLAMMA_ETH",
+ "source_file": "2026/2026-03-02_InverseFinance_FiRM_sDOLA_YieldSniping_LLAMMA_ETH.md",
+ "title": "Inverse Finance FiRM — sDOLA Yield Sniping + LLAMMA Price Manipulation Analysis",
+ "date": "2026-03-02",
+ "protocol": "Inverse Finance FiRM",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~227,326 DOLA + 6.74 WETH (~$242,000)",
+ "loss_usd": 242000.0,
+ "root_cause": "ERC4626 sDOLA vault yield sniping + cascading liquidations via LLAMMA price manipulation",
+ "attack_tx": "0xb935...8a4",
+ "vulnerable_contract": "FiRM Controller 0xad44...86, sDOLA 0xb45a...05, DBREarn 0xe5f2...b4",
+ "classes": [
+  "oracle-price-manipulation",
+  "staking-reward"
+ ],
+ "code_before": [
+  "// DBREarn.earn() — distributes accumulated DOLA yield to the sDOLA vault in bulk\n// Contract: 0xe5f24791e273cb96a1f8e5b67bc2397f0ad9b8b4\nfunction earn() external {\n    uint256 accumulated = dola.balanceOf(address(this));\n\n    // ❌ Vulnerable: yield is immediately attributed based on sDOLA holdings at call time\n    // Holding 90% of supply via flash loan captures 90% of accumulated yield\n    dola.transfer(address(sDOLA), accumulated);\n\n    // ERC4626 internals: totalAssets += accumulated\n    // Each holder's yield = accumulated * (heldShares / totalShares)\n    // Attacker holding 90.1% → receives 90.1% of yield\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: yield distribution based on time-weighted average balance (TWAB)\n// or require minimum holding period + limit distribution frequency\ncontract DBREarnFixed {\n    uint256 public lastEarnBlock;\n    uint256 public constant MIN_EARN_INTERVAL = 7200; // ~1 day (in blocks)\n\n    // Distribute yield based on snapshots so that\n    // flash loan attackers cannot snipe yield within a single block\n    function earn() external {\n        require(\n            block.number > lastEarnBlock + MIN_EARN_INTERVAL,\n            \"DBREarn: distribution interval not met\"\n        );\n\n        uint256 accumulated = dola.balanceOf(address(this));\n        require(accumulated > 0, \"DBREarn: no yield to distribute\");\n\n        lastEarnBlock = block.number;\n\n        // ✅ Distribute based on TWAB snapshot from the previous epoch\n        // Large deposits within a single block are not reflected in the TWAB\n        _distributeWithTWAB(accumulated);\n    }\n}",
+  "// ✅ Fix: enforce minimum distribution interval + TWAB-based distribution\ncontract DBREarnFixed {\n    uint256 public lastEarnBlock;\n    uint256 public constant MIN_EARN_INTERVAL = 7200; // ~24 hours\n\n    function earn() external {\n        require(\n            block.number > lastEarnBlock + MIN_EARN_INTERVAL,\n            \"too frequent\"\n        );\n        lastEarnBlock = block.number;\n\n        uint256 accumulated = dola.balanceOf(address(this));\n        // Distribute based on TWAB snapshot: average holdings over the past N blocks\n        _distributeWithTWAB(accumulated);\n    }\n}"
+ ],
+ "steps": [
+  "1. **Bunni Flash Loan** ([0xbbbb...bcb](https://etherscan.io/address/0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb)): 15,986 WETH + USDC",
+  "2. **Curve crvUSD Flash Loan** ([0xa920...635](https://etherscan.io/address/0xa920de414ea4ab66b97da1bfe9e6eca7d4219635)): 25,000,000 crvUSD",
+  "- Burn 10,607,802 sDOLA → receive 12,613,130 DOLA",
+  "- FiRM Controller → attack contract: return 10,904,021 crvUSD",
+  "USDC→alUSD ▶ alUSD/sDOLA ▶ 454,997",
+  "crvUSD → ▶ SaveDola ▶ 327,300",
+  "(Price band shift → liquidation trigger)",
+  "Burn 10,607,802 sDOLA → Receive 12,613,130 DOLA",
+  "Unwind own FiRM position → recover 10,904,021 crvUSD",
+  "Redeem scrvUSD → 7,002,748 crvUSD",
+  "USDC → WETH swap (Uniswap V2)",
+  "**sDOLA ratio change** | 1.1890 → 1.3531 DOLA/sDOLA (+13.8%)"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────────────────────┐\n│                         Attack Transaction (Block 24566937)                  │\n└─────────────────────────────────────────────────────────────────────────────┘\n\n  ┌──────────────┐    15,986 WETH + USDC     ┌──────────────────┐\n  │  Bunni       │ ──────────────────────────▶│                  │\n  │  FlashLoan   │                            │                  │\n  └──────────────┘                            │                  │\n                                              │  Attack Contract  │\n  ┌──────────────┐    25,000,000 crvUSD      │   (0xd8e8)       │\n  │ Curve crvUSD │ ──────────────────────────▶│                  │\n  │  FlashLoan   │                            │                  │\n  └──────────────┘     ",
+  "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n// Attack flow reconstruction based on on-chain verification data\n// Actual attack TX: 0xb93506af...ed3d8a4\n\ninterface IBunniFlash {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ninterface ICurveFlashLoan {\n    function flashLoan(address receiver, address token, uint256 amount, bytes calldata data) external;\n}\n\ninterface ILLAMMA {\n    function exchange(uint256 i, uint256 j, uint256 in_amount, uint256 min_amount) external returns (uint256);\n}\n\ninterface IsDOLA {\n    function deposit(uint256 assets, address receiver) external returns (uint256);\n    function redeem(uint256 shares, address receiver, address owner) external returns (uint256);\n    function balanceOf(address) exter"
+ ]
+}

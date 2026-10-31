@@ -1,0 +1,50 @@
+{
+ "id": "2024__2024-05-26_Normie_BusinessLogic_Base",
+ "source_file": "2024/2024-05-26_Normie_BusinessLogic_Base.md",
+ "title": "Normie — Unlimited Token Minting via premarket_user Business Logic Flaw Analysis",
+ "date": "2024-05-26",
+ "protocol": "Normie",
+ "chain": "Base",
+ "loss_raw": "~$881,686 (224.98 ETH at attack-time price; confirmed CertiK, Neptune Mutual)",
+ "loss_usd": 881686.0,
+ "root_cause": "`_get_premarket_user()` flawed authorization logic → conditional unlimited minting triggered inside `_transfer()`",
+ "attack_tx": "0xa618...c3fd",
+ "vulnerable_contract": "0x7F12...AF200",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — automatically registers premarket_user when received amount equals team wallet balance\nfunction _get_premarket_user(address _address, uint256 amount) internal {\n    premarket_user[_address] = !premarket_user[_address]\n        ? (amount == balanceOf(teamWalletAddress))  // ❌ Simple amount comparison anyone can satisfy\n        : premarket_user[_address];\n}",
+  "// ❌ Vulnerable code — hidden minting mechanism inside _transfer()\nfunction _transfer(\n    address sender,\n    address recipient,\n    uint256 amount\n) private returns (bool) {\n    // ...\n\n    // ❌ When purchasing from pair (isMarketPair[sender]) + premarket_user[recipient] condition is met:\n    // additionally accumulates amount in the contract's own balance (effectively minting)\n    if (\n        isMarketPair[sender] &&\n        !isExcludedFromFee[recipient] &&\n        premarket_user[recipient]       // ❌ Triggered using privileges obtained by attacker\n    ) {\n        _balances[address(this)] = _balances[address(this)].add(amount);\n        // ❌ Added to contract without deducting from sender's balance — supply increases\n    }\n\n    // ❌ Automatically executes swapAndLiquify when contract balance exceeds threshold\n    if (\n        overMinimumTokenBalance &&\n        !inSwapAndLiquify &&\n        !isMarketPair[sender] &&\n        swapAndLiquifyEnabled &&\n        !isExcludedFromFee[sender]\n    ) {\n        swapAndLiquify(contractTokenBalance);  // ❌ Swaps accumulated tokens for ETH\n    }\n\n    // ...\n\n    // ❌ Re-evaluates premarket_user after transfer — re-checks role assignment condition\n    _get_premarket_user(recipient, amount);\n    // ...\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — explicit allowlist-based role assignment\nmapping(address => bool) private premarket_user;\n\n// Restrict premarket_user assignment to owner only\nfunction setPremarketUser(address _address, bool _status) external onlyOwner {\n    premarket_user[_address] = _status;\n    emit PremarketUserUpdated(_address, _status);\n}\n\n// _get_premarket_user function completely removed or blocked from external calls\n// This function is not called inside _transfer()",
+  "// ✅ Fixed code — completely removes the conditional minting block\nfunction _transfer(\n    address sender,\n    address recipient,\n    uint256 amount\n) private returns (bool) {\n    // ...\n\n    // ✅ premarket_user-related minting block removed\n    // Supply can only increase through an explicit mint() function\n\n    // ✅ swapAndLiquify only processes tokens collected as fees\n    if (\n        overMinimumTokenBalance &&\n        !inSwapAndLiquify &&\n        !isMarketPair[sender] &&\n        swapAndLiquifyEnabled\n    ) {\n        swapAndLiquify(contractTokenBalance);\n    }\n\n    _balances[sender] = _balances[sender].sub(amount, \"Insufficient Balance\");\n    uint256 finalAmount = (isExcludedFromFee[sender] || isExcludedFromFee[recipient])\n        ? amount\n        : takeFee(sender, recipient, amount);\n\n    _balances[recipient] = _balances[recipient].add(finalAmount);\n    // ✅ _get_premarket_user call removed\n    emit Transfer(sender, recipient, finalAmount);\n    return true;\n}"
+ ],
+ "steps": [
+  "- 2 ETH → purchase NORMIE via SushiSwap V2 Router (receives ~171,956 NORMIE)",
+  "- After `_transfer()`, `_get_premarket_user()` is called → received amount 171,956 ≠ 5,000,000, so not obtained",
+  "- **SLP Flash Loan 1**: Borrow 5,000,000 NORMIE → transfer to attack contract",
+  "→ `_get_premarket_user()`: amount(5,000,000) == balanceOf(teamWallet)(5,000,000) ✓",
+  "→ **Attack contract successfully registered as `premarket_user`**",
+  "- When `_transfer(SLP → attack contract)` executes, premarket_user condition is met",
+  "→ `_balances[NORMIE_contract] += 9,066,513` (contract balance increases)",
+  "skim(address(this)) → Sends pair's actual balance - reserve difference to attack contract",
+  "transfer(SLP, 2,266,628) → Attack contract sends back to SLP (triggers premarket_user)",
+  "→ _balances[NORMIE_contract] += 2,266,628 (accumulates repeatedly)",
+  "→ Swaps accumulated 4,650,000 NORMIE for WETH (earning ~66–17 WETH each time)",
+  "STEP 1: Request SLP flash loan (5,000,000 NORMIE)",
+  "SLP → Attack Contract: 5,000,000 NORMIE",
+  "→ 5000000 == balanceOf(teamWallet) ✓",
+  "→ premarket_user[attackContract] = true ✓",
+  "Attack Contract → SLP: 5,020,000 NORMIE (repayment)",
+  "Borrow 11,333,142 NORMIE → Attack Contract",
+  "Large Dump: 9,066,513 NORMIE → WETH",
+  "premarket_user condition met when SLP → Attack Contract (buy)",
+  "→ NORMIE contract balance += 9,066,513 (unauthorized minting)"
+ ],
+ "other_code": [
+  "// Reference code — swapAndLiquify is not inherently vulnerable,\n// but when combined with the minting logic, it becomes the attacker's profit-realization mechanism\nfunction swapAndLiquify(uint256 tAmount) private lockTheSwap {\n    uint256 tokensForLP = tAmount.mul(_liquidityShare).div(_totalDistributionShares).div(2);\n    uint256 tokensForSwap = tAmount.sub(tokensForLP);\n    swapTokensForEth(tokensForSwap);  // NORMIE → ETH swap\n    uint256 amountReceived = address(this).balance;\n\n    // Distribute ETH to team wallet, developer wallet, and liquidity pool\n    if (amountReceived > 0) {\n        transferToAddressETH(teamWalletAddress, amountBNBMarketing);\n        transferToAddressETH(devWalletAddress, amountBNBTeam);\n        addLiquidity(tokensForLP, amountBNBLiquidity);\n    }\n}",
+  "for (i = 0; i < 50; i++) {\n    skim(address(this))        → Sends pair's actual balance - reserve difference to attack contract\n    transfer(SLP, 2,266,628)   → Attack contract sends back to SLP (triggers premarket_user)\n                                → _balances[NORMIE_contract] += 2,266,628 (accumulates repeatedly)\n}"
+ ]
+}

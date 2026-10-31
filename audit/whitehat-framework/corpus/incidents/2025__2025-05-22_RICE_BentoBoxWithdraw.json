@@ -1,0 +1,27 @@
+{
+ "id": "2025__2025-05-22_RICE_BentoBoxWithdraw",
+ "source_file": "2025/2025-05-22_RICE_BentoBoxWithdraw.md",
+ "title": "RICE Protocol — BentoBox Withdrawal Access Control Vulnerability Analysis",
+ "date": "2025-05-22",
+ "protocol": "RICE Protocol",
+ "chain": "Base",
+ "loss_raw": "~34.5 WETH (~88,100 USD)",
+ "loss_usd": null,
+ "root_cause": "The `withdraw` function in the BentoBox-style vault allows draining another user's assets without validating the `from` address",
+ "attack_tx": "0x8421c96c...",
+ "vulnerable_contract": "0xcfe0de4a50c80b434092f87e106dfa40b71a5563",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable withdraw: no from address validation\ncontract BentoBoxLike {\n    mapping(address => mapping(address => uint256)) public balanceOf; // user => token => amount\n\n    function withdraw(\n        address token_,\n        address from,    //",
+  "❌ unvalidated from address\n        address to,\n        uint256 amount,\n        uint256 share\n    ) external {\n        //",
+  "❌ no msg.sender == from check\n        //"
+ ],
+ "code_after": [
+  "✅ Correct implementation\nfunction withdraw(\n    address token_,\n    address from,\n    address to,\n    uint256 amount,\n    uint256 share\n) external {\n    //",
+  "✅ caller validation\n    require(\n        from == msg.sender ||\n        masterContractApproved[masterContractOf[msg.sender]][from],\n        \"Not approved\"\n    );\n    // ...\n}"
+ ],
+ "steps": [],
+ "other_code": []
+}

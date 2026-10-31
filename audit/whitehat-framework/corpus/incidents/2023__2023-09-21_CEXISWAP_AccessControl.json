@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-09-21_CEXISWAP_AccessControl",
+ "source_file": "2023/2023-09-21_CEXISWAP_AccessControl.md",
+ "title": "CEXISWAP — Swap Function Access Control Analysis",
+ "date": "2023-09-21",
+ "protocol": "CEXISWAP",
+ "chain": "Ethereum",
+ "loss_raw": "~$30K",
+ "loss_usd": 30.0,
+ "root_cause": "Arbitrary token approvals executable without parameter validation in the swap router",
+ "attack_tx": "0xede72a74d8398875...",
+ "vulnerable_contract": "0xb8a5890d53df78de...",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: arbitrary token approval possible\nfunction executeSwap(address tokenIn, address router, bytes calldata data) external {\n    IERC20(tokenIn).approve(router, type(uint256).max); //",
+  "❌ approves arbitrary router\n    (bool success,) = router.call(data); //",
+  "❌ executes arbitrary data\n}\n//"
+ ],
+ "code_after": [
+  "✅ Fix: allow only whitelisted routers\nfunction executeSwap(address tokenIn, address router, bytes calldata data) external {\n    require(approvedRouters[router], \"Not approved router\"); //",
+  "✅\n    IERC20(tokenIn).approve(router, amountNeeded);\n    (bool success,) = router.call(data);\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "// Root cause: arbitrary token approvals executable without parameter validation in the swap router\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  ├─① calls executeSwap(token, maliciousRouter, maliciousData)\n  ├─② executes unlimited approve to malicious router\n  ├─③ drains all contract tokens via transferFrom\n  └─④ ~$30K profit"
+ ]
+}

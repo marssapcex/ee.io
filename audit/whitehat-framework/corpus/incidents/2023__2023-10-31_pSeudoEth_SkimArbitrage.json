@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-10-31_pSeudoEth_SkimArbitrage",
+ "source_file": "2023/2023-10-31_pSeudoEth_SkimArbitrage.md",
+ "title": "pSeudoEth Skim Arbitrage Incident Analysis",
+ "date": "2023-10-31",
+ "protocol": "pSeudoEth",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Analyze pETH/WETH pair reserve state",
+  "2 ▶ Repeated skim() calls (10 rounds):",
+  "Round 1: Pair.skim(address(this)) → receive small amount of WETH",
+  "Round 2: Swap WETH to pETH → skim() again",
+  "3 ▶ Accumulated profit per round:",
+  "Burn mechanism causes reserve mismatch → skimmable amount generated",
+  "10 iterations → total 1.4 ETH accumulated",
+  "4 ▶ 1.4 ETH drained"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: repeated skim on pETH pair to manipulate reserves\ncontract pETHPair {\n    // UniswapV2 style pair\n    uint112 private reserve0; // pETH\n    uint112 private reserve1; // WETH\n\n    // skim: transfers the difference between actual balance and recorded reserve to caller\n    function skim(address to) external lock {\n        address _token0 = token0;\n        address _token1 = token1;\n        _safeTransfer(_token0, to, IERC20(_token0).balanceOf(address(this)) - reserve0);\n        _safeTransfer(_token1, to, IERC20(_token1).balanceOf(address(this)) - reserve1);\n    }\n}\n\n// Vulnerable: fee/tax mechanism on pETH transfer causes mismatch between received amount and recorded amount\ncontract pETH {\n    uint256 public burnRate = 2; // 2% burned on transfer\n\n    function _transfer(a",
+  "// Root Cause: Repeated Skim Arbitrage\n// Source code unverified — analysis based on bytecode"
+ ]
+}

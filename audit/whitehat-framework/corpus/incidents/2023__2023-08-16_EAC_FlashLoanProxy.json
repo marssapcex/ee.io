@@ -1,0 +1,32 @@
+{
+ "id": "2023__2023-08-16_EAC_FlashLoanProxy",
+ "source_file": "2023/2023-08-16_EAC_FlashLoanProxy.md",
+ "title": "EAC Flash Loan Proxy Attack Incident Analysis",
+ "date": "2023-08-16",
+ "protocol": "EAC",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ IDPPOracle(dodo_pool).flashLoan()",
+  "2 ▶ swap(usdt, eac, balance)",
+  "Swap USDT → EAC",
+  "3 ▶ proxy.call(0xe6a24c3f)",
+  "Manipulate EAC internal state → inflate value",
+  "4 ▶ swap(eac, usdt, balance)",
+  "→ Receive more USDT than initially deposited",
+  "5 ▶ IERC20(usdt).transfer() - Repay flash loan"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: proxy function with no access control\ncontract EACProxy {\n    address public implementation;\n\n    // Vulnerable: function that modifies internal state has no access control\n    // Selector 0xe6a24c3f\n    function manipulateState(/* params */) external {\n        // No access control — callable by anyone\n        // Can manipulate EAC token internal accounting\n        _updateTokenReserves();\n    }\n\n    // delegatecall in fallback function\n    fallback() external payable {\n        address impl = implementation;\n        assembly {\n            calldatacopy(0, 0, calldatasize())\n            let result := delegatecall(gas(), impl, 0, calldatasize(), 0, 0)\n            returndatacopy(0, 0, returndatasize())\n            switch result\n            case 0 { revert(0, returndatasiz",
+  "// Root cause: Flash Loan + Proxy Call Exploit\n// Source code unverified — analysis based on bytecode"
+ ]
+}

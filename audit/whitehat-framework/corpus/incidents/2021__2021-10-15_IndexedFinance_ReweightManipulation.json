@@ -1,0 +1,36 @@
+{
+ "id": "2021__2021-10-15_IndexedFinance_ReweightManipulation",
+ "source_file": "2021/2021-10-15_IndexedFinance_ReweightManipulation.md",
+ "title": "Indexed Finance — Re-indexing Price Manipulation DEFI5 Pool Exploit Analysis",
+ "date": "2021-10-15",
+ "protocol": "Indexed Finance",
+ "chain": "Ethereum",
+ "loss_raw": "~$16,000,000",
+ "loss_usd": 16000000.0,
+ "root_cause": "During re-indexing, `swapExactAmountIn()` allows MAX_IN_RATIO of 50% (excessively high) and `joinswapExternAmountIn()` lacks slippage protection, enabling large swaps to distort the pool's internal price followed by low-cost minting",
+ "attack_tx": "0x44aa...5aa (block 13,417,949)",
+ "vulnerable_contract": "DEFI5 Index Pool",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ DEFI5 IndexPool — large swaps permitted during re-indexing\nuint256 public constant MAX_IN_RATIO = 5 * 10**17; // 50%\n\nfunction swapExactAmountIn(\n    address tokenIn,\n    uint256 tokenAmountIn,\n    address tokenOut,\n    uint256 minAmountOut,\n    uint256 maxPrice\n) external returns (uint256 tokenAmountOut, uint256 spotPriceAfter) {\n    Record storage inRecord = _records[tokenIn];\n    Record storage outRecord = _records[tokenOut];\n\n    // Allows a single swap of up to 50% of pool balance\n    // Flash loan → mass swap → rapid pool price distortion\n    require(\n        tokenAmountIn <= bmul(inRecord.balance, MAX_IN_RATIO),\n        \"ERR_MAX_IN_RATIO\"\n    );\n    // ...\n}",
+  "// BConst.sol:\n// uint256 internal constant MAX_IN_RATIO = BONE / 2; // = 5e17 = 50%\n\nfunction swapExactAmountIn(\n  address tokenIn,\n  uint256 tokenAmountIn,\n  address tokenOut,\n  uint256 minAmountOut,\n  uint256 maxPrice\n)\n  external\n  override\n  _lock_\n  _public_\n  returns (uint256/* tokenAmountOut */, uint256/* spotPriceAfter */)\n{\n  (Record memory inRecord, uint256 realInBalance) = _getInputToken(tokenIn);\n  Record memory outRecord = _getOutputToken(tokenOut);\n\n  require(\n    tokenAmountIn <= bmul(inRecord.balance, MAX_IN_RATIO), // ❌ MAX_IN_RATIO = 50% — one swap can move half the pool\n    \"ERR_MAX_IN_RATIO\"\n  );\n\n  uint256 spotPriceBefore = calcSpotPrice(\n    inRecord.balance,\n    inRecord.denorm,\n    outRecord.balance,\n    outRecord.denorm,\n    _swapFee\n  );\n  require(spotPriceBefore <= maxPrice, \"ERR_BAD_LIMIT_PRICE\");\n\n  uint256 tokenAmountOut = calcOutGivenIn(\n    inRecord.balance,\n    inRecord.denorm,\n    outRecord.balance,\n    outRecord.denorm,\n    tokenAmountIn,\n    _swapFee\n  );\n\n  require(tokenAmountOut >= minAmountOut, \"ERR_LIMIT_OUT\");\n\n  _pullUnderlying(tokenIn, msg.sender, tokenAmountIn);\n  _pushUnderlying(tokenOut, msg.sender, tokenAmountOut);\n\n  outRecord.balance = bsub(outRecord.balance, tokenAmountOut);\n  _records[tokenOut].balance = outRecord.balance;\n  _decreaseDenorm(outRecord, tokenOut); // adjusts weight during re-indexing\n\n  realInBalance = badd(realInBalance, tokenAmountIn);\n  _updateInputToken(tokenIn, inRecord, realInBalance);\n  if (inRecord.ready) {\n    inRecord.balance = realInBalance;\n  }\n\n  uint256 spotPriceAfter = calcSpotPrice(\n    inRecord.balance,\n    inRecord.denorm,\n    outRecord.balance,\n    outRecord.denorm,\n    _swapFee\n  );\n\n  require(spotPriceAfter >= spotPriceBefore, \"ERR_MATH_APPROX_2\");\n  require(spotPriceAfter <= maxPrice, \"ERR_LIMIT_PRICE\");\n  require(\n    spotPriceBefore <= bdiv(tokenAmountIn, tokenAmountOut),\n    \"ERR_MATH_APPROX\"\n  );\n\n  emit LOG_SWAP(msg.sender, tokenIn, tokenOut, tokenAmountIn, tokenAmountOut);\n\n  return (tokenAmountOut, spotPriceAfter);\n}\n\nfunction joinswapExternAmountIn(\n  address tokenIn,\n  uint256 tokenAmountIn,\n  uint256 minPoolAmountOut\n)\n  external\n  override\n  _lock_\n  _public_\n  returns (uint256/* poolAmountOut */)\n{\n  (Record memory inRecord, uint256 realInBalance) = _getInputToken(tokenIn);\n\n  require(tokenAmountIn != 0, \"ERR_ZERO_IN\");\n\n  require(\n    tokenAmountIn <= bmul(inRecord.balance, MAX_IN_RATIO), // ❌ same 50% limit; pool balance already distorted by swaps\n    \"ERR_MAX_IN_RATIO\"\n  );\n\n  uint256 poolAmountOut = calcPoolOutGivenSingleIn(\n    inRecord.balance,   // ❌ inRecord.balance inflated by previous swapExactAmountIn calls\n    inRecord.denorm,\n    _totalSupply,\n    _totalWeight,\n    tokenAmountIn,\n    _swapFee\n  );                    // ❌ over-issues pool shares relative to true market price\n\n  require(poolAmountOut >= minPoolAmountOut, \"ERR_LIMIT_OUT\"); // ❌ attacker sets minPoolAmountOut = 0\n\n  _updateInputToken(tokenIn, inRecord, badd(realInBalance,"
+ ],
+ "code_after": [
+  "// ✅ Pause swaps during re-indexing\n// ✅ Lower MAX_IN_RATIO to 5%\n\nuint256 public constant MAX_IN_RATIO = 5 * 10**16; // 5%\nbool public reindexing;\n\nmodifier notReindexing() {\n    require(!reindexing, \"IndexPool: reindexing in progress\");\n    _;\n}\n\nfunction swapExactAmountIn(...) external notReindexing returns (...) {\n    require(\n        tokenAmountIn <= bmul(inRecord.balance, MAX_IN_RATIO),\n        \"ERR_MAX_IN_RATIO\"\n    );\n    // ...\n}",
+  "// ✅ Fix: reduce MAX_IN_RATIO and require non-zero minPoolAmountOut\nuint256 internal constant MAX_IN_RATIO = BONE / 20; // 5% instead of 50%\n// Also: pause swaps during re-indexing via _reindexLock modifier\nrequire(minPoolAmountOut > 0, \"ERR_ZERO_MIN_OUT\");"
+ ],
+ "steps": [
+  "Step 1: Uniswap V2 flash loan — 6 tokens",
+  "Step 2: DEFI5 IndexPool.swapExactAmountIn() repeated",
+  "50%) → distort token ratios in pool, index price drops",
+  "Step 3: DEFI5 IndexPool.joinswapExternAmountIn()",
+  "Step 4: Additional repeated mint/exit via SUSHI flash loan",
+  "Step 5: Sell minted DEFI5 tokens + repay flash loans"
+ ],
+ "other_code": [
+  "┌────────────────────────────────────────────────────────────┐\n│ Step 1: Uniswap V2 flash loan — 6 tokens                   │\n│ Borrow large amounts of UNI, AAVE, COMP, CRV, MKR, SNX    │\n│ uniswapV2Call() callback                                   │\n└─────────────────────┬──────────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────────┐\n│ Step 2: DEFI5 IndexPool.swapExactAmountIn() repeated       │\n│ Swap each token into the DEFI5 pool (exploit MAX_IN_RATIO  │\n│ 50%) → distort token ratios in pool, index price drops     │\n└─────────────────────┬──────────────────────────────────────┘\n                      │\n┌─────────────────────▼──────────────────────────────────────┐\n│ Step 3: DEFI5 IndexPool.joinswapExternAmountIn()          ",
+  "// uniswapV2Call() — flash loan callback\nfunction uniswapV2Call(address sender, uint amount0, uint amount1, bytes calldata data) external {\n    // Swap 6 tokens into the DEFI5 pool\n    // DEFI5Pool.swapExactAmountIn(UNI, uniAmount, DEFI5, 0, maxPrice)\n    // DEFI5Pool.swapExactAmountIn(AAVE, aaveAmount, DEFI5, 0, maxPrice)\n    // ... (COMP, CRV, MKR, SNX)\n\n    // Mass-mint DEFI5 at distorted price\n    // DEFI5Pool.joinswapExternAmountIn(token, amount, minPoolAmountOut)\n\n    // Repeat with additional SUSHI flash loan\n    // DEFI5Pool.exitswapPoolAmountIn(...)\n\n    // Repayment\n    // Return each Uniswap pair amount with fee\n}"
+ ]
+}

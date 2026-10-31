@@ -1,0 +1,38 @@
+{
+ "id": "2024__2024-01-30_MIMSpell2_PrecisionLossManipulation",
+ "source_file": "2024/2024-01-30_MIMSpell2_PrecisionLossManipulation.md",
+ "title": "MIM Spell (2nd) — Precision Loss-Based Repayment Rounding Manipulation Analysis",
+ "date": "2024-01-30",
+ "protocol": "Abracadabra / MIM Spell",
+ "chain": "Ethereum",
+ "loss_raw": "~$6,500,000",
+ "loss_usd": 6500000.0,
+ "root_cause": "Rounding down error in `rayDiv()` causes debt to be eliminated by 1 unit every 90 borrow-repay cycles, enabling artificial debt erasure",
+ "attack_tx": null,
+ "vulnerable_contract": "CauldronV4 0x7259e152",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: rayDiv rounding error\nfunction rayDiv(uint256 a, uint256 b) internal pure returns (uint256) {\n    return (a * RAY + b / 2) / b;\n    // b/2 rounding accumulates, causing debt to be calculated lower than actual\n}\n\n// repayForAll → userBorrowPart decreases → borrow limit increases on subsequent borrows\nfunction repayForAll(uint128 amount, bool skim) public returns (uint128) {\n    // Proportionally reduces all user debt\n    totalBorrow.elastic -= amount;\n    // Each user's borrowPart decreases lower than expected due to rayDiv rounding\n}\n\n//",
+  "// File: CauldronV4.sol\n    function borrow(address to, uint256 amount) public solvent returns (uint256 part, uint256 share) {  // ❌ Vulnerability\n        accrue();\n        (part, share) = _borrow(to, amount);\n    }",
+  "// File: BoringERC20.sol\nlibrary BoringERC20 {\n    bytes4 private constant SIG_SYMBOL = 0x95d89b41; // symbol()  // ❌ Vulnerability\n    bytes4 private constant SIG_NAME = 0x06fdde03; // name()\n    bytes4 private constant SIG_DECIMALS = 0x313ce567; // decimals()\n    bytes4 private constant SIG_BALANCE_OF = 0x70a08231; // balanceOf(address)\n    bytes4 private constant SIG_TOTALSUPPLY = 0x18160ddd; // balanceOf(address)\n    bytes4 private constant SIG_TRANSFER = 0xa9059cbb; // transfer(address,uint256)\n    bytes4 private constant SIG_TRANSFER_FROM = 0x23b872dd; // transferFrom(address,address,uint256)\n\n    function returnDataToString(bytes memory data) internal pure returns (string memory) {\n        if (data.length >= 64) {\n            return abi.decode(data, (string));\n        } else if (data.length == 32) {\n            uint8 i = 0;\n            while (i < 32 && data[i] != 0) {\n                i++;\n            }\n            bytes memory bytesArray = new bytes(i);\n            for (i = 0; i < 32 && data[i] != 0; i++) {\n                bytesArray[i] = data[i];\n            }\n            return string(bytesArray);\n        } else {\n            return \"???\";\n        }\n    }\n\n    /// @notice Provides a safe ERC20.symbol version which returns '???' as fallback string.\n    /// @param token The address of the ERC-20 token contract.\n    /// @return (string) Token symbol.\n    function safeSymbol(IERC20 token) internal view returns (string memory) {\n        (bool success, bytes memory data) = address(token).staticcall(abi.encodeWithSelector(SIG_SYMBOL));\n        return success ? returnDataToString(data) : \"???\";\n    }\n\n    /// @notice Provides a safe ERC20.name version which returns '???' as fallback string.\n    /// @param token The address of the ERC-20 token contract.\n    /// @return (string) Token name.\n    function safeName(IERC20 token) internal view returns (string memory) {\n        (bool success, bytes memory data) = address(token).staticcall(abi.encodeWithSelector(SIG_NAME));\n        return success ? returnDataToString(data) : \"???\";\n    }\n\n    /// @notice Provides a safe ERC20.decimals version which returns '18' as fallback value.\n    /// @param token The address of the ERC-20 token contract.\n    /// @return (uint8) Token decimals.\n    function safeDecimals(IERC20 token) internal view returns (uint8) {\n        (bool success, bytes memory data) = address(token).staticcall(abi.encodeWithSelector(SIG_DECIMALS));\n        return success && data.length == 32 ? abi.decode(data, (uint8)) : 18;\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: use ceiling rounding\nfunction rayDiv(uint256 a, uint256 b) internal pure returns (uint256) {\n    return (a * RAY + b - 1) / b;  // Rounds in the ceiling direction\n}"
+ ],
+ "steps": [
+  "→ [1] DegenBox flash: 300,000 MIM flash loan",
+  "→ [2] repayForAll(): repay all user debt",
+  "→ [3] Curve: MIM → USDT swap",
+  "→ Uniswap V3: MIM → USDC → WETH swap",
+  "→ [4] Deploy helper contract → 90 borrow-repay cycles",
+  "→ [5] Add final collateral → borrow remaining MIM",
+  "→ [6] Retrieve MIM → repay flash loan",
+  "→ [7] ~$6.5M profit (yvCurve-3Crypto-f collateral)"
+ ],
+ "other_code": [
+  "// File: IBentoBoxV1.sol\ncontract IFlashBorrower {\ninterface IFlashBorrower {\n    /// @notice The flashloan callback. `amount` + `fee` needs to repayed to msg.sender before this call returns.\n    /// @param sender The address of the invoker of this flashloan.\n    /// @param token The address of the token that is loaned.\n    /// @param amount of the `token` that is loaned.\n    /// @param fee The fee that needs to be paid on top for this loan. Needs to be the same as `token`.\n    /// @param data Additional data that was passed to the flashloan function.\n    function onFlashLoan(\n        address sender,\n        IERC20 token,\n        uint256 amount,\n        uint256 fee,\n        bytes calldata data\n    ) external;\n}",
+  "Attacker\n  │\n  ├─→ [1] DegenBox flash: 300,000 MIM flash loan\n  │\n  ├─→ [2] repayForAll(): repay all user debt\n  │         └─ userBorrowPart abnormally reduced due to rayDiv rounding\n  │\n  ├─→ [3] Curve: MIM → USDT swap\n  │   ├─→ Uniswap V3: MIM → USDC → WETH swap\n  │\n  ├─→ [4] Deploy helper contract → 90 borrow-repay cycles\n  │         └─ Rounding error accumulates each cycle\n  │\n  ├─→ [5] Add final collateral → borrow remaining MIM\n  │\n  ├─→ [6] Retrieve MIM → repay flash loan\n  │\n  └─→ [7] ~$6.5M profit (yvCurve-3Crypto-f collateral)"
+ ]
+}

@@ -1,0 +1,31 @@
+{
+ "id": "2023__2023-10-16_OpenLeverage_AdminTakeover",
+ "source_file": "2023/2023-10-16_OpenLeverage_AdminTakeover.md",
+ "title": "OpenLeverage Admin Takeover Incident Analysis",
+ "date": "2023-10-16",
+ "protocol": "OpenLeverage",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ RewardVaultDelegator.initialize(",
+  "No re-initialization guard → attacker gains admin",
+  "2 ▶ RewardVaultDelegator.setImplementation(address(this))",
+  "3 ▶ RewardVaultDelegator.a(address(this))",
+  "→ delegatecall to attacker's a() function",
+  "→ transfers all tokens held by the contract",
+  "4 ▶ Multiple tokens → swapped to BUSDT + profit realized (~$8,000)"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: re-invocable initialize + setImplementation\ncontract RewardVaultDelegator {\n    address public admin;\n    address public implementation;\n\n    // Vulnerable: no initialized check — anyone can re-initialize\n    function initialize(\n        address _admin,\n        address _implementation,\n        uint64 _version\n    ) external {\n        // require(!initialized, \"Already initialized\") missing\n        admin = _admin;\n        implementation = _implementation;\n    }\n\n    // Vulnerable: once attacker becomes admin, arbitrary implementation can be set\n    function setImplementation(address _implementation) external {\n        require(msg.sender == admin, \"Not admin\");\n        implementation = _implementation;\n    }\n\n    // Executes implementation via delegatecall\n    fallback(",
+  "// Root cause: Unprotected Initialize Re-invocation + Admin Takeover\n// Source code unverified — analysis based on bytecode"
+ ]
+}

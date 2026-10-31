@@ -1,0 +1,36 @@
+{
+ "id": "2023__2023-11-02_AIS_AccessControl",
+ "source_file": "2023/2023-11-02_AIS_AccessControl.md",
+ "title": "AIS Access Control Vulnerability Incident Analysis",
+ "date": "2023-11-02",
+ "protocol": "AIS",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// File: AIS_decompiled.sol\n    function setAdmin(address account) external {}  // ❌\n\n// ...\n\n    function transferToken(address account, address recipient, uint256 shares) external {}  // ❌"
+ ],
+ "code_after": [],
+ "steps": [
+  "1 ▶ PancakeSwap V3.flash(USDT 3,000,000)",
+  "2 ▶ swap(USDT → AIS) via PancakeSwap Router",
+  "3 ▶ Repeated skim loop (100 iterations):",
+  "4 ▶ AIS.harvestMarket()",
+  "5 ▶ VulContract.setAdmin(address(this))",
+  "No access control → attacker gains admin",
+  "6 ▶ VulContract.transferToken(AIS, attacker, amount)",
+  "7 ▶ AIS.setSwapPairs(address(this))",
+  "8 ▶ AIS → USDT reverse swap",
+  "9 ▶ PancakeSwap V3 flash loan repaid + ~$61,000 profit realized"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: no access control on setAdmin\ncontract VulContract {\n    address public admin;\n\n    // Vulnerable: anyone can call to change admin\n    function setAdmin(address newAdmin) external {\n        // require(msg.sender == admin, \"Not admin\") missing\n        admin = newAdmin;\n    }\n\n    // Only admin can call, but bypassed because setAdmin is public\n    function transferToken(address token, address to, uint256 amount) external {\n        require(msg.sender == admin, \"Not admin\");\n        IERC20(token).transfer(to, amount);\n    }\n}",
+  "Attacker [0x84f37F6cC75cCde5fE9bA99093824A11CfDc329D]\n  │\n  ├─1─▶ PancakeSwap V3.flash(USDT 3,000,000)\n  │      [Pool: 0x4f31Fa980a675570939B737Ebdde0471a4Be40Eb]\n  │      pancakeV3FlashCallback triggered\n  │\n  ├─2─▶ swap(USDT → AIS) via PancakeSwap Router\n  │      [Router: 0x10ED43C718714eb63d5aA57B78B54704E256024E]\n  │      USDT/AIS pair: 0x1219F2699893BD05FE03559aA78e0923559CF0cf\n  │\n  ├─3─▶ Repeated skim loop (100 iterations):\n  │      AIS.transfer(usdt_ais, balance * 90%)\n  │      AIS.transfer(usdt_ais, 0)  ← reentrancy/state update trigger\n  │      usdt_ais.skim(address(this)) × 2\n  │\n  ├─4─▶ AIS.harvestMarket()\n  │      [AIS: 0x6844Ef18012A383c14E9a76a93602616EE9d6132]\n  │      Internal reward harvest\n  │\n  ├─5─▶ VulContract.setAdmin(address(this))\n  │      [VulContract: 0xFFAc2Ed69"
+ ]
+}

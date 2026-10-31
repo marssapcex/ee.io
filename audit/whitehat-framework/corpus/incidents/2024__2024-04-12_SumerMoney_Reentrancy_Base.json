@@ -1,0 +1,48 @@
+{
+ "id": "2024__2024-04-12_SumerMoney_Reentrancy_Base",
+ "source_file": "2024/2024-04-12_SumerMoney_Reentrancy_Base.md",
+ "title": "SumerMoney — ETH Reentrancy-Based exchangeRate Manipulation Attack Analysis",
+ "date": "2024-04-12",
+ "protocol": "Sumer Money",
+ "chain": "Base",
+ "loss_raw": "~$310,000 (cbETH + USDC; per Neptune Mutual)",
+ "loss_usd": 310000.0,
+ "root_cause": "Reentrancy during `repayBorrowBehalf()` ETH transfer callback — `getCashPrior()` increases while `totalBorrows` has not yet decreased, causing abnormal `exchangeRate` inflation and enabling over-collateralized borrowing",
+ "attack_tx": "0x619c...661",
+ "vulnerable_contract": "0x2381...607 (sdrETH)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — CEther.repayBorrowBehalf() in Compound V2 fork\nfunction repayBorrowBehalf(address borrower) external payable {\n    // Issue 1: No nonReentrant modifier on function entry\n    // Issue 2: ETH has already arrived at the contract before internal accounting (_repayBorrowFresh) completes\n\n    uint error = repayBorrowBehalfInternal(borrower, msg.value);\n    requireNoError(error, \"repayBorrowBehalf failed\");\n}\n\nfunction repayBorrowBehalfInternal(\n    address borrower,\n    uint repayAmount\n) internal nonReentrant returns (uint) {\n    // ❌ nonReentrant is applied to the internal function, but\n    //    ETH is already delivered at the time of the external function call.\n    //    The possibility of triggering receive() on delivery exists not in this path\n    //    but in Compound's ETH receiving mechanism.\n    return repayBorrowFresh(msg.sender, borrower, repayAmount);\n}\n\nfunction repayBorrowFresh(\n    address payer,\n    address borrower,\n    uint repayAmount\n) internal returns (uint) {\n    // ❌ getCashPrior() already reflects this contract's ETH balance (including msg.value)\n    // ❌ However, accountBorrows[borrower].principal deduction only occurs within this function\n    // ❌ On reentrance, totalBorrows has not yet been decremented\n\n    uint cashPrior = getCashPrior();          // ← Reflects increased ETH balance\n    uint accountBorrowsPrev = borrowStoredAmount(borrower);\n\n    // ... interest calculation ...\n\n    doTransferIn(payer, actualRepayAmount);    // ← For ETH, already received\n\n    // A reentrant window exists before reaching this point\n    accountBorrows[borrower].principal = accountBorrowsPrev - actualRepayAmount;\n    accountBorrows[borrower].interestIndex = borrowIndex;\n    totalBorrows -= actualRepayAmount;         // ← This line not yet executed on reentrance\n\n    emit RepayBorrow(payer, borrower, actualRepayAmount, ...);\n    return NO_ERROR;\n}",
+  "// ❌ Vulnerable exchangeRate calculation — returns abnormal value during reentrant window\nfunction exchangeRateStoredInternal() internal view returns (uint) {\n    uint _totalSupply = totalSupply;\n    if (_totalSupply == 0) {\n        return initialExchangeRateMantissa;\n    } else {\n        // ❌ Calculated as sum of getCashPrior() + totalBorrows\n        // On reentrance: getCashPrior() increased + totalBorrows not yet decreased\n        // → Numerator is overstated, inflating exchangeRate\n        uint totalCash = getCashPrior();          // Already-increased ETH balance\n        uint cashPlusBorrowsMinusReserves =\n            totalCash + totalBorrows - totalReserves;  // totalBorrows still elevated\n        uint exchangeRate = cashPlusBorrowsMinusReserves * expScale / _totalSupply;\n        return exchangeRate;\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — apply nonReentrant to the external function\n// Requires inheriting ReentrancyGuard (OpenZeppelin)\nimport \"@openzeppelin/contracts/security/ReentrancyGuard.sol\";\n\n// ✅ Block reentrancy at the external level\nfunction repayBorrowBehalf(\n    address borrower\n) external payable nonReentrant {   // ← nonReentrant applied directly to the external function\n    uint error = repayBorrowBehalfInternal(borrower, msg.value);\n    requireNoError(error, \"repayBorrowBehalf failed\");\n}",
+  "// ✅ Defensive approach — block exchangeRate queries during reentrant state\nfunction exchangeRateCurrent() external nonReentrant returns (uint) {\n    // ✅ Cannot be called during reentrant state — reverts without gas waste\n    accrueInterest();\n    return exchangeRateStoredInternal();\n}"
+ ],
+ "steps": [
+  "Step 1 Balancer flash loan",
+  "Step 2 Unwrap WETH → obtain raw ETH",
+  "Step 3 sdrETH.mint(150 ETH) — deposit ETH, receive sdrETH tokens",
+  "Step 4 Create Helper contract (initialized with 1 wei)",
+  "Step 5 Transfer 645,000 USDC → Helper",
+  "Step 6 Helper.borrow():",
+  "→ On ETH transfer, Helper.receive() executes",
+  "→ msg.value==1, so owner.attack() callback",
+  "Step 7 [Reentrance] SumerMoney.attack():",
+  "Step 8 [Reentrance ends] repayBorrowBehalf completes",
+  "Step 9 Helper: sdrUSDC.redeem() — recover collateral USDC",
+  "Step 10 Helper: claimer.claim([311])",
+  "Step 11 Repay Balancer flash loan (WETH+USDC)",
+  "Step 12 Realize profit (cbETH + remaining USDC)",
+  "③ WETH → ETH conversion (150 ETH)",
+  "⑥ Transfer 645,000 USDC → Helper 0x23811c17bac40...",
+  "→ msg.value==1 → owner.attack() reentrance",
+  "(getCashPrior ↑ + totalBorrows intact → numerator overstated)"
+ ],
+ "other_code": [
+  "exchangeRate = (getCashPrior() + totalBorrows - totalReserves) / totalSupply",
+  "Step 1  Balancer flash loan\nStep 2  Unwrap WETH → obtain raw ETH\nStep 3  sdrETH.mint(150 ETH) — deposit ETH, receive sdrETH tokens\nStep 4  Create Helper contract (initialized with 1 wei)\nStep 5  Transfer 645,000 USDC → Helper\nStep 6  Helper.borrow():\n        (a) sdrUSDC.mint(USDC 645,000) — provide collateral\n        (b) sdrETH.borrow(full ETH balance) — borrow all ETH\n        (c) sdrETH.repayBorrowBehalf{value: borrowAmt+1}(this) call\n            └→ On ETH transfer, Helper.receive() executes\n               └→ msg.value==1, so owner.attack() callback ──┐\n                                                              │ Reentrant window\nStep 7  [Reentrance] SumerMoney.attack():                     │\n        ├ Confirm abnormal exchangeRate inflation          ◄──┘\n        ├ sdrcbETH.borrow(drai"
+ ]
+}

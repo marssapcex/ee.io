@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-04-24_SaitaChain_AccessControl_ETH",
+ "source_file": "2024/2024-04-24_SaitaChain_AccessControl_ETH.md",
+ "title": "SaitaChain XBridge — Access Control Vulnerability Analysis",
+ "date": "2024-04-24",
+ "protocol": "SaitaChain XBridge",
+ "chain": "Ethereum",
+ "loss_raw": "~$1,000,000 (ETH) / Total ~$1,440,000 (ETH + BNB combined)",
+ "loss_usd": 1000000.0,
+ "root_cause": "In `listToken()`, when `_baseToken == _correspondingToken`, the token owner (`_tokenOwner`) can be set without any caller validation → subsequent `withdrawTokens()` call drains assets",
+ "attack_tx": "0x903d...c92",
+ "vulnerable_contract": "0x354c...cB8C (XBridge4)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — XBridge4.sol (reconstructed vulnerable logic)\nfunction listToken(\n    address _baseToken,      // Base chain token address\n    address _correspondingToken,  // Corresponding chain token address\n    bool _isMintable         // Whether the corresponding token uses minting\n) external payable {\n    // ... fee processing and other logic ...\n\n    // ❌ Core vulnerability:\n    //    When _baseToken == _correspondingToken,\n    //    msg.sender is registered as token owner regardless of who they are.\n    //    No validation is performed to check whether the caller is the actual\n    //    token owner or has any authorization.\n    if (_baseToken == _correspondingToken) {\n        _tokenOwner[_baseToken] = msg.sender;  // ❌ Sets arbitrary address as owner\n    }\n\n    // ... token registration processing ...\n}",
+  "// ❌ Vulnerable code — withdrawTokens function (reconstructed vulnerable logic)\nfunction withdrawTokens(\n    address token,     // Token address to withdraw\n    address receiver,  // Recipient address\n    uint256 amount     // Withdrawal amount\n) external {\n    // Checks whether the caller is the registered owner of the token\n    // → This check itself is correct, but because the _tokenOwner registration\n    //   process is vulnerable, this check passes once the attacker is already\n    //   registered as owner\n    require(\n        msg.sender == _tokenOwner[token],\n        \"ONLY_TOKEN_LISTER_CAN_WITHDRAW\"\n    );\n\n    // ❌ This transfer succeeds because the attacker is registered as _tokenOwner\n    IERC20(token).transfer(receiver, amount);\n}",
+  "❌ No-check reg  │\n│  }                                                     │\n│                                                        │\n│  _tokenOwner[STC] = Attacker address  ← Ownership hijacked │\n└────────────────────────────────────────────────────────┘\n         │\n         │  Ownership registration complete\n         ▼\n┌───────────────────────────────────────────────────────────────────────┐\n│                    Step 2: Asset Drain Transaction                     │\n│               (withdrawTokens call — owner privilege abuse)            │\n└───────────────────────────────────────────────────────────────────────┘\n         │\n         ▼\n┌──────────────────┐\n│     Attacker     │\n│ 0x0cfc...caa7   │\n└──────────────────┘\n         │\n         │  withdrawTokens(token=STC, receiver=Attacker, amount=total_balance)\n         │\n         ▼\n┌────────────────────────────────────────────────────────┐\n│                  XBridge4 Contract                      │\n│                                                        │\n│  require(msg.sender == _tokenOwner[STC])               │\n│  → msg.sender(Attacker) == _tokenOwner[STC](Attacker)"
+ ],
+ "code_after": [
+  "// ✅ Fixed code\nfunction listToken(\n    address _baseToken,\n    address _correspondingToken,\n    bool _isMintable\n) external payable {\n    // ✅ Even in the _baseToken == _correspondingToken case,\n    //    verify that the caller is the actual token contract owner\n    if (_baseToken == _correspondingToken) {\n        // Option 1: Verify that the token contract's owner() is msg.sender\n        require(\n            IOwnable(_baseToken).owner() == msg.sender,\n            \"XBridge: caller is not the token owner\"\n        );\n        // Option 2: Prevent re-registration if an owner is already set\n        require(\n            _tokenOwner[_baseToken] == address(0),\n            \"XBridge: token already listed\"\n        );\n        _tokenOwner[_baseToken] = msg.sender;  // ✅ Register after validation\n    }\n\n    // ... token registration processing ...\n}",
+  "// ✅ Fixed code (requires listToken fix as a prerequisite)\nfunction withdrawTokens(\n    address token,\n    address receiver,\n    uint256 amount\n) external {\n    require(\n        msg.sender == _tokenOwner[token],\n        \"ONLY_TOKEN_LISTER_CAN_WITHDRAW\"\n    );\n\n    // ✅ Additional safeguard: withdrawal amount cannot exceed the owner's deposited balance\n    require(\n        amount <= _depositedBalance[token][msg.sender],\n        \"XBridge: insufficient deposited balance\"\n    );\n\n    _depositedBalance[token][msg.sender] -= amount;\n\n    IERC20(token).transfer(receiver, amount);\n\n    emit TokensWithdrawn(token, receiver, amount);\n}"
+ ],
+ "steps": [
+  "Step 1: Ownership Hijack Transaction",
+  "Step 2: Asset Drain Transaction",
+  "→ msg.sender(Attacker) == _tokenOwner[STC](Attacker) ✅",
+  "→ Check passes!",
+  "Attempted STC → ETH/BNB swap"
+ ],
+ "other_code": [
+  "Attack Round 1           Attack Round 2           Attack Round 3\n──────────               ──────────               ──────────\nTx A: listToken()        Tx C: listToken()        Tx E: listToken()\n  └▶ _tokenOwner set       └▶ _tokenOwner set       └▶ _tokenOwner set\nTx B: withdrawTokens()   Tx D: withdrawTokens()   Tx F: withdrawTokens()\n  └▶ STC drained           └▶ STC drained           └▶ STC drained"
+ ]
+}

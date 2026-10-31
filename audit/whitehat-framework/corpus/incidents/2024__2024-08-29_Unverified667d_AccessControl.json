@@ -1,0 +1,28 @@
+{
+ "id": "2024__2024-08-29_Unverified667d_AccessControl",
+ "source_file": "2024/2024-08-29_Unverified667d_AccessControl.md",
+ "title": "Unverified Contract 0x667d — Admin Privilege Takeover Analysis",
+ "date": "2024-08-29",
+ "protocol": "Unverified Contract",
+ "chain": "BSC",
+ "loss_raw": "~10,000 USD",
+ "loss_usd": null,
+ "root_cause": "The `grantRole` function lacked access control, allowing anyone to grant themselves admin privileges",
+ "attack_tx": "0x56d3ed5f",
+ "vulnerable_contract": "0x8de7eaba",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable grantRole: no caller validation\nfunction grantRole(bytes32 role, address account) external {\n    //",
+  "❌ Missing OpenZeppelin's onlyRole(getRoleAdmin(role))\n    // Anyone can assign an arbitrary role to themselves\n    _roles[role][account] = true;\n}\n\n// adminWithdraw: callable by admin only\nfunction adminWithdraw(\n    address handlerAddress,\n    address tokenAddress,\n    address recipient,\n    uint256 amountOrTokenID\n) external onlyRole(DEFAULT_ADMIN_ROLE) {\n    // Admin can withdraw arbitrary tokens\n    IERC20(tokenAddress).transferFrom(handlerAddress, recipient, amountOrTokenID);\n}\n\n//",
+  "// File: Unverified667d_decompiled.sol\ncontract Unverified667d {\n    function grantRole(bytes32 p0, address p1) external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Fix: use OpenZeppelin AccessControl standard\n// function grantRole(bytes32 role, address account)\n//     public override onlyRole(getRoleAdmin(role)) { ... }"
+ ],
+ "steps": [
+  "10463 DAI // entire balance"
+ ],
+ "other_code": []
+}

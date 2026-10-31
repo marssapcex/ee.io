@@ -1,0 +1,33 @@
+{
+ "id": "2026__2026-03-06_MoltEVM_mEVM_FakeSpawnerMint_Base",
+ "source_file": "2026/2026-03-06_MoltEVM_mEVM_FakeSpawnerMint_Base.md",
+ "title": "Security Incident Analysis: Molt EVM (mEVM) Unauthorized Minting via Fake Spawner",
+ "date": "2026-03-06",
+ "protocol": "MoltEVM",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ check missing!\n                │\n                └─ _mint(attacker, 100_000_000e18) ← unauthorized mint succeeded!\n                   Transfer event: 0x0 → attacker, 100,000,000 mEVM",
+  "// mEVM Token — VULNERABLE\nfunction mintFromSpawner(address to, uint256 amount) external {\n    // ❌ Only checks \"is caller a contract\", does not verify factory authorization!\n    require(msg.sender.code.length > 0, \"not contract\");\n    \n    // ❌ The following checks are absent:\n    // require(factory.isOfficialSpawner(msg.sender), \"unauthorized spawner\");\n    // require(amount <= MOLTLING_SUPPLY, \"exceeds per-moltling limit\");\n    \n    _mint(to, amount);  // unbounded mint executes\n}"
+ ],
+ "code_after": [
+  "✅ (spawner is a contract)\n                ├─ factory.isAuthorizedSpawner(msg.sender)? →",
+  "// mEVM Token\nmapping(address => bool) public officialSpawners;\n\nfunction mintFromSpawner(address to, uint256 amount) external {\n    // ✅ Only allow official spawners created by the factory\n    require(officialSpawners[msg.sender], \"not authorized spawner\");\n    // ✅ Prevent exceeding per-moltling limit\n    require(amount <= MOLTLING_SUPPLY, \"exceeds moltling supply limit\");\n    _mint(to, amount);\n}\n\n// Callable only by Factory\nfunction registerSpawner(address spawner) external onlyFactory {\n    officialSpawners[spawner] = true;\n}"
+ ],
+ "steps": [
+  "msg.sender.code.length > 0? → ✅ (spawner is a contract)",
+  "factory.isAuthorizedSpawner(msg.sender)? → ❌ check missing!",
+  "Transfer event: 0x0 → attacker, 100,000,000 mEVM"
+ ],
+ "other_code": [
+  "[User]\n  │\n  └─▶ Factory.createMoltling()\n        │\n        ├─ Deploy new Moltling token (based on moltImplementation code)\n        ├─ Create spawner contract (using official code)\n        │    allowedTarget = mEVM token\n        │    expiresAt = limited future timestamp\n        │    authorized_amount = MOLTLING_SUPPLY (= 1,000,000)\n        └─ Spawner ownership → granted to user\n              │\n              └─ User calls spawner → mEVM.mintFromSpawner(user, 1M)",
+  "// 0xd1B3C23955C41A4e6Dd9CA3Ccb46F132dE1bb07e key functions\ncontract FakeSpawner {\n    function allowedTarget() external view returns (address);  // 0x76c21baa → mEVM address\n    function expiresAt() external view returns (uint256);       // 0x76c21baa / 0x8622a689\n    function owner() external view returns (address);           // 0x8da5cb5b → Attacker EOA\n    function initialized() external view returns (bool);        // 0x63898e2b → true\n    function used() external view returns (bool);               // 0x9720d1fc → true (after use)\n    \n    // Core attack function (undisclosed custom)\n    function exploit(\n        address token,     // mEVM token address\n        address recipient, // token recipient (attacker)\n        uint256 amount     // 100,000,000 * 1e18\n    ) external;  // selector"
+ ]
+}

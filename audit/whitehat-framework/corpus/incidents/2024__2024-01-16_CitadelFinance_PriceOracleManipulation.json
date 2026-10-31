@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-01-16_CitadelFinance_PriceOracleManipulation",
+ "source_file": "2024/2024-01-16_CitadelFinance_PriceOracleManipulation.md",
+ "title": "Citadel Finance — Flash Loan-Based Price Oracle Manipulation Analysis",
+ "date": "2024-01-16",
+ "protocol": "Citadel Finance",
+ "chain": "Arbitrum",
+ "loss_raw": "~$93,000",
+ "loss_usd": 93000.0,
+ "root_cause": "`getCITInUSDAllFixedRates()` directly references the Uniswap V3 `slot0()` spot price, allowing excessive USDC withdrawal at a manipulated CIT price during `redeem()`",
+ "attack_tx": null,
+ "vulnerable_contract": "Citadel 0x34b66699",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: redemption calculation based on spot price\nfunction redeem(uint256 amount) external returns (uint256) {\n    uint256 citPrice = getCITInUSDAllFixedRates(); // spot price — manipulable\n    uint256 redeemAmount = amount * citPrice / 1e18;\n    require(redeemAmount <= maxRedeemable, \"exceeds limit\");\n    _burn(msg.sender, amount);\n    USDC.transfer(msg.sender, redeemAmount);\n}\n\n// getCITInUSDAllFixedRates() internally uses Uniswap V3 slot0()\n// → sqrtPriceX96 can be manipulated via flash loan\n\n//",
+  "// File: CitadelRedeem.sol\n    function redeem(uint256 underlying, uint256 token, uint256 amount, uint8 rate) public nonReentrant {\n        require(underlying == 0 || underlying == 1, \"Invalid underlying\");\n        require(token == 0 || token == 1, \"Invalid token\");\n        require(rate == 0 || rate == 1, \"Invalid rate\");\n        require(amount > 0, \"Amount must be greater than 0\");\n\n        uint256 amountAvailable = CITStaking.redeemCalculator(msg.sender)[token][rate];\n        require(amountAvailable > 0, \"Nothing to redeem\");\n\n        uint256 amountInUnderlying;\n        address tokenAddy = underlying == 0 ? address(USDC) : address(WETH);\n        // Variable rate\n        if (rate == 0) {\n            require(amount <= amountAvailable, \"Not enough CIT or bCIT to redeem\");\n            require(amount <= maxRedeemableVariable, \"Amount too high\");\n            maxRedeemableVariable -= amount;\n            address[] memory path = new address[](3);\n\n            path[0] = address(CIT); // 1e18\n            path[1] = address(WETH);\n            path[2] = address(USDC); // 1e6\n\n            uint[] memory a = camelotRouter.getAmountsOut(amount, path);\n\n            if (underlying == 0) {\n                amountInUnderlying = a[2]; // result in 6 decimal\n            } else {\n                amountInUnderlying = a[1]; // result in 18 decimal\n            }\n        } \n        // Fixed rate\n        else {\n            uint256 _amount = CITStaking.getCITInUSDAllFixedRates(msg.sender, amount);  // ❌ vulnerability\n            require(amount <= amountAvailable, \"Not enough CIT or bCIT to redeem\");\n            require(amount <= maxRedeemableFixed, \"Amount too high\");\n            maxRedeemableFixed -= amount;\n            if (underlying == 1) {\n                address[] memory path = new address[](2);\n\n                path[0] = address(USDC); // 1e6\n                path[1] = address(WETH); // 1e18\n\n                uint[] memory a = camelotRouter.getAmountsOut(_amount / 1e12, path); // result in 18 decimal\n\n                amountInUnderlying = a[1];\n            } else {\n                amountInUnderlying = _amount / 1e12; // 1e6 is the decimals of USDC, so 18 - 12 = 6\n            }\n        }\n\n        if (token == 0) {\n            CIT.burn(CITStakingAddy, amount);\n            CITStaking.removeStaking(msg.sender, address(CIT), rate, amount);\n        } else if (token == 1) {\n            totalbCITRedeemedByUser[msg.sender] += amount;\n            bCIT.burn(CITStakingAddy, amount);\n            CITStaking.removeStaking(msg.sender, address(bCIT), rate, amount);\n        }\n\n        treasury.distributeRedeem(tokenAddy, amountInUnderlying, msg.sender);\n    }"
+ ],
+ "code_after": [
+  "✅ Safe code: redemption calculation based on TWAP\nfunction redeem(uint256 amount) external returns (uint256) {\n    uint256 citPrice = getCITTWAPPrice(1800); // 30-minute TWAP\n    uint256 redeemAmount = amount * citPrice / 1e18;\n    require(redeemAmount <= maxRedeemable, \"exceeds limit\");\n    _burn(msg.sender, amount);\n    USDC.transfer(msg.sender, redeemAmount);\n}"
+ ],
+ "steps": [
+  "→ [1] Acquire 2,653 CIT → approve → deposit(fixed rate 1)",
+  "→ [2] Uniswap V3 flash: 4,500 WETH flash loan",
+  "→ [3] Swap WETH → USDC in large volume → manipulate WETH/USDC pool price",
+  "→ [4] getCITInUSDAllFixedRates() returns manipulated price",
+  "→ [5] Call redeem() → receive excessive USDC at manipulated price",
+  "→ [6] Reverse swap USDC → WETH",
+  "→ [7] Repay flash loan and pocket profit (~$93K)"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Acquire 2,653 CIT → approve → deposit(fixed rate 1)\n  │\n  ├─→ [2] Uniswap V3 flash: 4,500 WETH flash loan\n  │\n  ├─→ [3] Swap WETH → USDC in large volume → manipulate WETH/USDC pool price\n  │         └─ Artificially inflate CIT spot price\n  │\n  ├─→ [4] getCITInUSDAllFixedRates() returns manipulated price\n  │\n  ├─→ [5] Call redeem() → receive excessive USDC at manipulated price\n  │\n  ├─→ [6] Reverse swap USDC → WETH\n  │\n  └─→ [7] Repay flash loan and pocket profit (~$93K)",
+  "interface ICitadel {\n    function redeemCalculator() external view returns (address);\n    function getCITInUSDAllFixedRates() external view returns (uint256);\n    function deposit(uint256 amount, uint256 fixedRate) external;\n    function getTotalTokenStakedForUser(address user) external view returns (uint256);\n    function redeem(uint256 amount) external returns (uint256);\n}\n\ncontract AttackContract {\n    ICitadel constant citadel = ICitadel(0x34b666992fcce34669940ab6b017fe11e5750799);\n    IERC20 constant CIT  = IERC20(0x43cF1856606df2CB22AEdbA1a3e23725f1594E81);\n    IERC20 constant WETH = IERC20(0x82aF49447D8a07e3bd95BD0d56f35241523fBab1);\n    IERC20 constant USDC = IERC20(0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8);\n\n    function testExploit() external {\n        // [1] Deposit CIT (fixed"
+ ]
+}

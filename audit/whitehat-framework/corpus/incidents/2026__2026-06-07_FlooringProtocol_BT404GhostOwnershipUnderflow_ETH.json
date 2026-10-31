@@ -1,0 +1,39 @@
+{
+ "id": "2026__2026-06-07_FlooringProtocol_BT404GhostOwnershipUnderflow_ETH",
+ "source_file": "2026/2026-06-07_FlooringProtocol_BT404GhostOwnershipUnderflow_ETH.md",
+ "title": "Flooring Protocol — BT404 Ghost-Ownership Underflow Exploit Analysis",
+ "date": "2026-06-07",
+ "protocol": "Flooring Protocol",
+ "chain": "Ethereum",
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": "BT404 packs NFT ownership/indexing into bitfields for gas. A forged high-bit token-ID alias makes the ownership check record the attacker as owner (\"ghost ownership\"); a subsequent unchecked balance subtraction underflows past zero, wrapping the `fpToken` balance to ~2²⁵⁶ (near-infinite)",
+ "attack_tx": null,
+ "vulnerable_contract": "BT404 hybrid token implementation (per-pool `fp*` clones; e.g. `fpCloneX`, `fpCyberKongz`) — bit-packed NFT ownership/index bookkeeping",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "// BT404 (reconstructed) — packed ownership + index, gas-optimized\n// Ownership data for a token id is packed: [ ownerAddress(160) | indexData(88) | flags(8) ]\nmapping(uint256 => uint256) internal _ownershipData; // tokenId(aliased) => packed\n\nfunction _ownerAt(uint256 id) internal view returns (address owner) {\n    // ❌ The aliased/high-bit id is masked into a packed slot WITHOUT validating\n    //    that `id` is a real, in-range, currently-minted token id.\n    uint256 packed = _ownershipData[_aliasOf(id)];\n    owner = address(uint160(packed));\n}\n\nfunction _aliasOf(uint256 id) internal pure returns (uint256) {\n    // ❌ High bits are truncated to derive the storage key. Two DISTINCT ids\n    //    (a real one and an attacker's forged high-bit id) collapse to the\n    //    SAME key — the core \"ghost ownership\" collision.\n    return id & 0xffffffffff; // 40-bit truncation (illustrative)\n}\n\nfunction _setOwnerAndIndex(uint256 id, address owner, uint256 index) internal {\n    // ❌ Records the CALLER as owner of the aliased slot. No check that the\n    //    caller legitimately holds `id`; the packed write simply trusts `id`.\n    _ownershipData[_aliasOf(id)] =\n        uint256(uint160(owner)) | (index << 160);\n}",
+  "mapping(address => uint256) internal _balanceOf; // fpToken (ERC-20 side)\n\nfunction _transferFromNFT(address from, address to, uint256 id) internal {\n    require(_ownerAt(id) == from, \"NOT_OWNER\"); // ❌ passes via ghost ownership\n\n    // The hybrid keeps fungible balance in sync with NFT moves.\n    unchecked {\n        // ❌ from's real fpToken balance for this position is 0.\n        //    0 - _unit underflows and WRAPS to ~2**256.\n        _balanceOf[from] -= _unit;          // underflow\n        _balanceOf[to]   += _unit;\n    }\n\n    _setOwnerAndIndex(id, to, _nextIndex());\n    emit Transfer(from, to, _unit);\n}"
+ ],
+ "code_after": [
+  "function _aliasOf(uint256 id) internal pure returns (uint256) {\n    // ✅ Reject ids outside the legitimate minted range BEFORE deriving a key.\n    require(id != 0 && id <= _MAX_TOKEN_ID, \"BAD_TOKEN_ID\");\n    return id; // ✅ no lossy truncation → no slot collision / aliasing\n}\n\nfunction _transferFromNFT(address from, address to, uint256 id) internal {\n    // ✅ Authoritative ownership check against a collision-free key.\n    require(_ownerAt(id) == from, \"NOT_OWNER\");\n\n    // ✅ Checked subtraction: an attempt to move a position the holder does\n    //    not actually back reverts instead of wrapping.\n    uint256 bal = _balanceOf[from];\n    require(bal >= _unit, \"INSUFFICIENT_BALANCE\"); // ✅ underflow guard\n    _balanceOf[from] = bal - _unit;\n    _balanceOf[to]  += _unit;\n\n    _setOwnerAndIndex(id, to, _nextIndex());\n    emit Transfer(from, to, _unit);\n}",
+  "// ✅ Never subtract a fungible balance inside `unchecked` without a guard.\nuint256 bal = _balanceOf[from];\nrequire(bal >= _unit, \"INSUFFICIENT_BALANCE\");  // ✅ blocks the wrap to 2**256\n_balanceOf[from] = bal - _unit;\n_balanceOf[to]  += _unit;"
+ ],
+ "steps": [
+  "**[Step 1] Forge a high-bit token-ID alias → ghost ownership**",
+  "**[Step 2] Trigger the unchecked underflow → near-infinite `fpToken`**",
+  "**[Step 3] Dump into Uniswap V3 → drain WETH**",
+  "With a near-infinite `fpToken` supply, the attacker sells `fpToken` into the `fpToken`/WETH V3 pool, **crashing the `fpToken` price toward zero** and extracting the pool's WETH liquidity. In the fpCKBB trace, a single swap of **\"40,000,000,000 fpCKBB → 5.861 ETH\"** is visible.",
+  "[1] _aliasOf(id) truncates high bits → SLOT COLLISION",
+  "_ownerAt(id) == attacker → 👻 GHOST OWNERSHIP",
+  "0 - _unit → UNDERFLOW → ~2^256 fpToken",
+  "dump fpToken → price ≈ 0 → drain WETH",
+  "(fpCKBB: 40,000,000,000 fpCKBB → 5.861 ETH)",
+  "29 BAYC/4 MAYC/2 Punks"
+ ],
+ "other_code": [
+  "┌─────────────────────────────────────────────────────────────┐\n│  Attacker EOA (per pool)                                    │\n│  fpCloneX: 0x223CBC5B…FcAbb   fpCyberKongz: 0x5a0416fb…2e49 │\n└──────────────────────────────────┬──────────────────────────┘\n                                   │ forged high-bit token-id alias\n                                   ▼\n┌─────────────────────────────────────────────────────────────┐\n│  BT404 hybrid token  (fp* clone, bit-packed bookkeeping)    │\n│                                                             │\n│  [1] _aliasOf(id) truncates high bits → SLOT COLLISION       │\n│      _ownerAt(id) == attacker  → 👻 GHOST OWNERSHIP          │\n│                                                             │\n│  [2] unchecked { balanceOf[attacker] -= _unit; }    "
+ ]
+}

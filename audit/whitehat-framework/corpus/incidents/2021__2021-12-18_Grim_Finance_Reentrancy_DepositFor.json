@@ -1,0 +1,36 @@
+{
+ "id": "2021__2021-12-18_Grim_Finance_Reentrancy_DepositFor",
+ "source_file": "2021/2021-12-18_Grim_Finance_Reentrancy_DepositFor.md",
+ "title": "Grim Finance — depositFor() Reentrancy Vulnerability Analysis",
+ "date": "2021-12-18",
+ "protocol": "Grim Finance",
+ "chain": "Fantom",
+ "loss_raw": "~$30,000,000",
+ "loss_usd": 30000000.0,
+ "root_cause": "`depositFor()` is reenterable when calling `transferFrom()` on an external token — 7 nested reentrant calls via a malicious token contract",
+ "attack_tx": "0x1931...dd6 (block 25,345,003)",
+ "vulnerable_contract": "GrimBoostVault (`depositFor()` function)",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "// ❌ GrimBoostVault\n// depositFor() accepts an arbitrary token address and calls transferFrom()\n// Reentrancy possible via the malicious token's transferFrom() hook\nfunction depositFor(address token, uint256 _amount, address user) public {\n    // ❌ No nonReentrant guard\n    // ❌ No token address validation\n\n    uint256 _pool = balance(); // Already inflated value on reentry\n\n    // Malicious token's transferFrom() executes → triggers reentrancy\n    IERC20(token).transferFrom(msg.sender, address(this), _amount);\n\n    uint256 _after = balance();\n    _amount = _after.sub(_pool); // Calculate actual amount received\n\n    uint256 shares;\n    if (totalSupply() == 0) {\n        shares = _amount;\n    } else {\n        // totalSupply can be manipulated via reentrancy\n        shares = (_amount.mul(totalSupply())).div(_pool);\n    }\n    _mint(user, shares);\n}",
+  "// Reconstructed from PoC — NOT verified source\n// ❌ GrimBoostVault.depositFor() — accepts arbitrary token address, no reentrancy guard\nfunction depositFor(address token, uint256 _amount, address user) public {\n    // ❌ No nonReentrant modifier — reentrant calls stack freely\n    // ❌ No validation that `token` == want (the legitimate LP token)\n\n    uint256 _pool = balance(); // reads vault's underlying token balance\n\n    IERC20(token).transferFrom(msg.sender, address(this), _amount); // ❌ external call BEFORE state update\n    // ^ attacker supplies a malicious `token` whose transferFrom() re-enters depositFor()\n    // Each reentrant call reads the same stale `_pool` and inflates shares\n\n    uint256 _after = balance();\n    _amount = _after.sub(_pool);\n\n    uint256 shares;\n    if (totalSupply() == 0) {\n        shares = _amount;\n    } else {\n        shares = (_amount.mul(totalSupply())).div(_pool); // ❌ _pool is stale on reentry\n    }\n    _mint(user, shares); // mints inflated share count to attacker\n}"
+ ],
+ "code_after": [
+  "// ✅ nonReentrant + only whitelisted tokens allowed\nmodifier nonReentrant() {\n    require(_status != _ENTERED, \"ReentrancyGuard: reentrant call\");\n    _status = _ENTERED;\n    _;\n    _status = _NOT_ENTERED;\n}\n\nfunction depositFor(address token, uint256 _amount, address user)\n    public nonReentrant\n{\n    // ✅ Only whitelisted tokens allowed\n    require(token == want, \"GrimBoostVault: invalid token\");\n\n    uint256 _pool = balance();\n    IERC20(token).safeTransferFrom(msg.sender, address(this), _amount);\n    uint256 _after = balance();\n    _amount = _after.sub(_pool);\n\n    uint256 shares = totalSupply() == 0\n        ? _amount\n        : (_amount.mul(totalSupply())).div(_pool);\n    _mint(user, shares);\n}",
+  "// ✅ Fix:\nfunction depositFor(address token, uint256 _amount, address user)\n    public nonReentrant                               // ✅ reentrancy guard\n{\n    require(token == want, \"GrimBoostVault: only want token\"); // ✅ whitelist token\n\n    uint256 _pool = balance();\n    IERC20(token).safeTransferFrom(msg.sender, address(this), _amount);\n    uint256 _after = balance();\n    _amount = _after.sub(_pool);\n\n    uint256 shares = totalSupply() == 0\n        ? _amount\n        : (_amount.mul(totalSupply())).div(_pool);\n    _mint(user, shares);\n}"
+ ],
+ "steps": [
+  "Step 1: BeethovenX flash loan 937,830 WFTM + 30 BTC",
+  "Step 2: Add liquidity to SpiritSwap → obtain LP tokens",
+  "Step 3: GrimBoostVault.depositFor(maliciousToken, ...)",
+  "maliciousToken.transferFrom() → triggers reentrancy",
+  "Step 4: 7 nested reentrant calls — manipulate vault",
+  "Step 5: Withdraw vault assets with excess shares +"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────┐\n│ Step 1: BeethovenX flash loan 937,830 WFTM + 30 BTC     │\n│ IBeethovenxVault.flashLoan(tokens, amounts, this, data)  │\n└─────────────────────┬────────────────────────────────────┘\n                      │ receiveFlashLoan() callback\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 2: Add liquidity to SpiritSwap → obtain LP tokens   │\n│ ISpiritRouter.addLiquidity(WFTM, BTC, ...)               │\n└─────────────────────┬────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────┐\n│ Step 3: GrimBoostVault.depositFor(maliciousToken, ...)   │\n│ maliciousToken.transferFrom() → triggers reentrancy      │\n└─────────────────────┬───────────────────────────────",
+  "uint8 public reentrancyCount = 0;\n\n// Reenters via the transferFrom() hook inside GrimBoostVault.depositFor()\nfunction transferFrom(address from, address to, uint256 amount) external returns (bool) {\n    // Reenter 7 times\n    if (reentrancyCount < 7) {\n        reentrancyCount++;\n        // Reenter: call depositFor with progressively different parameters\n        grimBoostVault.depositFor(address(this), amount, address(this));\n    } else {\n        // Final call: swap in the real LP token\n        grimBoostVault.depositFor(address(lpToken), lpAmount, address(this));\n    }\n    return true;\n}"
+ ]
+}

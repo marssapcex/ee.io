@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-04-XX_Z123_ConsecutiveSwapLiquidityBurn",
+ "source_file": "2024/2024-04-XX_Z123_ConsecutiveSwapLiquidityBurn.md",
+ "title": "Z123 — 79 Consecutive Swaps Excessive Liquidity Burn Analysis",
+ "date": "2024-04-01",
+ "protocol": "Z123",
+ "chain": "BSC",
+ "loss_raw": "~$135,000",
+ "loss_usd": 135000.0,
+ "root_cause": "Each swap through the victim router excessively burns Z123 liquidity; after 79 iterations the supply reduction distorts the price, allowing the attacker to realize profit",
+ "attack_tx": null,
+ "vulnerable_contract": "Z123 0xb000f121",
+ "classes": [
+  "slippage-amm"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: excessive liquidity burned on every swap\ncontract Z123Token {\n    // Transfer tax + burn mechanism\n    function _transfer(address from, address to, uint256 amount) internal {\n        uint256 burnAmount = amount * burnRate / 10000;\n        _burn(from, burnAmount);  // ← burn accumulates on every swap\n\n        uint256 netAmount = amount - burnAmount;\n        _balances[from] -= amount;\n        _balances[to] += netAmount;\n    }\n}\n\n// Victim router: swapExactTokensForTokensSupportingFeeOnTransferTokens\n// → internally calls Z123.transfer() repeatedly → cumulative burn\n// → after 79 swaps Z123 balance plummets → price spikes relative to USDT\n\n//",
+  "// File: Z123_decompiled.sol\ncontract Z123 {\ncontract Z123 {\n    address public owner;\n\n\n    // Selector: 0x98650275\n\n    // 📌 Minting - unlimited issuance risk\n    function renounceMinter() external {}  // ❌ Vulnerability\n\n    // Selector: 0xa9059cbb\n    function transfer(address p0, uint256 p1) external {}\n\n    // Selector: 0xdb79c5bf\n    function setSaleDate(uint256 p0) external {}\n\n    // Selector: 0xdd62ed3e\n    function allowance(address p0, address p1) external view returns (uint256) {}\n\n    // Selector: 0xdf28efe8\n    function _transactFeeValue(uint256 p0) external {}\n\n    // Selector: 0xaa271e1a\n\n    // 📌 Minting - unlimited issuance risk\n    function isMinter(address p0) external view returns (bool) {}\n\n    // Selector: 0xc1bb672c\n    function setWhite(address[] memory p0, uint256 p1) external {}\n\n    // Selector: 0xa348c289\n    function isWhite(address p0) external view returns (bool) {}\n\n    // Selector: 0xa457c2d7\n    function decreaseAllowance(address p0, uint256 p1) external {}\n\n    // Selector: 0xa5dcc4c9\n    function getContractorsFee(uint256 p0) external view returns (uint256) {}\n\n    // Selector: 0x9ba071ed\n    function sale_date() external {}\n\n    // Selector: 0xa2d83b5e\n    function update(address p0, uint256 p1) external {}\n\n    // Selector: 0x39509351\n    function increaseAllowance(address p0, uint256 p1) external {}\n\n    // Selector: 0x70a08231\n    function balanceOf(address p0) external view returns (uint256) {}\n\n    // Selector: 0x95d89b41\n    function symbol() external view returns (string memory) {}\n\n    // Selector: 0x983b2d56\n\n    // 📌 Minting - unlimited issuance risk\n    function addMinter(address p0) external {}\n\n    // Selector: 0x49f9b042\n    function setTransactFee(uint256[] memory p0) external {}\n\n    // Selector: 0x6b27eec1\n    function setContractorsFee(uint256[] memory p0, address[] memory p1, uint256 p2) external {}\n\n    // Selector: 0x18160ddd\n    function totalSupply() external view returns (uint256) {}\n\n    // Selector: 0x23b872dd\n    // 📌 Arbitrary transferFrom - approval validation required\n    function transferFrom(address p0, address p1, uint256 p2) external {}\n\n    // Selector: 0x313ce567\n    function decimals() external view returns (uint8) {}\n\n    // Selector: 0x06fdde03\n    function name() external view returns (string memory) {}\n\n    // Selector: 0x095ea7b3\n    // 📌 approve - safeApprove race condition risk\n    function approve(address p0, uint256 p1) external {}\n\n    // Selector: 0x616c6c65\n    function unknown_616c6c65() external {}\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: burn rate cap + per-block burn limit\nuint256 constant MAX_BURN_RATE = 100; // 1% maximum\nuint256 constant MAX_BLOCK_BURN = 1000e18;\nuint256 public blockBurnAccum;\nuint256 public lastBurnBlock;\n\nfunction _burn(address from, uint256 amount) internal {\n    if (block.number != lastBurnBlock) {\n        blockBurnAccum = 0;\n        lastBurnBlock = block.number;\n    }\n    require(blockBurnAccum + amount <= MAX_BLOCK_BURN, \"block burn limit\");\n    blockBurnAccum += amount;\n    // ...\n}"
+ ],
+ "steps": [
+  "→ [1] PancakeSwap V3 Flash Loan: 18,000,000 USDT",
+  "→ [2] Swap USDT → Z123 via normal router (1 time)",
+  "→ [3] Swap Z123 → USDT via victim router × 79 times",
+  "Z123 balance plummets → price distorted",
+  "→ [4] Realize arbitrage profit from victim router price distortion",
+  "→ [5] Repay V3 flash loan",
+  "→ [6] ~$135K profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] PancakeSwap V3 Flash Loan: 18,000,000 USDT\n  │\n  ├─→ [2] Swap USDT → Z123 via normal router (1 time)\n  │\n  ├─→ [3] Swap Z123 → USDT via victim router × 79 times\n  │         └─ Z123 burn accumulates on every swap\n  │         └─ Z123 balance plummets → price distorted\n  │\n  ├─→ [4] Realize arbitrage profit from victim router price distortion\n  │         └─ Receive high USDT output due to low Z123 balance\n  │\n  ├─→ [5] Repay V3 flash loan\n  │\n  └─→ [6] ~$135K profit",
+  "interface IPancakeV3Pool {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ninterface IPancakeRouter {\n    function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n        uint256 amountIn, uint256 amountOutMin,\n        address[] calldata path, address to, uint256 deadline\n    ) external;\n}\n\ncontract AttackContract {\n    IPancakeV3Pool  constant v3Pool     = IPancakeV3Pool(/* V3 USDT pool */);\n    IPancakeRouter  constant normalRtr  = IPancakeRouter(/* normal PancakeRouter */);\n    IPancakeRouter  constant victimRtr  = IPancakeRouter(0x6125c643a2D4A927ACd63C1185c6be902eFd5dC8);\n    IERC20 constant Z123 = IERC20(0xb000f121A173D7Dd638bb080fEe669a2F3Af9760);\n    IERC20 constant USDT = IERC20(0x55d398326f99059fF775485246999027B319"
+ ]
+}

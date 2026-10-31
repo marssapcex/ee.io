@@ -1,0 +1,31 @@
+{
+ "id": "2023__2023-08-30_Uwerx_TokenLogic",
+ "source_file": "2023/2023-08-30_Uwerx_TokenLogic.md",
+ "title": "Uwerx — Token Unlock Vulnerability Analysis",
+ "date": "2023-08-30",
+ "protocol": "Uwerx",
+ "chain": "Ethereum",
+ "loss_raw": "~176 ETH",
+ "loss_usd": null,
+ "root_cause": "Team wallet unlock conditions were arbitrarily modifiable on-chain",
+ "attack_tx": "0x3b19e152943f31fe08...",
+ "vulnerable_contract": "0x4306b12f8e824ce1fa...",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: team can modify the vesting period\nfunction changeVestingEndDate(uint256 newEndDate) external onlyOwner {\n    vestingEndDate = newEndDate; //",
+  "❌ Can be set to a past date\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: vesting period cannot be shortened, only extended\nfunction extendVestingEndDate(uint256 newEndDate) external onlyOwner {\n    require(newEndDate > vestingEndDate, \"Can only extend\"); //",
+  "✅\n    vestingEndDate = newEndDate;\n}"
+ ],
+ "steps": [
+  "③ Sell on market → 176 ETH realized (investor losses)"
+ ],
+ "other_code": [
+  "// Root cause: team wallet unlock conditions were arbitrarily modifiable on-chain\n// Source code unverified — based on bytecode analysis",
+  "Team (Insider)\n  ├─① Call changeVestingEndDate(past date)\n  │       └─ Vesting period ends immediately\n  ├─② Unlock full team token balance\n  └─③ Sell on market → 176 ETH realized (investor losses)"
+ ]
+}

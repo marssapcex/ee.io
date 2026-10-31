@@ -1,0 +1,30 @@
+{
+ "id": "2023__2023-07-10_MintoFinance_SignatureBypass",
+ "source_file": "2023/2023-07-10_MintoFinance_SignatureBypass.md",
+ "title": "Minto Finance Signature Validation Bypass Incident Analysis",
+ "date": "2023-07-10",
+ "protocol": "MintoFinance",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "signature-replay"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ ReferalCrowdSales.buyTokens() call",
+  "→ Signature validation bypassed, BTCMT tokens acquired",
+  "2 ▶ BTCMT.approve(PancakeRouter3, amount)",
+  "3 ▶ PancakeRouter3.exactInputSingle()",
+  "BTCMT → BUSD swap",
+  "4 ▶ Profit realized (~$9,000 USD)"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: signature validation bypassable with empty signature\ncontract ReferalCrowdSales {\n    // Vulnerable: callable with empty bytes signature and zero address referrer\n    function buyTokens(\n        address referrer,\n        bytes calldata signature,\n        uint256 deadline\n    ) external payable {\n        // Vulnerable: no validation of signature length or content\n        if (signature.length > 0) {\n            address signer = recoverSigner(referrer, deadline, signature);\n            require(signer == authorizedSigner, \"Invalid signature\");\n        }\n        // If signature is empty, proceeds without referrer bonus\n        // But the token purchase itself is permitted\n        uint256 tokenAmount = calculateTokens(msg.value);\n        BTCMT.transfer(msg.sender, tokenAmo",
+  "// Root cause: Signature Validation Bypass\n// Source code unverified — based on bytecode analysis"
+ ]
+}

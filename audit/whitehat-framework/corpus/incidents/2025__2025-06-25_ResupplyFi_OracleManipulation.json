@@ -1,0 +1,36 @@
+{
+ "id": "2025__2025-06-25_ResupplyFi_OracleManipulation",
+ "source_file": "2025/2025-06-25_ResupplyFi_OracleManipulation.md",
+ "title": "ResupplyFi — Over-Borrowing via Oracle Manipulation Analysis",
+ "date": "2025-06-25",
+ "protocol": "ResupplyFi",
+ "chain": "Ethereum",
+ "loss_raw": "~9,600,000 USD",
+ "loss_usd": null,
+ "root_cause": "Collateral value oracle relies on manipulable sCRVUSD pool ratio",
+ "attack_tx": "0xffbbd492",
+ "vulnerable_contract": "0x6e90c85a495d54c6d7E1f3400FEF1f6e59f86bd6",
+ "classes": [
+  "integer-precision",
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable logic: oracle uses manipulable current price from Curve pool\nfunction getCollateralValue(uint256 scrvusdAmount) public view returns (uint256) {\n    // curvePool.get_p() or current balance ratio — manipulable via flash loan\n    uint256 price = curvePool.getCurrentPrice();\n    return (scrvusdAmount * price) / 1e18;\n}\n\nfunction borrow(uint256 collateralAmount, uint256 borrowAmount, address receiver) external {\n    uint256 collateralValue = getCollateralValue(collateralAmount);\n    // LTV check passes using manipulated price\n    require(borrowAmount <= collateralValue * MAX_LTV / 1e18, \"LTV exceeded\");\n    ...\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: use Curve EMA oracle or Chainlink\nfunction getCollateralValue(uint256 scrvusdAmount) public view returns (uint256) {\n    uint256 price = curvePool.price_oracle(); // EMA price (manipulation-resistant)\n    return (scrvusdAmount * price) / 1e18;\n}"
+ ],
+ "steps": [
+  "1 ▶ MorphoBlue: flashLoan(large USDC amount)",
+  "2 ▶ USDC → crvUSD swap (Curve)",
+  "3 ▶ crvUSD → sCRVUSD mint (inflate price)",
+  "4 ▶ Curve pool oracle manipulation (_manipulateOracles)",
+  "5 ▶ ResupplyVault.addCollateralVault(sCRVUSD)",
+  "6 ▶ ResupplyVault.borrow(excessive amount)",
+  "7 ▶ MorphoBlue: flash loan repaid + ~9.6M USD profit retained"
+ ],
+ "other_code": [
+  "// File: src/protocol/ResupplyPair.sol\nfunction getPairAccounting()\n        external\n        view\n        returns (\n            uint256 _claimableFees,\n            uint128 _totalBorrowAmount,\n            uint128 _totalBorrowShares,\n            uint256 _totalCollateral\n        )\n    {\n        VaultAccount memory _totalBorrow;\n        (, , _claimableFees, _totalBorrow) = previewAddInterest();\n        _totalBorrowAmount = _totalBorrow.amount;\n        _totalBorrowShares = _totalBorrow.shares;\n        _totalCollateral = totalCollateral();\n    }\n\n// ... (lines 125-130 omitted) ...\n\n    function toBorrowShares(\n        uint256 _amount,\n        bool _roundUp,\n        bool _previewInterest\n    ) external view returns (uint256 _shares) {\n        if (_previewInterest) {\n            (, , , VaultAccoun",
+  "Attacker\n  │\n  ├─1─▶ MorphoBlue: flashLoan(large USDC amount)\n  │         [onMorphoFlashLoan callback]\n  │\n  ├─2─▶ USDC → crvUSD swap (Curve)\n  │\n  ├─3─▶ crvUSD → sCRVUSD mint (inflate price)\n  │         └─ sCRVUSD/crvUSD ratio distorted\n  │\n  ├─4─▶ Curve pool oracle manipulation (_manipulateOracles)\n  │         └─ ResupplyFi price feed reflects manipulated price\n  │\n  ├─5─▶ ResupplyVault.addCollateralVault(sCRVUSD)\n  │         └─ Collateral registered at inflated price\n  │\n  ├─6─▶ ResupplyVault.borrow(excessive amount)\n  │         └─ Over-collateralized borrow executed beyond LTV\n  │\n  └─7─▶ MorphoBlue: flash loan repaid + ~9.6M USD profit retained"
+ ]
+}

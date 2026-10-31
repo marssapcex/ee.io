@@ -1,0 +1,37 @@
+{
+ "id": "2023__2023-01-13_RoeFinance_FlashLoanLPManipulation",
+ "source_file": "2023/2023-01-13_RoeFinance_FlashLoanLPManipulation.md",
+ "title": "Roe Finance — Flash Loan LP Collateral Value Manipulation Analysis",
+ "date": "2023-01-13",
+ "protocol": "Roe Finance",
+ "chain": "Ethereum",
+ "loss_raw": "Unknown",
+ "loss_usd": null,
+ "root_cause": "LP token collateral value computed from `getReserves()` spot price, allowing reserve manipulation within a single block to distort collateral valuation",
+ "attack_tx": "0x927b7841...",
+ "vulnerable_contract": "0x5F360c6b...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: uses spot reserves to calculate UniswapV2 LP token price\nfunction getUnderlyingPrice(address cToken) external view returns (uint256) {\n    IUniswapV2Pair pair = IUniswapV2Pair(underlying);\n    (uint112 reserve0, uint112 reserve1,) = pair.getReserves();\n    uint256 totalSupply = pair.totalSupply();\n    //",
+  "❌ LP token price calculated from current reserves → manipulable\n    uint256 lpPrice = (reserve0 * price0 + reserve1 * price1) / totalSupply;\n    return lpPrice;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: use the Fair LP Price formula\nfunction getUnderlyingPrice(address cToken) external view returns (uint256) {\n    // Use Alpha Finance's Fair LP Price formula:\n    // sqrt(reserve0 * reserve1) * 2 * sqrt(price0 * price1) / totalSupply\n    // More manipulation-resistant than simple reserve summation\n}"
+ ],
+ "steps": [
+  "1 ▶ Balancer flash loan (borrow large amounts of WBTC + USDC)",
+  "2 ▶ Add liquidity to UniswapV2 WBTC-USDC pair",
+  "→ LP token reserve-based price inflated",
+  "3 ▶ Deposit LP tokens as collateral into Roe Finance",
+  "4 ▶ Borrow large amount of roeUSDC against overvalued collateral",
+  "5 ▶ Remove liquidity from UniswapV2 (redeem LP tokens)",
+  "6 ▶ Swap WBTC for USDC",
+  "7 ▶ Repay Balancer flash loan → borrow proceeds kept as profit"
+ ],
+ "other_code": [
+  "// Root cause: LP token collateral value computed from getReserves() spot price, allowing reserve manipulation within a single block to distort collateral valuation\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ Balancer flash loan (borrow large amounts of WBTC + USDC)\n  │       flashLoanAmount = 5,673,090,338,021 (in USDC units)\n  │\n  ├─2─▶ Add liquidity to UniswapV2 WBTC-USDC pair\n  │       → LP token reserve-based price inflated\n  │\n  ├─3─▶ Deposit LP tokens as collateral into Roe Finance\n  │       Evaluated at manipulated inflated price\n  │\n  ├─4─▶ Borrow large amount of roeUSDC against overvalued collateral\n  │       vdUSDC debt tokens minted\n  │\n  ├─5─▶ Remove liquidity from UniswapV2 (redeem LP tokens)\n  │\n  ├─6─▶ Swap WBTC for USDC\n  │\n  └─7─▶ Repay Balancer flash loan → borrow proceeds kept as profit"
+ ]
+}

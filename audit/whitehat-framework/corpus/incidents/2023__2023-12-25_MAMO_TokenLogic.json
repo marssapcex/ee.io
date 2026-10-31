@@ -1,0 +1,23 @@
+{
+ "id": "2023__2023-12-25_MAMO_TokenLogic",
+ "source_file": "2023/2023-12-25_MAMO_TokenLogic.md",
+ "title": "MAMO Token Logic Vulnerability Analysis (December 2023)",
+ "date": "2023-12-25",
+ "protocol": "MAMO",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "// MAMO token transfer logic\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 fee = 0;\n\n    if (isPair[to]) {\n        // Sell fee calculation\n        fee = amount * sellFee / 100;\n    } else if (isPair[from]) {\n        // Buy fee calculation\n        fee = amount * buyFee / 100;\n    }\n\n    // Fee accumulation — manipulable\n    accumulatedFees += fee;\n\n    // Auto-swap triggered when accumulation exceeds threshold\n    if (accumulatedFees > swapThreshold) {\n        // Swap timing and price are manipulable\n        _swapFeesForBNB(accumulatedFees);\n        accumulatedFees = 0;\n    }\n}",
+  "function _transfer(address from, address to, uint256 amount) internal override {\n    uint256 fee = calculateFee(from, to, amount);\n\n    // Reentrancy guard\n    require(!inSwap, \"Reentrant call\");\n\n    if (fee > 0) {\n        super._transfer(from, address(this), fee);\n        amount -= fee;\n    }\n    super._transfer(from, to, amount);\n}"
+ ]
+}

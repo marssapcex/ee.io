@@ -1,0 +1,36 @@
+{
+ "id": "2023__2023-03-15_poolz_IntegerOverflow",
+ "source_file": "2023/2023-03-15_poolz_IntegerOverflow.md",
+ "title": "Poolz Finance — Integer Overflow Attack Analysis",
+ "date": "2023-03-15",
+ "protocol": "Poolz Finance",
+ "chain": "BSC",
+ "loss_raw": "~665K USD",
+ "loss_usd": null,
+ "root_cause": "Integer overflow due to missing `SafeMath` in Solidity 0.6.x",
+ "attack_tx": "Occurred across multiple chains",
+ "vulnerable_contract": "Poolz LockedDeal Contract",
+ "classes": [
+  "integer-precision"
+ ],
+ "code_before": [
+  "❌ Vulnerable code (Solidity 0.6.x, SafeMath not used)\nfunction CreateMassDeal(\n    address[] calldata _to,\n    uint256[] calldata _amount,\n    uint256[] calldata _startTime,\n    uint256[] calldata _finishTime,\n    address _tokenAddress\n) external payable {\n    for (uint256 i = 0; i < _to.length; ++i) {\n        //",
+  "❌ totalAmount calculation susceptible to overflow\n        uint256 totalAmount += _amount[i];  // overflow → very small value\n        // In practice, creates a lock with a tiny token amount for a huge amount value\n    }\n    //",
+  "❌ Lock created without validation\n    _createDeal(_to, totalAmount, _startTime, _finishTime, _tokenAddress);\n}\n\n// On withdrawal, the overflowed large amount enables mass withdrawal\nfunction withdraw(uint256 dealId) external {\n    // amount is much larger than actually locked due to overflow\n    uint256 withdrawAmount = deals[dealId].amount;\n    token.transfer(msg.sender, withdrawAmount);  // mass withdrawal\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix: Use SafeMath or upgrade to Solidity 0.8.x or above\n// Solidity 0.8.x automatically reverts on overflow"
+ ],
+ "steps": [
+  "1 ▶ CreateMassDeal(",
+  "2 ▶ Deposit only a small amount of tokens",
+  "3 ▶ Lock period elapses (or set to 0)",
+  "4 ▶ withdraw(dealId)",
+  "deal.amount = very large value → mass withdrawal",
+  "5 ▶ Sell stolen tokens → profit"
+ ],
+ "other_code": [
+  "// Root cause: Integer overflow due to missing `SafeMath` in Solidity 0.6.x\n// Source code unverified — based on bytecode analysis",
+  "Attacker\n  │\n  ├─1─▶ CreateMassDeal(\n  │         amounts=[MAX_UINT - X, Y, ...]  // overflow-inducing values\n  │     )\n  │       totalAmount = (MAX_UINT - X) + Y = small value (overflow)\n  │       actual tokens required = overflowed small value\n  │\n  ├─2─▶ Deposit only a small amount of tokens\n  │       However, deal.amount is stored as the large pre-overflow value\n  │\n  ├─3─▶ Lock period elapses (or set to 0)\n  │\n  ├─4─▶ withdraw(dealId)\n  │       deal.amount = very large value → mass withdrawal\n  │\n  └─5─▶ Sell stolen tokens → profit"
+ ]
+}

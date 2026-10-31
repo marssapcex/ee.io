@@ -1,0 +1,35 @@
+{
+ "id": "2023__2023-06-06_UN_FlashLoanManipulation",
+ "source_file": "2023/2023-06-06_UN_FlashLoanManipulation.md",
+ "title": "UN Token — Flash Loan LP Price Manipulation Analysis",
+ "date": "2023-06-06",
+ "protocol": "UN Token",
+ "chain": "BSC",
+ "loss_raw": "~26K USD",
+ "loss_usd": null,
+ "root_cause": "UN token internal function relies on manipulable LP spot price",
+ "attack_tx": "0xff551526...",
+ "vulnerable_contract": "0x1aFA48B7...",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "// ❌ Internal calculation based on UN/BUSD LP spot price\ncontract UN {\n    IUniswapV2Pair public pair; // UN/BUSD pair\n\n    function getUNPrice() internal view returns (uint256) {\n        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();\n        // ❌ Spot reserves → manipulable via flash loan\n        return uint256(reserve1) * 1e18 / uint256(reserve0); // BUSD per UN\n    }\n\n    // ❌ Internal reward/swap based on manipulated price\n    function claimReward() external {\n        uint256 price = getUNPrice();\n        uint256 reward = userStake[msg.sender] * price / 1e18;\n        busd.transfer(msg.sender, reward); // ❌ Excessive reward\n    }\n}"
+ ],
+ "code_after": [
+  "// ✅ Use UniswapV2 TWAP or Chainlink oracle\nfunction getUNPrice() internal view returns (uint256) {\n    return twapOracle.consult(address(un), 1e18); // 30-minute TWAP\n}"
+ ],
+ "steps": [
+  "1. Borrow BUSD via DODO flash loan",
+  "2. Buy large amount of UN with BUSD",
+  "→ UN price spikes (reserve manipulated)",
+  "3. Call UN internal function (at manipulated price)",
+  "→ Receive excessive BUSD reward",
+  "4. Sell UN back to BUSD + repay flash loan",
+  "5. 26K USD profit"
+ ],
+ "other_code": [
+  "// Root cause: UN token internal function relies on manipulable LP spot price\n// Source code unverified — based on bytecode analysis",
+  "┌──────────────────────────────────────────┐\n│  1. Borrow BUSD via DODO flash loan      │\n└──────────────────────┬───────────────────┘\n                       ▼\n┌──────────────────────────────────────────┐\n│  2. Buy large amount of UN with BUSD     │\n│     → UN price spikes (reserve manipulated) │\n└──────────────────────┬───────────────────┘\n                       ▼\n┌──────────────────────────────────────────┐\n│  3. Call UN internal function (at manipulated price) │\n│     → Receive excessive BUSD reward      │\n└──────────────────────┬───────────────────┘\n                       ▼\n┌──────────────────────────────────────────┐\n│  4. Sell UN back to BUSD + repay flash loan │\n│  5. 26K USD profit                       │\n└──────────────────────────────────────────┘"
+ ]
+}

@@ -1,0 +1,38 @@
+{
+ "id": "2022__2022-11_MooCAKECTX_HarvestFlashLoanManipulation",
+ "source_file": "2022/2022-11_MooCAKECTX_HarvestFlashLoanManipulation.md",
+ "title": "MooCAKECTX — Beefy Vault harvest() Flash Loan Manipulation Attack Analysis",
+ "date": "2022-11-01",
+ "protocol": "MooCAKECTX",
+ "chain": "Binance Smart Chain",
+ "loss_raw": "Unconfirmed",
+ "loss_usd": null,
+ "root_cause": "`harvest()` is callable by anyone (no `onlyKeeper`) and there is no same-block deposit/withdrawal guard, allowing accumulated rewards at deposit time to be over-distributed proportional to the attacker's current deposit share",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable BeefyVault - flash loan capital included at harvest() call time\ncontract BeefyVault {\n    IStrategy public strategy;\n    IERC20 public want; // CAKE\n\n    function depositAll() external {\n        deposit(want.balanceOf(msg.sender));\n    }\n\n    function deposit(uint256 _amount) public {\n        uint256 _pool = balance();\n        want.transferFrom(msg.sender, address(this), _amount);\n\n        // Deposit CAKE into strategy\n        strategy.deposit();\n        // Calculate user share based on current total balance\n        //",
+  "❌ When harvest() is called after a large flash loan deposit,\n        // historically accumulated rewards are distributed proportional to current deposit amount\n    }\n\n    //",
+  "❌ Externally callable - harvest can be triggered at any time\n    function harvest() external {\n        strategy.harvest();\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct pattern - same-block deposit/withdrawal guard + harvest access control\ncontract SafeBeefyVault {\n    mapping(address => uint256) public lastDeposit;\n\n    function deposit(uint256 _amount) public {\n        lastDeposit[msg.sender] = block.number;\n        // ...\n    }\n\n    function withdraw(uint256 _shares) public {\n        //",
+  "✅ Cannot withdraw in the same block as deposit (flash loan defense)\n        require(block.number > lastDeposit[msg.sender], \"Same block deposit/withdraw\");\n        // ...\n    }\n\n    //"
+ ],
+ "steps": [
+  "[1] 3 WBNB → swap to CTK → deposit into SmartChef (pre-position CTK rewards)",
+  "vBUSD.mint(400,000 BUSD) → register BUSD collateral",
+  "vCAKE.borrow(50,000 CAKE) → borrow CAKE",
+  "50,000 CAKE → deposit into Vault",
+  "→ Strategy stakes CAKE in SmartChef",
+  "CTK → swap to CAKE → compound into Vault",
+  "[7] vCAKE.repayBorrow() → repay CAKE",
+  "vBUSD.redeemUnderlying() → recover BUSD"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IVToken {\n    function mint(uint256) external returns (uint256);\n    function borrow(uint256) external returns (uint256);\n    function repayBorrow(uint256) external returns (uint256);\n    function redeemUnderlying(uint256) external returns (uint256);\n}\n\ninterface IUnitroller {\n    function enterMarkets(address[] calldata) external returns (uint256[] memory);\n}\n\ninterface IBeefyVault {\n    function depositAll() external;\n    function withdrawAll() external;\n    function balance() external view returns (uint256);\n}\n\ninterface IStrategy {\n    function harvest() external;\n}\n\ninterface IDODO {\n    function flashLoan(uint256, uint256, address, bytes calldata) external;\n}\n\ninterface IERC20 {\n "
+ ]
+}

@@ -1,0 +1,30 @@
+{
+ "id": "2025__2025-08-09_d3xai_PriceManipulation-TaxToken",
+ "source_file": "2025/2025-08-09_d3xai_PriceManipulation-TaxToken.md",
+ "title": "d3xai — Tax Token Price Manipulation Analysis",
+ "date": "2025-08-09",
+ "protocol": "d3xai",
+ "chain": "BSC",
+ "loss_raw": "~190 BNB",
+ "loss_usd": null,
+ "root_cause": "Arbitrage arising from discrepancy between the tax logic of the fee-on-transfer token (D3XAT) and AMM price calculation",
+ "attack_tx": "0x26bcefc1...",
+ "vulnerable_contract": "N/A (Proxy contract logic vulnerable)",
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: mismatch between post-tax amount received and AMM price basis\n// Tax is deducted on D3XAT token transfer\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 taxAmount = amount * taxRate / 100;\n    uint256 actualAmount = amount - taxAmount;\n    // AMM calculates price based on amount, but only actualAmount is actually received\n    super._transfer(from, to, actualAmount);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Remediation direction: integrate AMM with token tax logic validation\n// Fee-on-transfer tokens require the AMM to recognize and handle them\n// Use PancakeSwap's swapExactTokensForTokensSupportingFeeOnTransferTokens"
+ ],
+ "steps": [
+  "Repeatedly swap USDT → D3XAT from each address",
+  "Partial D3XAT burned as tax → price inflates"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ PancakeSwap V3 Flash Loan (borrow large amount of USDT)\n  │\n  ├─[2]─▶ Deploy 27 dummy addresses (pancakeBuyers)\n  │         Repeatedly swap USDT → D3XAT from each address\n  │         └─ Partial D3XAT burned as tax → price inflates\n  │\n  ├─[3]─▶ Sell D3XAT via Proxy contract through special route\n  │         └─ Receive USDT at inflated price\n  │\n  ├─[4]─▶ Realize additional profit through 2 proxyBuyers\n  │\n  └─[5]─▶ Repay flash loan + retain 190 BNB profit",
+  "function pancakeV3FlashCallback(...) {\n    // [1] 27 rounds: buy D3XAT from each dummy address\n    for (uint256 i = 0; i < numPancakeOperRound; i++) {\n        // Each dummy buyer address swaps USDT → D3XAT\n        // Due to tax, actual amount received < AMM calculated amount → pool imbalance occurs\n        PancakeBuyer(pancakeBuyers[i]).buy(USDT_ADDR, D3XAT, pancakeBuyers[i], amount);\n    }\n\n    // [2] Sell D3XAT from each dummy address via Proxy contract\n    for (uint256 i = 0; i < numPancakeOperRound; i++) {\n        // Sell D3XAT → USDT at the inflated price\n        PancakeSeller(pancakeSellers[i]).sell(D3XAT, USDT_ADDR, address(this));\n    }\n\n    // [3] Realize additional profit via Proxy contract route\n    for (uint256 i = 0; i < numProxyOperRound; i++) {\n        ProxyBuyer(proxyBuyers"
+ ]
+}

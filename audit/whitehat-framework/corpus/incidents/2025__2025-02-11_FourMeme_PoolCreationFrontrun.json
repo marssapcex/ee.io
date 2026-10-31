@@ -1,0 +1,38 @@
+{
+ "id": "2025__2025-02-11_FourMeme_PoolCreationFrontrun",
+ "source_file": "2025/2025-02-11_FourMeme_PoolCreationFrontrun.md",
+ "title": "FourMeme — Pool Pre-emption Attack Before Liquidity Migration Analysis",
+ "date": "2025-02-11",
+ "protocol": "FourMeme",
+ "chain": "BSC",
+ "loss_raw": "~$183,000 (287 BNB; per PeckShield and CoinTelegraph)",
+ "loss_usd": 183000.0,
+ "root_cause": "Attacker pre-created a PancakeSwap pool with an extreme price before the official liquidity migration, inducing the platform to inject liquidity into the manipulated pool",
+ "attack_tx": "0x2902...f61 (Exploiter2 main profit tx)",
+ "vulnerable_contract": "FourMeme Launchpad (BSC)",
+ "classes": [
+  "business-logic",
+  "mev-sandwich"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: no validation of pool existence or initial price\nfunction migrateToPool(address token, uint256 bnbAmount, uint256 tokenAmount) external {\n    address pool = IFactory(factory).getPool(token, WBNB, fee);\n\n    if (pool == address(0)) {\n        // Create a new pool only when none exists\n        pool = IFactory(factory).createPool(token, WBNB, fee);\n        IPool(pool).initialize(calculateSqrtPrice(tokenAmount, bnbAmount));\n    }\n    //",
+  "❌ If pool already exists, liquidity is added without any price validation!\n    // Liquidity is injected directly into the attacker's extreme-price pool\n\n    INonfungiblePositionManager(npm).mint(\n        MintParams({token0: token, token1: WBNB, ...})\n    );\n}\n\n//",
+  "// RECONSTRUCTED — not verified source; derived from PoC + on-chain trace\n// ❌ FourMeme Launchpad: 0x5c952063c7fc8610FFDB798152D69F0B9550762b\nfunction _addLiquidityToPancakeV3(\n    address token,\n    uint256 bnbAmount,\n    uint256 tokenAmount\n) internal {\n    address pool = IPancakeV3Factory(factory).getPool(token, WBNB, fee);\n\n    if (pool == address(0)) {\n        // Only creates+initializes pool if it doesn't exist yet\n        pool = IPancakeV3Factory(factory).createPool(token, WBNB, fee);\n        uint160 sqrtPrice = _computeSqrtPrice(tokenAmount, bnbAmount);\n        IPancakeV3Pool(pool).initialize(sqrtPrice);\n    }\n    // ❌ If pool already exists (pre-created by attacker), no price check is performed.\n    // Liquidity is added unconditionally at whatever sqrtPriceX96 the pool has.\n    // Attacker pre-initializes the pool with sqrtPriceX96 ≈ type(uint160).max/2,\n    // making 1 meme token worth ~368 trillion times the intended WBNB price.\n\n    INonfungiblePositionManager(npm).mint(\n        INonfungiblePositionManager.MintParams({\n            token0: token < WBNB ? token : WBNB,\n            token1: token < WBNB ? WBNB : token,\n            fee: fee,\n            tickLower: tickLower,\n            tickUpper: tickUpper,\n            amount0Desired: token < WBNB ? tokenAmount : bnbAmount,\n            amount1Desired: token < WBNB ? bnbAmount : tokenAmount,\n            amount0Min: 0,\n            amount1Min: 0,  // ❌ no minimum — entire WBNB injected at attacker's price\n            recipient: address(this),\n            deadline: block.timestamp\n        })\n    );\n}"
+ ],
+ "code_after": [
+  "✅ Safe code: validates pool initial price\nfunction migrateToPool(address token, uint256 bnbAmount, uint256 tokenAmount) external {\n    address pool = IFactory(factory).getPool(token, WBNB, fee);\n\n    if (pool != address(0)) {\n        // Validate that the existing pool's current price is within the expected range\n        (uint160 sqrtPriceX96,,,,,,) = IPool(pool).slot0();\n        uint160 expectedPrice = calculateSqrtPrice(tokenAmount, bnbAmount);\n        require(\n            sqrtPriceX96 >= expectedPrice * 90 / 100 &&\n            sqrtPriceX96 <= expectedPrice * 110 / 100,\n            \"Pool price manipulated\"\n        );\n    } else {\n        pool = IFactory(factory).createPool(token, WBNB, fee);\n        IPool(pool).initialize(calculateSqrtPrice(tokenAmount, bnbAmount));\n    }\n    // Safely add liquidity\n}",
+  "// ✅ Fix: validate pool price before adding liquidity\nif (pool != address(0)) {\n    (uint160 sqrtPriceX96,,,,,,) = IPancakeV3Pool(pool).slot0();\n    uint160 expectedPrice = _computeSqrtPrice(tokenAmount, bnbAmount);\n    require(\n        sqrtPriceX96 >= expectedPrice * 95 / 100 &&\n        sqrtPriceX96 <= expectedPrice * 105 / 100,\n        \"FourMeme: pool price manipulated\"\n    );\n}"
+ ],
+ "steps": [
+  "→ [1] Purchase a small amount of meme tokens from FourMeme (minimal BNB)",
+  "→ [2] [Front-run] Create PancakeSwap pool before the official migration",
+  "→ [3] FourMeme's official liquidity migration executes",
+  "addLiquidity() → detects existing pool",
+  "→ [4] Attacker: swaps minimal tokens for large amount of WBNB",
+  "→ [5] Profit: ~287 BNB (~$186,000)"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─→ [1] Purchase a small amount of meme tokens from FourMeme (minimal BNB)\n  │\n  ├─→ [2] [Front-run] Create PancakeSwap pool before the official migration\n  │         └─ sqrtPriceX96: 368 trillion × normal value (extreme high price)\n  │            Effective price ratio: billions of BNB per token\n  │\n  ├─→ [3] FourMeme's official liquidity migration executes\n  │         └─ addLiquidity() → detects existing pool\n  │            Injects WBNB into manipulated pool with no price validation\n  │\n  ├─→ [4] Attacker: swaps minimal tokens for large amount of WBNB\n  │         └─ Due to manipulated price: tiny token amount = massive WBNB output\n  │\n  └─→ [5] Profit: ~287 BNB (~$186,000)",
+  "// Full PoC not available — reconstructed from summary\n\ncontract FourMemeAttacker {\n    address constant PANCAKE_FACTORY = /* PancakeSwap V3 Factory */;\n    address constant PANCAKE_NPM = /* NonFungiblePositionManager */;\n    address constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;\n\n    function attack(address memeToken) external payable {\n        // [1] Purchase a small amount of meme tokens from FourMeme\n        IFourMeme(fourMeme).buyToken{value: 0.001 ether}(memeToken);\n\n        // [2] Pre-empt pool creation with an extremely high sqrtPriceX96\n        // Set to approximately 368 trillion times the normal price\n        uint160 extremeSqrtPrice = type(uint160).max / 2; // extreme high price\n        address pool = IPancakeV3Factory(PANCAKE_FACTORY).createAndInitializePoolIfNece"
+ ]
+}

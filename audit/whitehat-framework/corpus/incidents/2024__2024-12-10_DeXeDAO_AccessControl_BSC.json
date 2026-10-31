@@ -1,0 +1,23 @@
+{
+ "id": "2024__2024-12-10_DeXeDAO_AccessControl_BSC",
+ "source_file": "2024/2024-12-10_DeXeDAO_AccessControl_BSC.md",
+ "title": "DeXe DAO — Multi-Step Access Control Exploit on BSC (~$640K)",
+ "date": "2024-12-10",
+ "protocol": "DeXe DAO",
+ "chain": "BNB Smart Chain",
+ "loss_raw": "~$640K",
+ "loss_usd": 640.0,
+ "root_cause": "Access Control Issue — multi-step exploit contract (`step3()`) exploited an unprotected privileged function in DeXe DAO governance or treasury contracts, draining approximately $640K in tokens",
+ "attack_tx": "`0xc96287cadfc96afd715ffeae25fd07b19d3c06b83dff54ffd7ad4633882d7b24`",
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [],
+ "other_code": [
+  "// Attacker-deployed exploit contract (0x31aBe92D7f6E8549B637b186F4839d5D4d7b8e0e)\n// step3() is the final drain step — earlier steps stage the attack\n\ncontract DeXeExploit {\n    address constant DEXE_DAO = 0x...;      // DeXe governance/treasury contract\n    address constant DEXE_TOKEN = 0x...;    // DeXe token contract\n\n    // step1: sets up state — e.g., obtains flash loan, registers exploiter as delegate\n    function step1() external { ... }\n\n    // step2: intermediate preparation — e.g., triggers proposal execution, sets allowances\n    function step2() external { ... }\n\n    // step3: final drain — calls the unprotected withdrawal/distribution function\n    function step3() external {\n        // BUG: DeXe DAO's privileged function (e.g., distributeRewards, emergencyWithdraw,\n        // ",
+  "// VULNERABLE — DeXe DAO treasury/reward function (reconstructed)\nfunction distributeRewards(address recipient, uint256 amount) external {\n    // BUG: missing role check — should require governorRole or multisig approval\n    // Any caller can trigger reward distribution to themselves\n    rewardToken.transfer(recipient, amount);\n}\n\n// FIXED\nfunction distributeRewards(address recipient, uint256 amount)\n    external\n    onlyRole(GOVERNOR_ROLE)  // require governance approval\n{\n    require(amount <= pendingRewards[recipient], \"exceeds entitlement\");\n    pendingRewards[recipient] -= amount;\n    rewardToken.transfer(recipient, amount);\n}"
+ ]
+}

@@ -1,0 +1,31 @@
+{
+ "id": "2024__2024-11-26_NFTG_FlashLoanRewardDrain",
+ "source_file": "2024/2024-11-26_NFTG_FlashLoanRewardDrain.md",
+ "title": "NFTG — DODO Flash Loan Reward Manipulation Vulnerability Analysis",
+ "date": "2024-11-26",
+ "protocol": "NFTG Token",
+ "chain": "BSC",
+ "loss_raw": "~10,000 USD",
+ "loss_usd": null,
+ "root_cause": "The `0x85d07203` function in the NFTG contract calculates rewards based solely on the USDT deposit amount with no holding period validation, allowing repeated deposits within a single transaction to claim excessive rewards",
+ "attack_tx": "0xbd330fd1",
+ "vulnerable_contract": "0x5fbbb391",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ NFTG: deposit-based reward function callable repeatedly\ncontract NFTGContract {\n    // selector 0x85d07203\n    function depositAndClaim(uint256 amount, address recipient) external {\n        //",
+  "❌ No protection against repeated calls\n        //",
+  "❌ Can be repeated with flash loan funds\n        require(IERC20(USDT).balanceOf(address(this)) >= amount);\n\n        // Reward calculated based on deposit amount (manipulable via flash loan)\n        uint256 reward = calculateReward(amount);\n        INFTG(NFTG_TOKEN).mint(recipient, reward);\n    }\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Fix:\n// Prevent repeated calls within a single transaction\n// Add nonReentrant + per-call cooldown\n// Add flash loan fund detection logic"
+ ],
+ "steps": [
+  "→ repeated small deposits + reward claims",
+  "[5] ▶ Transfer remaining USDT to attacker → ~10,000 USD profit"
+ ],
+ "other_code": [
+  "Attacker (0x5af00b07)\n  │\n  ├─[1]─▶ USDT.approve(addr1, max)\n  │\n  ├─[2]─▶ DODO.flashLoan(0, 825555.5 USDT, this, 0x3078)\n  │\n  ├─[3]─▶ DPPFlashLoanCall callback:\n  │         └─ for idx in range(11):\n  │             USDT.transfer(addr1, idx*1e13 + 11*1e13)\n  │             addr1.call(selector_0x85d07203, 2125*1e13*3600, this)\n  │             → repeated small deposits + reward claims\n  │\n  ├─[4]─▶ Repay DODO flash loan (825.5555 USDT)\n  │\n  └─[5]─▶ Transfer remaining USDT to attacker → ~10,000 USD profit"
+ ]
+}

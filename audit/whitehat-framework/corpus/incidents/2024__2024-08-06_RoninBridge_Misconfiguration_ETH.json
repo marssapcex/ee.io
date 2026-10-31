@@ -1,0 +1,36 @@
+{
+ "id": "2024__2024-08-06_RoninBridge_Misconfiguration_ETH",
+ "source_file": "2024/2024-08-06_RoninBridge_Misconfiguration_ETH.md",
+ "title": "Ronin Bridge — Misconfiguration Vulnerability Analysis (2024)",
+ "date": "2024-08-06",
+ "protocol": "Ronin Bridge",
+ "chain": "Ethereum",
+ "loss_raw": "~$11,810,813 drained (3,996 ETH + 1,998,046 USDC); **all funds returned by white-hat MEV bots; net loss to protocol = $0; $500K bounty paid**",
+ "loss_usd": 11810813.0,
+ "root_cause": "`initializeV3` not called during bridge contract upgrade → `_totalOperatorWeight = 0` → `minimumVoteWeight = 0` → signature verification bypassed",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable state: initializeV3 was never called\n// Only initializeV4 was executed in the upgrade transaction\n\nfunction initializeV3() external reinitializer(3) {\n    // This function should have been called — syncs validator weights from BridgeManager\n    IBridgeManager mainchainBridgeManager = IBridgeManager(getContract(ContractType.BRIDGE_MANAGER));\n    (, address[] memory operators, uint96[] memory weights) = mainchainBridgeManager.getFullBridgeOperatorInfos();\n\n    uint96 totalWeight;\n    for (uint i; i < operators.length; i++) {\n        _operatorWeight[operators[i]] = weights[i];\n        totalWeight += weights[i];\n    }\n    _totalOperatorWeight = totalWeight; // ← This value should have been initialized\n}\n\nfunction initializeV4(address payable wethUnwrapper_) external reinitializer(4) {\n    wethUnwrapper = WethUnwrapper(wethUnwrapper_); //",
+  "❌ _totalOperatorWeight remains 0\n}",
+  "// MainchainGatewayV3.sol\n\nuint96 private _totalOperatorWeight; // ❌ Remains 0 because initializeV3 was not called\nmapping(address operator => uint96 weight) private _operatorWeight; // ❌ All remain 0"
+ ],
+ "code_after": [
+  "✅ Only this function was executed\n    //",
+  "// ✅ Correct upgrade: call initializeV3 first, then initializeV4\n\nfunction initializeV3() external reinitializer(3) {\n    // ✅ Sync validator info from BridgeManager\n    IBridgeManager mainchainBridgeManager = IBridgeManager(getContract(ContractType.BRIDGE_MANAGER));\n    (, address[] memory operators, uint96[] memory weights) = mainchainBridgeManager.getFullBridgeOperatorInfos();\n\n    uint96 totalWeight;\n    for (uint i; i < operators.length; i++) {\n        _operatorWeight[operators[i]] = weights[i];\n        totalWeight += weights[i];\n    }\n    _totalOperatorWeight = totalWeight; // ✅ Proper weight set (e.g., ~10,000)\n}\n\n// ✅ Both functions must be called in order in the upgrade deployment script\n// 1. proxy.upgradeToAndCall(impl, abi.encodeCall(initializeV3, ()))\n// 2. proxy.upgradeToAndCall(impl, abi.encodeCall(initializeV4, (wethUnwrapper)))\n// Or executed atomically in a single multicall"
+ ],
+ "steps": [
+  "→ Executes front-run",
+  "_getTotalWeight() → 0 ← ❌ Uninitialized",
+  "_minimumVoteWeight(0) → 0 ← ❌ Verification",
+  "weight = _getWeight(arbitrary signer) → 0",
+  "08:48:47 | Ronin team upgrades MainchainGatewayV3 to V4",
+  "10:15:23 | Bridge paused"
+ ],
+ "other_code": [
+  "// Conceptual reproduction — Ronin Bridge initializeV3 missing vulnerability\n// Actual attack was executed by MEV bot after detecting in mempool\n\ninterface IMainchainGatewayV3 {\n    // Withdrawal submission function — validates signatures and withdraws assets\n    function submitWithdrawal(\n        Transfer.Receipt calldata receipt,\n        Signature[] calldata signatures\n    ) external returns (bool locked);\n}\n\ncontract RoninExploit {\n    IMainchainGatewayV3 constant BRIDGE = IMainchainGatewayV3(\n        0x64192819ac13ef72bf6b5ae239ac672b43a9af08 // Ronin Bridge V2 proxy\n    );\n\n    function exploit() external {\n        // ① Verify vulnerable state: minimumVoteWeight() == 0\n        //   → _totalOperatorWeight is 0, so calculation result is 0\n        // uint256 minWeight = BRIDGE.minimumVot"
+ ]
+}

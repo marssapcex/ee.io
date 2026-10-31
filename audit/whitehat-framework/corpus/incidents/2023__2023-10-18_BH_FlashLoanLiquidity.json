@@ -1,0 +1,33 @@
+{
+ "id": "2023__2023-10-18_BH_FlashLoanLiquidity",
+ "source_file": "2023/2023-10-18_BH_FlashLoanLiquidity.md",
+ "title": "BH Flash Loan Liquidity Manipulation Incident Analysis",
+ "date": "2023-10-18",
+ "protocol": "BH",
+ "chain": null,
+ "loss_raw": null,
+ "loss_usd": null,
+ "root_cause": null,
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [],
+ "code_after": [],
+ "steps": [
+  "1 ▶ 5-layer DODO DPP Oracle Flash Loan",
+  "DPPOracle1.flashLoan() → DPPOracle2 → DPPOracle3 → DPP → DPPAdvanced",
+  "2 ▶ WBNB_BUSDT.swap() - Additional BUSDT acquisition via WBNB swap",
+  "3 ▶ BUSDT_USDC.flash() - Additional flash loan",
+  "4 ▶ UnverifiedContract1.Upgrade() × 12 iterations",
+  "5 ▶ Call function 0x33688938() - Add liquidity",
+  "6 ▶ BUSDTToBH() - Swap BUSDT → BH",
+  "7 ▶ Function 0x4e290832() × 10 iterations - Asymmetric liquidity removal",
+  "8 ▶ Repay all flash loans + realize ~$1.27M profit"
+ ],
+ "other_code": [
+  "// Vulnerable pattern: Repeated Upgrade with no access control\ncontract UnverifiedContract {\n    uint256 public upgradeMultiplier;\n    mapping(address => uint256) public liquidityProvided;\n\n    // Vulnerable: Upgrade function callable by anyone, repeatedly\n    function Upgrade() external {\n        // Liquidity multiplier increases with each call\n        upgradeMultiplier += 1;\n        liquidityProvided[msg.sender] += calculateBonus();\n    }\n\n    // Vulnerable: Asymmetric liquidity removal using manipulated multiplier\n    function removeLiquidity(uint256 amount) external {\n        uint256 busdtAmount = amount * upgradeMultiplier; // uses manipulated multiplier\n        BUSDT.transfer(msg.sender, busdtAmount);\n    }\n}",
+  "// Root cause: Flash Loan + Repeated Upgrade + Asymmetric Liquidity Removal\n// Source code unverified — analysis based on bytecode"
+ ]
+}

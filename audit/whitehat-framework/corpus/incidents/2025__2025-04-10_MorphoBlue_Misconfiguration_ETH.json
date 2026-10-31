@@ -1,0 +1,35 @@
+{
+ "id": "2025__2025-04-10_MorphoBlue_Misconfiguration_ETH",
+ "source_file": "2025/2025-04-10_MorphoBlue_Misconfiguration_ETH.md",
+ "title": "Morpho Blue — Misconfigured Market Settings Vulnerability Analysis",
+ "date": "2025-04-10",
+ "protocol": "Morpho Blue",
+ "chain": "Ethereum",
+ "loss_raw": "~$2,601,443 (1,708.64 ETH, price $1,522.52/ETH)",
+ "loss_usd": 2601443.0,
+ "root_cause": "Frontend SDK update misconfiguration — token approvals were incorrectly directed to the Bundler3 contract itself rather than the Bundler3 adapter",
+ "attack_tx": null,
+ "vulnerable_contract": "Bundler3 (0x65661941...a2dc90245)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable: approval target is Bundler3 contract itself, not the adapter\n// Misconfiguration in @morpho-org/bundler-sdk-viem\n\n// Approval generated when constructing user transaction bundle\nIERC20(token).approve(\n    address(bundler3),        // ❌ Bundler3 contract — no access control!\n    amountNeededForTx         // Approves exact amount (no excess)\n);",
+  "// ❌ Bundler3: no initiator validation\n// Address: 0x6566194141eefa99af43bb5aa71460ca2dc90245\ncontract Bundler3 {\n    function multicall(bytes[] calldata data) external payable {\n        // Executes without checking initiator\n        // Anyone can exploit this if approval is granted to this contract\n        for (uint256 i = 0; i < data.length; ++i) {\n            (bool success, ) = address(this).delegatecall(data[i]);\n            require(success);\n        }\n    }\n}",
+  "Step 1: Propagation of SDK-misconfigured transaction\n──────────────────────────────────────────────────────────────────\n  Victim (EOA)\n      │\n      │  approve(Bundler3, amount)   ← ❌ Approval to Bundler3, not the adapter\n      ▼\n  Ethereum Mempool (publicly pending)\n      │\n      ├──▶ Scheduled for normal mining (victim's intent)\n      │\n      └──▶ Detected by attacker/MEV bot monitoring the mempool"
+ ],
+ "code_after": [
+  "// ✅ Fixed: approval target set to the adapter contract\n// @morpho-org/bundler-sdk-viem@3.0.0-next.14 and later\n\n// Approval generated when constructing user transaction bundle\nIERC20(token).approve(\n    address(generalAdapter1), // ✅ Ethereum General Adapter1 — has initiator access control\n    amountNeededForTx\n);",
+  "// ✅ GeneralAdapter1: initiator-based access control\n// Address: 0x4a6c312ec70e8747a587ee860a0353cd42be0ae0\ncontract GeneralAdapter1 {\n    address public immutable BUNDLER3;\n\n    modifier onlyBundler3() {\n        require(msg.sender == BUNDLER3, \"not bundler\");\n        _;\n    }\n\n    // Validates initiator to ensure only the transaction originator benefits\n    function transferFrom(address token, address from, uint256 amount)\n        external onlyBundler3\n    {\n        // ✅ Only allows calls via Bundler3 → only the original transaction initiator benefits\n        IERC20(token).transferFrom(from, address(this), amount);\n    }\n}"
+ ],
+ "steps": [
+  "Step 1: Propagation of SDK-misconfigured transaction",
+  "Step 2: Front-run execution",
+  "Step 3: Whitehat response and resolution",
+  "transferFrom( → tx fails or no-ops"
+ ],
+ "other_code": [
+  "Step 2: Front-run execution\n──────────────────────────────────────────────────────────────────\n  Mempool monitor (attacker or whitehat c0ffeebabe.eth)\n      │\n      │  Submits transaction ahead with higher gas\n      ▼\n  Ethereum miner/validator\n      │\n      │  Processes attacker's transaction first\n      ▼\n  Bundler3.multicall([\n      transferFrom(token, victim, amount)  ← Exploits approval granted to Bundler3\n  ])\n      │\n      │  transferFrom succeeds (approval exists)\n      ▼\n  ~1,708.64 ETH worth of funds moved to attacker/whitehat address",
+  "Step 3: Whitehat response and resolution\n──────────────────────────────────────────────────────────────────\n  c0ffeebabe.eth\n      │\n      ├── Intercepts funds ($2,601,443 worth)\n      │\n      ├── Reports vulnerability to Morpho team and Immunefi\n      │\n      └── Returns full amount to victims + receives bug bounty\n          │\n  Morpho team\n      │\n      ├── Rolls back frontend within 4 minutes of receiving alert\n      │\n      └── Deploys patched SDK versions\n          - @morpho-org/bundler-sdk-viem@3.0.0-next.14\n          - @morpho-org/blue-sdk-viem@3.0.0-next.6\n          - @morpho-org/blue-sdk-ethers@3.0.0-next.4"
+ ]
+}

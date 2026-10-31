@@ -1,0 +1,34 @@
+{
+ "id": "2024__2024-09-10_CaterpillarCoin_Create2LPBurn",
+ "source_file": "2024/2024-09-10_CaterpillarCoin_Create2LPBurn.md",
+ "title": "Caterpillar Coin (CUT) — Price Manipulation via CREATE2 Address Prediction and LP Burn",
+ "date": "2024-09-10",
+ "protocol": "Caterpillar Coin",
+ "chain": "BSC",
+ "loss_raw": "~1,400,000 USD",
+ "loss_usd": null,
+ "root_cause": "Pre-funding a CREATE2-predictable address before deploying the attack contract, then exploiting the LP burn mechanism",
+ "attack_tx": "0x2c123d08...",
+ "vulnerable_contract": "0x7057F3b0F4D0649B428F0D8378A8a0E7D21d36a7 (CUT)",
+ "classes": [
+  "create2-exploit"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: LP burn() allows arbitrary recipient for token returns\nfunction burn(address to) external lock {\n    //",
+  "❌ Burns LP tokens and returns underlying tokens to the `to` address\n    // If the attacker pre-acquires LP tokens, they can extract CUT via `to`\n    uint256 liquidity = balanceOf[address(this)];\n    _burn(address(this), liquidity);\n    _safeTransfer(token0, to, amount0);  //",
+  "❌ `to` is an arbitrary address\n    _safeTransfer(token1, to, amount1);\n}\n\n//"
+ ],
+ "code_after": [
+  "✅ Correct code: Strengthen fee handling and reentrancy protection on LP burn\nfunction burn(address to) external lock nonReentrant {\n    require(to != address(0) && !isBlacklisted[to], \"Invalid recipient\");  //",
+  "✅ Validate recipient\n    // ...\n}"
+ ],
+ "steps": [
+  "► BUSD * 70% → Swap to CUT",
+  "► Remaining BUSD + CUT → addLiquidity",
+  "► CUT → BUSD reverse swap",
+  "► LP tokens → transfer to BUSDCUT pool"
+ ],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─► PancakeSwap V2 Flash Swap: Borrow 4,500,000 BUSD\n  │\n  ├─[2]─► Repeat 10 times:\n  │         ├─► calAddress(i): Compute CREATE2 predicted address\n  │         ├─► Transfer large amount of BUSD to predicted address\n  │         └─► createContract(i): Deploy Attack contract\n  │               └─► In constructor:\n  │                     ├─► BUSD * 70% → Swap to CUT\n  │                     ├─► Remaining BUSD + CUT → addLiquidity\n  │                     ├─► CUT → BUSD reverse swap\n  │                     ├─► LP tokens → transfer to BUSDCUT pool\n  │                     └─► BUSDCUT.burn(address(this))\n  │\n  ├─[3]─► Repay flash swap\n  │\n  └─[4]─► Total loss: ~1,400,000 USD"
+ ]
+}

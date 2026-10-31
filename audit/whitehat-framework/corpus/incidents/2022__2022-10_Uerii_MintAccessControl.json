@@ -1,0 +1,31 @@
+{
+ "id": "2022__2022-10_Uerii_MintAccessControl",
+ "source_file": "2022/2022-10_Uerii_MintAccessControl.md",
+ "title": "Uerii — `mint()` Missing Access Control Attack Analysis",
+ "date": "2022-10-01",
+ "protocol": "Uerii Token",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "~2,500 USDC",
+ "loss_usd": null,
+ "root_cause": "`mint()` function has no access control, allowing anyone to mint arbitrary amounts of UERII tokens",
+ "attack_tx": null,
+ "vulnerable_contract": "0x418C24191aE947A78C99fDc0e45a1f96Afb254BE (UERII Token)",
+ "classes": [
+  "access-control"
+ ],
+ "code_before": [
+  "❌ Vulnerable mint() - no access control (UERII Token line 493)\ncontract UERIIToken is ERC20 {\n    //",
+  "❌ No onlyOwner or onlyMinter modifier\n    // Anyone can call this and mint arbitrary amounts\n    function mint(address to, uint256 amount) external {\n        _mint(to, amount);\n    }\n}\n\n//",
+  "// ❌ Root cause: `mint()` function has no access control, allowing anyone to mint arbitrary amounts of UERII tokens\n    function mint() external view returns (uint256) {}  // 0x1249c58b  // ❌ Unauthorized minting"
+ ],
+ "code_after": [
+  "✅ Correct pattern 1 - onlyOwner\ncontract SafeUERIIToken is ERC20, Ownable {\n    function mint(address to, uint256 amount) external onlyOwner {\n        _mint(to, amount);\n    }\n}\n\n//",
+  "✅ Correct pattern 2 - role-based access control\nimport \"@openzeppelin/contracts/access/AccessControl.sol\";\n\ncontract SafeUERIITokenWithRoles is ERC20, AccessControl {\n    bytes32 public constant MINTER_ROLE = keccak256(\"MINTER_ROLE\");\n\n    constructor() {\n        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);\n        _grantRole(MINTER_ROLE, msg.sender);\n    }\n\n    function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {\n        _mint(to, amount);\n    }\n}"
+ ],
+ "steps": [
+  "→ Mint large amount of UERII to attacker address",
+  "[2] Swap UERII → USDC (Uniswap V3, fee=500)",
+  "[3] Swap USDC → WETH (Uniswap V3, fee=500)"
+ ],
+ "other_code": []
+}

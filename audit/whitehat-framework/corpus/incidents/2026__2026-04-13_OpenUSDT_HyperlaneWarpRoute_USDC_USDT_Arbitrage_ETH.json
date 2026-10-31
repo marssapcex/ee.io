@@ -1,0 +1,38 @@
+{
+ "id": "2026__2026-04-13_OpenUSDT_HyperlaneWarpRoute_USDC_USDT_Arbitrage_ETH",
+ "source_file": "2026/2026-04-13_OpenUSDT_HyperlaneWarpRoute_USDC_USDT_Arbitrage_ETH.md",
+ "title": "OpenUSDT (oUSDT) — Hyperlane Warp Route USDC/USDT Peg Arbitrage",
+ "date": "2026-04-13",
+ "protocol": "OpenUSDT",
+ "chain": null,
+ "loss_raw": "~410,010 USDC extracted on Ethereum across 8 withdrawals (representative attacker; open vulnerability enabled repeated arbitrage)",
+ "loss_usd": null,
+ "root_cause": "oUSDT warp route mints oUSDT 1:1 against USDC on Base but oUSDT is redeemable 1:1 for native USDT on Celo — USDC/USDT price divergence becomes free arbitrage",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "// ⚠️ RECONSTRUCTED — implementation behind proxy not separately verified. Derived from Hyperlane open-source warp route\n// pattern and on-chain traces. Real language: Solidity (EVM).\n\n// Base chain — oUSDT HyperlaneERC20WarpRoute (collateral: USDC)\nfunction transferRemote(\n    uint32  destination,\n    bytes32 recipient,\n    uint256 amount\n) external payable returns (bytes32 messageId) {\n    USDC.transferFrom(msg.sender, address(this), amount);\n    // ❌ Mints oUSDT 1:1 against USDC regardless of the USDC/USDT market rate\n    _mint(address(this), amount);                  // ❌ hard-coded 1:1\n    return _dispatch(destination, recipient, amount);\n}\n\n// Celo chain — oUSDT HyperlaneERC20WarpRoute (collateral: USDT)\nfunction handle(\n    uint32  origin,\n    bytes32 sender,\n    bytes   calldata message\n) external {\n    (bytes32 recipient, uint256 amount) = abi.decode(message, (bytes32, uint256));\n    _burn(address(this), amount);\n    // ❌ Redeems oUSDT 1:1 for USDT regardless of the USDC/USDT market rate\n    USDT.transfer(address(uint160(uint256(recipient))), amount); // ❌ hard-coded 1:1\n}"
+ ],
+ "code_after": [
+  "// ✅ Fix: consult a Chainlink USDC/USDT oracle before minting\nfunction transferRemote(uint32 destination, bytes32 recipient, uint256 usdcAmount)\n    external payable returns (bytes32)\n{\n    USDC.transferFrom(msg.sender, address(this), usdcAmount);\n    // ✅ Price the USDC collateral in USDT terms via oracle\n    uint256 oUsdtAmount = _usdcToUsdt(usdcAmount); // oracle-adjusted amount\n    _mint(address(this), oUsdtAmount);\n    return _dispatch(destination, recipient, oUsdtAmount);\n}\nfunction _usdcToUsdt(uint256 usdcAmount) internal view returns (uint256) {\n    (, int256 price,,,) = IChainlinkFeed(USDC_USDT_FEED).latestRoundData();\n    return usdcAmount * uint256(price) / 1e8; // ✅ market-rate conversion\n}"
+ ],
+ "steps": [
+  "(1) Base: deposit N USDC → Hyperlane oUSDT warp route",
+  "(2) Bridge oUSDT (Base → Celo) via Hyperlane (cents of gas)",
+  "(3) Celo: burn N oUSDT → receive N USDT",
+  "1 | 0x2ebfd1cd…dfc9c8 | 24,869,021 | 10.9",
+  "2 | 0x9f0ab90c…bce190 | 24,869,219 | 49,999.9",
+  "3 | 0x09690b50…cde350 | 24,869,224 | 99,999.9",
+  "4 | 0xc74ad3c3…46ec2 | 24,869,228 | 99,999.9",
+  "5 | 0xbf51b9b0…55205 | 24,869,237 | 29,999.9",
+  "6 | 0xa7f9754a…eb342 | 24,869,594 | 19,999.9",
+  "7 | 0x7c846ed3…071aa | 24,869,596 | 99,999.9",
+  "8 | 0x06c2c310…b4d9ae | 24,869,783 | 9,999.9"
+ ],
+ "other_code": [
+  "┌──────────────────────────────────────────────────────────────────┐\n│ (1) Base: deposit N USDC → Hyperlane oUSDT warp route           │\n│     mint N oUSDT                     (fixed 1:1, ignores market) │\n├──────────────────────────────────────────────────────────────────┤\n│ (2) Bridge oUSDT (Base → Celo) via Hyperlane (cents of gas)     │\n├──────────────────────────────────────────────────────────────────┤\n│ (3) Celo: burn N oUSDT → receive N USDT                         │\n│     (USDT market price > USDC by ~0.02%)                         │\n├──────────────────────────────────────────────────────────────────┤\n│ (4) Sell USDT for USDC on Celo DEX or bridge out to Ethereum    │\n│     USDC Hyperlane warp route (0xd059…f36c) and withdraw         │\n├────────────────────────────────────────────"
+ ]
+}

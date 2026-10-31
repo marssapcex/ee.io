@@ -1,0 +1,52 @@
+{
+ "id": "2025__2025-07-09_GMX_UnverifiedInput_ARB",
+ "source_file": "2025/2025-07-09_GMX_UnverifiedInput_ARB.md",
+ "title": "GMX — Unvalidated User Input Vulnerability Analysis",
+ "date": "2025-07-09",
+ "protocol": "GMX V1",
+ "chain": "Arbitrum",
+ "loss_raw": "~$42,000,000 (WETH, WBTC, USDC, USDe, LINK, UNI, USDT, FRAX, DAI; per BlockSec, Halborn, CoinDesk)",
+ "loss_usd": 42000000.0,
+ "root_cause": "Cross-contract reentrancy via unvalidated user input — ETH refund callback recipient address not validated",
+ "attack_tx": "0x0318...6ef",
+ "vulnerable_contract": "OrderBook 0x09f7...ACB / Vault 0x489e...C4A",
+ "classes": [
+  "arbitrary-call",
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "// ❌ Vulnerable code — ETH sent to _account without validating whether it is a contract\nfunction executeDecreaseOrder(\n    address _account,    // ❌ No validation that _account is an EOA\n    uint256 _orderIndex,\n    address payable _feeReceiver\n) external onlyOrderKeeper {\n    Order memory order = decreaseOrders[_account][_orderIndex];\n    // ...position decrease logic executes...\n\n    // ❌ Uses call with no gas limit for ETH refund → allows fallback() execution\n    // ❌ ShortsTracker update is not yet complete at this point\n    (bool success, ) = _account.call{value: order.executionFee}(\"\");\n    // ↑ This call triggers the attacker's fallback(), causing reentrancy\n}",
+  "// ❌ Vulnerable code — skips ShortsTracker update when called directly\nfunction increasePosition(\n    address _account,\n    address _collateralToken,\n    address _indexToken,\n    uint256 _sizeDelta,\n    bool _isLong\n) external override nonReentrant {\n    _validate(isLeverageEnabled, 28);\n    // ❌ Without going through PositionManager, the following does not execute:\n    // ShortsTracker.updateGlobalShortData() is never called → only globalShortSizes increases\n    // → globalShortSizes ↑, globalShortAveragePrices unchanged → divergence occurs\n    _increasePosition(_account, _collateralToken, _indexToken, _sizeDelta, _isLong, price);\n}",
+  "// ❌ Vulnerable code — trusts the manipulated globalShortAveragePrices\nfunction getGlobalShortDelta(address _token) public view returns (bool, uint256) {\n    uint256 size = vault.globalShortSizes(_token);        // Updated immediately ↑\n    uint256 averagePrice = getGlobalShortAveragePrice(_token); // ❌ Not updated — holds low value\n    \n    // ❌ size is large, averagePrice is low, so price > averagePrice → enormous unrealized loss calculated\n    uint256 priceDelta = averagePrice > price ? averagePrice.sub(price) : price.sub(averagePrice);\n    uint256 delta = size.mul(priceDelta).div(averagePrice);\n    bool hasProfit = averagePrice > price;\n    return (hasProfit, delta);\n    // ↑ hasProfit=false, delta=astronomical number → added to AUM → GLP price skyrockets\n}"
+ ],
+ "code_after": [
+  "// ✅ Fixed code — adds EOA validation or uses transfer\nfunction executeDecreaseOrder(\n    address _account,\n    uint256 _orderIndex,\n    address payable _feeReceiver\n) external onlyOrderKeeper {\n    // ✅ Reject execution if _account is a contract address\n    require(_account.code.length == 0, \"OrderBook: account must be EOA\");\n    // Alternatively: propagate reentrancy guard to the Vault level\n    // Alternatively: execute ETH transfer after all state updates (CEI pattern)\n    Order memory order = decreaseOrders[_account][_orderIndex];\n    // ... remaining logic ...\n}",
+  "// ✅ Fixed code — directly updates ShortsTracker inside increasePosition\nfunction increasePosition(\n    address _account,\n    address _collateralToken,\n    address _indexToken,\n    uint256 _sizeDelta,\n    bool _isLong\n) external override nonReentrant {\n    _validate(isLeverageEnabled, 28);\n    // ✅ Always update ShortsTracker for short positions\n    if (!_isLong) {\n        uint256 markPrice = _isLong ? getMaxPrice(_indexToken) : getMinPrice(_indexToken);\n        shortsTracker.updateGlobalShortData(\n            _account, _collateralToken, _indexToken, _isLong, _sizeDelta, markPrice, true\n        );\n    }\n    _increasePosition(_account, _collateralToken, _indexToken, _sizeDelta, _isLong, price);\n}"
+ ],
+ "steps": [
+  "createOpenETHPosition() → Create ETH long position increase order in OrderBook",
+  "keeperExecuteOpenETHPosition() → PositionManager executes the order",
+  "createCloseETHPosition() → Create ETH long position decrease order",
+  "→ PositionManager.executeDecreaseOrder() called",
+  "→ ETH refund triggers malicious contract's fallback() ← [REENTRANCY OCCURS]",
+  "→ Inside fallback():",
+  "→ globalShortSizes increases without ShortsTracker update",
+  "→ globalShortAveragePrice: $109,515 → (gradually decreasing) → $1,914",
+  "createCloseETHPosition() re-called → prepares for next iteration",
+  "→ FastPriceFeed.setPricesWithBitsAndExecute() called",
+  "→ BTC short position decrease executed",
+  "→ ShortsTracker normal update continues to drive globalShortAveragePrice down",
+  "→ fallback() executes profitAttack():",
+  "mintAndStakeGlp(USDC, 6,000,000) → mint 4,129,000 GLP",
+  "increasePosition(USDC, BTC, 15,385e33, false) → large BTC short",
+  "→ ETH refund: call{value}() ◄ ❌ Recipient not validated",
+  "ETH received → fallback() executes",
+  "Bypasses PositionManager → ShortsTracker not updated",
+  "→ $109,515 → $1,914 (57×↓)",
+  "AUM ↑↑↑ → GLP price ↑↑↑"
+ ],
+ "other_code": [
+  "Repeat 2 times:\n  createOpenETHPosition()     → Create ETH long position increase order in OrderBook\n  keeperExecuteOpenETHPosition() → PositionManager executes the order",
+  "createCloseETHPosition()      → Create ETH long position decrease order\n                                 (receiver: the malicious contract itself)\n\nRepeat 5 times:\n  keeperExecuteCloseETHPosition()\n    → PositionManager.executeDecreaseOrder() called\n    → ETH refund triggers malicious contract's fallback() ← [REENTRANCY OCCURS]\n    → Inside fallback():\n        Vault.increasePosition(this, USDC, BTC, 90030e33, false)\n          → globalShortSizes increases without ShortsTracker update\n          → globalShortAveragePrice: $109,515 → (gradually decreasing) → $1,914\n        positionRouter.createDecreasePosition(BTC short decrease request)\n        createCloseETHPosition() re-called → prepares for next iteration\n\n  keeperExecuteCloseBTCPosition()\n    → FastPriceFeed.setPricesWithBitsAndExecute() "
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "id": "2022__2022-06-26_XCarnival_NFTPledgeReentrancy",
+ "source_file": "2022/2022-06-26_XCarnival_NFTPledgeReentrancy.md",
+ "title": "XCarnival — BAYC NFT Collateral Order State Reuse Attack Analysis",
+ "date": "2022-06-26",
+ "protocol": "XCarnival NFT Lending Protocol",
+ "chain": "Ethereum Mainnet",
+ "loss_raw": "3,087 ETH (~$3,870,000)",
+ "loss_usd": 3870000.0,
+ "root_cause": "In `pledgeAndBorrow()`, after locking an NFT as collateral and generating an order ID, calling `withdrawNFT()` to reclaim the NFT still leaves the order ID valid, allowing repeated borrowing via `borrow()`",
+ "attack_tx": null,
+ "vulnerable_contract": "XNFT 0xb14B3b9682990ccC16F52eB04146C3ceAB01169A",
+ "classes": [
+  "reentrancy"
+ ],
+ "code_before": [
+  "❌ Vulnerable XCarnival XNFT (pseudocode)\ncontract XNFT {\n    struct Order {\n        address nftAddress;\n        uint256 tokenId;\n        address borrower;\n        uint256 borrowedAmount;\n        bool    active;      //",
+  "❌ Remains active = true even after NFT is withdrawn\n    }\n\n    mapping(uint256 => Order) public orders;\n    uint256 public orderCounter;\n\n    // NFT collateral + borrow\n    function pledgeAndBorrow(\n        address nft,\n        uint256 tokenId,\n        uint256 borrowAmount,\n        address xToken,\n        uint256 minBorrow\n    ) external returns (uint256 orderId) {\n        // Receive NFT\n        IERC721(nft).transferFrom(msg.sender, address(this), tokenId);\n\n        // Generate orderId\n        orderId = ++orderCounter;\n        orders[orderId] = Order({\n            nftAddress:    nft,\n            tokenId:       tokenId,\n            borrower:      msg.sender,\n            borrowedAmount: 0,\n            active:        true\n        });\n\n        // Execute borrow\n        if (borrowAmount > 0) {\n            IXToken(xToken).borrow(borrowAmount, msg.sender, orderId);\n        }\n    }\n\n    function withdrawNFT(uint256 orderId) external {\n        Order storage order = orders[orderId];\n        require(order.borrower == msg.sender, \"not borrower\");\n        require(order.borrowedAmount == 0, \"debt exists\");\n\n        //",
+  "❌ NFT is returned but order.active remains true\n        // → orderId is still recognized as valid collateral\n        IERC721(order.nftAddress).transferFrom(\n            address(this), msg.sender, order.tokenId\n        );\n        // order.active = false; // ← This line is missing!\n    }\n\n    // Allow borrowing if orderId is active\n    function _borrow(uint256 orderId, uint256 amount) internal {\n        Order storage order = orders[orderId];\n        require(order.active, \"order not active\"); //"
+ ],
+ "code_after": [
+  "✅ Correct pattern: deactivate order upon NFT withdrawal\ncontract XNFTFixed {\n    function withdrawNFT(uint256 orderId) external {\n        Order storage order = orders[orderId];\n        require(order.borrower == msg.sender, \"not borrower\");\n        require(order.borrowedAmount == 0, \"debt exists\");\n\n        //",
+  "✅ Deactivate order simultaneously with NFT return\n        order.active = false;  // ← Key fix\n\n        IERC721(order.nftAddress).safeTransferFrom(\n            address(this), msg.sender, order.tokenId\n        );\n    }\n}"
+ ],
+ "steps": [
+  "[1] BAYC #5110 → transfer to main attack contract",
+  "[3a] BAYC #5110 → transfer to Payload[i]",
+  "[3d] BAYC #5110 → transfer to next Payload[i+1]",
+  "orderId.active = true → collateral check passes",
+  "→ 33 * 36 ETH = 1,188 ETH borrowed"
+ ],
+ "other_code": [
+  "Attacker (holds BAYC #5110)\n    │\n    ├─[1] BAYC #5110 → transfer to main attack contract\n    │       BAYC.transferFrom(attacker, mainContract, 5110)\n    │\n    ├─[2] Deploy 33 Payload contracts\n    │\n    ├─[3] Repeat for each Payload (i = 1 ~ 33):\n    │       │\n    │       ├─ [3a] BAYC #5110 → transfer to Payload[i]\n    │       │\n    │       ├─ [3b] Payload[i]: XNFT.pledgeAndBorrow(BAYC, 5110, 0, ...)\n    │       │         Lock NFT + generate orderId[i] (borrow 0 ETH)\n    │       │\n    │       ├─ [3c] Payload[i]: XNFT.withdrawNFT(orderId[i])\n    │       │         Reclaim NFT ← ⚡ order[i].active remains true\n    │       │\n    │       └─ [3d] BAYC #5110 → transfer to next Payload[i+1]\n    │\n    ├─[4] Obtain 33 valid orderIds (NFT returned to attacker)\n    │\n    ├─[5] Call XToken.borrow(36 ET",
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity 0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IXNFT {\n    function counter() external returns (uint256);\n\n    // NFT collateral + borrow (key: orderId generation)\n    function pledgeAndBorrow(\n        address nftAddress,\n        uint256 tokenId,\n        uint256 borrowAmount,\n        address xToken,\n        uint256 minBorrow\n    ) external;\n\n    // ⚡ NFT withdrawal — order.active is not set to false\n    function withdrawNFT(uint256 orderId) external;\n}\n\ninterface IXToken {\n    // Allow borrow if orderId is valid\n    function borrow(uint256 borrowAmount, address payable borrower, uint256 orderId) external;\n}\n\ninterface IBAYC {\n    function setApprovalForAll(address operator, bool approved) external;\n    function transferFrom(address f"
+ ]
+}

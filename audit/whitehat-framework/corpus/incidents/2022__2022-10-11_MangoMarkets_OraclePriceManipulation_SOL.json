@@ -1,0 +1,35 @@
+{
+ "id": "2022__2022-10-11_MangoMarkets_OraclePriceManipulation_SOL",
+ "source_file": "2022/2022-10-11_MangoMarkets_OraclePriceManipulation_SOL.md",
+ "title": "Mango Markets — Oracle Price Manipulation Governance Drain Analysis",
+ "date": "2022-10-11",
+ "protocol": "Mango Markets",
+ "chain": "Solana",
+ "loss_raw": "~$114,000,000 (USDC, MNGO, SOL, BTC, ETH, and other assets drained from treasury)",
+ "loss_usd": 114000000.0,
+ "root_cause": "The attacker used two accounts and a large coordinated trade to manipulate the MNGO/USDC spot price on the Mango exchange itself — the same venue used as the oracle for MNGO collateral valuation — allowing artificial inflation of collateral value and subsequent over-borrowing of all liquid assets",
+ "attack_tx": "On-chain Solana; attacker publicly claimed responsibility post-exploit",
+ "vulnerable_contract": "Mango Markets lending/trading program (oracle-based margin borrowing)",
+ "classes": [
+  "other"
+ ],
+ "code_before": [
+  "// File: program/src/processor.rs\n// Source: https://github.com/blockworks-foundation/mango-v3/blob/main/program/src/processor.rs\n\nfn cache_prices(program_id: &Pubkey, accounts: &[AccountInfo]) -> MangoResult<()> {\n    let mango_group = MangoGroup::load_checked(mango_group_ai, program_id)?;\n    let mut mango_cache =\n        MangoCache::load_mut_checked(mango_cache_ai, program_id, &mango_group)?;\n    let last_update = clock.unix_timestamp as u64;\n\n    for oracle_ai in oracle_ais.iter() {\n        let oracle_index = mango_group.find_oracle_index(oracle_ai.key).ok_or(throw!())?;\n        // ❌ read_oracle reads from whatever oracle account was registered for this token.\n        //    For MNGO, this was a Stub oracle — whose price was set by the Mango team\n        //    to track the Mango spot market's own last-fill price.\n        if let Ok(price) = read_oracle(\n            &mango_group,\n            oracle_index,\n            oracle_ai,\n            mango_cache.price_cache[oracle_index].price,\n        ) {\n            mango_cache.price_cache[oracle_index] = PriceCache { price, last_update };\n        }\n    }\n    Ok(())\n}",
+  "❌ StubOracle price is simply a u128 field set by the program admin.\n            //    For MNGO, this field was periodically updated to the Mango spot price —\n            //    the same venue the attacker was trading on. No TWAP, no external source.\n            let oracle = StubOracle::load(oracle_ai)?;\n            I80F48::from_num(oracle.price)  //",
+  "❌ returns the manipulated spot price directly\n        }\n        OracleType::Switchboard => {\n            //"
+ ],
+ "code_after": [
+  "✅ Pyth provides an external, manipulation-resistant price feed\n            let value = I80F48::from_num(price_account.agg.price);\n            // ... confidence filter applied ...\n            value\n        }\n        OracleType::Stub => {\n            //",
+  "✅ Switchboard is an external feed (used for other tokens, not MNGO)\n            let result = FastRoundResultAccountData::deserialize(&oracle_ai.try_borrow_data()?).unwrap();\n            I80F48::from_num(result.result.result)\n        }\n        OracleType::Unknown => return Err(throw_err!(MangoErrorCode::InvalidOracleType)),\n    };\n    Ok(price)\n}"
+ ],
+ "steps": [
+  "→ Account A now short MNGO (will profit if MNGO falls)",
+  "→ Use as buying power on Mango spot market",
+  "MNGO spot price: $0.038 → $0.91 (~24x in minutes)",
+  "→ Mango treasury effectively emptied",
+  "→ Attacker votes YES with stolen MNGO; proposal passes"
+ ],
+ "other_code": [
+  "Attacker (with ~$10M USDC initial capital)\n    │\n    ├─[1] Account A: Open large MNGO perpetual SHORT position on Mango\n    │       → Account A now short MNGO (will profit if MNGO falls)\n    │\n    ├─[2] Account B: Deposit flash-borrowed USDC as collateral\n    │       → Use as buying power on Mango spot market\n    │\n    ├─[3] Account B: Buy massive amounts of MNGO on Mango spot\n    │       MNGO spot price: $0.038 → $0.91 (~24x in minutes)\n    │       Account B accumulates ~488M MNGO (Mango's entire float)\n    │\n    ├─[4] Mango's oracle reflects the manipulated price $0.91\n    │       Account B paper collateral: ~$423M\n    │\n    ├─[5] Account B borrows ALL liquid assets against inflated collateral:\n    │       ~$114M: USDC, BTC, ETH, SOL, MSOL, USDT, SRM, MNGO\n    │       → Mango treasury ef"
+ ]
+}
