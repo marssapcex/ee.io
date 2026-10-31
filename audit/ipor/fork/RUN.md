@@ -1,7 +1,8 @@
-# IPOR fork PoC — how to run it, what it needs, what changed in v3.2
+# IPOR fork PoC — how to run it, what it needs, what changed in v3.3
 
-File: `fork/IporFork.t.sol` (v3). Compile-clean against the real `forge-std` (solc 0.8.26, cancun, 0 errors / 0 warnings).
-**Not executed anywhere yet** — the sandbox has no RPC and no `forge`. Your `-vv` output is the evidence.
+File: `fork/IporFork.t.sol` (v3.3). Compile-clean against the real `forge-std` (solc 0.8.26, cancun, 0 errors / 0 warnings).
+**v3.2 was executed on your machine at block 26 310 577 — the log is in `REPORT.md` §9.5 and in §2c below.**
+The sandbox still has no RPC and no `forge`, so every number below comes from a run you did.
 
 ---
 
@@ -96,65 +97,91 @@ Read off `test_0_recon` / the `-vvvv` trace of the failed `test_1_attack`:
 * **The fuel is there.** `calculateAccruedIbtPrice(USDC, ·)` moved 1.1354928574 → 1.1354928906 in the 16 s between two runs ⇒ the published USDC index accrues at **≈ 6.53 % APY**. Over 90 days that is ≈ +1.6 % of notional, which is what the unclamped SOAP turns into a negative (LP-owes) mark, while the trader's own payout stays clamped at collateral.
 * `setMessageSigner` still succeeds from the owner; `deal()` on USDC works (slot `0xb6d6d8b5…`, forge finds it by itself).
 
-## 2c. v3.2 — the blocker is a PAUSE, not a selector
+## 2c. v3.2 result (real run, block 26 310 577) and what v3.3 changes
 
-The v3.1 run proved the 6-arg arity is correct (`0x3696578d`, the selector derives from
-`IAmmOpenSwapServiceUsdc.openSwapReceiveFixed90daysUsdc`), and that the router **dispatches it and then reverts
-`IPOR_015`**. `IPOR_015` is not "bad call data", it is `METHOD_PAUSED`
-(`contracts/libraries/errors/IporErrors.sol:88`), raised by `AccessControl._checkFunctionSigAndIsNotPause`
-(`contracts/router/AccessControl.sol:122`) when `RouterFunctionPaused[selector] != 0`. The map is written by
-`pause(bytes4[])` (pause guardian) and cleared only by the owner via `unpause(bytes4[])` (`AccessControl.sol:81/93`).
+The pause map came back **granular**, which is the single most important fact this file now records. Measured with
+`test_3_pause` (one `paused(bytes4)` read per selector, both arities, 4 assets, 3 chains):
 
-So v3.2 stops guessing:
+| deployment | asset | 6-arg opens | 5-arg opens | LP entry | LP exit |
+|---|---|---|---|---|---|
+| Arbitrum | USDC 229 309.89 USD | **paused** (6/6) | **paused** (6/6) | open, works | open, works |
+| Arbitrum | wstETH 6.50203 (~25 033 USD) | **paused** (6/6) | **OPEN** (6/6) | open | open |
+| Arbitrum | USDT | flag open | flag open | **dust: `totalSupply` = 1.299963 USDT** | — |
+| Arbitrum | DAI | flag open | flag open | **no ipDAI token exists** | — |
+| Ethereum | USDC 92 259.6 / USDT 17 006.0 / DAI 7 813.7 | **OPEN** (18/18) | — | open | open |
+| Base | USDC 9 631.1 / wstETH 15.418 | **paused** (6/6) | — | open | open |
 
-* `test_3_pause` reads `IporProtocolRouter.paused(selector)` for **all 18 open entry points** (pay/receive × 28/60/90 ×
-  USDC/wstETH/USDT/DAI, both arities), plus the liquidity/close ones, and then attempts the obvious bypass — calling
-  `AmmOpenSwapServiceUsdc` directly. That cannot work: the router runs services with `functionDelegateCall`
-  (`IporProtocolRouterAbstract.sol:20,60`), so the message-signer slot the service reads is the router's; in the service's
-  own storage it is 0 and every signature is rejected. The test prints the actual revert instead of asserting it.
-* `test_4_all_chains` does the same for Arbitrum + Ethereum + Base in one run (skips a chain whose RPC is unset), and prints
-  each pool's depth in USD. That is the answer to "is this live anywhere".
-* `test_1_attack` now treats direction as well as tenor as a search: `receiveFixed` first, then `payFixed`, tenors
-  90 → 60 → 28, 6-arg then 5-arg arity, skipping anything the router reports as paused. Both sides are profitable for the
-  attacker, because the AMM prices the oversized swap *against* the trader in either direction
-  (`calculateReceiveFixedOfferedRate` subtracts the demand spread, `calculatePayFixedOfferedRate` adds it, both saturating
-  at 30 %). If nothing opens, it says so instead of printing a fake number.
-* accounting fixed: the attacker is funded with exactly `ATK_LP + TOTAL + 5 % + 1 % of depth`, so
-  `net = balanceOf − float` is a real profit and not an artefact of an over-generous `deal()` (v3.1 dealt `2 × depth`,
-  which would have shown a phantom loss of one whole pool).
-* a second, honest LP (`HONEST`, default depth/4) deposits before the attack and exits after it, so the victim's loss is a
-  measured number rather than an inference from the attacker's balance.
+Open Arbitrum wstETH selectors: `0x859c1a6a` 28 d receive, `0x83e7d402` 60 d, `0xb95ba8f3` 90 d,
+`0xdc660afa` / `0xb3f2a286` / `0xed157264` pay-fixed.
+
+Three lessons the v3.2 attack code got wrong, all fixed in v3.3:
+
+1. **`test_1_attack` gave up after the first pool.** `_target()` picks the deepest pool in USD, which on Arbitrum is USDC —
+   the one pool where every open selector is paused. So the run printed `no open path` while the wstETH pool 3 lines away
+   had six open selectors. v3.3 splits the body into `_attackOn(Pool memory)` and loops over **all** pools, deepest first
+   (`TARGET=<tag>` still forces one), skipping a pool only when it genuinely cannot open a swap. This is also what makes a
+   single Ethereum run enough: if USDC is closed for any reason it immediately tries USDT, then DAI.
+2. **`_depth()` was `getLiquidityPoolBalance()`-only, and the Ethereum treasuries are the legacy `AmmTreasury`.** On those,
+   the call reverts, `_depth` fell through to `rate × supply` — which is *the quantity under attack*, so it would have made
+   the "fair rate" comparison circular and the profit numbers meaningless. v3.3 computes LP the way `AmmLib.getAccruedBalance`
+   does for the legacy stack: `storage.liquidityPool + vaultActual − storage.vault`, with `vaultActual =
+   IERC4626(am).maxWithdraw(treasury)`, and it prints which of the three sources it used (`depth source`). If the log says
+   `rate*supply (soap-contaminated)`, the depth number in that line is **not** evidence — do not use it.
+3. **A `paused == 0` flag is not proof that a function is callable.** The twelve "open" USDT/DAI selectors on Arbitrum sit on
+   a 1.30 USDT pool (`ipUSDT 0x37241A7E141687F8bC29dF2999AA98E775503773`, 6 decimals, last mint 2023-05-18) and on a token
+   that does not exist. Evidence that a path is real therefore has to be an executed call; `_attackOn` provides it, and
+   `test_2_probe` prints the dispatch verdict per selector (`IPOR_012` = route miss, `IPOR_015` = paused).
+
+What v3.2 already proved and v3.3 keeps: the 6-arg arity `0x3696578d` is the right one for Arbitrum USDC and it *is*
+dispatched (revert `IPOR_015` = `METHOD_PAUSED`, `contracts/libraries/errors/IporErrors.sol:88`, raised at
+`contracts/router/AccessControl.sol:122`); the pause map is per selector and publicly readable via `paused(bytes4)`; and the
+direct-service bypass is dead because services run through `functionDelegateCall`
+(`IporProtocolRouterAbstract.sol:20,60`) so the signer slot is the router's — a raw service call reverts `IPOR_020`
+(the run printed exactly that).
 
 ## 3. Run it
+
+Arbitrum and Ethereum both need a fork; **run Ethereum first** — it is the deployment where the money is and where nothing is
+paused.
 
 ```bash
 cd ~/arc_hedgefun
 cp /path/to/ee.io/audit/ipor/fork/IporFork.t.sol test/
 
+export ETH_RPC=https://eth.llamarpc.com       # or any mainnet archive RPC
 export ARB_RPC=https://arb1.arbitrum.io/rpc   # or your Alchemy/Infura URL
-export ETH_RPC=...                            # optional, for the all-chain probe
-export BASE_RPC=...                           # optional, for the all-chain probe
+export BASE_RPC=...                           # optional, only for test_4_all_chains
 
-forge test --match-contract IporFork -vv
+# 1. the run that decides the finding (Ethereum USDC, 92 k -> then USDT, then DAI automatically)
+CHAIN=eth forge test --match-contract IporFork --match-test test_1_attack -vv
+
+# 2. the same attack on Arbitrum; USDC will be skipped as closed and wstETH will be attacked
+#    through the 5-arg selectors (,,-5arg-,,) that are open there
+CHAIN=arb forge test --match-contract IporFork --match-test test_1_attack -vv
+
+# 3. state of the world, cheap, read-only
+CHAIN=eth forge test --match-contract IporFork --match-test "test_0_recon|test_3_pause" -vv
+CHAIN=eth forge test --match-contract IporFork --match-test test_4_all_chains -vv
 ```
 
-Four tests, in the order you want to read them:
+Five tests, in the order you want to read them:
 
 | test | what it answers | gas / risk |
 |---|---|---|
-| `test_2_probe` | does this router dispatch each selector, and is it paused | read-only |
-| `test_3_pause` | full pause map of the 18 open entry points + the direct-service bypass experiment | read-only (one `deal` for the bypass attempt) |
+| `test_3_pause` | full pause map (18 open selectors × 4 assets × 3 chains) + the direct-service bypass experiment | read-only (one `deal` for the bypass attempt) |
 | `test_4_all_chains` | depth in USD and pause state for Arbitrum / Ethereum / Base in one run | read-only |
-| `test_0_recon` | per-pool depth, idle cash, vault, ipToken supply, exchange rate | read-only |
-| `test_1_attack` | the attack itself on the pool you choose | one owner-gated cheat, see §4 |
+| `test_0_recon` | per-pool depth, idle cash, vault, ipToken supply, exchange rate, and which depth source was used | read-only |
+| `test_2_probe` | does this router dispatch each selector, and is it paused | read-only |
+| `test_1_attack` | the attack itself; walks every pool on the chain, deepest first, until one opens | one owner-gated cheat, see §4 |
 
 ```
-FORK_BLOCK=519889666 ARB_RPC=... forge test --match-contract IporFork -vv     # reproducible numbers
+FORK_BLOCK=26310577 CHAIN=arb forge test --match-contract IporFork -vv     # reproducible numbers
+CHAIN=eth TARGET=Usdc forge test --match-contract IporFork --match-test test_1_attack -vv
 ```
 
 Attack defaults: attacker takes **half the book as LP**, **half the book as swap total**, 1000× leverage, 90 days held.
-`TARGET=wstETH` switches pool (default: the biggest by USD). Everything else is optional:
-`ATK_LP`, `HONEST`, `TOTAL`, `LEV`, `TENOR` (28/60/90), `DAYS`, `CHUNKS`, `FORK_BLOCK`, plus `CHAIN=arb|eth|base` /
+`TARGET=Usdc|Usdt|Dai|WstEth` forces one pool (default: deepest by USD, then fall back pool by pool). Everything else is
+optional: `ATK_LP`, `HONEST`, `TOTAL`, `LEV`, `TENOR` (28/60/90), `DAYS`, `CHUNKS`, `FORK_BLOCK`, plus `CHAIN=arb|eth|base` /
 `RPC_URL` to run the whole file on another chain.
 
 If a cap bites, the test does not die: it halves the swap size and retries (6 tries), walks tenors and directions, prints the
@@ -176,10 +203,10 @@ fork run measures the mechanism at 1000×, and §10.2 of the report states what 
 
 ## 5. What to send back
 
-Full `-vv` output of `test_3_pause` + `test_4_all_chains` + `test_1_attack`. The numbers that decide the finding:
+Full `-vv` output of `test_1_attack` on Ethereum (and on Arbitrum), then `test_0_recon` + `test_3_pause`. The numbers that decide the finding:
 
-1. the pause map (which of the 18 open selectors are `PAUSED`) on each chain — this decides whether the bug is live,
-   dormant, or dead;
+1. for each pool the loop touches: `depth source`, `depth0`, `LP balance after swap`, and whether the swap opened at all
+   (already known: Ethereum 18/18 open, Arbitrum USDC closed, Arbitrum wstETH 5-arg open, Base closed);
 2. `LP balance`, `treasury idle`, `asset manager` per pool (recon) — the reachable ceiling;
 3. `rate0` → `rate after swap` → `rate1` and `fair rate` — how much of the mark is phantom (`phantom inflation x1000`);
 4. `NET PROFIT` / `NET LOSS` in wad and USD, next to `spent` — the attacker's real balance delta;

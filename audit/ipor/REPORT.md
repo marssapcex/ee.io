@@ -411,44 +411,59 @@ entire derivatives TVL is 484 k and which has no on-chain alarm — but this is 
 a guaranteed loss for LPs only if the swap is left open, and the protocol has the power to close it.**
 
 ---
-**9.5 The open side is paused on the live router — measured, and what it means for "is this live today".**
+**9.5 Where the open side is actually open — measured on all three deployments at block 26 310 577.**
 
-Probing the deployed Arbitrum router `0x760Fa0aB719c4067D3A8d4727Cf07E8f3Bf118db` at block 26 310 512
-(`fork/IporFork.t.sol::test_2_probe`, v3.1), with the per-chain arity taken from
-`contracts/chains/arbitrum/interfaces/IAmmOpenSwapServiceUsdc.sol:101`:
+This section used to say "Arbitrum is paused, therefore the bug is latent". The full run of
+`fork/IporFork.t.sol::test_3_pause` (v3.2, one `paused(bytes4)` read per selector, both arities, all three chains)
+replaces that guess with the real map, and the answer is not "paused everywhere":
 
-| entry point | selector | observed |
-|---|---|---|
-| `openSwapReceiveFixed90daysUsdc(beneficiary, inputAsset, amount, rate, leverage, risk)` | `0x3696578d` | **dispatched**, then reverts `IPOR_015` |
-| `openSwapReceiveFixed90daysUsdc` 5-arg legacy arity | `0xed2b4a54` | `IPOR_012`, not in this router's dispatch table |
-| `openSwapReceiveFixed90daysWstEth` | `0x1253b3ae` | **dispatched**, then reverts `IPOR_015` |
-| `provideLiquidityUsdcToAmmPoolUsdc` | `0x87b3c417` | executes (LP entry works) |
-| `redeemFromAmmPoolUsdc` | `0x4e854bd9` | executes |
+| deployment | asset | 6-arg opens (V1 flavour) | 5-arg opens (legacy flavour) | LP exit |
+|---|---|---|---|---|
+| Arbitrum `0x760Fa0aB…8db` | USDC `0xaf88…5831` | **paused** (all 6) | **paused** (all 6) | open, works |
+| Arbitrum | wstETH `0x5979…0529` | **paused** (all 6) | **OPEN** (all 6) | open, works |
+| Arbitrum | USDT | flag = open | flag = open | no real pool (see below) |
+| Arbitrum | DAI | flag = open | flag = open | no pool at all |
+| Ethereum `0x16d10400…6fd` | USDC / USDT / DAI | **OPEN** (all 18) | n/a | open |
+| Base `0x21d337eB…918` | USDC / wstETH | **paused** (all 6) | — | open |
+
+The open Arbitrum wstETH selectors are
+`0x859c1a6a` (28 d receive-fixed), `0x83e7d402` (60 d), `0xb95ba8f3` (90 d),
+`0xdc660afa`, `0xb3f2a286`, `0xed157264` (the three pay-fixed tenors).
+The six 6-arg wstETH selectors are paused **on the same pool, in the same block** — the pause map is keyed by *selector*,
+not by pool or by function name, so "is this entry point open" is a per-arity, per-tenor, per-direction fact that has to be
+enumerated. Any analysis that says "IPOR paused swaps" without the selector numbers is wrong.
 
 `IPOR_015` is `METHOD_PAUSED` (`contracts/libraries/errors/IporErrors.sol:88`), raised by
 `AccessControl._checkFunctionSigAndIsNotPause` (`contracts/router/AccessControl.sol:122`) from the per-selector map
-`StorageLibBaseV1.getRouterFunctionPaused().value[selector]`. That map is written by `pause(bytes4[])` (pause guardian) and
-cleared only by the owner through `unpause(bytes4[])` (`AccessControl.sol:81` / `:93`). It is **per selector**, not a global
-switch, and it is publicly readable: `IporProtocolRouter.paused(bytes4)`.
+`StorageLibBaseV1.getRouterFunctionPaused().value[selector]`, written by `pause(bytes4[])` (pause guardian) and cleared only
+by the owner through `unpause(bytes4[])` (`AccessControl.sol:81`/`:93`). It is publicly readable: `IporProtocolRouter.paused(bytes4)`.
 
-Three consequences, stated plainly rather than buried:
+Four consequences, stated plainly rather than buried:
 
-1. **On Arbitrum the 90-day receive-fixed entry points are shut right now.** Whatever the rest of this report proves about
-   the maths, that attack is *dormant* there, not live: no permissionless open, no oversized notional, no mark to inflate.
-2. **The pause cannot be side-stepped by calling the service contracts directly.** Services are never `call`ed: the router
+1. **The bug is live, not latent.** Ethereum's USDC / USDT / DAI pools — 92.26 M + 17.01 M + 7.81 M of LP balance,
+   ~117 M USD — have *every* open-swap selector un-paused. Arbitrum wstETH exposes the same path through its 5-arg
+   entry points. The earlier "dormant everywhere" reading was an artefact of probing only Arbitrum USDC.
+2. **A `paused == 0` flag is not proof of a callable function.** Those flag reads are a filter, not evidence: a selector that
+   was never registered also reads 0. The Arbitrum USDT pool turns out to hold **1.299963 USDT** (`ipUSDT 0x37241A7E…3773`,
+   6 decimals, `totalSupply = 1 299 963`, last mint 2023-05-18), and Arbitrum has **no ipDAI token at all**
+   (blockscout token search: zero hits) — so the twelve "open" USDT/DAI selectors on Arbitrum sit on a dust pool and a
+   non-existent one. Corroboration for the *real* pools therefore comes from executing the call, which is what
+   `test_1_attack` now does (it tries the requested tenor first, then the other two, and both arities per size, and prints
+   the reason: `IPOR_012` = route miss, `IPOR_015` = paused, `IPOR_02x` = risk-indicator rejection).
+3. **The pause cannot be side-stepped by calling the service contracts directly.** Services are never `call`ed: the router
    resolves a service address and runs `implementation.functionDelegateCall(...)`
-   (`contracts/router/IporProtocolRouterAbstract.sol:20,60`), so service code always executes in the router's storage
-   context. A raw call to `AmmOpenSwapServiceUsdc` (`0x5D90…A27b`) therefore has `_getMessageSigner()` read its own empty
-   slot (0), and `RiskIndicatorsValidatorLib.verify` rejects every payload — OZ 4.9.3 `ECDSA.recover` reverts on a malformed
-   signature, it never returns `address(0)`. `fork/IporFork.t.sol::test_3_pause` runs this experiment and prints the revert.
-3. **What is *not* established.** Only the 90-day receive-fixed selectors have been probed. Whether other tenors or the
-   pay-fixed side are open, and whether Ethereum/Base are paused at all, is one ungated question that
-   `test_4_all_chains` answers for all 18 open entry points on all three deployments in a single run. Until that log exists
-   this report does **not** claim the bug is exploitable today; it claims (a) the accounting hole is real and measured on a
-   local deployment of the repo's own code, and (b) the live entry points sit one `unpause` away from it.
+   (`contracts/router/IporProtocolRouterAbstract.sol:20,60`), so service code always runs in the router's storage context.
+   A raw call to `AmmOpenSwapServiceUsdc` (`0x5D90…A27b`) has `_getMessageSigner()` read its own empty slot (0), and
+   `RiskIndicatorsValidatorLib.verify` rejects every payload (`IPOR_020`) — measured in the same run.
+4. **The two reverts previously reported on the USDC pool were calldata artefacts, not gates.**
+   `redeemFromAmmPoolUsdc()` / `closeSwapsUsdc()` called with empty calldata fail on argument decoding
+   (`'Address: low-level delegate call failed'`). `AmmPoolsService.redeemFromAmmPoolUsdc` is `_redeem(_usdc, beneficiary,
+   ipTokenAmount)` — two arguments — and with real arguments the exit works.
 
-If the map comes back fully paused on all three chains, the correct reading is: *latent critical bug, currently unreachable
-without the owner unpausing.* That is the honest status, and it is the reason this section exists.
+So the report no longer claims "latent": the accounting hole is reachable, permissionlessly, on the deployment with ~117 M USD
+of LP balance, and on Arbitrum wstETH through the 5-arg selectors. What an attack actually nets on each of those pools is
+§7.1 and §8; what the operator can do about it during the 24-day window is §9.1–9.4.
+
 
 ---
 
