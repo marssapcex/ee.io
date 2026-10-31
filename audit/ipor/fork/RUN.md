@@ -13,6 +13,7 @@ File: `fork/IporFork.t.sol` (v3). Compile-clean against the real `forge-std` (so
 | 2 | `_depth()` returned 229,309.96 for a pool holding 995.79 USDC idle | it used `AmmStorage.liquidityPool`, which is *LP equity*, not cash | `AmmTreasury.getLiquidityPoolBalance()` — the exact number the swap engine uses (`AmmOpenSwapServiceBaseV1.sol:142`) |
 | 3 | asset manager always 0 | `AmmTreasuryBaseV2` has **no** `getConfiguration()` (that is the legacy `AmmTreasury`); the call reverted and was swallowed | `ammAssetManagement()` + `IERC4626.maxWithdraw(treasury)` |
 | 4 | knobs unusable | `vm.envUint` reverts when unset | every knob optional (`_envOr`) |
+| 5 | `openSwapReceiveFixed90daysUsdc` also reverted `IPOR_012` (v3, run of 2026-10-31) | **same class of mistake, second place: the arity.** Arbitrum/Base USDC swaps take `(beneficiary, inputAsset, amount, acceptableRate, leverage, riskIndicators)` — 6 params (`contracts/chains/arbitrum/interfaces/IAmmOpenSwapServiceUsdc.sol:101`); Ethereum's legacy stable pools take 5, without `inputAsset` (`contracts/interfaces/IAmmOpenSwapService.sol:212`). Different `inputAsset` position → different selector → dispatch miss. | `_openCalldata()` builds both flavours, the attack tries both per size, `test_2_probe` prints which selectors this router actually dispatches |
 
 ### Why #1 matters for the report
 
@@ -85,6 +86,16 @@ WSTETH      0x5979D7b546E38E414F7E9822514be443A4800529   ipwstETH 0xbDa4b3e17a9B
 
 ---
 
+## 2b. What the first real run already proved (fork, blocks 26,310,468 / 519,891,316)
+
+Read off `test_0_recon` / the `-vvvv` trace of the failed `test_1_attack`:
+
+* `provideLiquidityUsdcToAmmPoolUsdc` **works** through the router: 22,930.99387 USDC in → 20,066.41076 ipUSDC minted, and the service immediately rebalanced 22,653.40 USDC into the Fusion vault (`depositToAssetManagementInternal`) — i.e. the pool really is ~99 % vault-backed, which is why idle cash alone looked like dust.
+* `getLiquidityPoolBalance()` = 229,309.9387 while `cash + maxWithdraw` = 231,745.8132: the treasury deducts 2,435.87 of accrued fee/collateral buckets. `AmmStorage.getBalance()` returns `(0, 0, 384, 2051.87)` — its field order is **not** the one the v2 header assumed, so never use it for depth.
+* `getSoapIndicators()` for both pools is empty (no open swaps at that block) and the exchange rate equals `LP/supply` to 18 digits: 1.1427551316 (USDC), 1.0574739078 (wstETH). The mark starts clean, so any inflation measured after the warp is the attack's.
+* **The fuel is there.** `calculateAccruedIbtPrice(USDC, ·)` moved 1.1354928574 → 1.1354928906 in the 16 s between two runs ⇒ the published USDC index accrues at **≈ 6.53 % APY**. Over 90 days that is ≈ +1.6 % of notional, which is what the unclamped SOAP turns into a negative (LP-owes) mark, while the trader's own payout stays clamped at collateral.
+* `setMessageSigner` still succeeds from the owner; `deal()` on USDC works (slot `0xb6d6d8b5…`, forge finds it by itself).
+
 ## 3. Run it
 
 ```bash
@@ -105,8 +116,14 @@ Run the recon first (read-only, always safe):
 forge test --match-contract IporFork --match-test test_0_recon -vv
 ```
 
-Then the attack, default sizing = 10 % of LP balance as the attacker's own LP, 50 % of LP balance as swap total amount,
-1000× leverage, 90 days elapsed:
+Selector probe (no state change, tells you what this router dispatches — run it if anything reverts `IPOR_012`):
+
+```bash
+forge test --match-contract IporFork --match-test test_2_probe -vv
+```
+
+Then the attack. Default sizing: the attacker takes **half the book as LP** and **half the book as swap total amount**
+(his LP capital comes back inside the redemption, so it is capital, not cost), 1000× leverage, 90 days elapsed:
 
 ```bash
 forge test --match-contract IporFork --match-test test_1_attack -vv
