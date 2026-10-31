@@ -411,6 +411,48 @@ entire derivatives TVL is 484 k and which has no on-chain alarm — but this is 
 a guaranteed loss for LPs only if the swap is left open, and the protocol has the power to close it.**
 
 ---
+**9.5 The open side is paused on the live router — measured, and what it means for "is this live today".**
+
+Probing the deployed Arbitrum router `0x760Fa0aB719c4067D3A8d4727Cf07E8f3Bf118db` at block 26 310 512
+(`fork/IporFork.t.sol::test_2_probe`, v3.1), with the per-chain arity taken from
+`contracts/chains/arbitrum/interfaces/IAmmOpenSwapServiceUsdc.sol:101`:
+
+| entry point | selector | observed |
+|---|---|---|
+| `openSwapReceiveFixed90daysUsdc(beneficiary, inputAsset, amount, rate, leverage, risk)` | `0x3696578d` | **dispatched**, then reverts `IPOR_015` |
+| `openSwapReceiveFixed90daysUsdc` 5-arg legacy arity | `0xed2b4a54` | `IPOR_012`, not in this router's dispatch table |
+| `openSwapReceiveFixed90daysWstEth` | `0x1253b3ae` | **dispatched**, then reverts `IPOR_015` |
+| `provideLiquidityUsdcToAmmPoolUsdc` | `0x87b3c417` | executes (LP entry works) |
+| `redeemFromAmmPoolUsdc` | `0x4e854bd9` | executes |
+
+`IPOR_015` is `METHOD_PAUSED` (`contracts/libraries/errors/IporErrors.sol:88`), raised by
+`AccessControl._checkFunctionSigAndIsNotPause` (`contracts/router/AccessControl.sol:122`) from the per-selector map
+`StorageLibBaseV1.getRouterFunctionPaused().value[selector]`. That map is written by `pause(bytes4[])` (pause guardian) and
+cleared only by the owner through `unpause(bytes4[])` (`AccessControl.sol:81` / `:93`). It is **per selector**, not a global
+switch, and it is publicly readable: `IporProtocolRouter.paused(bytes4)`.
+
+Three consequences, stated plainly rather than buried:
+
+1. **On Arbitrum the 90-day receive-fixed entry points are shut right now.** Whatever the rest of this report proves about
+   the maths, that attack is *dormant* there, not live: no permissionless open, no oversized notional, no mark to inflate.
+2. **The pause cannot be side-stepped by calling the service contracts directly.** Services are never `call`ed: the router
+   resolves a service address and runs `implementation.functionDelegateCall(...)`
+   (`contracts/router/IporProtocolRouterAbstract.sol:20,60`), so service code always executes in the router's storage
+   context. A raw call to `AmmOpenSwapServiceUsdc` (`0x5D90…A27b`) therefore has `_getMessageSigner()` read its own empty
+   slot (0), and `RiskIndicatorsValidatorLib.verify` rejects every payload — OZ 4.9.3 `ECDSA.recover` reverts on a malformed
+   signature, it never returns `address(0)`. `fork/IporFork.t.sol::test_3_pause` runs this experiment and prints the revert.
+3. **What is *not* established.** Only the 90-day receive-fixed selectors have been probed. Whether other tenors or the
+   pay-fixed side are open, and whether Ethereum/Base are paused at all, is one ungated question that
+   `test_4_all_chains` answers for all 18 open entry points on all three deployments in a single run. Until that log exists
+   this report does **not** claim the bug is exploitable today; it claims (a) the accounting hole is real and measured on a
+   local deployment of the repo's own code, and (b) the live entry points sit one `unpause` away from it.
+
+If the map comes back fully paused on all three chains, the correct reading is: *latent critical bug, currently unreachable
+without the owner unpausing.* That is the honest status, and it is the reason this section exists.
+
+---
+
+
 ## 10. How long does it actually have to stay open, and how loud is it?
 
 Both questions were measured, and both answers are less favourable to the attacker than "90 days, undetected".
@@ -508,7 +550,8 @@ audit/ipor/
 ├── REPORT.md              <- this file
 ├── repo/                  <- clone of IPOR-Labs/ipor-protocol @ 434327d
 ├── fork/
-│   ├── IporFork.t.sol     <- v3 fork PoC (recon + attack, Arbitrum default, Ethereum/Base wired)
+│   ├── IporFork.t.sol     <- v3.2 fork PoC: recon, selector probe, pause map + bypass test,
+│   │                         all-chain probe, then the attack (direction/tenor aware)
 │   ├── IporWstEthFork.t.sol <- v1 wstETH-only test, superseded
 │   └── RUN.md             <- how to run it, address forensics, why IPOR_012 happened, what is cheated
 └── lab/
