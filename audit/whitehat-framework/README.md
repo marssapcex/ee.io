@@ -52,6 +52,7 @@ python3 tools/gate.py runs/mytarget/20261101-101500 6 --run   # also execute for
 | `tools/build_corpus.py` | clones `kismp123/DeFi-Security-Incident` at a pinned commit, parses 821 incident files into `corpus/incidents/*.json`, 24 class pages, 797 patterns, `INDEX.md`, `provenance.json` | ~2 s |
 | `tools/triage.py` | IDF-weighted match of every in-scope `.sol` file against the 797 patterns → ranked candidates + per-module class shortlist | ~0.2 s / 120 files |
 | `tools/gate.py` | phase gate, exits 1 with the reason | instant |
+| `tools/local_chain/` | a hardhat EVM that runs with **no network**: solc-js from npm, `hardhat_setBalance`/`setStorageAt`/`impersonate`, `transplant.js` to replay a hand-dumped mainnet snapshot | verified |
 | `tools/start_run.sh` | creates `runs/<target>/<stamp>/` from the templates **and seeds `02-coverage.tsv` with the real in-scope file list as `todo`** | instant |
 
 `triage.py` example:

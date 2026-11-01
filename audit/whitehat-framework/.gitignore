@@ -1,3 +1,6 @@
 corpus/.source/
 runs/
 __pycache__/
+tools/local_chain/node_modules/
+tools/local_chain/artifacts/
+tools/local_chain/cache/
