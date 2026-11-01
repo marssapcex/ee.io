@@ -1,0 +1,36 @@
+# Dispatched by the agent with:  gh workflow run agent-run.yml -f ref=<sha>
+# Runs ONLY on a runner the operator registered by hand, labelled "agent-exec".
+# There is no cron, no push and no pull_request trigger: nothing runs unless the
+# agent (or the operator) explicitly dispatches it.
+name: agent-run
+on:
+  workflow_dispatch:
+    inputs:
+      args:
+        description: "extra args passed to remote/job.sh (optional)"
+        required: false
+        default: ""
+jobs:
+  exec:
+    # a self-hosted runner on the operator's machine
+    runs-on: [self-hosted, agent-exec]
+    timeout-minutes: 20
+    # only the repo owner can trigger this
+    if: github.actor == 'marssapcex'
+    concurrency:
+      group: agent-exec
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: arena/4ea00a9f-ee-io
+      - name: run
+        run: |
+          chmod +x remote/job.sh
+          remote/job.sh ${{ inputs.args }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-out
+          path: agent-out/
+          retention-days: 3
