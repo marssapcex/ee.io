@@ -6,9 +6,11 @@
     "test": "hardhat test"
   },
   "devDependencies": {
-    "hardhat": "^2.29.1",
     "@nomicfoundation/hardhat-ethers": "^3",
+    "@openzeppelin/contracts": "4.9.6",
     "chai": "^4",
+    "hardhat": "^2.29.1",
+    "solady": "0.0.156",
     "solc": "0.8.26"
   }
 }
