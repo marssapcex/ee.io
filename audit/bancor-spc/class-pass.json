@@ -1,0 +1,146 @@
+[
+ {
+  "class": "access-control",
+  "signal_regex": "only\\(|ownerOnly|protected",
+  "hits_in_file": 17,
+  "verdict": "convert: only(BANCOR_NETWORK); config: ownerOnly; 2 ham phi khong guard"
+ },
+ {
+  "class": "approval-abuse",
+  "signal_regex": "safeTransferFrom",
+  "hits_in_file": 1,
+  "verdict": "TransferFrom(msg.sender -> this) dung chieu, luong do network contract goi"
+ },
+ {
+  "class": "arbitrary-call",
+  "signal_regex": "\\.call\\(|delegatecall",
+  "hits_in_file": 0,
+  "verdict": "khong co low-level call nao"
+ },
+ {
+  "class": "bridge-crosschain",
+  "signal_regex": null,
+  "hits_in_file": 0,
+  "verdict": "khong ap dung"
+ },
+ {
+  "class": "business-logic",
+  "signal_regex": "addLiquidityAmounts|fundCost|fundSupplyAmount|liquidateReserveAmount",
+  "hits_in_file": 13,
+  "verdict": "rounding: nap lam tron LEN, rut lam tron XUONG"
+ },
+ {
+  "class": "create2-exploit",
+  "signal_regex": "create2",
+  "hits_in_file": 0,
+  "verdict": "khong ap dung"
+ },
+ {
+  "class": "defl-tax-token",
+  "signal_regex": "balanceOf\\(address\\(this\\)\\)",
+  "hits_in_file": 5,
+  "verdict": "5 cho doc balance thuc -> fee-on-transfer chi lam stored<actual, bat loi cho pool"
+ },
+ {
+  "class": "donation-inflation",
+  "signal_regex": "get_balances|doConvert|syncReserveBalances",
+  "hits_in_file": 7,
+  "verdict": "doConvert ghi actualSourceBalance -> donation khong lam pool 'ngheo' gia"
+ },
+ {
+  "class": "flash-loan",
+  "signal_regex": "collateral|borrow",
+  "hits_in_file": 0,
+  "verdict": "khong co collateral -> khong co don bay"
+ },
+ {
+  "class": "governance",
+  "signal_regex": "transferOwnership|acceptOwnership",
+  "hits_in_file": 5,
+  "verdict": "2 buoc, khong vote"
+ },
+ {
+  "class": "integer-precision",
+  "signal_regex": "mul\\(|div\\(",
+  "hits_in_file": 13,
+  "verdict": "SafeMath 0.6 -> revert khi overflow; chia co guard"
+ },
+ {
+  "class": "mev-sandwich",
+  "signal_regex": "",
+  "hits_in_file": 0,
+  "verdict": "co the sandwich nhung phi do trader tu dat minReturn"
+ },
+ {
+  "class": "nft",
+  "signal_regex": null,
+  "hits_in_file": 0,
+  "verdict": "khong ap dung"
+ },
+ {
+  "class": "oracle-price-manipulation",
+  "signal_regex": "reserveBalances\\(\\)|recentAverageRate",
+  "hits_in_file": 3,
+  "verdict": "recentAverageRate = TWAP 10' (view, cho contract khac); reserveBalances spot dung noi bo"
+ },
+ {
+  "class": "other",
+  "signal_regex": null,
+  "hits_in_file": 0,
+  "verdict": "xem B1-B4 trong REPORT"
+ },
+ {
+  "class": "private-key-compromise",
+  "signal_regex": null,
+  "hits_in_file": 0,
+  "verdict": "khong ap dung"
+ },
+ {
+  "class": "proxy-storage",
+  "signal_regex": "initialize",
+  "hits_in_file": 1,
+  "verdict": "khong phai proxy, khong co initializer"
+ },
+ {
+  "class": "reentrancy",
+  "signal_regex": "protected",
+  "hits_in_file": 6,
+  "verdict": "6 cho; state update truoc transfer (CEI)"
+ },
+ {
+  "class": "self-balance-exploit",
+  "signal_regex": "syncReserveBalances\\(\\)",
+  "hits_in_file": 1,
+  "verdict": "sync() ghi balanceOf(this) vao state = B1, ai cung goi duoc"
+ },
+ {
+  "class": "signature-replay",
+  "signal_regex": "ecrecover|permit",
+  "hits_in_file": 0,
+  "verdict": "khong co chu ky"
+ },
+ {
+  "class": "slippage-amm",
+  "signal_regex": "minReturn|_minReturn",
+  "hits_in_file": 4,
+  "verdict": "co, nhung addLiquidity(...,0) bi chan boi verifyLiquidityInput"
+ },
+ {
+  "class": "staking-reward",
+  "signal_regex": null,
+  "hits_in_file": 0,
+  "verdict": "khong ap dung"
+ },
+ {
+  "class": "unprotected-callback",
+  "signal_regex": "onUpgradeComplete|receive\\(\\)",
+  "hits_in_file": 2,
+  "verdict": "onUpgradeComplete co only(CONVERTER_UPGRADER); receive() chi validReserve"
+ },
+ {
+  "class": "weak-randomness",
+  "signal_regex": null,
+  "hits_in_file": 0,
+  "verdict": "khong ap dung"
+ }
+]

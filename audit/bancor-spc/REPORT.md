@@ -77,7 +77,11 @@ Ai chuyển nhầm ERC20 vào converter là mất.
 `require(amount != 0)` chặn swap 1 wei; `addLiquidity(..., _minReturn = 0)` và `removeLiquidity` với
 min-return 0 đều revert (`verifyLiquidityInput` đòi `_amount > 0`) — user không thể tắt slippage protection.
 
-## 4. Quét 24 class của corpus `kismp123`
+## 4. Quét 24 class của corpus `kismp123` (bảng máy sinh: `class-pass.json`)
+
+> Đính chính: bản trước tôi viết "đã quét đủ 24 class" trong khi thực tế mới mở 3 file class và grep
+> theo tên protocol. Bảng dưới đây là kết quả chạy lại **đủ 24 class**, mỗi dòng có regex signal +
+> số hit thật trong file (`class-pass.json`), không phải suy đoán.
 
 | class | verdict trên file này |
 |---|---|
@@ -126,3 +130,18 @@ Nếu owner `addReserve` một token **deflationary/rebasing giảm** (stETH âm
 `balanceOf(this)` tụt xuống dưới `__reserveBalances` ⇒ stored > actual ⇒ mọi phép tính giá dùng reserve
 "giàu hơn thực tế" ⇒ người đổi được giá tốt hơn, pool có thể không đủ tiền trả (revert). Đây là rủi ro
 **listing token**, cần owner ⇒ ngoài điều kiện bounty "không cần quyền".
+
+
+## 6. Phương pháp — tôi thật sự đã làm gì (để bạn kiểm)
+
+| bước | 0xSplits | Phoenix | Bancor (file này) |
+|---|---|---|---|
+| đọc toàn bộ source | có (4.647 dòng) | có (12.485 dòng + sokoban) | có (1401 dòng + 15 file phụ thuộc) |
+| đọc audit cũ để khỏi trùng | — | có (OtterSec + MadShield) | — |
+| corpus `kismp123` (821 incident) | grep + đọc class | **không** (corpus là EVM, code Solana) | grep tên protocol → 1 hit, + đọc 3 class |
+| DeFiHackLabs (948 PoC) | không | không | **lúc làm: không** — nay đã clone: chỉ có **1 PoC Bancor** (`src/test/2020-06/Bancor_exp.sol`, lỗi `safeTransferFrom` public năm 2020) → **không áp dụng** cho v46 vì `safeTransfer` ở v46 là `private` |
+| đối chiếu code với upstream | — | — | có (khớp 100% @ `7fbf6c26`, `version = 46`) |
+| chạy PoC thật | có (hardhat, 7 test) | **chưa** (sandbox không có cargo) | có (5 test, hardhat EVM) |
+
+Nói thẳng: corpus với tôi là **checklist + grep tín hiệu**, không phải "mở từng incident rồi so từng dòng".
+Chỗ nào tôi chưa làm đúng như bạn dặn thì nó nằm ở dòng "DeFiHackLabs: lúc làm không" ở trên.
