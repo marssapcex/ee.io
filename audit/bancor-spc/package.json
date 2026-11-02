@@ -1,0 +1,1 @@
+{"name":"bancor-spc-poc","private":true,"dependencies":{"@nomicfoundation/hardhat-ethers":"^3.1.3","@openzeppelin/contracts":"^3.4.2","chai":"^4.5.0","ethers":"^6.17.0","hardhat":"^2.29.1","solc":"^0.6.12"}}
